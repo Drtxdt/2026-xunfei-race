@@ -224,6 +224,15 @@ class LineFollowNode:
         self.finish_box_bottom_touch_ratio = float(
             rospy.get_param("~finish_box_bottom_touch_ratio", rospy.get_param("finish_box_bottom_touch_ratio", 0.92))
         )
+        self.finish_box_min_height_ratio = float(
+            rospy.get_param("~finish_box_min_height_ratio", rospy.get_param("finish_box_min_height_ratio", 0.22))
+        )
+        self.finish_box_center_tolerance_ratio = float(
+            rospy.get_param(
+                "~finish_box_center_tolerance_ratio",
+                rospy.get_param("finish_box_center_tolerance_ratio", 0.28),
+            )
+        )
         self.finish_approach_center_alpha = float(
             rospy.get_param("~finish_approach_center_alpha", rospy.get_param("finish_approach_center_alpha", 0.75))
         )
@@ -642,8 +651,13 @@ class LineFollowNode:
 
         box_area_ratio = float(w * h) / max(1.0, float(bottom.shape[0] * width))
         good_box_area = box_area_ratio >= self.finish_box_min_area_ratio
+        box_height_ratio = float(h) / max(1.0, float(bottom.shape[0]))
+        good_box_height = box_height_ratio >= self.finish_box_min_height_ratio
         box_bottom = y + h
         good_bottom_touch = float(box_bottom) / max(1.0, float(bottom.shape[0])) >= self.finish_box_bottom_touch_ratio
+        box_center_x = x + w / 2.0
+        center_tolerance_px = self.finish_box_center_tolerance_ratio * float(width)
+        good_center_alignment = abs(box_center_x - (width / 2.0)) <= center_tolerance_px
 
         detected = (
             has_horizontal_edge
@@ -652,7 +666,9 @@ class LineFollowNode:
             and good_fill
             and good_connectivity
             and good_box_area
+            and good_box_height
             and good_bottom_touch
+            and good_center_alignment
         )
         return FinishDetectionResult(
             detected, box, horizontal_width_ratio, left_h_ratio, right_h_ratio, fill_ratio, component_count
