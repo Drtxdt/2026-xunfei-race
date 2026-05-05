@@ -1,0 +1,17 @@
+<launch>
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/line_follow.yaml" />
+
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <node pkg="ucar_2026_line_follow" type="line_follow_node.py" name="line_follow_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+</launch>
