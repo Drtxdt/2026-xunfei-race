@@ -173,6 +173,18 @@ class LineFollowNode:
         self.startup_force_left_until_dual_frames = int(
             rospy.get_param("~startup_force_left_until_dual_frames", rospy.get_param("startup_force_left_until_dual_frames", 8))
         )
+        self.startup_force_left_clear_nonfork_frames = int(
+            rospy.get_param(
+                "~startup_force_left_clear_nonfork_frames",
+                rospy.get_param("startup_force_left_clear_nonfork_frames", 10),
+            )
+        )
+        self.startup_force_left_min_duration = float(
+            rospy.get_param("~startup_force_left_min_duration", rospy.get_param("startup_force_left_min_duration", 2.6))
+        )
+        self.startup_force_left_bias_px = float(
+            rospy.get_param("~startup_force_left_bias_px", rospy.get_param("startup_force_left_bias_px", -95.0))
+        )
         self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 6.0)))
 
         self.finish_confirm_frames = int(
@@ -206,6 +218,18 @@ class LineFollowNode:
         self.finish_box_max_components = int(
             rospy.get_param("~finish_box_max_components", rospy.get_param("finish_box_max_components", 4))
         )
+        self.finish_box_min_area_ratio = float(
+            rospy.get_param("~finish_box_min_area_ratio", rospy.get_param("finish_box_min_area_ratio", 0.06))
+        )
+        self.finish_box_bottom_touch_ratio = float(
+            rospy.get_param("~finish_box_bottom_touch_ratio", rospy.get_param("finish_box_bottom_touch_ratio", 0.92))
+        )
+        self.finish_forward_distance_m = float(
+            rospy.get_param("~finish_forward_distance_m", rospy.get_param("finish_forward_distance_m", 0.50))
+        )
+        self.finish_forward_speed = float(
+            rospy.get_param("~finish_forward_speed", rospy.get_param("finish_forward_speed", 0.12))
+        )
         self.finish_profile = rospy.get_param("~finish_profile", rospy.get_param("finish_profile", "default"))
         self._load_finish_profile_overrides()
 
@@ -228,8 +252,10 @@ class LineFollowNode:
         self.last_finish_result: Optional[FinishDetectionResult] = None
         self.start_time = time.time()
         self.finish_detection_enabled = False
+        self.finish_forward_until = 0.0
         self.startup_force_left_mode = self.turn_direction == "left"
         self.dual_line_stable_frames = 0
+        self.nonfork_stable_frames = 0
         if self.started and self.turn_direction == "left":
             self.turn_until = self.start_time + self.startup_left_bias_duration
 
@@ -251,6 +277,7 @@ class LineFollowNode:
             self.finish_detection_enabled = False
             self.startup_force_left_mode = self.turn_direction == "left"
             self.dual_line_stable_frames = 0
+            self.nonfork_stable_frames = 0
             if self.turn_direction == "left":
                 self.turn_until = self.start_time + self.startup_left_bias_duration
             self.set_status("searching")
@@ -274,12 +301,27 @@ class LineFollowNode:
             if now - self.finish_time >= self.finish_stop_time:
                 self.set_status("finish")
             return
+        if now < self.finish_forward_until:
+            self.publish_finish_forward_control()
+            self.finish_phase = "advance_in_finish"
+            self.set_status("in_finish_box")
+            return
+        if self.finish_forward_until > 0.0 and now >= self.finish_forward_until and self.finish_time is None:
+            self.finish_time = now
+            self.finish_phase = "finish"
+            self.set_status("finish")
+            self.stop_robot()
+            return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
         observations = self.observe_lane(mask, frame.shape[1], self.startup_force_left_mode)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
         self.update_lane_width_estimate(observations)
         fork_rows = sum(1 for obs in observations if obs.multi_candidate)
+        if fork_rows > 0:
+            self.nonfork_stable_frames = 0
+        else:
+            self.nonfork_stable_frames += 1
         image_center = frame.shape[1] / 2.0
         lane_center_offset = None if lane_center is None else abs(lane_center - image_center)
         fork_geometry_ok = lane_center_offset is not None and lane_center_offset <= self.fork_center_tolerance_px
@@ -310,10 +352,12 @@ class LineFollowNode:
                 self.finish_lost_frames = 0
 
         if self.finish_frames >= self.finish_confirm_frames:
-            self.finish_time = now
-            self.finish_phase = "finish"
-            self.set_status("finish")
-            self.stop_robot()
+            forward_speed = max(0.01, self.finish_forward_speed)
+            forward_duration = max(0.0, self.finish_forward_distance_m / forward_speed)
+            self.finish_forward_until = now + forward_duration
+            self.finish_phase = "advance_in_finish"
+            self.set_status("in_finish_box")
+            self.publish_finish_forward_control()
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
             return
@@ -333,12 +377,13 @@ class LineFollowNode:
                 self.single_line_frames += 1
                 self.dual_line_stable_frames = 0
 
+            startup_elapsed = now - self.start_time
             if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
-                self.startup_force_left_mode = False
-
-
-            if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
-                self.startup_force_left_mode = False
+                if (
+                    startup_elapsed >= self.startup_force_left_min_duration
+                    and self.nonfork_stable_frames >= self.startup_force_left_clear_nonfork_frames
+                ):
+                    self.startup_force_left_mode = False
 
             if (
                 fork_detected_latched
@@ -349,6 +394,9 @@ class LineFollowNode:
                 self.last_fork_time = now
 
             target_center = lane_center
+            if self.startup_force_left_mode and self.turn_direction == "left":
+                target_center += self.startup_force_left_bias_px
+                self.set_status("turn_left")
             if now < self.turn_until:
                 target_center += self.turn_bias_px
                 self.set_status("turn_left")
@@ -605,7 +653,20 @@ class LineFollowNode:
         good_fill = fill_ratio >= self.finish_box_min_fill_ratio
         good_connectivity = component_count <= self.finish_box_max_components
 
-        detected = has_horizontal_edge and has_left_side and has_right_side and good_fill and good_connectivity
+        box_area_ratio = float(w * h) / max(1.0, float(bottom.shape[0] * width))
+        good_box_area = box_area_ratio >= self.finish_box_min_area_ratio
+        box_bottom = y + h
+        good_bottom_touch = float(box_bottom) / max(1.0, float(bottom.shape[0])) >= self.finish_box_bottom_touch_ratio
+
+        detected = (
+            has_horizontal_edge
+            and has_left_side
+            and has_right_side
+            and good_fill
+            and good_connectivity
+            and good_box_area
+            and good_bottom_touch
+        )
         return FinishDetectionResult(
             detected, box, horizontal_width_ratio, left_h_ratio, right_h_ratio, fill_ratio, component_count
         )
@@ -726,6 +787,12 @@ class LineFollowNode:
 
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
+
+    def publish_finish_forward_control(self):
+        twist = Twist()
+        twist.linear.x = max(0.0, self.finish_forward_speed)
+        twist.angular.z = 0.0
+        self.cmd_pub.publish(twist)
 
     def set_status(self, status: str):
         if self.status != status:
