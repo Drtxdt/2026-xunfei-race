@@ -318,6 +318,10 @@ class LineFollowNode:
             self.publish_status()
             return
 
+        if not self.started:
+            self.stop_robot()
+            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
+
         if lane_center is not None:
             self.last_detection_time = now
             self.last_lane_center = lane_center
@@ -328,6 +332,10 @@ class LineFollowNode:
             else:
                 self.single_line_frames += 1
                 self.dual_line_stable_frames = 0
+
+            if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
+                self.startup_force_left_mode = False
+
 
             if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
                 self.startup_force_left_mode = False
@@ -479,7 +487,7 @@ class LineFollowNode:
         if len(segments) == 1:
             segment = segments[0]
             if force_left_mode and self.turn_direction == "left":
-                center = segment.center + self.lane_width_px / 2.0
+                center = segment.center + lane_width_px / 2.0
                 return segment.center, None, center, False
             if segment.center < image_width / 2.0:
                 center = segment.center + lane_width_px / 2.0
