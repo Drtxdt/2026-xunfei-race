@@ -224,6 +224,9 @@ class LineFollowNode:
         self.finish_box_bottom_touch_ratio = float(
             rospy.get_param("~finish_box_bottom_touch_ratio", rospy.get_param("finish_box_bottom_touch_ratio", 0.92))
         )
+        self.finish_approach_center_alpha = float(
+            rospy.get_param("~finish_approach_center_alpha", rospy.get_param("finish_approach_center_alpha", 0.75))
+        )
         self.finish_profile = rospy.get_param("~finish_profile", rospy.get_param("finish_profile", "default"))
         self._load_finish_profile_overrides()
 
@@ -347,6 +350,11 @@ class LineFollowNode:
 
         if lane_center is not None:
             self.last_detection_time = now
+            lane_center_raw = lane_center
+            if self.finish_frames > 0 and self.last_lane_center is not None:
+                alpha = max(0.0, min(1.0, self.finish_approach_center_alpha))
+                lane_center = alpha * self.last_lane_center + (1.0 - alpha) * lane_center_raw
+
             self.last_lane_center = lane_center
             two_sided_tracking = any(obs.left_x is not None and obs.right_x is not None for obs in observations)
             if two_sided_tracking:
