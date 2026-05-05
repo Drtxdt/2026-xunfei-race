@@ -2,4 +2,4 @@ build/
 devel/
 .vscode
 .codex
-.claude
+.claudesrc/ucar_2026_line_follow/scripts/__pycache__/
