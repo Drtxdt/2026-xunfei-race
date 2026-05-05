@@ -78,6 +78,8 @@ finish_approach_center_alpha: 0.75
 finish_approach_max_angular_speed: 0.45
 finish_approach_linear_speed_scale: 0.78
 finish_center_jump_reject_px: 90
+finish_final_approach_frames: 2
+finish_final_linear_speed: 0.03
 
 # Scenario profile selector for finish detection thresholds.
 finish_profile: track_a

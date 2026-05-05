@@ -243,6 +243,12 @@ class LineFollowNode:
         self.finish_approach_linear_speed_scale = float(
             rospy.get_param("~finish_approach_linear_speed_scale", rospy.get_param("finish_approach_linear_speed_scale", 0.78))
         )
+        self.finish_final_approach_frames = int(
+            rospy.get_param("~finish_final_approach_frames", rospy.get_param("finish_final_approach_frames", 2))
+        )
+        self.finish_final_linear_speed = float(
+            rospy.get_param("~finish_final_linear_speed", rospy.get_param("finish_final_linear_speed", 0.03))
+        )
         self.finish_center_jump_reject_px = float(
             rospy.get_param("~finish_center_jump_reject_px", rospy.get_param("finish_center_jump_reject_px", 90.0))
         )
@@ -378,7 +384,7 @@ class LineFollowNode:
             self.finish_time = now
             self.finish_phase = "finish"
             self.set_status("finish")
-            self.stop_robot()
+            self.hard_stop_robot()
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
             return
@@ -714,6 +720,8 @@ class LineFollowNode:
         angular_limit = self.max_angular_speed
         if self.finish_frames > 0:
             angular_limit = min(angular_limit, self.finish_approach_max_angular_speed)
+        if self.finish_frames >= max(1, self.finish_confirm_frames - self.finish_final_approach_frames):
+            angular_limit = min(angular_limit, 0.12)
         angular = max(-angular_limit, min(angular_limit, angular))
 
         if now < self.turn_until:
@@ -726,6 +734,8 @@ class LineFollowNode:
             linear = max(self.min_linear_speed, min(self.base_linear_speed, linear))
             if self.finish_frames > 0:
                 linear *= max(0.2, min(1.0, self.finish_approach_linear_speed_scale))
+            if self.finish_frames >= max(1, self.finish_confirm_frames - self.finish_final_approach_frames):
+                linear = min(linear, self.finish_final_linear_speed)
 
         twist = Twist()
         twist.linear.x = linear
@@ -836,6 +846,10 @@ class LineFollowNode:
 
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
+
+    def hard_stop_robot(self):
+        for _ in range(4):
+            self.cmd_pub.publish(Twist())
 
     def set_status(self, status: str):
         if self.status != status:
