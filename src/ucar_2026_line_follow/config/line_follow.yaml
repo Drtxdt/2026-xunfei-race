@@ -52,6 +52,9 @@ fork_candidate_count: 3
 turn_bias_px: -55
 turn_hold_time: 1.2
 turn_linear_speed: 0.08
+startup_left_bias_duration: 1.6
+startup_force_left_until_dual_frames: 8
+finish_enable_delay: 6.0
 
 # Finish detection for the P1 50 cm x 50 cm white parking square.
 finish_confirm_frames: 5

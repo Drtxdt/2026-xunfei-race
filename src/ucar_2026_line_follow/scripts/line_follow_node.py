@@ -167,6 +167,13 @@ class LineFollowNode:
         self.turn_linear_speed = float(
             rospy.get_param("~turn_linear_speed", rospy.get_param("turn_linear_speed", 0.08))
         )
+        self.startup_left_bias_duration = float(
+            rospy.get_param("~startup_left_bias_duration", rospy.get_param("startup_left_bias_duration", 1.6))
+        )
+        self.startup_force_left_until_dual_frames = int(
+            rospy.get_param("~startup_force_left_until_dual_frames", rospy.get_param("startup_force_left_until_dual_frames", 8))
+        )
+        self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 6.0)))
 
         self.finish_confirm_frames = int(
             rospy.get_param("~finish_confirm_frames", rospy.get_param("finish_confirm_frames", 5))
@@ -219,6 +226,12 @@ class LineFollowNode:
         self.finish_time = None
         self.finish_phase = "search"
         self.last_finish_result: Optional[FinishDetectionResult] = None
+        self.start_time = time.time()
+        self.finish_detection_enabled = False
+        self.startup_force_left_mode = self.turn_direction == "left"
+        self.dual_line_stable_frames = 0
+        if self.started and self.turn_direction == "left":
+            self.turn_until = self.start_time + self.startup_left_bias_duration
 
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
@@ -234,6 +247,12 @@ class LineFollowNode:
     def start_callback(self, msg: Bool):
         self.started = bool(msg.data)
         if self.started and self.status == "idle":
+            self.start_time = time.time()
+            self.finish_detection_enabled = False
+            self.startup_force_left_mode = self.turn_direction == "left"
+            self.dual_line_stable_frames = 0
+            if self.turn_direction == "left":
+                self.turn_until = self.start_time + self.startup_left_bias_duration
             self.set_status("searching")
         if not self.started:
             self.pid.reset()
@@ -248,6 +267,8 @@ class LineFollowNode:
             return
 
         now = time.time()
+        if self.finish_time is None and not self.finish_detection_enabled:
+            self.finish_detection_enabled = (now - self.start_time) >= self.finish_enable_delay
         if self.finish_time is not None:
             self.stop_robot()
             if now - self.finish_time >= self.finish_stop_time:
@@ -255,7 +276,7 @@ class LineFollowNode:
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
-        observations = self.observe_lane(mask, frame.shape[1])
+        observations = self.observe_lane(mask, frame.shape[1], self.startup_force_left_mode)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
         self.update_lane_width_estimate(observations)
         fork_rows = sum(1 for obs in observations if obs.multi_candidate)
@@ -270,6 +291,8 @@ class LineFollowNode:
         finish_detected = finish_result.detected
         self.last_finish_result = finish_result
 
+        if not self.finish_detection_enabled:
+            finish_detected = False
         if finish_detected:
             self.finish_frames += 1
             self.finish_lost_frames = 0
@@ -292,11 +315,6 @@ class LineFollowNode:
             self.set_status("finish")
             self.stop_robot()
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
-            return
-
-        if not self.started:
-            self.stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
             return
 
@@ -306,8 +324,13 @@ class LineFollowNode:
             two_sided_tracking = any(obs.left_x is not None and obs.right_x is not None for obs in observations)
             if two_sided_tracking:
                 self.single_line_frames = 0
+                self.dual_line_stable_frames += 1
             else:
                 self.single_line_frames += 1
+                self.dual_line_stable_frames = 0
+
+            if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
+                self.startup_force_left_mode = False
 
             if (
                 fork_detected_latched
@@ -386,13 +409,13 @@ class LineFollowNode:
                 cv2.drawContours(filtered, [contour], -1, 255, thickness=cv2.FILLED)
         return filtered
 
-    def observe_lane(self, mask: np.ndarray, image_width: int) -> List[RowObservation]:
+    def observe_lane(self, mask: np.ndarray, image_width: int, force_left_mode: bool = False) -> List[RowObservation]:
         observations = []
         roi_height = mask.shape[0]
         for ratio in self.scan_row_ratios:
             y = int(max(0, min(roi_height - 1, roi_height * ratio)))
             segments = self.find_segments(mask[y, :])
-            left_x, right_x, center_x, multi_candidate = self.choose_lane_pair(segments, image_width)
+            left_x, right_x, center_x, multi_candidate = self.choose_lane_pair(segments, image_width, force_left_mode)
             observations.append(RowObservation(y, segments, left_x, right_x, center_x, multi_candidate))
         return observations
 
@@ -435,12 +458,15 @@ class LineFollowNode:
         return merged
 
     def choose_lane_pair(
-        self, segments: List[Segment], image_width: int
+        self, segments: List[Segment], image_width: int, force_left_mode: bool = False
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool]:
         lane_width_px = self.current_lane_width_px()
         if len(segments) >= 2:
             multi_candidate = len(segments) >= self.fork_candidate_count
-            if multi_candidate and self.turn_direction == "left":
+            if force_left_mode and self.turn_direction == "left":
+                left = segments[0]
+                right = segments[1]
+            elif multi_candidate and self.turn_direction == "left":
                 left = segments[0]
                 right = segments[1]
             elif multi_candidate and self.turn_direction == "right":
@@ -452,6 +478,9 @@ class LineFollowNode:
 
         if len(segments) == 1:
             segment = segments[0]
+            if force_left_mode and self.turn_direction == "left":
+                center = segment.center + self.lane_width_px / 2.0
+                return segment.center, None, center, False
             if segment.center < image_width / 2.0:
                 center = segment.center + lane_width_px / 2.0
                 return segment.center, None, center, False
@@ -659,11 +688,18 @@ class LineFollowNode:
             cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 120, 0), 2)
 
         turn_left_sec = max(0.0, self.turn_until - now)
-        text = "status={} phase={} finish_frames={} detected={} fork_rows={} fork={} turn_left={:.2f}s".format(
-            self.status, self.finish_phase, self.finish_frames, int(finish_result.detected),
-            fork_rows, int(fork_detected), turn_left_sec
+        text = "status={} phase={} finish_frames={} detected={} enabled={} left_mode={} fork_rows={} fork={} turn_left={:.2f}s".format(
+            self.status,
+            self.finish_phase,
+            self.finish_frames,
+            int(finish_result.detected),
+            int(self.finish_detection_enabled),
+            int(self.startup_force_left_mode),
+            fork_rows,
+            int(fork_detected),
+            turn_left_sec,
         )
-        cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+        cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 2)
         text2 = "h={:.2f} vl={:.2f} vr={:.2f} fill={:.2f} cc={} lane_w={:.1f}px adapt={}".format(
             finish_result.horizontal_width_ratio,
             finish_result.vertical_left_height_ratio,
