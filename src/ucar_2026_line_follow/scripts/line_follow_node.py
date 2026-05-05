@@ -286,7 +286,11 @@ class LineFollowNode:
         return mask, y0
 
     def remove_small_components(self, mask: np.ndarray) -> np.ndarray:
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contour_result = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if len(contour_result) == 2:
+            contours = contour_result[0]
+        else:
+            contours = contour_result[1]
         filtered = np.zeros_like(mask)
         for contour in contours:
             if cv2.contourArea(contour) >= self.min_contour_area:
