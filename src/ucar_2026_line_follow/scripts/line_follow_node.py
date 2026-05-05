@@ -91,8 +91,22 @@ class LineFollowNode:
         self.turn_direction = rospy.get_param("~turn_direction", rospy.get_param("turn_direction", "left")).lower()
         self.publish_debug = bool(rospy.get_param("~publish_debug", rospy.get_param("publish_debug", True)))
 
-        self.lane_width_px = float(rospy.get_param("~lane_width_px", rospy.get_param("lane_width_px", 230)))
-        self.lane_width = self.lane_width_px
+        self.lane_width_px_init = float(
+            rospy.get_param("~lane_width_px_init", rospy.get_param("lane_width_px_init", 230))
+        )
+        self.lane_width_px_min = float(
+            rospy.get_param("~lane_width_px_min", rospy.get_param("lane_width_px_min", 150))
+        )
+        self.lane_width_px_max = float(
+            rospy.get_param("~lane_width_px_max", rospy.get_param("lane_width_px_max", 320))
+        )
+        self.lane_width_adapt_alpha = float(
+            rospy.get_param("~lane_width_adapt_alpha", rospy.get_param("lane_width_adapt_alpha", 0.2))
+        )
+        self.enable_lane_width_adapt = bool(
+            rospy.get_param("~enable_lane_width_adapt", rospy.get_param("enable_lane_width_adapt", False))
+        )
+        self.estimated_lane_width_px = float(self.lane_width_px_init)
         self.single_line_hold_frames = int(
             rospy.get_param("~single_line_hold_frames", rospy.get_param("single_line_hold_frames", 12))
         )
@@ -143,6 +157,11 @@ class LineFollowNode:
         self.fork_candidate_count = int(
             rospy.get_param("~fork_candidate_count", rospy.get_param("fork_candidate_count", 3))
         )
+        self.fork_center_tolerance_px = float(
+            rospy.get_param("~fork_center_tolerance_px", rospy.get_param("fork_center_tolerance_px", 180.0))
+        )
+        self.fork_cooldown_sec = float(rospy.get_param("~fork_cooldown_sec", rospy.get_param("fork_cooldown_sec", 1.0)))
+        self.fork_latch_time = float(rospy.get_param("~fork_latch_time", rospy.get_param("fork_latch_time", 0.35)))
         self.turn_bias_px = float(rospy.get_param("~turn_bias_px", rospy.get_param("turn_bias_px", -55.0)))
         self.turn_hold_time = float(rospy.get_param("~turn_hold_time", rospy.get_param("turn_hold_time", 1.2)))
         self.turn_linear_speed = float(
@@ -200,6 +219,8 @@ class LineFollowNode:
         self.last_error_px = 0.0
         self.single_line_frames = 0
         self.turn_until = 0.0
+        self.last_fork_time = -1e9
+        self.fork_latch_until = 0.0
         self.finish_frames = 0
         self.finish_lost_frames = 0
         self.finish_time = None
@@ -257,7 +278,15 @@ class LineFollowNode:
         mask, roi_origin_y = self.extract_white_mask(frame)
         observations = self.observe_lane(mask, frame.shape[1], self.startup_force_left_mode)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
-        fork_detected = any(obs.multi_candidate for obs in observations)
+        self.update_lane_width_estimate(observations)
+        fork_rows = sum(1 for obs in observations if obs.multi_candidate)
+        image_center = frame.shape[1] / 2.0
+        lane_center_offset = None if lane_center is None else abs(lane_center - image_center)
+        fork_geometry_ok = lane_center_offset is not None and lane_center_offset <= self.fork_center_tolerance_px
+        fork_detected = fork_rows >= self.fork_candidate_count and fork_geometry_ok
+        if fork_detected:
+            self.fork_latch_until = max(self.fork_latch_until, now + self.fork_latch_time)
+        fork_detected_latched = now < self.fork_latch_until
         finish_result = self.detect_finish(mask)
         finish_detected = finish_result.detected
         self.last_finish_result = finish_result
@@ -285,14 +314,13 @@ class LineFollowNode:
             self.finish_phase = "finish"
             self.set_status("finish")
             self.stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result)
+            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
+            self.publish_status()
             return
 
         if not self.started:
             self.stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result)
-            self.publish_status()
-            return
+            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
 
         if lane_center is not None:
             self.last_detection_time = now
@@ -308,8 +336,17 @@ class LineFollowNode:
             if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
                 self.startup_force_left_mode = False
 
-            if fork_detected and self.turn_direction == "left":
+
+            if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
+                self.startup_force_left_mode = False
+
+            if (
+                fork_detected_latched
+                and self.turn_direction == "left"
+                and (now - self.last_fork_time) >= self.fork_cooldown_sec
+            ):
                 self.turn_until = max(self.turn_until, now + self.turn_hold_time)
+                self.last_fork_time = now
 
             target_center = lane_center
             if now < self.turn_until:
@@ -325,7 +362,7 @@ class LineFollowNode:
             self.single_line_frames += 1
             self.handle_lost_or_search(now)
 
-        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result)
+        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
         self.publish_status()
 
     def _load_finish_profile_overrides(self):
@@ -431,7 +468,7 @@ class LineFollowNode:
     def choose_lane_pair(
         self, segments: List[Segment], image_width: int, force_left_mode: bool = False
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool]:
-        lane_width = float(getattr(self, "lane_width_px", getattr(self, "lane_width", 230.0)))
+        lane_width_px = self.current_lane_width_px()
         if len(segments) >= 2:
             multi_candidate = len(segments) >= self.fork_candidate_count
             if force_left_mode and self.turn_direction == "left":
@@ -450,30 +487,57 @@ class LineFollowNode:
         if len(segments) == 1:
             segment = segments[0]
             if force_left_mode and self.turn_direction == "left":
-                center = segment.center + lane_width / 2.0
+                center = segment.center + lane_width_px / 2.0
                 return segment.center, None, center, False
             if segment.center < image_width / 2.0:
-                center = segment.center + lane_width / 2.0
+                center = segment.center + lane_width_px / 2.0
                 return segment.center, None, center, False
-            center = segment.center - lane_width / 2.0
+            center = segment.center - lane_width_px / 2.0
             return None, segment.center, center, False
 
         return None, None, None, False
 
     def best_pair_near_image_center(self, segments: List[Segment], image_width: int) -> Tuple[Segment, Segment]:
-        lane_width = float(getattr(self, "lane_width_px", getattr(self, "lane_width", 230.0)))
         image_center = image_width / 2.0
+        lane_width_px = self.current_lane_width_px()
         best_pair = (segments[0], segments[1])
         best_score = float("inf")
         for left, right in zip(segments, segments[1:]):
             center = (left.center + right.center) / 2.0
             width = right.center - left.center
-            width_penalty = abs(width - lane_width) * 0.25
+            width_penalty = abs(width - lane_width_px) * 0.25
             score = abs(center - image_center) + width_penalty
             if score < best_score:
                 best_pair = (left, right)
                 best_score = score
         return best_pair
+
+    def current_lane_width_px(self) -> float:
+        if self.enable_lane_width_adapt:
+            return self.estimated_lane_width_px
+        return self.lane_width_px_init
+
+    def update_lane_width_estimate(self, observations: Sequence[RowObservation]):
+        if not self.enable_lane_width_adapt:
+            self.estimated_lane_width_px = self.lane_width_px_init
+            return
+
+        width_samples = []
+        for obs in observations:
+            if obs.left_x is None or obs.right_x is None or obs.multi_candidate:
+                continue
+            sample_width = obs.right_x - obs.left_x
+            if self.lane_width_px_min <= sample_width <= self.lane_width_px_max:
+                width_samples.append(sample_width)
+
+        if not width_samples:
+            return
+
+        sample_mean = float(np.mean(width_samples))
+        alpha = max(0.0, min(1.0, self.lane_width_adapt_alpha))
+        updated = (1.0 - alpha) * self.estimated_lane_width_px + alpha * sample_mean
+        self.estimated_lane_width_px = max(self.lane_width_px_min, min(self.lane_width_px_max, updated))
+        rospy.loginfo_throttle(1.0, "estimated_lane_width_px=%.2f (sample=%.2f)", self.estimated_lane_width_px, sample_mean)
 
     def estimate_lane_center(self, observations: Sequence[RowObservation], image_width: int) -> Optional[float]:
         centers = []
@@ -592,6 +656,9 @@ class LineFollowNode:
         observations: Sequence[RowObservation],
         lane_center: Optional[float],
         finish_result: FinishDetectionResult,
+        fork_rows: int,
+        fork_detected: bool,
+        now: float,
     ):
         if not self.publish_debug or self.debug_pub.get_num_connections() == 0:
             return
@@ -628,23 +695,29 @@ class LineFollowNode:
             x, y, w, h = finish_result.candidate_box
             cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 120, 0), 2)
 
-        text = "status={} phase={} finish_frames={} detected={} enabled={} left_mode={}".format(
+        turn_left_sec = max(0.0, self.turn_until - now)
+        text = "status={} phase={} finish_frames={} detected={} enabled={} left_mode={} fork_rows={} fork={} turn_left={:.2f}s".format(
             self.status,
             self.finish_phase,
             self.finish_frames,
             int(finish_result.detected),
             int(self.finish_detection_enabled),
             int(self.startup_force_left_mode),
+            fork_rows,
+            int(fork_detected),
+            turn_left_sec,
         )
-        cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
-        text2 = "h={:.2f} vl={:.2f} vr={:.2f} fill={:.2f} cc={}".format(
+        cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 2)
+        text2 = "h={:.2f} vl={:.2f} vr={:.2f} fill={:.2f} cc={} lane_w={:.1f}px adapt={}".format(
             finish_result.horizontal_width_ratio,
             finish_result.vertical_left_height_ratio,
             finish_result.vertical_right_height_ratio,
             finish_result.inner_fill_ratio,
             finish_result.inner_component_count,
+            self.current_lane_width_px(),
+            int(self.enable_lane_width_adapt),
         )
-        cv2.putText(debug, text2, (10, max(mh + 50, 55)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
+        cv2.putText(debug, text2, (10, max(mh + 50, 55)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 200, 255), 2)
 
         try:
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(debug, encoding="bgr8"))
