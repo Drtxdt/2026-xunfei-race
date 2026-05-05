@@ -192,7 +192,7 @@ class LineFollowNode:
             rospy.get_param("~finish_confirm_frames", rospy.get_param("finish_confirm_frames", 5))
         )
         self.finish_release_frames = int(
-            rospy.get_param("~finish_release_frames", rospy.get_param("finish_release_frames", 3))
+            rospy.get_param("~finish_release_frames", rospy.get_param("finish_release_frames", 1))
         )
         self.finish_stop_time = float(
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
@@ -360,9 +360,9 @@ class LineFollowNode:
                 self.set_status("in_finish_box")
         else:
             self.finish_lost_frames += 1
+            self.finish_frames = 0
+            self.finish_phase = "search"
             if self.finish_lost_frames >= self.finish_release_frames:
-                self.finish_frames = 0
-                self.finish_phase = "search"
                 self.finish_lost_frames = 0
 
         if self.finish_frames >= self.finish_confirm_frames:

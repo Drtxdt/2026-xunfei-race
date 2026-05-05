@@ -62,7 +62,7 @@ finish_enable_delay: 6.0
 
 # Finish detection for the P1 50 cm x 50 cm white parking square.
 finish_confirm_frames: 9
-finish_release_frames: 3
+finish_release_frames: 1
 finish_stop_time: 1.0
 finish_bottom_ratio: 0.72
 finish_horizontal_min_width_ratio: 0.45
@@ -83,6 +83,6 @@ finish_center_jump_reject_px: 90
 finish_profile: track_a
 finish_profiles:
   track_a:
-    finish_confirm_frames: 5
+    finish_confirm_frames: 9
     finish_horizontal_min_width_ratio: 0.45
     finish_vertical_side_min_height_ratio: 0.18
