@@ -1,0 +1,7 @@
+# Track A finish profile overrides.
+finish_profile: track_a
+finish_profiles:
+  track_a:
+    finish_confirm_frames: 5
+    finish_horizontal_min_width_ratio: 0.45
+    finish_vertical_side_min_height_ratio: 0.18
