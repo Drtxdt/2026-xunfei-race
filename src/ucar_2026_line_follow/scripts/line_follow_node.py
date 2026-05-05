@@ -30,6 +30,17 @@ class RowObservation:
     multi_candidate: bool
 
 
+@dataclass
+class FinishDetectionResult:
+    detected: bool
+    candidate_box: Optional[Tuple[int, int, int, int]]
+    horizontal_width_ratio: float
+    vertical_left_height_ratio: float
+    vertical_right_height_ratio: float
+    inner_fill_ratio: float
+    inner_component_count: int
+
+
 class PidController:
     def __init__(self, kp: float, ki: float, kd: float, max_integral: float):
         self.kp = kp
@@ -160,6 +171,9 @@ class LineFollowNode:
         self.finish_confirm_frames = int(
             rospy.get_param("~finish_confirm_frames", rospy.get_param("finish_confirm_frames", 5))
         )
+        self.finish_release_frames = int(
+            rospy.get_param("~finish_release_frames", rospy.get_param("finish_release_frames", 3))
+        )
         self.finish_stop_time = float(
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
@@ -179,6 +193,14 @@ class LineFollowNode:
                 "~finish_vertical_side_min_height_ratio", rospy.get_param("finish_vertical_side_min_height_ratio", 0.18)
             )
         )
+        self.finish_box_min_fill_ratio = float(
+            rospy.get_param("~finish_box_min_fill_ratio", rospy.get_param("finish_box_min_fill_ratio", 0.03))
+        )
+        self.finish_box_max_components = int(
+            rospy.get_param("~finish_box_max_components", rospy.get_param("finish_box_max_components", 4))
+        )
+        self.finish_profile = rospy.get_param("~finish_profile", rospy.get_param("finish_profile", "default"))
+        self._load_finish_profile_overrides()
 
         self.cmd_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1, latch=True)
@@ -193,7 +215,10 @@ class LineFollowNode:
         self.last_fork_time = -1e9
         self.fork_latch_until = 0.0
         self.finish_frames = 0
+        self.finish_lost_frames = 0
         self.finish_time = None
+        self.finish_phase = "search"
+        self.last_finish_result: Optional[FinishDetectionResult] = None
 
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
@@ -241,27 +266,37 @@ class LineFollowNode:
         if fork_detected:
             self.fork_latch_until = max(self.fork_latch_until, now + self.fork_latch_time)
         fork_detected_latched = now < self.fork_latch_until
-        finish_detected = self.detect_finish(mask)
+        finish_result = self.detect_finish(mask)
+        finish_detected = finish_result.detected
+        self.last_finish_result = finish_result
 
         if finish_detected:
             self.finish_frames += 1
+            self.finish_lost_frames = 0
+            if self.finish_frames < self.finish_confirm_frames:
+                self.finish_phase = "approach_finish"
+                self.set_status("approach_finish")
+            else:
+                self.finish_phase = "in_finish_box"
+                self.set_status("in_finish_box")
         else:
-            self.finish_frames = max(0, self.finish_frames - 1)
+            self.finish_lost_frames += 1
+            if self.finish_lost_frames >= self.finish_release_frames:
+                self.finish_frames = 0
+                self.finish_phase = "search"
+                self.finish_lost_frames = 0
 
         if self.finish_frames >= self.finish_confirm_frames:
             self.finish_time = now
+            self.finish_phase = "finish"
             self.set_status("finish")
             self.stop_robot()
-            self.publish_debug_image(
-                frame, mask, roi_origin_y, observations, lane_center, True, fork_rows, fork_detected_latched, now
-            )
+            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
             return
 
         if not self.started:
             self.stop_robot()
-            self.publish_debug_image(
-                frame, mask, roi_origin_y, observations, lane_center, False, fork_rows, fork_detected_latched, now
-            )
+            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
             return
 
@@ -296,10 +331,23 @@ class LineFollowNode:
             self.single_line_frames += 1
             self.handle_lost_or_search(now)
 
-        self.publish_debug_image(
-            frame, mask, roi_origin_y, observations, lane_center, finish_detected, fork_rows, fork_detected_latched, now
-        )
+        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
         self.publish_status()
+
+    def _load_finish_profile_overrides(self):
+        profiles = rospy.get_param("~finish_profiles", rospy.get_param("finish_profiles", {}))
+        if not isinstance(profiles, dict):
+            return
+        profile_cfg = profiles.get(self.finish_profile, {})
+        if not isinstance(profile_cfg, dict):
+            return
+        self.finish_confirm_frames = int(profile_cfg.get("finish_confirm_frames", self.finish_confirm_frames))
+        self.finish_horizontal_min_width_ratio = float(
+            profile_cfg.get("finish_horizontal_min_width_ratio", self.finish_horizontal_min_width_ratio)
+        )
+        self.finish_vertical_side_min_height_ratio = float(
+            profile_cfg.get("finish_vertical_side_min_height_ratio", self.finish_vertical_side_min_height_ratio)
+        )
 
     def extract_white_mask(self, frame: np.ndarray) -> Tuple[np.ndarray, int]:
         height = frame.shape[0]
@@ -472,12 +520,12 @@ class LineFollowNode:
         center = float(np.average(np.array(centers), weights=np.array(weights)))
         return max(0.0, min(float(image_width - 1), center))
 
-    def detect_finish(self, mask: np.ndarray) -> bool:
+    def detect_finish(self, mask: np.ndarray) -> FinishDetectionResult:
         height, width = mask.shape[:2]
         y0 = int(height * self.finish_bottom_ratio)
         bottom = mask[y0:, :]
         if bottom.size == 0:
-            return False
+            return FinishDetectionResult(False, None, 0.0, 0.0, 0.0, 0.0, 0)
 
         row_min_width = int(width * self.finish_horizontal_min_width_ratio)
         wide_rows = 0
@@ -486,6 +534,9 @@ class LineFollowNode:
             if any(segment.width >= row_min_width for segment in segments):
                 wide_rows += 1
         has_horizontal_edge = wide_rows >= self.finish_horizontal_min_rows
+        horizontal_width_ratio = float(max([0] + [max([s.width for s in self.find_segments(row)] + [0]) for row in bottom])) / max(
+            1.0, float(width)
+        )
 
         col_projection = bottom > 0
         min_side_height = int(bottom.shape[0] * self.finish_vertical_side_min_height_ratio)
@@ -493,10 +544,34 @@ class LineFollowNode:
         right_band = col_projection[:, (width * 2) // 3 :]
         left_cols = np.sum(left_band, axis=0) if left_band.size else np.array([])
         right_cols = np.sum(right_band, axis=0) if right_band.size else np.array([])
-        has_left_side = bool(left_cols.size and np.max(left_cols) >= min_side_height)
-        has_right_side = bool(right_cols.size and np.max(right_cols) >= min_side_height)
+        left_h = int(np.max(left_cols)) if left_cols.size else 0
+        right_h = int(np.max(right_cols)) if right_cols.size else 0
+        has_left_side = bool(left_cols.size and left_h >= min_side_height)
+        has_right_side = bool(right_cols.size and right_h >= min_side_height)
+        left_h_ratio = float(left_h) / max(1.0, float(bottom.shape[0]))
+        right_h_ratio = float(right_h) / max(1.0, float(bottom.shape[0]))
 
-        return has_horizontal_edge and has_left_side and has_right_side
+        contour_result = cv2.findContours(bottom, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contour_result[0] if len(contour_result) == 2 else contour_result[1]
+        if not contours:
+            return FinishDetectionResult(False, None, horizontal_width_ratio, left_h_ratio, right_h_ratio, 0.0, 0)
+
+        largest = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest)
+        box = (x, y0 + y, w, h)
+        box_region = bottom[y : y + h, x : x + w]
+        if box_region.size == 0:
+            return FinishDetectionResult(False, box, horizontal_width_ratio, left_h_ratio, right_h_ratio, 0.0, 0)
+        fill_ratio = float(np.count_nonzero(box_region)) / float(box_region.size)
+        n_labels, _, _, _ = cv2.connectedComponentsWithStats((box_region > 0).astype(np.uint8), connectivity=8)
+        component_count = max(0, int(n_labels) - 1)
+        good_fill = fill_ratio >= self.finish_box_min_fill_ratio
+        good_connectivity = component_count <= self.finish_box_max_components
+
+        detected = has_horizontal_edge and has_left_side and has_right_side and good_fill and good_connectivity
+        return FinishDetectionResult(
+            detected, box, horizontal_width_ratio, left_h_ratio, right_h_ratio, fill_ratio, component_count
+        )
 
     def publish_control(self, lane_center: float, image_width: int, now: float, two_sided_tracking: bool):
         image_center = image_width / 2.0
@@ -543,7 +618,7 @@ class LineFollowNode:
         roi_origin_y: int,
         observations: Sequence[RowObservation],
         lane_center: Optional[float],
-        finish_detected: bool,
+        finish_result: FinishDetectionResult,
         fork_rows: int,
         fork_detected: bool,
         now: float,
@@ -579,20 +654,26 @@ class LineFollowNode:
         mh, mw = mask_bgr.shape[:2]
         debug[0:mh, 0:mw] = mask_bgr
 
+        if finish_result.candidate_box is not None:
+            x, y, w, h = finish_result.candidate_box
+            cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 120, 0), 2)
+
         turn_left_sec = max(0.0, self.turn_until - now)
-        text = "status={} finish_frames={} finish_now={} fork_rows={} fork={} turn_left={:.2f}s".format(
-            self.status, self.finish_frames, int(finish_detected), fork_rows, int(fork_detected), turn_left_sec
+        text = "status={} phase={} finish_frames={} detected={} fork_rows={} fork={} turn_left={:.2f}s".format(
+            self.status, self.finish_phase, self.finish_frames, int(finish_result.detected),
+            fork_rows, int(fork_detected), turn_left_sec
         )
-        cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
-        cv2.putText(
-            debug,
-            "lane_w={:.1f}px adapt={}".format(self.current_lane_width_px(), int(self.enable_lane_width_adapt)),
-            (10, max(mh + 55, 60)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 0),
-            2,
+        cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+        text2 = "h={:.2f} vl={:.2f} vr={:.2f} fill={:.2f} cc={} lane_w={:.1f}px adapt={}".format(
+            finish_result.horizontal_width_ratio,
+            finish_result.vertical_left_height_ratio,
+            finish_result.vertical_right_height_ratio,
+            finish_result.inner_fill_ratio,
+            finish_result.inner_component_count,
+            self.current_lane_width_px(),
+            int(self.enable_lane_width_adapt),
         )
+        cv2.putText(debug, text2, (10, max(mh + 50, 55)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 200, 255), 2)
 
         try:
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(debug, encoding="bgr8"))
