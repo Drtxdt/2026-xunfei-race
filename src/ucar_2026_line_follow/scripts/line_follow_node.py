@@ -236,6 +236,15 @@ class LineFollowNode:
         self.finish_approach_center_alpha = float(
             rospy.get_param("~finish_approach_center_alpha", rospy.get_param("finish_approach_center_alpha", 0.75))
         )
+        self.finish_approach_max_angular_speed = float(
+            rospy.get_param("~finish_approach_max_angular_speed", rospy.get_param("finish_approach_max_angular_speed", 0.45))
+        )
+        self.finish_approach_linear_speed_scale = float(
+            rospy.get_param("~finish_approach_linear_speed_scale", rospy.get_param("finish_approach_linear_speed_scale", 0.78))
+        )
+        self.finish_center_jump_reject_px = float(
+            rospy.get_param("~finish_center_jump_reject_px", rospy.get_param("finish_center_jump_reject_px", 90.0))
+        )
         self.finish_profile = rospy.get_param("~finish_profile", rospy.get_param("finish_profile", "default"))
         self._load_finish_profile_overrides()
 
@@ -325,6 +334,17 @@ class LineFollowNode:
         finish_result = self.detect_finish(mask)
         finish_detected = finish_result.detected
         self.last_finish_result = finish_result
+        rospy.loginfo_throttle(
+            0.5,
+            "finish dbg: det=%d frames=%d h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
+            int(finish_detected),
+            self.finish_frames,
+            finish_result.horizontal_width_ratio,
+            finish_result.vertical_left_height_ratio,
+            finish_result.vertical_right_height_ratio,
+            finish_result.inner_fill_ratio,
+            finish_result.inner_component_count,
+        )
 
         if not self.finish_detection_enabled:
             finish_detected = False
@@ -361,6 +381,8 @@ class LineFollowNode:
             self.last_detection_time = now
             lane_center_raw = lane_center
             if self.finish_frames > 0 and self.last_lane_center is not None:
+                if abs(lane_center_raw - self.last_lane_center) > self.finish_center_jump_reject_px:
+                    lane_center_raw = self.last_lane_center
                 alpha = max(0.0, min(1.0, self.finish_approach_center_alpha))
                 lane_center = alpha * self.last_lane_center + (1.0 - alpha) * lane_center_raw
 
@@ -679,7 +701,10 @@ class LineFollowNode:
         error = lane_center - image_center
         self.last_error_px = error
         angular = -self.pid.update(error, now)
-        angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+        angular_limit = self.max_angular_speed
+        if self.finish_frames > 0:
+            angular_limit = min(angular_limit, self.finish_approach_max_angular_speed)
+        angular = max(-angular_limit, min(angular_limit, angular))
 
         if now < self.turn_until:
             linear = self.turn_linear_speed
@@ -689,6 +714,8 @@ class LineFollowNode:
             slowdown = min(abs(error) / max(self.error_slowdown_px, 1.0), 1.0)
             linear = self.base_linear_speed - slowdown * (self.base_linear_speed - self.min_linear_speed)
             linear = max(self.min_linear_speed, min(self.base_linear_speed, linear))
+            if self.finish_frames > 0:
+                linear *= max(0.2, min(1.0, self.finish_approach_linear_speed_scale))
 
         twist = Twist()
         twist.linear.x = linear

@@ -60,7 +60,7 @@ startup_force_left_bias_px: -120
 finish_enable_delay: 6.0
 
 # Finish detection for the P1 50 cm x 50 cm white parking square.
-finish_confirm_frames: 8
+finish_confirm_frames: 9
 finish_release_frames: 3
 finish_stop_time: 1.0
 finish_bottom_ratio: 0.72
@@ -74,6 +74,9 @@ finish_box_bottom_touch_ratio: 0.96
 finish_box_min_height_ratio: 0.22
 finish_box_center_tolerance_ratio: 0.28
 finish_approach_center_alpha: 0.75
+finish_approach_max_angular_speed: 0.45
+finish_approach_linear_speed_scale: 0.78
+finish_center_jump_reject_px: 90
 
 # Scenario profile selector for finish detection thresholds.
 finish_profile: track_a
