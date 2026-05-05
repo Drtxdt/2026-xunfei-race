@@ -153,6 +153,7 @@ class LineFollowNode:
             rospy.get_param("~search_angular_speed", rospy.get_param("search_angular_speed", 0.25))
         )
         self.lost_timeout = float(rospy.get_param("~lost_timeout", rospy.get_param("lost_timeout", 1.0)))
+        self.stop_on_lost = bool(rospy.get_param("~stop_on_lost", rospy.get_param("stop_on_lost", False)))
 
         self.fork_candidate_count = int(
             rospy.get_param("~fork_candidate_count", rospy.get_param("fork_candidate_count", 3))
@@ -365,6 +366,15 @@ class LineFollowNode:
                 self.finish_lost_frames = 0
 
         if self.finish_frames >= self.finish_confirm_frames:
+            rospy.loginfo(
+                "finish confirmed: frames=%d h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
+                self.finish_frames,
+                finish_result.horizontal_width_ratio,
+                finish_result.vertical_left_height_ratio,
+                finish_result.vertical_right_height_ratio,
+                finish_result.inner_fill_ratio,
+                finish_result.inner_component_count,
+            )
             self.finish_time = now
             self.finish_phase = "finish"
             self.set_status("finish")
@@ -735,9 +745,18 @@ class LineFollowNode:
             self.cmd_pub.publish(twist)
             return
 
-        self.pid.reset()
-        self.stop_robot()
-        self.set_status("lost")
+        if self.stop_on_lost:
+            self.pid.reset()
+            self.stop_robot()
+            self.set_status("lost")
+            return
+
+        self.set_status("searching")
+        twist = Twist()
+        twist.linear.x = self.search_linear_speed
+        direction = 1.0 if self.turn_direction == "left" else -1.0
+        twist.angular.z = direction * self.search_angular_speed
+        self.cmd_pub.publish(twist)
 
     def publish_debug_image(
         self,

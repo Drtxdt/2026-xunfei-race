@@ -45,6 +45,7 @@ error_slowdown_px: 160.0
 # Lost-line handling
 search_angular_speed: 0.25
 lost_timeout: 1.0
+stop_on_lost: false
 
 # Fork handling. When three or more candidate borders are visible, the node
 # chooses the left corridor by default and adds a short left-turn bias.
