@@ -131,6 +131,11 @@ class LineFollowNode:
         self.fork_candidate_count = int(
             rospy.get_param("~fork_candidate_count", rospy.get_param("fork_candidate_count", 3))
         )
+        self.fork_center_tolerance_px = float(
+            rospy.get_param("~fork_center_tolerance_px", rospy.get_param("fork_center_tolerance_px", 180.0))
+        )
+        self.fork_cooldown_sec = float(rospy.get_param("~fork_cooldown_sec", rospy.get_param("fork_cooldown_sec", 1.0)))
+        self.fork_latch_time = float(rospy.get_param("~fork_latch_time", rospy.get_param("fork_latch_time", 0.35)))
         self.turn_bias_px = float(rospy.get_param("~turn_bias_px", rospy.get_param("turn_bias_px", -55.0)))
         self.turn_hold_time = float(rospy.get_param("~turn_hold_time", rospy.get_param("turn_hold_time", 1.2)))
         self.turn_linear_speed = float(
@@ -170,6 +175,8 @@ class LineFollowNode:
         self.last_error_px = 0.0
         self.single_line_frames = 0
         self.turn_until = 0.0
+        self.last_fork_time = -1e9
+        self.fork_latch_until = 0.0
         self.finish_frames = 0
         self.finish_time = None
 
@@ -210,7 +217,14 @@ class LineFollowNode:
         mask, roi_origin_y = self.extract_white_mask(frame)
         observations = self.observe_lane(mask, frame.shape[1])
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
-        fork_detected = any(obs.multi_candidate for obs in observations)
+        fork_rows = sum(1 for obs in observations if obs.multi_candidate)
+        image_center = frame.shape[1] / 2.0
+        lane_center_offset = None if lane_center is None else abs(lane_center - image_center)
+        fork_geometry_ok = lane_center_offset is not None and lane_center_offset <= self.fork_center_tolerance_px
+        fork_detected = fork_rows >= self.fork_candidate_count and fork_geometry_ok
+        if fork_detected:
+            self.fork_latch_until = max(self.fork_latch_until, now + self.fork_latch_time)
+        fork_detected_latched = now < self.fork_latch_until
         finish_detected = self.detect_finish(mask)
 
         if finish_detected:
@@ -222,12 +236,16 @@ class LineFollowNode:
             self.finish_time = now
             self.set_status("finish")
             self.stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, True)
+            self.publish_debug_image(
+                frame, mask, roi_origin_y, observations, lane_center, True, fork_rows, fork_detected_latched, now
+            )
             return
 
         if not self.started:
             self.stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, False)
+            self.publish_debug_image(
+                frame, mask, roi_origin_y, observations, lane_center, False, fork_rows, fork_detected_latched, now
+            )
             self.publish_status()
             return
 
@@ -240,8 +258,13 @@ class LineFollowNode:
             else:
                 self.single_line_frames += 1
 
-            if fork_detected and self.turn_direction == "left":
+            if (
+                fork_detected_latched
+                and self.turn_direction == "left"
+                and (now - self.last_fork_time) >= self.fork_cooldown_sec
+            ):
                 self.turn_until = max(self.turn_until, now + self.turn_hold_time)
+                self.last_fork_time = now
 
             target_center = lane_center
             if now < self.turn_until:
@@ -257,7 +280,9 @@ class LineFollowNode:
             self.single_line_frames += 1
             self.handle_lost_or_search(now)
 
-        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_detected)
+        self.publish_debug_image(
+            frame, mask, roi_origin_y, observations, lane_center, finish_detected, fork_rows, fork_detected_latched, now
+        )
         self.publish_status()
 
     def extract_white_mask(self, frame: np.ndarray) -> Tuple[np.ndarray, int]:
@@ -474,6 +499,9 @@ class LineFollowNode:
         observations: Sequence[RowObservation],
         lane_center: Optional[float],
         finish_detected: bool,
+        fork_rows: int,
+        fork_detected: bool,
+        now: float,
     ):
         if not self.publish_debug or self.debug_pub.get_num_connections() == 0:
             return
@@ -506,7 +534,10 @@ class LineFollowNode:
         mh, mw = mask_bgr.shape[:2]
         debug[0:mh, 0:mw] = mask_bgr
 
-        text = "status={} finish_frames={} finish_now={}".format(self.status, self.finish_frames, int(finish_detected))
+        turn_left_sec = max(0.0, self.turn_until - now)
+        text = "status={} finish_frames={} finish_now={} fork_rows={} fork={} turn_left={:.2f}s".format(
+            self.status, self.finish_frames, int(finish_detected), fork_rows, int(fork_detected), turn_left_sec
+        )
         cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
 
         try:
