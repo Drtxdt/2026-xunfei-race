@@ -55,6 +55,8 @@ turn_linear_speed: 0.08
 startup_left_bias_duration: 1.6
 startup_force_left_until_dual_frames: 8
 startup_force_left_clear_nonfork_frames: 10
+startup_force_left_min_duration: 2.6
+startup_force_left_bias_px: -95
 finish_enable_delay: 6.0
 
 # Finish detection for the P1 50 cm x 50 cm white parking square.

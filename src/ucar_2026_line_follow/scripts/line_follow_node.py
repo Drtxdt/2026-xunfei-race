@@ -179,6 +179,12 @@ class LineFollowNode:
                 rospy.get_param("startup_force_left_clear_nonfork_frames", 10),
             )
         )
+        self.startup_force_left_min_duration = float(
+            rospy.get_param("~startup_force_left_min_duration", rospy.get_param("startup_force_left_min_duration", 2.6))
+        )
+        self.startup_force_left_bias_px = float(
+            rospy.get_param("~startup_force_left_bias_px", rospy.get_param("startup_force_left_bias_px", -95.0))
+        )
         self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 6.0)))
 
         self.finish_confirm_frames = int(
@@ -288,7 +294,6 @@ class LineFollowNode:
             if now - self.finish_time >= self.finish_stop_time:
                 self.set_status("finish")
             return
-
         mask, roi_origin_y = self.extract_white_mask(frame)
         observations = self.observe_lane(mask, frame.shape[1], self.startup_force_left_mode)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
@@ -351,8 +356,12 @@ class LineFollowNode:
                 self.single_line_frames += 1
                 self.dual_line_stable_frames = 0
 
+            startup_elapsed = now - self.start_time
             if self.startup_force_left_mode and self.dual_line_stable_frames >= self.startup_force_left_until_dual_frames:
-                if self.nonfork_stable_frames >= self.startup_force_left_clear_nonfork_frames:
+                if (
+                    startup_elapsed >= self.startup_force_left_min_duration
+                    and self.nonfork_stable_frames >= self.startup_force_left_clear_nonfork_frames
+                ):
                     self.startup_force_left_mode = False
 
             if (
@@ -364,6 +373,9 @@ class LineFollowNode:
                 self.last_fork_time = now
 
             target_center = lane_center
+            if self.startup_force_left_mode and self.turn_direction == "left":
+                target_center += self.startup_force_left_bias_px
+                self.set_status("turn_left")
             if now < self.turn_until:
                 target_center += self.turn_bias_px
                 self.set_status("turn_left")
