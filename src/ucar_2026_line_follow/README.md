@@ -24,7 +24,9 @@ Status values:
 - `tracking`: following the detected corridor
 - `turn_left`: fork-like multi-border area detected; left corridor is selected
 - `lost`: line lost longer than `lost_timeout`; command is stopped
-- `finish`: P1 parking square detected; command is stopped
+- `finish_stop`: P1 parking square detected; command is stopped before reversing
+- `finish_reverse`: reversing after the P1 stop
+- `finish`: reverse maneuver is complete; command is stopped
 
 ## Run
 

@@ -197,6 +197,12 @@ class LineFollowNode:
         self.finish_stop_time = float(
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
+        self.finish_reverse_distance_m = float(
+            rospy.get_param("~finish_reverse_distance_m", rospy.get_param("finish_reverse_distance_m", 0.10))
+        )
+        self.finish_reverse_speed = abs(
+            float(rospy.get_param("~finish_reverse_speed", rospy.get_param("finish_reverse_speed", 0.05)))
+        )
         self.finish_bottom_ratio = float(
             rospy.get_param("~finish_bottom_ratio", rospy.get_param("finish_bottom_ratio", 0.72))
         )
@@ -270,6 +276,8 @@ class LineFollowNode:
         self.finish_frames = 0
         self.finish_lost_frames = 0
         self.finish_time = None
+        self.finish_reverse_start_time = None
+        self.finish_reverse_done = False
         self.finish_phase = "search"
         self.last_finish_result: Optional[FinishDetectionResult] = None
         self.start_time = time.time()
@@ -293,9 +301,15 @@ class LineFollowNode:
 
     def start_callback(self, msg: Bool):
         self.started = bool(msg.data)
-        if self.started and self.status == "idle":
+        if self.started and self.status in ("idle", "finish"):
             self.start_time = time.time()
             self.finish_detection_enabled = False
+            self.finish_frames = 0
+            self.finish_lost_frames = 0
+            self.finish_time = None
+            self.finish_reverse_start_time = None
+            self.finish_reverse_done = False
+            self.finish_phase = "search"
             self.startup_force_left_mode = self.turn_direction == "left"
             self.dual_line_stable_frames = 0
             self.nonfork_stable_frames = 0
@@ -304,6 +318,10 @@ class LineFollowNode:
             self.set_status("searching")
         if not self.started:
             self.pid.reset()
+            self.finish_time = None
+            self.finish_reverse_start_time = None
+            self.finish_reverse_done = False
+            self.finish_phase = "search"
             self.stop_robot()
             self.set_status("idle")
 
@@ -318,9 +336,7 @@ class LineFollowNode:
         if self.finish_time is None and not self.finish_detection_enabled:
             self.finish_detection_enabled = (now - self.start_time) >= self.finish_enable_delay
         if self.finish_time is not None:
-            self.stop_robot()
-            if now - self.finish_time >= self.finish_stop_time:
-                self.set_status("finish")
+            self.handle_finish_maneuver(now)
             return
         mask, roi_origin_y = self.extract_white_mask(frame)
         observations = self.observe_lane(mask, frame.shape[1], self.startup_force_left_mode)
@@ -382,8 +398,10 @@ class LineFollowNode:
                 finish_result.inner_component_count,
             )
             self.finish_time = now
-            self.finish_phase = "finish"
-            self.set_status("finish")
+            self.finish_reverse_start_time = None
+            self.finish_reverse_done = False
+            self.finish_phase = "finish_stop"
+            self.set_status("finish_stop")
             self.hard_stop_robot()
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
@@ -767,6 +785,40 @@ class LineFollowNode:
         direction = 1.0 if self.turn_direction == "left" else -1.0
         twist.angular.z = direction * self.search_angular_speed
         self.cmd_pub.publish(twist)
+
+    def handle_finish_maneuver(self, now: float):
+        if self.finish_time is None:
+            return
+
+        if now - self.finish_time < self.finish_stop_time:
+            self.finish_phase = "finish_stop"
+            self.stop_robot()
+            self.set_status("finish_stop")
+            return
+
+        if self.finish_reverse_done or self.finish_reverse_distance_m <= 0.0 or self.finish_reverse_speed <= 0.0:
+            self.finish_phase = "finish"
+            self.finish_reverse_done = True
+            self.stop_robot()
+            self.set_status("finish")
+            return
+
+        reverse_time = self.finish_reverse_distance_m / self.finish_reverse_speed
+        if self.finish_reverse_start_time is None:
+            self.finish_reverse_start_time = now
+
+        if now - self.finish_reverse_start_time < reverse_time:
+            self.finish_phase = "finish_reverse"
+            twist = Twist()
+            twist.linear.x = -self.finish_reverse_speed
+            self.cmd_pub.publish(twist)
+            self.set_status("finish_reverse")
+            return
+
+        self.finish_phase = "finish"
+        self.finish_reverse_done = True
+        self.stop_robot()
+        self.set_status("finish")
 
     def publish_debug_image(
         self,
