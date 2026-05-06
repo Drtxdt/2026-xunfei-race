@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -197,6 +197,7 @@ class LineFollowNode:
         self.finish_stop_time = float(
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
+        self.finish_auto_stop = bool(rospy.get_param("~finish_auto_stop", rospy.get_param("finish_auto_stop", True)))
         self.finish_reverse_distance_m = float(
             rospy.get_param("~finish_reverse_distance_m", rospy.get_param("finish_reverse_distance_m", 0.10))
         )
@@ -280,6 +281,7 @@ class LineFollowNode:
         self.finish_reverse_done = False
         self.finish_phase = "search"
         self.last_finish_result: Optional[FinishDetectionResult] = None
+        self.last_debug_snapshot: Optional[Dict] = None
         self.start_time = time.time()
         self.finish_detection_enabled = False
         self.startup_force_left_mode = self.turn_direction == "left"
@@ -387,25 +389,49 @@ class LineFollowNode:
             if self.finish_lost_frames >= self.finish_release_frames:
                 self.finish_lost_frames = 0
 
+        self.update_debug_snapshot(
+            frame,
+            roi_origin_y,
+            observations,
+            lane_center,
+            finish_result,
+            fork_rows,
+            fork_detected_latched,
+            now,
+        )
+
         if self.finish_frames >= self.finish_confirm_frames:
-            rospy.loginfo(
-                "finish confirmed: frames=%d h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
-                self.finish_frames,
-                finish_result.horizontal_width_ratio,
-                finish_result.vertical_left_height_ratio,
-                finish_result.vertical_right_height_ratio,
-                finish_result.inner_fill_ratio,
-                finish_result.inner_component_count,
+            if self.finish_auto_stop:
+                rospy.loginfo(
+                    "finish confirmed: frames=%d h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
+                    self.finish_frames,
+                    finish_result.horizontal_width_ratio,
+                    finish_result.vertical_left_height_ratio,
+                    finish_result.vertical_right_height_ratio,
+                    finish_result.inner_fill_ratio,
+                    finish_result.inner_component_count,
+                )
+                self.finish_time = now
+                self.finish_reverse_start_time = None
+                self.finish_reverse_done = False
+                self.finish_phase = "finish_stop"
+                self.set_status("finish_stop")
+                self.hard_stop_robot()
+                self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
+                self.publish_status()
+                return
+            self.finish_phase = "parking_debug"
+            self.set_status("parking_debug")
+            self.update_debug_snapshot(
+                frame,
+                roi_origin_y,
+                observations,
+                lane_center,
+                finish_result,
+                fork_rows,
+                fork_detected_latched,
+                now,
             )
-            self.finish_time = now
-            self.finish_reverse_start_time = None
-            self.finish_reverse_done = False
-            self.finish_phase = "finish_stop"
-            self.set_status("finish_stop")
-            self.hard_stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
-            self.publish_status()
-            return
 
         if not self.started:
             self.stop_robot()
@@ -785,6 +811,97 @@ class LineFollowNode:
         direction = 1.0 if self.turn_direction == "left" else -1.0
         twist.angular.z = direction * self.search_angular_speed
         self.cmd_pub.publish(twist)
+
+    def update_debug_snapshot(
+        self,
+        frame: np.ndarray,
+        roi_origin_y: int,
+        observations: Sequence[RowObservation],
+        lane_center: Optional[float],
+        finish_result: FinishDetectionResult,
+        fork_rows: int,
+        fork_detected: bool,
+        now: float,
+    ):
+        height, width = frame.shape[:2]
+        box = finish_result.candidate_box
+        box_info = None
+        if box is not None:
+            x, y, w, h = box
+            full_y = roi_origin_y + y
+            box_info = {
+                "roi_x": x,
+                "roi_y": y,
+                "full_x": x,
+                "full_y": full_y,
+                "width_px": w,
+                "height_px": h,
+                "center_x_px": x + w / 2.0,
+                "center_y_full_px": full_y + h / 2.0,
+                "bottom_y_full_px": full_y + h,
+                "center_x_ratio": (x + w / 2.0) / max(1.0, float(width)),
+                "center_y_full_ratio": (full_y + h / 2.0) / max(1.0, float(height)),
+                "bottom_y_full_ratio": (full_y + h) / max(1.0, float(height)),
+                "width_ratio": w / max(1.0, float(width)),
+                "height_full_ratio": h / max(1.0, float(height)),
+            }
+
+        self.last_debug_snapshot = {
+            "timestamp_sec": now,
+            "status": self.status,
+            "finish_phase": self.finish_phase,
+            "started": self.started,
+            "image_width": width,
+            "image_height": height,
+            "roi_origin_y": roi_origin_y,
+            "roi_height": height - roi_origin_y,
+            "lane_center_px": lane_center,
+            "lane_center_ratio": None if lane_center is None else lane_center / max(1.0, float(width)),
+            "last_error_px": self.last_error_px,
+            "finish_detection_enabled": self.finish_detection_enabled,
+            "finish_frames": self.finish_frames,
+            "finish_confirm_frames": self.finish_confirm_frames,
+            "finish_detected": finish_result.detected,
+            "finish_candidate_box": box_info,
+            "finish_metrics": {
+                "horizontal_width_ratio": finish_result.horizontal_width_ratio,
+                "vertical_left_height_ratio": finish_result.vertical_left_height_ratio,
+                "vertical_right_height_ratio": finish_result.vertical_right_height_ratio,
+                "inner_fill_ratio": finish_result.inner_fill_ratio,
+                "inner_component_count": finish_result.inner_component_count,
+            },
+            "fork_rows": fork_rows,
+            "fork_detected": fork_detected,
+            "estimated_lane_width_px": self.current_lane_width_px(),
+            "observations": [
+                {
+                    "roi_y": obs.y,
+                    "full_y": roi_origin_y + obs.y,
+                    "left_x": obs.left_x,
+                    "right_x": obs.right_x,
+                    "center_x": obs.center_x,
+                    "multi_candidate": obs.multi_candidate,
+                    "segments": [
+                        {
+                            "left": segment.left,
+                            "right": segment.right,
+                            "center": segment.center,
+                            "width": segment.width,
+                        }
+                        for segment in obs.segments
+                    ],
+                }
+                for obs in observations
+            ],
+            "control_params": {
+                "base_linear_speed": self.base_linear_speed,
+                "min_linear_speed": self.min_linear_speed,
+                "finish_approach_linear_speed_scale": self.finish_approach_linear_speed_scale,
+                "finish_final_linear_speed": self.finish_final_linear_speed,
+                "finish_reverse_distance_m": self.finish_reverse_distance_m,
+                "finish_reverse_speed": self.finish_reverse_speed,
+            },
+        }
 
     def handle_finish_maneuver(self, now: float):
         if self.finish_time is None:

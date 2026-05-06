@@ -27,6 +27,7 @@ Status values:
 - `finish_stop`: P1 parking square detected; command is stopped before reversing
 - `finish_reverse`: reversing after the P1 stop
 - `finish`: reverse maneuver is complete; command is stopped
+- `parking_debug`: debug node has detected P1 but is waiting for manual `Ctrl+C`
 
 ## Run
 
@@ -46,6 +47,20 @@ View the debug image:
 
 ```bash
 rosrun image_view image_view image:=/line_follow/debug_image
+```
+
+Record a parking calibration snapshot. Let the car run, press `Ctrl+C` at the
+position where you want it to stop, and send the printed JSON path or file:
+
+```bash
+roslaunch ucar_2026_line_follow parking_debug.launch
+```
+
+By default the snapshot is saved under
+`~/.ros/ucar_2026_line_follow/parking_debug_*.json`. You can choose a path:
+
+```bash
+roslaunch ucar_2026_line_follow parking_debug.launch debug_output_path:=/tmp/parking_debug.json
 ```
 
 ## Field Tuning
