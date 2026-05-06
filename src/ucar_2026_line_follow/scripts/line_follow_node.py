@@ -1050,7 +1050,7 @@ class LineFollowNode:
                 linear = min(linear, self.finish_final_linear_speed)
 
         if self.finish_odom_active:
-            linear = min(linear, self.finish_odom_approach_speed)
+            linear = self.finish_odom_approach_speed
 
         twist = Twist()
         twist.linear.x = linear

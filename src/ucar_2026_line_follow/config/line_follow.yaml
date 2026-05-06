@@ -67,7 +67,7 @@ finish_stop_time: 1.0
 finish_use_odom_approach: true
 odom_topic: /odom
 finish_odom_approach_distance_m: 0.50
-finish_odom_approach_speed: 0.05
+finish_odom_approach_speed: 0.08
 finish_odom_min_trigger_frames: 2
 finish_odom_timeout_sec: 8.0
 finish_parking_target_bottom_y_ratio: 0.955
