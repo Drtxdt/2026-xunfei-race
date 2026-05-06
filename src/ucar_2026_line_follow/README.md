@@ -5,13 +5,14 @@ ROS1 Python package for the 2026 visual line-following subtask.
 Rules reference recorded from the task request:
 `https://www.iflysse.com/laboratory/intelligent-car-race`
 
-The first version is intentionally vision-only. It subscribes to the USB camera,
-tracks the lane between two white borders, prefers the left corridor at a fork,
-and stops after detecting the P1 parking square.
+The node subscribes to the USB camera and odometry, tracks the lane between two
+white borders, prefers the left corridor at a fork, and uses odometry to finish
+the P1 parking approach after the parking candidate is detected.
 
 ## Interfaces
 
 - Subscribes: `/usb_cam/image_raw` (`sensor_msgs/Image`)
+- Subscribes: `/odom` (`nav_msgs/Odometry`)
 - Optional start: `/line_follow/start` (`std_msgs/Bool`)
 - Publishes: `/cmd_vel` (`geometry_msgs/Twist`)
 - Publishes: `/line_follow/status` (`std_msgs/String`)
@@ -25,8 +26,9 @@ Status values:
 - `turn_left`: fork-like multi-border area detected; left corridor is selected
 - `lost`: line lost longer than `lost_timeout`; command is stopped
 - `parking_approach`: P1 parking square candidate is visible; slowing for visual parking
+- `parking_odom_approach`: parking candidate locked; moving by odometry to final stop
 - `parking_ready`: calibrated parking target is reached
-- `finish_stop`: calibrated parking target is reached; command is stopped
+- `finish_stop`: odometry parking target is reached; command is stopped
 - `finish`: parking stop hold is complete; command is stopped
 - `parking_debug`: debug node has detected P1 but is waiting for manual `Ctrl+C`
 

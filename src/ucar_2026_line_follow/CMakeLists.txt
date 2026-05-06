@@ -4,6 +4,7 @@ project(ucar_2026_line_follow)
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   geometry_msgs
+  nav_msgs
   rospy
   sensor_msgs
   std_msgs

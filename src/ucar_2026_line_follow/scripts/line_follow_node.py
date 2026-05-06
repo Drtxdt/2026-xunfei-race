@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -8,6 +9,7 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
@@ -80,6 +82,7 @@ class LineFollowNode:
 
         self.image_topic = rospy.get_param("~image_topic", rospy.get_param("image_topic", "/usb_cam/image_raw"))
         self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", rospy.get_param("cmd_vel_topic", "/cmd_vel"))
+        self.odom_topic = rospy.get_param("~odom_topic", rospy.get_param("odom_topic", "/odom"))
         self.status_topic = rospy.get_param("~status_topic", rospy.get_param("status_topic", "/line_follow/status"))
         self.debug_image_topic = rospy.get_param(
             "~debug_image_topic", rospy.get_param("debug_image_topic", "/line_follow/debug_image")
@@ -198,6 +201,33 @@ class LineFollowNode:
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
         self.finish_auto_stop = bool(rospy.get_param("~finish_auto_stop", rospy.get_param("finish_auto_stop", True)))
+        self.finish_use_odom_approach = bool(
+            rospy.get_param("~finish_use_odom_approach", rospy.get_param("finish_use_odom_approach", True))
+        )
+        self.finish_odom_approach_distance_m = float(
+            rospy.get_param(
+                "~finish_odom_approach_distance_m",
+                rospy.get_param("finish_odom_approach_distance_m", 0.50),
+            )
+        )
+        self.finish_odom_approach_speed = abs(float(
+            rospy.get_param(
+                "~finish_odom_approach_speed",
+                rospy.get_param("finish_odom_approach_speed", 0.05),
+            )
+        ))
+        self.finish_odom_min_trigger_frames = int(
+            rospy.get_param(
+                "~finish_odom_min_trigger_frames",
+                rospy.get_param("finish_odom_min_trigger_frames", 2),
+            )
+        )
+        self.finish_odom_timeout_sec = float(
+            rospy.get_param(
+                "~finish_odom_timeout_sec",
+                rospy.get_param("finish_odom_timeout_sec", 8.0),
+            )
+        )
         self.finish_parking_target_bottom_y_ratio = float(
             rospy.get_param(
                 "~finish_parking_target_bottom_y_ratio",
@@ -316,6 +346,12 @@ class LineFollowNode:
         self.finish_parking_candidate_frames = 0
         self.finish_parking_reached_frames = 0
         self.finish_parking_bottom_y_ratio = 0.0
+        self.current_odom_xy: Optional[Tuple[float, float]] = None
+        self.last_odom_time = None
+        self.finish_odom_active = False
+        self.finish_odom_start_xy: Optional[Tuple[float, float]] = None
+        self.finish_odom_start_time = None
+        self.finish_odom_distance_m = 0.0
         self.finish_phase = "search"
         self.last_finish_result: Optional[FinishDetectionResult] = None
         self.last_debug_snapshot: Optional[Dict] = None
@@ -329,6 +365,7 @@ class LineFollowNode:
 
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
+        self.odom_sub = rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
 
         rospy.on_shutdown(self.stop_robot)
         self.publish_status(force=True)
@@ -349,6 +386,7 @@ class LineFollowNode:
             self.finish_parking_candidate_frames = 0
             self.finish_parking_reached_frames = 0
             self.finish_parking_bottom_y_ratio = 0.0
+            self.reset_finish_odom_approach()
             self.finish_phase = "search"
             self.startup_force_left_mode = self.turn_direction == "left"
             self.dual_line_stable_frames = 0
@@ -362,9 +400,21 @@ class LineFollowNode:
             self.finish_parking_candidate_frames = 0
             self.finish_parking_reached_frames = 0
             self.finish_parking_bottom_y_ratio = 0.0
+            self.reset_finish_odom_approach()
             self.finish_phase = "search"
             self.stop_robot()
             self.set_status("idle")
+
+    def odom_callback(self, msg: Odometry):
+        position = msg.pose.pose.position
+        self.current_odom_xy = (float(position.x), float(position.y))
+        self.last_odom_time = time.time()
+
+    def reset_finish_odom_approach(self):
+        self.finish_odom_active = False
+        self.finish_odom_start_xy = None
+        self.finish_odom_start_time = None
+        self.finish_odom_distance_m = 0.0
 
     def image_callback(self, msg: Image):
         try:
@@ -435,10 +485,85 @@ class LineFollowNode:
         else:
             self.finish_parking_reached_frames = 0
 
-        if finish_detected or parking_candidate:
+        if self.finish_use_odom_approach:
+            if (
+                not self.finish_odom_active
+                and self.finish_parking_candidate_frames >= max(1, self.finish_odom_min_trigger_frames)
+            ):
+                self.start_finish_odom_approach(now)
+
+            if self.finish_odom_active:
+                self.update_finish_odom_distance()
+                self.finish_phase = "parking_odom_approach"
+                self.set_status("parking_odom_approach")
+                if lane_center is None:
+                    lane_center = frame.shape[1] / 2.0
+
+                if self.finish_odom_distance_m >= self.finish_odom_approach_distance_m:
+                    if self.finish_auto_stop:
+                        rospy.loginfo(
+                            "odom parking target reached: distance=%.3fm target=%.3fm",
+                            self.finish_odom_distance_m,
+                            self.finish_odom_approach_distance_m,
+                        )
+                        self.update_debug_snapshot(
+                            frame,
+                            roi_origin_y,
+                            observations,
+                            lane_center,
+                            finish_result,
+                            fork_rows,
+                            fork_detected_latched,
+                            now,
+                        )
+                        self.finish_time = now
+                        self.finish_phase = "finish_stop"
+                        self.set_status("finish_stop")
+                        self.hard_stop_robot()
+                        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
+                        self.publish_status()
+                        return
+                    self.finish_phase = "parking_debug"
+                    self.set_status("parking_debug")
+
+                if self.finish_auto_stop and self.finish_odom_timed_out(now):
+                    rospy.logwarn(
+                        "odom parking timed out: last_odom_age=%.2fs distance=%.3fm",
+                        self.odom_age(now),
+                        self.finish_odom_distance_m,
+                    )
+                    self.update_debug_snapshot(
+                        frame,
+                        roi_origin_y,
+                        observations,
+                        lane_center,
+                        finish_result,
+                        fork_rows,
+                        fork_detected_latched,
+                        now,
+                    )
+                    self.finish_time = now
+                    self.finish_phase = "finish_stop"
+                    self.set_status("finish_stop")
+                    self.hard_stop_robot()
+                    self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, finish_result, fork_rows, fork_detected_latched, now)
+                    self.publish_status()
+                    return
+
+        if finish_detected or parking_candidate or self.finish_odom_active:
             self.finish_frames += 1
             self.finish_lost_frames = 0
-            if parking_reached:
+            if (
+                self.finish_odom_active
+                and not self.finish_auto_stop
+                and self.finish_odom_distance_m >= self.finish_odom_approach_distance_m
+            ):
+                self.finish_phase = "parking_debug"
+                self.set_status("parking_debug")
+            elif self.finish_odom_active:
+                self.finish_phase = "parking_odom_approach"
+                self.set_status("parking_odom_approach")
+            elif parking_reached:
                 self.finish_phase = "parking_ready"
                 self.set_status("parking_ready")
             elif parking_candidate:
@@ -468,7 +593,7 @@ class LineFollowNode:
             now,
         )
 
-        if self.finish_parking_reached_frames >= self.finish_parking_confirm_frames:
+        if (not self.finish_use_odom_approach) and self.finish_parking_reached_frames >= self.finish_parking_confirm_frames:
             if self.finish_auto_stop:
                 rospy.loginfo(
                     "parking target reached: frames=%d bottom=%.3f h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
@@ -851,6 +976,51 @@ class LineFollowNode:
         reached = candidate and bottom_y_ratio >= self.finish_parking_target_bottom_y_ratio
         return candidate, reached, bottom_y_ratio
 
+    def start_finish_odom_approach(self, now: float) -> bool:
+        if self.current_odom_xy is None:
+            rospy.logwarn_throttle(
+                1.0,
+                "parking candidate locked but no odom is available on %s",
+                self.odom_topic,
+            )
+            return False
+
+        if self.odom_age(now) > self.finish_odom_timeout_sec:
+            rospy.logwarn_throttle(
+                1.0,
+                "parking candidate locked but odom on %s is stale: age=%.2fs",
+                self.odom_topic,
+                self.odom_age(now),
+            )
+            return False
+
+        self.finish_odom_active = True
+        self.finish_odom_start_xy = self.current_odom_xy
+        self.finish_odom_start_time = now
+        self.finish_odom_distance_m = 0.0
+        rospy.loginfo(
+            "parking odom approach started: topic=%s distance=%.3fm speed=%.3fm/s",
+            self.odom_topic,
+            self.finish_odom_approach_distance_m,
+            self.finish_odom_approach_speed,
+        )
+        return True
+
+    def update_finish_odom_distance(self):
+        if self.current_odom_xy is None or self.finish_odom_start_xy is None:
+            return
+        dx = self.current_odom_xy[0] - self.finish_odom_start_xy[0]
+        dy = self.current_odom_xy[1] - self.finish_odom_start_xy[1]
+        self.finish_odom_distance_m = math.hypot(dx, dy)
+
+    def odom_age(self, now: float) -> float:
+        if self.last_odom_time is None:
+            return float("inf")
+        return max(0.0, now - self.last_odom_time)
+
+    def finish_odom_timed_out(self, now: float) -> bool:
+        return self.finish_odom_active and self.odom_age(now) > self.finish_odom_timeout_sec
+
     def publish_control(self, lane_center: float, image_width: int, now: float, two_sided_tracking: bool):
         image_center = image_width / 2.0
         error = lane_center - image_center
@@ -878,6 +1048,9 @@ class LineFollowNode:
                 or self.finish_parking_bottom_y_ratio >= self.finish_parking_slow_bottom_y_ratio
             ):
                 linear = min(linear, self.finish_final_linear_speed)
+
+        if self.finish_odom_active:
+            linear = min(linear, self.finish_odom_approach_speed)
 
         twist = Twist()
         twist.linear.x = linear
@@ -962,6 +1135,11 @@ class LineFollowNode:
             "finish_parking_candidate_frames": self.finish_parking_candidate_frames,
             "finish_parking_reached_frames": self.finish_parking_reached_frames,
             "finish_parking_bottom_y_ratio": self.finish_parking_bottom_y_ratio,
+            "finish_odom_active": self.finish_odom_active,
+            "finish_odom_start_xy": self.finish_odom_start_xy,
+            "finish_odom_current_xy": self.current_odom_xy,
+            "finish_odom_distance_m": self.finish_odom_distance_m,
+            "finish_odom_age_sec": self.odom_age(now),
             "finish_detected": finish_result.detected,
             "finish_candidate_box": box_info,
             "finish_metrics": {
@@ -1002,6 +1180,12 @@ class LineFollowNode:
                 "finish_parking_target_bottom_y_ratio": self.finish_parking_target_bottom_y_ratio,
                 "finish_parking_slow_bottom_y_ratio": self.finish_parking_slow_bottom_y_ratio,
                 "finish_parking_confirm_frames": self.finish_parking_confirm_frames,
+                "finish_use_odom_approach": self.finish_use_odom_approach,
+                "odom_topic": self.odom_topic,
+                "finish_odom_approach_distance_m": self.finish_odom_approach_distance_m,
+                "finish_odom_approach_speed": self.finish_odom_approach_speed,
+                "finish_odom_min_trigger_frames": self.finish_odom_min_trigger_frames,
+                "finish_odom_timeout_sec": self.finish_odom_timeout_sec,
             },
         }
 

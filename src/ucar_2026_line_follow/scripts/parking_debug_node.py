@@ -43,6 +43,10 @@ class ParkingDebugNode(LineFollowNode):
                 "finish_parking_candidate_frames": self.finish_parking_candidate_frames,
                 "finish_parking_reached_frames": self.finish_parking_reached_frames,
                 "finish_parking_bottom_y_ratio": self.finish_parking_bottom_y_ratio,
+                "finish_odom_active": self.finish_odom_active,
+                "finish_odom_start_xy": self.finish_odom_start_xy,
+                "finish_odom_current_xy": self.current_odom_xy,
+                "finish_odom_distance_m": self.finish_odom_distance_m,
             },
             "snapshot": snapshot,
             "recommended_fields_to_send": [
@@ -56,6 +60,9 @@ class ParkingDebugNode(LineFollowNode):
                 "snapshot.finish_phase",
                 "snapshot.finish_frames",
                 "snapshot.finish_parking_bottom_y_ratio",
+                "snapshot.finish_odom_start_xy",
+                "snapshot.finish_odom_current_xy",
+                "snapshot.finish_odom_distance_m",
             ],
         }
 
@@ -84,10 +91,11 @@ class ParkingDebugNode(LineFollowNode):
         box = snapshot.get("finish_candidate_box")
         metrics = snapshot.get("finish_metrics", {})
         rospy.loginfo(
-            "parking debug summary: status=%s phase=%s finish_frames=%s box=%s metrics=%s",
+            "parking debug summary: status=%s phase=%s finish_frames=%s odom_distance=%s box=%s metrics=%s",
             snapshot.get("status"),
             snapshot.get("finish_phase"),
             snapshot.get("finish_frames"),
+            snapshot.get("finish_odom_distance_m"),
             box,
             metrics,
         )
