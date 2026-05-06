@@ -198,11 +198,47 @@ class LineFollowNode:
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
         self.finish_auto_stop = bool(rospy.get_param("~finish_auto_stop", rospy.get_param("finish_auto_stop", True)))
-        self.finish_reverse_distance_m = float(
-            rospy.get_param("~finish_reverse_distance_m", rospy.get_param("finish_reverse_distance_m", 0.10))
+        self.finish_parking_target_bottom_y_ratio = float(
+            rospy.get_param(
+                "~finish_parking_target_bottom_y_ratio",
+                rospy.get_param("finish_parking_target_bottom_y_ratio", 0.955),
+            )
         )
-        self.finish_reverse_speed = abs(
-            float(rospy.get_param("~finish_reverse_speed", rospy.get_param("finish_reverse_speed", 0.05)))
+        self.finish_parking_slow_bottom_y_ratio = float(
+            rospy.get_param(
+                "~finish_parking_slow_bottom_y_ratio",
+                rospy.get_param("finish_parking_slow_bottom_y_ratio", 0.90),
+            )
+        )
+        self.finish_parking_confirm_frames = int(
+            rospy.get_param(
+                "~finish_parking_confirm_frames",
+                rospy.get_param("finish_parking_confirm_frames", 2),
+            )
+        )
+        self.finish_parking_min_horizontal_width_ratio = float(
+            rospy.get_param(
+                "~finish_parking_min_horizontal_width_ratio",
+                rospy.get_param("finish_parking_min_horizontal_width_ratio", 0.70),
+            )
+        )
+        self.finish_parking_min_vertical_side_height_ratio = float(
+            rospy.get_param(
+                "~finish_parking_min_vertical_side_height_ratio",
+                rospy.get_param("finish_parking_min_vertical_side_height_ratio", 0.30),
+            )
+        )
+        self.finish_parking_min_box_width_ratio = float(
+            rospy.get_param(
+                "~finish_parking_min_box_width_ratio",
+                rospy.get_param("finish_parking_min_box_width_ratio", 0.70),
+            )
+        )
+        self.finish_parking_min_box_height_ratio = float(
+            rospy.get_param(
+                "~finish_parking_min_box_height_ratio",
+                rospy.get_param("finish_parking_min_box_height_ratio", 0.09),
+            )
         )
         self.finish_bottom_ratio = float(
             rospy.get_param("~finish_bottom_ratio", rospy.get_param("finish_bottom_ratio", 0.72))
@@ -277,8 +313,9 @@ class LineFollowNode:
         self.finish_frames = 0
         self.finish_lost_frames = 0
         self.finish_time = None
-        self.finish_reverse_start_time = None
-        self.finish_reverse_done = False
+        self.finish_parking_candidate_frames = 0
+        self.finish_parking_reached_frames = 0
+        self.finish_parking_bottom_y_ratio = 0.0
         self.finish_phase = "search"
         self.last_finish_result: Optional[FinishDetectionResult] = None
         self.last_debug_snapshot: Optional[Dict] = None
@@ -309,8 +346,9 @@ class LineFollowNode:
             self.finish_frames = 0
             self.finish_lost_frames = 0
             self.finish_time = None
-            self.finish_reverse_start_time = None
-            self.finish_reverse_done = False
+            self.finish_parking_candidate_frames = 0
+            self.finish_parking_reached_frames = 0
+            self.finish_parking_bottom_y_ratio = 0.0
             self.finish_phase = "search"
             self.startup_force_left_mode = self.turn_direction == "left"
             self.dual_line_stable_frames = 0
@@ -321,8 +359,9 @@ class LineFollowNode:
         if not self.started:
             self.pid.reset()
             self.finish_time = None
-            self.finish_reverse_start_time = None
-            self.finish_reverse_done = False
+            self.finish_parking_candidate_frames = 0
+            self.finish_parking_reached_frames = 0
+            self.finish_parking_bottom_y_ratio = 0.0
             self.finish_phase = "search"
             self.stop_robot()
             self.set_status("idle")
@@ -359,11 +398,20 @@ class LineFollowNode:
         finish_result = self.detect_finish(mask)
         finish_detected = finish_result.detected
         self.last_finish_result = finish_result
+        parking_candidate, parking_reached, parking_bottom_y_ratio = self.evaluate_parking_target(
+            finish_result, roi_origin_y, frame.shape[0], frame.shape[1]
+        )
+        if parking_candidate and lane_center is None:
+            lane_center = frame.shape[1] / 2.0
         rospy.loginfo_throttle(
             0.5,
-            "finish dbg: det=%d frames=%d h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
+            "finish dbg: det=%d park=%d reached=%d frames=%d park_frames=%d bottom=%.3f h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
             int(finish_detected),
+            int(parking_candidate),
+            int(parking_reached),
             self.finish_frames,
+            self.finish_parking_reached_frames,
+            parking_bottom_y_ratio,
             finish_result.horizontal_width_ratio,
             finish_result.vertical_left_height_ratio,
             finish_result.vertical_right_height_ratio,
@@ -373,10 +421,30 @@ class LineFollowNode:
 
         if not self.finish_detection_enabled:
             finish_detected = False
-        if finish_detected:
+            parking_candidate = False
+            parking_reached = False
+
+        self.finish_parking_bottom_y_ratio = parking_bottom_y_ratio if parking_candidate else 0.0
+        if parking_candidate:
+            self.finish_parking_candidate_frames += 1
+        else:
+            self.finish_parking_candidate_frames = 0
+
+        if parking_reached:
+            self.finish_parking_reached_frames += 1
+        else:
+            self.finish_parking_reached_frames = 0
+
+        if finish_detected or parking_candidate:
             self.finish_frames += 1
             self.finish_lost_frames = 0
-            if self.finish_frames < self.finish_confirm_frames:
+            if parking_reached:
+                self.finish_phase = "parking_ready"
+                self.set_status("parking_ready")
+            elif parking_candidate:
+                self.finish_phase = "parking_approach"
+                self.set_status("parking_approach")
+            elif self.finish_frames < self.finish_confirm_frames:
                 self.finish_phase = "approach_finish"
                 self.set_status("approach_finish")
             else:
@@ -400,11 +468,12 @@ class LineFollowNode:
             now,
         )
 
-        if self.finish_frames >= self.finish_confirm_frames:
+        if self.finish_parking_reached_frames >= self.finish_parking_confirm_frames:
             if self.finish_auto_stop:
                 rospy.loginfo(
-                    "finish confirmed: frames=%d h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
+                    "parking target reached: frames=%d bottom=%.3f h=%.2f vl=%.2f vr=%.2f fill=%.2f cc=%d",
                     self.finish_frames,
+                    parking_bottom_y_ratio,
                     finish_result.horizontal_width_ratio,
                     finish_result.vertical_left_height_ratio,
                     finish_result.vertical_right_height_ratio,
@@ -412,8 +481,6 @@ class LineFollowNode:
                     finish_result.inner_component_count,
                 )
                 self.finish_time = now
-                self.finish_reverse_start_time = None
-                self.finish_reverse_done = False
                 self.finish_phase = "finish_stop"
                 self.set_status("finish_stop")
                 self.hard_stop_robot()
@@ -756,13 +823,41 @@ class LineFollowNode:
             detected, box, horizontal_width_ratio, left_h_ratio, right_h_ratio, fill_ratio, component_count
         )
 
+    def evaluate_parking_target(
+        self,
+        finish_result: FinishDetectionResult,
+        roi_origin_y: int,
+        image_height: int,
+        image_width: int,
+    ) -> Tuple[bool, bool, float]:
+        box = finish_result.candidate_box
+        if box is None:
+            return False, False, 0.0
+
+        x, y, w, h = box
+        bottom_y_ratio = float(roi_origin_y + y + h) / max(1.0, float(image_height))
+        box_width_ratio = float(w) / max(1.0, float(image_width))
+        box_height_ratio = float(h) / max(1.0, float(image_height))
+
+        candidate = (
+            finish_result.horizontal_width_ratio >= self.finish_parking_min_horizontal_width_ratio
+            and finish_result.vertical_left_height_ratio >= self.finish_parking_min_vertical_side_height_ratio
+            and finish_result.vertical_right_height_ratio >= self.finish_parking_min_vertical_side_height_ratio
+            and box_width_ratio >= self.finish_parking_min_box_width_ratio
+            and box_height_ratio >= self.finish_parking_min_box_height_ratio
+            and finish_result.inner_fill_ratio >= self.finish_box_min_fill_ratio
+            and finish_result.inner_component_count <= self.finish_box_max_components
+        )
+        reached = candidate and bottom_y_ratio >= self.finish_parking_target_bottom_y_ratio
+        return candidate, reached, bottom_y_ratio
+
     def publish_control(self, lane_center: float, image_width: int, now: float, two_sided_tracking: bool):
         image_center = image_width / 2.0
         error = lane_center - image_center
         self.last_error_px = error
         angular = -self.pid.update(error, now)
         angular_limit = self.max_angular_speed
-        if self.finish_frames > 0:
+        if self.finish_frames > 0 or self.finish_parking_candidate_frames > 0:
             angular_limit = min(angular_limit, self.finish_approach_max_angular_speed)
         if self.finish_frames >= max(1, self.finish_confirm_frames - self.finish_final_approach_frames):
             angular_limit = min(angular_limit, 0.12)
@@ -776,9 +871,12 @@ class LineFollowNode:
             slowdown = min(abs(error) / max(self.error_slowdown_px, 1.0), 1.0)
             linear = self.base_linear_speed - slowdown * (self.base_linear_speed - self.min_linear_speed)
             linear = max(self.min_linear_speed, min(self.base_linear_speed, linear))
-            if self.finish_frames > 0:
+            if self.finish_frames > 0 or self.finish_parking_candidate_frames > 0:
                 linear *= max(0.2, min(1.0, self.finish_approach_linear_speed_scale))
-            if self.finish_frames >= max(1, self.finish_confirm_frames - self.finish_final_approach_frames):
+            if (
+                self.finish_frames >= max(1, self.finish_confirm_frames - self.finish_final_approach_frames)
+                or self.finish_parking_bottom_y_ratio >= self.finish_parking_slow_bottom_y_ratio
+            ):
                 linear = min(linear, self.finish_final_linear_speed)
 
         twist = Twist()
@@ -861,6 +959,9 @@ class LineFollowNode:
             "finish_detection_enabled": self.finish_detection_enabled,
             "finish_frames": self.finish_frames,
             "finish_confirm_frames": self.finish_confirm_frames,
+            "finish_parking_candidate_frames": self.finish_parking_candidate_frames,
+            "finish_parking_reached_frames": self.finish_parking_reached_frames,
+            "finish_parking_bottom_y_ratio": self.finish_parking_bottom_y_ratio,
             "finish_detected": finish_result.detected,
             "finish_candidate_box": box_info,
             "finish_metrics": {
@@ -898,8 +999,9 @@ class LineFollowNode:
                 "min_linear_speed": self.min_linear_speed,
                 "finish_approach_linear_speed_scale": self.finish_approach_linear_speed_scale,
                 "finish_final_linear_speed": self.finish_final_linear_speed,
-                "finish_reverse_distance_m": self.finish_reverse_distance_m,
-                "finish_reverse_speed": self.finish_reverse_speed,
+                "finish_parking_target_bottom_y_ratio": self.finish_parking_target_bottom_y_ratio,
+                "finish_parking_slow_bottom_y_ratio": self.finish_parking_slow_bottom_y_ratio,
+                "finish_parking_confirm_frames": self.finish_parking_confirm_frames,
             },
         }
 
@@ -913,27 +1015,7 @@ class LineFollowNode:
             self.set_status("finish_stop")
             return
 
-        if self.finish_reverse_done or self.finish_reverse_distance_m <= 0.0 or self.finish_reverse_speed <= 0.0:
-            self.finish_phase = "finish"
-            self.finish_reverse_done = True
-            self.stop_robot()
-            self.set_status("finish")
-            return
-
-        reverse_time = self.finish_reverse_distance_m / self.finish_reverse_speed
-        if self.finish_reverse_start_time is None:
-            self.finish_reverse_start_time = now
-
-        if now - self.finish_reverse_start_time < reverse_time:
-            self.finish_phase = "finish_reverse"
-            twist = Twist()
-            twist.linear.x = -self.finish_reverse_speed
-            self.cmd_pub.publish(twist)
-            self.set_status("finish_reverse")
-            return
-
         self.finish_phase = "finish"
-        self.finish_reverse_done = True
         self.stop_robot()
         self.set_status("finish")
 
@@ -982,7 +1064,8 @@ class LineFollowNode:
 
         if finish_result.candidate_box is not None:
             x, y, w, h = finish_result.candidate_box
-            cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 120, 0), 2)
+            full_y = roi_origin_y + y
+            cv2.rectangle(debug, (x, full_y), (x + w, full_y + h), (255, 120, 0), 2)
 
         turn_left_sec = max(0.0, self.turn_until - now)
         text = "status={} phase={} finish_frames={} detected={} enabled={} left_mode={} fork_rows={} fork={} turn_left={:.2f}s".format(

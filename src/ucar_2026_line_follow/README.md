@@ -24,9 +24,10 @@ Status values:
 - `tracking`: following the detected corridor
 - `turn_left`: fork-like multi-border area detected; left corridor is selected
 - `lost`: line lost longer than `lost_timeout`; command is stopped
-- `finish_stop`: P1 parking square detected; command is stopped before reversing
-- `finish_reverse`: reversing after the P1 stop
-- `finish`: reverse maneuver is complete; command is stopped
+- `parking_approach`: P1 parking square candidate is visible; slowing for visual parking
+- `parking_ready`: calibrated parking target is reached
+- `finish_stop`: calibrated parking target is reached; command is stopped
+- `finish`: parking stop hold is complete; command is stopped
 - `parking_debug`: debug node has detected P1 but is waiting for manual `Ctrl+C`
 
 ## Run

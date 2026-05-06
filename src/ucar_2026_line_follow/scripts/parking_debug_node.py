@@ -40,6 +40,9 @@ class ParkingDebugNode(LineFollowNode):
                 "finish_detection_enabled": self.finish_detection_enabled,
                 "finish_frames": self.finish_frames,
                 "finish_confirm_frames": self.finish_confirm_frames,
+                "finish_parking_candidate_frames": self.finish_parking_candidate_frames,
+                "finish_parking_reached_frames": self.finish_parking_reached_frames,
+                "finish_parking_bottom_y_ratio": self.finish_parking_bottom_y_ratio,
             },
             "snapshot": snapshot,
             "recommended_fields_to_send": [
@@ -52,6 +55,7 @@ class ParkingDebugNode(LineFollowNode):
                 "snapshot.status",
                 "snapshot.finish_phase",
                 "snapshot.finish_frames",
+                "snapshot.finish_parking_bottom_y_ratio",
             ],
         }
 

@@ -64,8 +64,13 @@ finish_enable_delay: 6.0
 finish_confirm_frames: 9
 finish_release_frames: 1
 finish_stop_time: 1.0
-finish_reverse_distance_m: 0.15
-finish_reverse_speed: 0.05
+finish_parking_target_bottom_y_ratio: 0.955
+finish_parking_slow_bottom_y_ratio: 0.90
+finish_parking_confirm_frames: 2
+finish_parking_min_horizontal_width_ratio: 0.70
+finish_parking_min_vertical_side_height_ratio: 0.30
+finish_parking_min_box_width_ratio: 0.70
+finish_parking_min_box_height_ratio: 0.09
 finish_bottom_ratio: 0.72
 finish_horizontal_min_width_ratio: 0.45
 finish_horizontal_min_rows: 4

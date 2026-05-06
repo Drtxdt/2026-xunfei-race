@@ -1,0 +1,164 @@
+{
+  "note": "Snapshot saved when parking_debug_node shut down. Use this to tune visual parking stop thresholds.",
+  "shutdown_time": "2026-05-06T16:46:34",
+  "snapshot_available": true,
+  "node": {
+    "status": "tracking",
+    "finish_phase": "search",
+    "finish_detection_enabled": true,
+    "finish_frames": 0,
+    "finish_confirm_frames": 9
+  },
+  "snapshot": {
+    "timestamp_sec": 1778057194.1063573,
+    "status": "tracking",
+    "finish_phase": "search",
+    "started": true,
+    "image_width": 640,
+    "image_height": 480,
+    "roi_origin_y": 216,
+    "roi_height": 264,
+    "lane_center_px": 355.4,
+    "lane_center_ratio": 0.5553125,
+    "last_error_px": 44.90624999999994,
+    "finish_detection_enabled": true,
+    "finish_frames": 0,
+    "finish_confirm_frames": 9,
+    "finish_detected": false,
+    "finish_candidate_box": {
+      "roi_x": 0,
+      "roi_y": 190,
+      "full_x": 0,
+      "full_y": 406,
+      "width_px": 640,
+      "height_px": 56,
+      "center_x_px": 320.0,
+      "center_y_full_px": 434.0,
+      "bottom_y_full_px": 462,
+      "center_x_ratio": 0.5,
+      "center_y_full_ratio": 0.9041666666666667,
+      "bottom_y_full_ratio": 0.9625,
+      "width_ratio": 1.0,
+      "height_full_ratio": 0.11666666666666667
+    },
+    "finish_metrics": {
+      "horizontal_width_ratio": 0.7796875,
+      "vertical_left_height_ratio": 0.36486486486486486,
+      "vertical_right_height_ratio": 0.3918918918918919,
+      "inner_fill_ratio": 0.43956473214285713,
+      "inner_component_count": 1
+    },
+    "fork_rows": 0,
+    "fork_detected": false,
+    "estimated_lane_width_px": 230.0,
+    "observations": [
+      {
+        "roi_y": 52,
+        "full_y": 268,
+        "left_x": 319.5,
+        "right_x": null,
+        "center_x": 434.5,
+        "multi_candidate": false,
+        "segments": [
+          {
+            "left": 0,
+            "right": 639,
+            "center": 319.5,
+            "width": 640
+          }
+        ]
+      },
+      {
+        "roi_y": 92,
+        "full_y": 308,
+        "left_x": null,
+        "right_x": 352.5,
+        "center_x": 237.5,
+        "multi_candidate": false,
+        "segments": [
+          {
+            "left": 173,
+            "right": 532,
+            "center": 352.5,
+            "width": 360
+          }
+        ]
+      },
+      {
+        "roi_y": 132,
+        "full_y": 348,
+        "left_x": null,
+        "right_x": null,
+        "center_x": null,
+        "multi_candidate": false,
+        "segments": []
+      },
+      {
+        "roi_y": 171,
+        "full_y": 387,
+        "left_x": null,
+        "right_x": null,
+        "center_x": null,
+        "multi_candidate": false,
+        "segments": []
+      },
+      {
+        "roi_y": 211,
+        "full_y": 427,
+        "left_x": 102.5,
+        "right_x": 517.5,
+        "center_x": 310.0,
+        "multi_candidate": false,
+        "segments": [
+          {
+            "left": 40,
+            "right": 165,
+            "center": 102.5,
+            "width": 126
+          },
+          {
+            "left": 444,
+            "right": 591,
+            "center": 517.5,
+            "width": 148
+          }
+        ]
+      },
+      {
+        "roi_y": 242,
+        "full_y": 458,
+        "left_x": 316.5,
+        "right_x": null,
+        "center_x": 431.5,
+        "multi_candidate": false,
+        "segments": [
+          {
+            "left": 224,
+            "right": 409,
+            "center": 316.5,
+            "width": 186
+          }
+        ]
+      }
+    ],
+    "control_params": {
+      "base_linear_speed": 0.16,
+      "min_linear_speed": 0.06,
+      "finish_approach_linear_speed_scale": 0.78,
+      "finish_final_linear_speed": 0.03,
+      "finish_reverse_distance_m": 0.15,
+      "finish_reverse_speed": 0.05
+    }
+  },
+  "recommended_fields_to_send": [
+    "snapshot.finish_candidate_box",
+    "snapshot.finish_metrics",
+    "snapshot.lane_center_px",
+    "snapshot.image_width",
+    "snapshot.image_height",
+    "snapshot.roi_origin_y",
+    "snapshot.status",
+    "snapshot.finish_phase",
+    "snapshot.finish_frames"
+  ]
+}
