@@ -49,6 +49,18 @@ class ParkingDetectionResult:
     component_count: int
 
 
+@dataclass
+class LaneCandidate:
+    center_x: float
+    left_x: Optional[float]
+    right_x: Optional[float]
+    selected_pair: Optional[Tuple[int, int]]
+    strategy: str
+    row_index: int
+    y: int
+    weight: float
+
+
 class PidController:
     def __init__(self, kp: float, ki: float, kd: float, max_integral: float):
         self.kp = kp
@@ -258,6 +270,24 @@ class RightLineFollowNode:
         self.debug_info_publish_interval = float(
             rospy.get_param("~debug_info_publish_interval", rospy.get_param("debug_info_publish_interval", 0.2))
         )
+        self.right_route_acquire_min_center_ratio = float(
+            rospy.get_param(
+                "~right_route_acquire_min_center_ratio",
+                rospy.get_param("right_route_acquire_min_center_ratio", 0.58),
+            )
+        )
+        self.right_route_lock_frames = int(
+            rospy.get_param("~right_route_lock_frames", rospy.get_param("right_route_lock_frames", 4))
+        )
+        self.lane_center_jump_reject_px = float(
+            rospy.get_param("~lane_center_jump_reject_px", rospy.get_param("lane_center_jump_reject_px", 120.0))
+        )
+        self.lane_center_smooth_alpha = float(
+            rospy.get_param("~lane_center_smooth_alpha", rospy.get_param("lane_center_smooth_alpha", 0.45))
+        )
+        self.lane_center_lost_hold_frames = int(
+            rospy.get_param("~lane_center_lost_hold_frames", rospy.get_param("lane_center_lost_hold_frames", 8))
+        )
 
         self.parking_enable_delay = float(
             rospy.get_param("~parking_enable_delay", rospy.get_param("parking_enable_delay", 6.0))
@@ -418,6 +448,11 @@ class RightLineFollowNode:
         self.last_control_angular = 0.0
         self.last_control_linear = 0.0
         self.last_control_reason = "init"
+        self.route_locked = False
+        self.route_lock_candidate_frames = 0
+        self.lane_center_lost_frames = 0
+        self.last_lane_candidates: List[Dict] = []
+        self.last_selected_lane_candidate: Optional[Dict] = None
         self.start_time = time.time()
         self.startup_force_right_mode = True
         self.dual_line_stable_frames = 0
@@ -467,6 +502,11 @@ class RightLineFollowNode:
             self.last_lane_center = None
             self.last_right_line_x = None
             self.right_line_lost_frames = 0
+            self.route_locked = False
+            self.route_lock_candidate_frames = 0
+            self.lane_center_lost_frames = 0
+            self.last_lane_candidates = []
+            self.last_selected_lane_candidate = None
             self.pid.reset()
             self.set_status("searching")
         if not self.started:
@@ -608,6 +648,9 @@ class RightLineFollowNode:
             self.last_lane_center = None
             self.last_right_line_x = None
             self.right_line_lost_frames = 0
+            self.route_locked = False
+            self.route_lock_candidate_frames = 0
+            self.lane_center_lost_frames = 0
             self.single_line_frames = 0
             self.dual_line_stable_frames = 0
             self.set_status("startup_straight")
@@ -940,20 +983,83 @@ class RightLineFollowNode:
         if self.right_line_only_mode:
             return self.estimate_center_from_right_line(observations, image_width)
 
-        centers = []
-        weights = []
-        total = len(observations)
+        candidates = self.collect_lane_candidates(observations)
+        self.last_lane_candidates = [self.lane_candidate_to_debug(candidate) for candidate in candidates]
+        selected = self.select_route_candidate(candidates, image_width)
+        self.last_selected_lane_candidate = None if selected is None else self.lane_candidate_to_debug(selected)
+        if selected is None:
+            if self.route_locked and self.last_lane_center is not None and self.lane_center_lost_frames < self.lane_center_lost_hold_frames:
+                self.lane_center_lost_frames += 1
+                return self.last_lane_center
+            self.lane_center_lost_frames += 1
+            return None
 
+        raw_center = selected.center_x
+        acquire_min_center = image_width * max(0.0, min(1.0, self.right_route_acquire_min_center_ratio))
+        if not self.route_locked and raw_center < acquire_min_center:
+            self.route_lock_candidate_frames = 0
+            self.lane_center_lost_frames += 1
+            return None
+
+        self.route_lock_candidate_frames += 1
+        if self.route_lock_candidate_frames >= max(1, self.right_route_lock_frames):
+            self.route_locked = True
+
+        if self.last_lane_center is not None and abs(raw_center - self.last_lane_center) > self.lane_center_jump_reject_px:
+            self.lane_center_lost_frames += 1
+            return self.last_lane_center
+
+        alpha = max(0.0, min(1.0, self.lane_center_smooth_alpha))
+        if self.last_lane_center is None:
+            center = raw_center
+        else:
+            center = (1.0 - alpha) * self.last_lane_center + alpha * raw_center
+
+        self.lane_center_lost_frames = 0
+        return center
+
+    def collect_lane_candidates(self, observations: Sequence[RowObservation]) -> List[LaneCandidate]:
+        candidates = []
+        total = len(observations)
         for index, obs in enumerate(observations):
             if obs.center_x is None:
                 continue
             weight = 1.0 + (float(index) / max(total - 1, 1)) * (self.target_row_weight_bottom - 1.0)
-            centers.append(obs.center_x)
-            weights.append(weight)
+            candidates.append(
+                LaneCandidate(
+                    center_x=obs.center_x,
+                    left_x=obs.left_x,
+                    right_x=obs.right_x,
+                    selected_pair=obs.selected_pair,
+                    strategy=obs.strategy,
+                    row_index=index,
+                    y=obs.y,
+                    weight=weight,
+                )
+            )
+        return candidates
 
-        if not centers:
+    def select_route_candidate(self, candidates: Sequence[LaneCandidate], image_width: int) -> Optional[LaneCandidate]:
+        if not candidates:
             return None
-        return float(np.average(centers, weights=weights))
+        if self.route_locked and self.last_lane_center is not None:
+            return min(candidates, key=lambda candidate: abs(candidate.center_x - self.last_lane_center))
+
+        paired = [candidate for candidate in candidates if candidate.left_x is not None and candidate.right_x is not None]
+        pool = paired if paired else list(candidates)
+        return max(pool, key=lambda candidate: (candidate.center_x, candidate.weight))
+
+    def lane_candidate_to_debug(self, candidate: LaneCandidate) -> Dict:
+        return {
+            "center_x": candidate.center_x,
+            "left_x": candidate.left_x,
+            "right_x": candidate.right_x,
+            "selected_pair": candidate.selected_pair,
+            "strategy": candidate.strategy,
+            "row_index": candidate.row_index,
+            "roi_y": candidate.y,
+            "weight": candidate.weight,
+        }
 
     def estimate_center_from_right_line(self, observations: Sequence[RowObservation], image_width: int) -> Optional[float]:
         right_lines = []
@@ -1146,6 +1252,18 @@ class RightLineFollowNode:
         self.cmd_pub.publish(twist)
 
     def handle_lost_or_search(self, now: float):
+        if self.startup_force_right_mode and not self.route_locked:
+            self.set_status("route_acquire")
+            twist = Twist()
+            twist.linear.x = self.search_linear_speed
+            twist.angular.z = 0.0
+            self.last_control_reason = "route_acquire_straight"
+            self.last_control_error_px = 0.0
+            self.last_control_linear = twist.linear.x
+            self.last_control_angular = twist.angular.z
+            self.cmd_pub.publish(twist)
+            return
+
         if self.last_detection_time is None or now - self.last_detection_time <= self.lost_timeout:
             self.set_status("searching")
             twist = Twist()
@@ -1284,6 +1402,11 @@ class RightLineFollowNode:
             "right_line_lost_frames": self.right_line_lost_frames,
             "last_error_px": self.last_error_px,
             "target_center_px": self.last_target_center,
+            "route_locked": self.route_locked,
+            "route_lock_candidate_frames": self.route_lock_candidate_frames,
+            "lane_center_lost_frames": self.lane_center_lost_frames,
+            "lane_candidates": self.last_lane_candidates,
+            "selected_lane_candidate": self.last_selected_lane_candidate,
             "control": {
                 "reason": self.last_control_reason,
                 "error_px": self.last_control_error_px,
@@ -1481,6 +1604,10 @@ class RightLineFollowNode:
             "mode": {
                 "right_line_only": self.right_line_only_mode,
                 "startup_force_right": self.startup_force_right_mode,
+                "route_locked": self.route_locked,
+                "route_lock_candidate_frames": self.route_lock_candidate_frames,
+                "lane_center_lost_frames": self.lane_center_lost_frames,
+                "right_route_acquire_min_center_ratio": self.right_route_acquire_min_center_ratio,
                 "right_line_target_side": self.right_line_target_side,
                 "lane_width_px": self.current_lane_width_px(),
             },
@@ -1492,6 +1619,8 @@ class RightLineFollowNode:
                 "last_x": self.last_right_line_x,
                 "lost_frames": self.right_line_lost_frames,
             },
+            "lane_candidates": snapshot.get("lane_candidates", []),
+            "selected_lane_candidate": snapshot.get("selected_lane_candidate"),
             "parking": {
                 "detected": snapshot.get("parking_detected"),
                 "reached": snapshot.get("parking_reached"),

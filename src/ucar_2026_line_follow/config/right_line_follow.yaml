@@ -84,6 +84,11 @@ startup_force_right_min_duration: 3.2
 startup_force_right_bias_px: 0
 right_anchor_ratio: 0.72
 debug_info_publish_interval: 0.2
+right_route_acquire_min_center_ratio: 0.58
+right_route_lock_frames: 4
+lane_center_jump_reject_px: 120
+lane_center_smooth_alpha: 0.45
+lane_center_lost_hold_frames: 8
 
 # P1 black parking rectangle detection and stop behavior.
 parking_enable_delay: 6.0
