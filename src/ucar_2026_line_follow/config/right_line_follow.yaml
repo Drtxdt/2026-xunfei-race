@@ -66,9 +66,9 @@ right_line_target_side: right
 right_line_smooth_alpha: 0.35
 right_line_jump_reject_px: 120
 right_line_lost_hold_frames: 8
-right_line_max_error_px: 95
+right_line_max_error_px: 70
 right_line_deadband_px: 8
-right_line_max_angular_speed: 0.35
+right_line_max_angular_speed: 0.25
 startup_min_target_x_ratio: 0.52
 right_turn_bias_px: 0
 right_turn_hold_time: 1.15
