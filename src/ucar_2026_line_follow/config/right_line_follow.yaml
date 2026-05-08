@@ -4,6 +4,7 @@ cmd_vel_topic: /cmd_vel
 odom_topic: /odom
 status_topic: /right_line_follow/status
 debug_image_topic: /right_line_follow/debug_image
+debug_info_topic: /right_line_follow/debug_info
 start_topic: /right_line_follow/start
 
 # Startup and route. This node is dedicated to the vehicle-perspective right
@@ -52,17 +53,16 @@ search_angular_speed: 0.25
 lost_timeout: 1.0
 stop_on_lost: false
 
-# Right-lane selection. The default strategy follows only the rightmost white
-# line and keeps the car center half a lane-width to its right. This fixes the
-# observed startup-left-turn behavior; switch target_side to left only if the
-# camera/route is mirrored on your car.
+# Right-lane selection. Default mirrors the proven left-line code: choose the
+# rightmost adjacent line pair when multiple lanes are visible, then follow the
+# pair center. right_line_only is kept only as a fallback/debug mode.
 fork_candidate_count: 3
 fork_center_tolerance_px: 220
 fork_cooldown_sec: 0.8
 fork_latch_time: 0.45
-right_line_only_mode: true
+right_line_only_mode: false
 right_line_target_offset_ratio: 0.5
-right_line_target_side: right
+right_line_target_side: left
 right_line_smooth_alpha: 0.35
 right_line_jump_reject_px: 120
 right_line_lost_hold_frames: 8
@@ -70,8 +70,8 @@ right_line_max_error_px: 70
 right_line_deadband_px: 8
 right_line_max_angular_speed: 0.25
 startup_min_target_x_ratio: 0.52
-startup_straight_lock_time: 1.6
-startup_fork_straight_time: 3.6
+startup_straight_lock_time: 1.2
+startup_fork_straight_time: 3.2
 startup_straight_lock_speed: 0.09
 startup_straight_lock_angular: 0.0
 right_turn_bias_px: 0
@@ -83,6 +83,7 @@ startup_force_right_clear_nonfork_frames: 18
 startup_force_right_min_duration: 3.2
 startup_force_right_bias_px: 0
 right_anchor_ratio: 0.72
+debug_info_publish_interval: 0.2
 
 # P1 black parking rectangle detection and stop behavior.
 parking_enable_delay: 6.0

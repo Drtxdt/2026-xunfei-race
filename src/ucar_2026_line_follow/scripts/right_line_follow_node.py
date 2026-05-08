@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import math
 import time
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ class RowObservation:
     center_x: Optional[float]
     multi_candidate: bool
     selected_pair: Optional[Tuple[int, int]]
+    strategy: str
 
 
 @dataclass
@@ -90,6 +92,9 @@ class RightLineFollowNode:
         self.status_topic = rospy.get_param("~status_topic", rospy.get_param("status_topic", "/right_line_follow/status"))
         self.debug_image_topic = rospy.get_param(
             "~debug_image_topic", rospy.get_param("debug_image_topic", "/right_line_follow/debug_image")
+        )
+        self.debug_info_topic = rospy.get_param(
+            "~debug_info_topic", rospy.get_param("debug_info_topic", "/right_line_follow/debug_info")
         )
         self.start_topic = rospy.get_param("~start_topic", rospy.get_param("start_topic", "/right_line_follow/start"))
 
@@ -169,7 +174,7 @@ class RightLineFollowNode:
         self.fork_cooldown_sec = float(rospy.get_param("~fork_cooldown_sec", rospy.get_param("fork_cooldown_sec", 0.8)))
         self.fork_latch_time = float(rospy.get_param("~fork_latch_time", rospy.get_param("fork_latch_time", 0.45)))
         self.right_line_only_mode = bool(
-            rospy.get_param("~right_line_only_mode", rospy.get_param("right_line_only_mode", True))
+            rospy.get_param("~right_line_only_mode", rospy.get_param("right_line_only_mode", False))
         )
         self.right_line_target_offset_ratio = float(
             rospy.get_param(
@@ -250,6 +255,9 @@ class RightLineFollowNode:
             rospy.get_param("~startup_force_right_bias_px", rospy.get_param("startup_force_right_bias_px", 0.0))
         )
         self.right_anchor_ratio = float(rospy.get_param("~right_anchor_ratio", rospy.get_param("right_anchor_ratio", 0.72)))
+        self.debug_info_publish_interval = float(
+            rospy.get_param("~debug_info_publish_interval", rospy.get_param("debug_info_publish_interval", 0.2))
+        )
 
         self.parking_enable_delay = float(
             rospy.get_param("~parking_enable_delay", rospy.get_param("parking_enable_delay", 6.0))
@@ -383,6 +391,7 @@ class RightLineFollowNode:
         self.cmd_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1, latch=True)
         self.debug_pub = rospy.Publisher(self.debug_image_topic, Image, queue_size=1)
+        self.debug_info_pub = rospy.Publisher(self.debug_info_topic, String, queue_size=1)
 
         self.status = "idle" if not self.started else "searching"
         self.last_detection_time = None
@@ -402,6 +411,13 @@ class RightLineFollowNode:
         self.parking_phase = "search"
         self.last_parking_result: Optional[ParkingDetectionResult] = None
         self.last_debug_snapshot: Optional[Dict] = None
+        self.last_debug_info_publish_time = 0.0
+        self.last_lane_strategy = "none"
+        self.last_target_center = None
+        self.last_control_error_px = 0.0
+        self.last_control_angular = 0.0
+        self.last_control_linear = 0.0
+        self.last_control_reason = "init"
         self.start_time = time.time()
         self.startup_force_right_mode = True
         self.dual_line_stable_frames = 0
@@ -422,7 +438,12 @@ class RightLineFollowNode:
 
         rospy.on_shutdown(self.stop_robot)
         self.publish_status(force=True)
-        rospy.loginfo("right_line_follow_node started. image=%s cmd_vel=%s", self.image_topic, self.cmd_vel_topic)
+        rospy.loginfo(
+            "right_line_follow_node started. image=%s cmd_vel=%s debug_info=%s",
+            self.image_topic,
+            self.cmd_vel_topic,
+            self.debug_info_topic,
+        )
 
     def _get_float_list(self, name: str, default: Sequence[float]) -> List[float]:
         value = rospy.get_param("~" + name, rospy.get_param(name, list(default)))
@@ -591,6 +612,7 @@ class RightLineFollowNode:
             self.dual_line_stable_frames = 0
             self.set_status("startup_straight")
             self.publish_startup_straight_control()
+            self.publish_debug_info(now)
             self.publish_debug_image(frame, white_mask, parking_mask, roi_origin_y, parking_roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
             return
@@ -646,11 +668,13 @@ class RightLineFollowNode:
             else:
                 self.set_status("tracking")
 
+            self.last_target_center = target_center
             self.publish_control(target_center, frame.shape[1], now, two_sided_tracking)
         else:
             self.single_line_frames += 1
             self.handle_lost_or_search(now)
 
+        self.publish_debug_info(now)
         self.publish_debug_image(frame, white_mask, parking_mask, roi_origin_y, parking_roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
         self.publish_status()
 
@@ -670,6 +694,11 @@ class RightLineFollowNode:
         twist = Twist()
         twist.linear.x = max(0.0, self.startup_straight_lock_speed)
         twist.angular.z = self.startup_straight_lock_angular
+        self.last_target_center = None
+        self.last_control_error_px = 0.0
+        self.last_control_linear = twist.linear.x
+        self.last_control_angular = twist.angular.z
+        self.last_control_reason = "startup_straight_lock"
         self.cmd_pub.publish(twist)
 
     def extract_white_mask(self, frame: np.ndarray) -> Tuple[np.ndarray, int]:
@@ -728,7 +757,18 @@ class RightLineFollowNode:
             left_x, right_x, center_x, multi_candidate, selected_pair = self.choose_lane_pair(
                 segments, image_width, force_right_mode
             )
-            observations.append(RowObservation(y, segments, left_x, right_x, center_x, multi_candidate, selected_pair))
+            observations.append(
+                RowObservation(
+                    y,
+                    segments,
+                    left_x,
+                    right_x,
+                    center_x,
+                    multi_candidate,
+                    selected_pair,
+                    self.last_lane_strategy,
+                )
+            )
         return observations
 
     def find_segments(self, row: np.ndarray) -> List[Segment]:
@@ -772,11 +812,12 @@ class RightLineFollowNode:
         self, segments: List[Segment], image_width: int, force_right_mode: bool = False
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, Optional[Tuple[int, int]]]:
         lane_width_px = self.current_lane_width_px()
-        if segments and (self.right_line_only_mode or force_right_mode or len(segments) >= self.fork_candidate_count):
+        if segments and self.right_line_only_mode:
             multi_candidate = len(segments) >= self.fork_candidate_count
             right_index = self.choose_right_reference_index(segments)
             right = segments[right_index]
             center = self.center_from_right_line(right.center, image_width)
+            self.last_lane_strategy = "right_line_only"
             return None, right.center, center, multi_candidate, (right_index, right_index)
 
         if len(segments) >= 2:
@@ -792,15 +833,19 @@ class RightLineFollowNode:
                 left = segments[left_index]
                 right = segments[right_index]
                 selected_pair = (left_index, right_index)
+            self.last_lane_strategy = "rightmost_pair" if force_right_mode or multi_candidate else "center_pair"
             return left.center, right.center, (left.center + right.center) / 2.0, multi_candidate, selected_pair
 
         if len(segments) == 1:
             segment = segments[0]
             center = self.estimate_single_line_center(segment.center, image_width, force_right_mode)
             if segment.center < center:
+                self.last_lane_strategy = "single_left_line"
                 return segment.center, None, center, False, None
+            self.last_lane_strategy = "single_right_line"
             return None, segment.center, center, False, None
 
+        self.last_lane_strategy = "no_line"
         return None, None, None, False, None
 
     def choose_right_reference_index(self, segments: Sequence[Segment]) -> int:
@@ -831,6 +876,8 @@ class RightLineFollowNode:
 
     def estimate_single_line_center(self, segment_center: float, image_width: int, force_right_mode: bool) -> float:
         lane_width_px = self.current_lane_width_px()
+        if force_right_mode and not self.right_line_only_mode:
+            return segment_center - lane_width_px / 2.0
         if force_right_mode:
             right_anchor = image_width * self.right_anchor_ratio
             candidates = [
@@ -1079,6 +1126,20 @@ class RightLineFollowNode:
         if self.parking_odom_active:
             linear = self.parking_odom_approach_speed
 
+        self.last_control_error_px = error
+        self.last_control_linear = linear
+        self.last_control_angular = angular
+        if self.parking_odom_active:
+            self.last_control_reason = "parking_odom"
+        elif self.parking_candidate_frames > 0:
+            self.last_control_reason = "parking_visual"
+        elif self.right_line_only_mode:
+            self.last_control_reason = "right_line_only"
+        elif not two_sided_tracking and self.single_line_frames > self.single_line_hold_frames:
+            self.last_control_reason = "single_line_search_speed"
+        else:
+            self.last_control_reason = "lane_pair"
+
         twist = Twist()
         twist.linear.x = linear
         twist.angular.z = angular
@@ -1222,6 +1283,13 @@ class RightLineFollowNode:
             "last_right_line_x": self.last_right_line_x,
             "right_line_lost_frames": self.right_line_lost_frames,
             "last_error_px": self.last_error_px,
+            "target_center_px": self.last_target_center,
+            "control": {
+                "reason": self.last_control_reason,
+                "error_px": self.last_control_error_px,
+                "linear_x": self.last_control_linear,
+                "angular_z": self.last_control_angular,
+            },
             "startup_force_right_mode": self.startup_force_right_mode,
             "parking_detection_enabled": self.parking_detection_enabled,
             "parking_candidate_frames": self.parking_candidate_frames,
@@ -1255,6 +1323,7 @@ class RightLineFollowNode:
                     "center_x": obs.center_x,
                     "multi_candidate": obs.multi_candidate,
                     "selected_pair": obs.selected_pair,
+                    "strategy": obs.strategy,
                     "segments": [
                         {
                             "left": segment.left,
@@ -1313,6 +1382,10 @@ class RightLineFollowNode:
         if lane_center is not None:
             cv2.line(debug, (int(lane_center), roi_origin_y), (int(lane_center), height - 1), (0, 0, 255), 2)
 
+        if self.last_target_center is not None:
+            target_x = int(max(0, min(width - 1, self.last_target_center)))
+            cv2.line(debug, (target_x, roi_origin_y), (target_x, height - 1), (255, 0, 255), 2)
+
         if parking_result.candidate_box is not None:
             x, y, w, h = parking_result.candidate_box
             full_y = parking_roi_origin_y + y
@@ -1351,11 +1424,105 @@ class RightLineFollowNode:
             self.parking_odom_distance_m,
         )
         cv2.putText(debug, text2, (10, max(wh + 50, 55)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 220, 255), 2)
+        text3 = "strategy={} target={} err={:.1f} lin={:.2f} ang={:.2f}".format(
+            self.last_lane_strategy,
+            self._fmt_float(self.last_target_center),
+            self.last_control_error_px,
+            self.last_control_linear,
+            self.last_control_angular,
+        )
+        cv2.putText(debug, text3, (10, max(wh + 75, 80)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 0, 255), 2)
 
         try:
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(debug, encoding="bgr8"))
         except CvBridgeError as exc:
             rospy.logwarn_throttle(2.0, "debug image conversion failed: %s", exc)
+
+    def publish_debug_info(self, now: float):
+        if not self.publish_debug:
+            return
+        if now - self.last_debug_info_publish_time < max(0.0, self.debug_info_publish_interval):
+            return
+        self.last_debug_info_publish_time = now
+
+        snapshot = self.last_debug_snapshot or {}
+        compact_observations = []
+        for obs in snapshot.get("observations", []):
+            compact_observations.append(
+                {
+                    "full_y": obs.get("full_y"),
+                    "strategy": obs.get("strategy"),
+                    "selected_pair": obs.get("selected_pair"),
+                    "center_x": obs.get("center_x"),
+                    "left_x": obs.get("left_x"),
+                    "right_x": obs.get("right_x"),
+                    "segments": [
+                        {
+                            "center": segment.get("center"),
+                            "width": segment.get("width"),
+                        }
+                        for segment in obs.get("segments", [])
+                    ],
+                }
+            )
+
+        info = {
+            "status": self.status,
+            "phase": self.parking_phase,
+            "lane_center_px": snapshot.get("lane_center_px"),
+            "target_center_px": self.last_target_center,
+            "image_width": snapshot.get("image_width"),
+            "control": {
+                "reason": self.last_control_reason,
+                "error_px": self.last_control_error_px,
+                "linear_x": self.last_control_linear,
+                "angular_z": self.last_control_angular,
+            },
+            "mode": {
+                "right_line_only": self.right_line_only_mode,
+                "startup_force_right": self.startup_force_right_mode,
+                "right_line_target_side": self.right_line_target_side,
+                "lane_width_px": self.current_lane_width_px(),
+            },
+            "fork": {
+                "rows": snapshot.get("fork_rows"),
+                "detected": snapshot.get("fork_detected"),
+            },
+            "right_line": {
+                "last_x": self.last_right_line_x,
+                "lost_frames": self.right_line_lost_frames,
+            },
+            "parking": {
+                "detected": snapshot.get("parking_detected"),
+                "reached": snapshot.get("parking_reached"),
+                "box": snapshot.get("parking_candidate_box"),
+                "metrics": snapshot.get("parking_metrics"),
+            },
+            "observations": compact_observations,
+        }
+
+        self.debug_info_pub.publish(String(data=json.dumps(info, ensure_ascii=False, separators=(",", ":"))))
+        rospy.loginfo_throttle(
+            0.5,
+            "right dbg status=%s reason=%s lane=%s target=%s err=%.1f lin=%.3f ang=%.3f fork=%s strategy=%s",
+            self.status,
+            self.last_control_reason,
+            self._fmt_float(snapshot.get("lane_center_px")),
+            self._fmt_float(self.last_target_center),
+            self.last_control_error_px,
+            self.last_control_linear,
+            self.last_control_angular,
+            snapshot.get("fork_rows"),
+            self.last_lane_strategy,
+        )
+
+    def _fmt_float(self, value):
+        if value is None:
+            return "None"
+        try:
+            return "%.1f" % float(value)
+        except (TypeError, ValueError):
+            return str(value)
 
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
