@@ -52,20 +52,24 @@ search_angular_speed: 0.25
 lost_timeout: 1.0
 stop_on_lost: false
 
-# Right-lane selection. At startup and forks, the rightmost adjacent pair is
-# selected so the car does not drift into the middle lane.
+# Right-lane selection. The default strategy follows only the rightmost white
+# line and keeps the car center half a lane-width to its left. This avoids the
+# previous startup behavior where an added right bias could push the car out of
+# the track.
 fork_candidate_count: 3
 fork_center_tolerance_px: 220
 fork_cooldown_sec: 0.8
 fork_latch_time: 0.45
-right_turn_bias_px: 65
+right_line_only_mode: true
+right_line_target_offset_ratio: 0.5
+right_turn_bias_px: 0
 right_turn_hold_time: 1.15
 right_turn_linear_speed: 0.08
-startup_right_bias_duration: 1.7
+startup_right_bias_duration: 0.0
 startup_force_right_until_dual_frames: 8
 startup_force_right_clear_nonfork_frames: 18
 startup_force_right_min_duration: 3.2
-startup_force_right_bias_px: 115
+startup_force_right_bias_px: 0
 right_anchor_ratio: 0.72
 
 # P1 black parking rectangle detection and stop behavior.

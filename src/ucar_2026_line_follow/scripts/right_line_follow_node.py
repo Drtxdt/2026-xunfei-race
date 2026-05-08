@@ -168,8 +168,17 @@ class RightLineFollowNode:
         )
         self.fork_cooldown_sec = float(rospy.get_param("~fork_cooldown_sec", rospy.get_param("fork_cooldown_sec", 0.8)))
         self.fork_latch_time = float(rospy.get_param("~fork_latch_time", rospy.get_param("fork_latch_time", 0.45)))
+        self.right_line_only_mode = bool(
+            rospy.get_param("~right_line_only_mode", rospy.get_param("right_line_only_mode", True))
+        )
+        self.right_line_target_offset_ratio = float(
+            rospy.get_param(
+                "~right_line_target_offset_ratio",
+                rospy.get_param("right_line_target_offset_ratio", 0.5),
+            )
+        )
         self.right_turn_bias_px = float(
-            rospy.get_param("~right_turn_bias_px", rospy.get_param("right_turn_bias_px", 65.0))
+            rospy.get_param("~right_turn_bias_px", rospy.get_param("right_turn_bias_px", 0.0))
         )
         self.right_turn_hold_time = float(
             rospy.get_param("~right_turn_hold_time", rospy.get_param("right_turn_hold_time", 1.15))
@@ -178,7 +187,7 @@ class RightLineFollowNode:
             rospy.get_param("~right_turn_linear_speed", rospy.get_param("right_turn_linear_speed", 0.08))
         )
         self.startup_right_bias_duration = float(
-            rospy.get_param("~startup_right_bias_duration", rospy.get_param("startup_right_bias_duration", 1.7))
+            rospy.get_param("~startup_right_bias_duration", rospy.get_param("startup_right_bias_duration", 0.0))
         )
         self.startup_force_right_until_dual_frames = int(
             rospy.get_param(
@@ -199,7 +208,7 @@ class RightLineFollowNode:
             )
         )
         self.startup_force_right_bias_px = float(
-            rospy.get_param("~startup_force_right_bias_px", rospy.get_param("startup_force_right_bias_px", 115.0))
+            rospy.get_param("~startup_force_right_bias_px", rospy.get_param("startup_force_right_bias_px", 0.0))
         )
         self.right_anchor_ratio = float(rospy.get_param("~right_anchor_ratio", rospy.get_param("right_anchor_ratio", 0.72)))
 
@@ -536,6 +545,10 @@ class RightLineFollowNode:
             self.last_lane_center = lane_center
 
             two_sided_tracking = any(obs.left_x is not None and obs.right_x is not None for obs in observations)
+            if self.right_line_only_mode:
+                two_sided_tracking = two_sided_tracking or any(
+                    obs.right_x is not None and obs.center_x is not None for obs in observations
+                )
             if two_sided_tracking:
                 self.single_line_frames = 0
                 self.dual_line_stable_frames += 1
@@ -556,12 +569,16 @@ class RightLineFollowNode:
                 self.last_fork_time = now
 
             target_center = lane_center
-            if self.startup_force_right_mode:
+            if self.startup_force_right_mode and not self.right_line_only_mode:
                 target_center += self.startup_force_right_bias_px
                 self.set_status("startup_right")
-            if now < self.right_turn_until:
+            elif self.startup_force_right_mode:
+                self.set_status("right_line_startup")
+            if now < self.right_turn_until and not self.right_line_only_mode:
                 target_center += self.right_turn_bias_px
                 self.set_status("turn_right")
+            elif now < self.right_turn_until:
+                self.set_status("right_line_fork")
             elif self.parking_candidate_frames >= self.parking_candidate_confirm_frames:
                 self.set_status(self.parking_phase)
             elif not two_sided_tracking and self.single_line_frames > self.single_line_hold_frames:
@@ -677,6 +694,13 @@ class RightLineFollowNode:
         self, segments: List[Segment], image_width: int, force_right_mode: bool = False
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, Optional[Tuple[int, int]]]:
         lane_width_px = self.current_lane_width_px()
+        if segments and (self.right_line_only_mode or force_right_mode or len(segments) >= self.fork_candidate_count):
+            multi_candidate = len(segments) >= self.fork_candidate_count
+            right_index = len(segments) - 1
+            right = segments[right_index]
+            center = self.center_from_right_line(right.center)
+            return None, right.center, center, multi_candidate, (right_index, right_index)
+
         if len(segments) >= 2:
             multi_candidate = len(segments) >= self.fork_candidate_count
             if force_right_mode or multi_candidate:
@@ -700,6 +724,10 @@ class RightLineFollowNode:
             return None, segment.center, center, False, None
 
         return None, None, None, False, None
+
+    def center_from_right_line(self, right_line_x: float) -> float:
+        offset = self.current_lane_width_px() * max(0.0, min(1.0, self.right_line_target_offset_ratio))
+        return right_line_x - offset
 
     def estimate_single_line_center(self, segment_center: float, image_width: int, force_right_mode: bool) -> float:
         lane_width_px = self.current_lane_width_px()
