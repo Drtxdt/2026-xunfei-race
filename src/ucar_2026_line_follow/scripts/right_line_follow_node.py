@@ -189,6 +189,18 @@ class RightLineFollowNode:
         self.right_line_lost_hold_frames = int(
             rospy.get_param("~right_line_lost_hold_frames", rospy.get_param("right_line_lost_hold_frames", 8))
         )
+        self.right_line_max_error_px = float(
+            rospy.get_param("~right_line_max_error_px", rospy.get_param("right_line_max_error_px", 95.0))
+        )
+        self.right_line_deadband_px = float(
+            rospy.get_param("~right_line_deadband_px", rospy.get_param("right_line_deadband_px", 8.0))
+        )
+        self.right_line_max_angular_speed = float(
+            rospy.get_param(
+                "~right_line_max_angular_speed",
+                rospy.get_param("right_line_max_angular_speed", 0.35),
+            )
+        )
         self.startup_min_target_x_ratio = float(
             rospy.get_param("~startup_min_target_x_ratio", rospy.get_param("startup_min_target_x_ratio", 0.52))
         )
@@ -721,7 +733,7 @@ class RightLineFollowNode:
             multi_candidate = len(segments) >= self.fork_candidate_count
             right_index = self.choose_right_reference_index(segments)
             right = segments[right_index]
-            center = self.center_from_right_line(right.center)
+            center = self.center_from_right_line(right.center, image_width)
             return None, right.center, center, multi_candidate, (right_index, right_index)
 
         if len(segments) >= 2:
@@ -755,8 +767,21 @@ class RightLineFollowNode:
             return len(segments) - 1
         return min(range(len(segments)), key=lambda index: abs(segments[index].center - self.last_right_line_x))
 
-    def center_from_right_line(self, right_line_x: float) -> float:
+    def center_from_right_line(self, right_line_x: float, image_width: Optional[int] = None) -> float:
         offset = self.current_lane_width_px() * max(0.0, min(1.0, self.right_line_target_offset_ratio))
+        if image_width is not None and image_width > 0:
+            image_center = float(image_width) / 2.0
+            if self.right_line_target_side.startswith("left"):
+                desired_line_x = image_center + offset
+            else:
+                desired_line_x = image_center - offset
+            error = right_line_x - desired_line_x
+            if abs(error) <= self.right_line_deadband_px:
+                error = 0.0
+            max_error = max(1.0, self.right_line_max_error_px)
+            error = max(-max_error, min(max_error, error))
+            return image_center + error
+
         if self.right_line_target_side.startswith("left"):
             return right_line_x - offset
         return right_line_x + offset
@@ -823,7 +848,7 @@ class RightLineFollowNode:
 
     def estimate_lane_center(self, observations: Sequence[RowObservation], image_width: int) -> Optional[float]:
         if self.right_line_only_mode:
-            return self.estimate_center_from_right_line(observations)
+            return self.estimate_center_from_right_line(observations, image_width)
 
         centers = []
         weights = []
@@ -840,7 +865,7 @@ class RightLineFollowNode:
             return None
         return float(np.average(centers, weights=weights))
 
-    def estimate_center_from_right_line(self, observations: Sequence[RowObservation]) -> Optional[float]:
+    def estimate_center_from_right_line(self, observations: Sequence[RowObservation], image_width: int) -> Optional[float]:
         right_lines = []
         weights = []
         total = len(observations)
@@ -854,7 +879,7 @@ class RightLineFollowNode:
         if not right_lines:
             if self.last_right_line_x is not None and self.right_line_lost_frames < self.right_line_lost_hold_frames:
                 self.right_line_lost_frames += 1
-                return self.center_from_right_line(self.last_right_line_x)
+                return self.center_from_right_line(self.last_right_line_x, image_width)
             self.right_line_lost_frames += 1
             return None
 
@@ -864,7 +889,7 @@ class RightLineFollowNode:
             and abs(raw_right_x - self.last_right_line_x) > self.right_line_jump_reject_px
         ):
             self.right_line_lost_frames += 1
-            return self.center_from_right_line(self.last_right_line_x)
+            return self.center_from_right_line(self.last_right_line_x, image_width)
 
         alpha = max(0.0, min(1.0, self.right_line_smooth_alpha))
         if self.last_right_line_x is None:
@@ -874,7 +899,7 @@ class RightLineFollowNode:
 
         self.last_right_line_x = smoothed_right_x
         self.right_line_lost_frames = 0
-        return self.center_from_right_line(smoothed_right_x)
+        return self.center_from_right_line(smoothed_right_x, image_width)
 
     def detect_parking(
         self, mask: np.ndarray, roi_origin_y: int, image_height: int, image_width: int
@@ -989,6 +1014,8 @@ class RightLineFollowNode:
         self.last_error_px = error
         angular = -self.pid.update(error, now)
         angular_limit = self.max_angular_speed
+        if self.right_line_only_mode:
+            angular_limit = min(angular_limit, self.right_line_max_angular_speed)
         if self.parking_candidate_frames > 0 or self.parking_odom_active:
             angular_limit = min(angular_limit, self.parking_approach_max_angular_speed)
         angular = max(-angular_limit, min(angular_limit, angular))
@@ -1141,6 +1168,9 @@ class RightLineFollowNode:
             "right_line_only_mode": self.right_line_only_mode,
             "right_line_target_side": self.right_line_target_side,
             "right_line_target_offset_ratio": self.right_line_target_offset_ratio,
+            "right_line_max_error_px": self.right_line_max_error_px,
+            "right_line_deadband_px": self.right_line_deadband_px,
+            "right_line_max_angular_speed": self.right_line_max_angular_speed,
             "startup_min_target_x_ratio": self.startup_min_target_x_ratio,
             "last_right_line_x": self.last_right_line_x,
             "right_line_lost_frames": self.right_line_lost_frames,
