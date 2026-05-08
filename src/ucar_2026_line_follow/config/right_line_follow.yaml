@@ -37,10 +37,10 @@ scan_row_ratios: [0.20, 0.35, 0.50, 0.65, 0.80, 0.92]
 target_row_weight_bottom: 1.5
 
 # PID control
-base_linear_speed: 0.15
+base_linear_speed: 0.12
 min_linear_speed: 0.055
 search_linear_speed: 0.035
-kp: 0.0045
+kp: 0.0038
 ki: 0.0
 kd: 0.0015
 max_integral: 80.0
@@ -53,15 +53,20 @@ lost_timeout: 1.0
 stop_on_lost: false
 
 # Right-lane selection. The default strategy follows only the rightmost white
-# line and keeps the car center half a lane-width to its left. This avoids the
-# previous startup behavior where an added right bias could push the car out of
-# the track.
+# line and keeps the car center half a lane-width to its right. This fixes the
+# observed startup-left-turn behavior; switch target_side to left only if the
+# camera/route is mirrored on your car.
 fork_candidate_count: 3
 fork_center_tolerance_px: 220
 fork_cooldown_sec: 0.8
 fork_latch_time: 0.45
 right_line_only_mode: true
 right_line_target_offset_ratio: 0.5
+right_line_target_side: right
+right_line_smooth_alpha: 0.35
+right_line_jump_reject_px: 120
+right_line_lost_hold_frames: 8
+startup_min_target_x_ratio: 0.52
 right_turn_bias_px: 0
 right_turn_hold_time: 1.15
 right_turn_linear_speed: 0.08

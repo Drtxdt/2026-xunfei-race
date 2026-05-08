@@ -177,6 +177,21 @@ class RightLineFollowNode:
                 rospy.get_param("right_line_target_offset_ratio", 0.5),
             )
         )
+        self.right_line_target_side = str(
+            rospy.get_param("~right_line_target_side", rospy.get_param("right_line_target_side", "right"))
+        ).lower()
+        self.right_line_smooth_alpha = float(
+            rospy.get_param("~right_line_smooth_alpha", rospy.get_param("right_line_smooth_alpha", 0.35))
+        )
+        self.right_line_jump_reject_px = float(
+            rospy.get_param("~right_line_jump_reject_px", rospy.get_param("right_line_jump_reject_px", 120.0))
+        )
+        self.right_line_lost_hold_frames = int(
+            rospy.get_param("~right_line_lost_hold_frames", rospy.get_param("right_line_lost_hold_frames", 8))
+        )
+        self.startup_min_target_x_ratio = float(
+            rospy.get_param("~startup_min_target_x_ratio", rospy.get_param("startup_min_target_x_ratio", 0.52))
+        )
         self.right_turn_bias_px = float(
             rospy.get_param("~right_turn_bias_px", rospy.get_param("right_turn_bias_px", 0.0))
         )
@@ -348,6 +363,8 @@ class RightLineFollowNode:
         self.status = "idle" if not self.started else "searching"
         self.last_detection_time = None
         self.last_lane_center = None
+        self.last_right_line_x = None
+        self.right_line_lost_frames = 0
         self.last_error_px = 0.0
         self.single_line_frames = 0
         self.right_turn_until = 0.0
@@ -402,6 +419,9 @@ class RightLineFollowNode:
             self.nonfork_stable_frames = 0
             self.right_turn_until = self.start_time + self.startup_right_bias_duration
             self.reset_parking_odom_approach()
+            self.last_lane_center = None
+            self.last_right_line_x = None
+            self.right_line_lost_frames = 0
             self.pid.reset()
             self.set_status("searching")
         if not self.started:
@@ -569,6 +589,9 @@ class RightLineFollowNode:
                 self.last_fork_time = now
 
             target_center = lane_center
+            if self.startup_force_right_mode and self.right_line_only_mode:
+                min_startup_target = frame.shape[1] * max(0.0, min(1.0, self.startup_min_target_x_ratio))
+                target_center = max(target_center, min_startup_target)
             if self.startup_force_right_mode and not self.right_line_only_mode:
                 target_center += self.startup_force_right_bias_px
                 self.set_status("startup_right")
@@ -696,7 +719,7 @@ class RightLineFollowNode:
         lane_width_px = self.current_lane_width_px()
         if segments and (self.right_line_only_mode or force_right_mode or len(segments) >= self.fork_candidate_count):
             multi_candidate = len(segments) >= self.fork_candidate_count
-            right_index = len(segments) - 1
+            right_index = self.choose_right_reference_index(segments)
             right = segments[right_index]
             center = self.center_from_right_line(right.center)
             return None, right.center, center, multi_candidate, (right_index, right_index)
@@ -725,9 +748,18 @@ class RightLineFollowNode:
 
         return None, None, None, False, None
 
+    def choose_right_reference_index(self, segments: Sequence[Segment]) -> int:
+        if not segments:
+            return 0
+        if self.last_right_line_x is None:
+            return len(segments) - 1
+        return min(range(len(segments)), key=lambda index: abs(segments[index].center - self.last_right_line_x))
+
     def center_from_right_line(self, right_line_x: float) -> float:
         offset = self.current_lane_width_px() * max(0.0, min(1.0, self.right_line_target_offset_ratio))
-        return right_line_x - offset
+        if self.right_line_target_side.startswith("left"):
+            return right_line_x - offset
+        return right_line_x + offset
 
     def estimate_single_line_center(self, segment_center: float, image_width: int, force_right_mode: bool) -> float:
         lane_width_px = self.current_lane_width_px()
@@ -790,6 +822,9 @@ class RightLineFollowNode:
         rospy.loginfo_throttle(1.0, "right estimated_lane_width_px=%.2f", self.estimated_lane_width_px)
 
     def estimate_lane_center(self, observations: Sequence[RowObservation], image_width: int) -> Optional[float]:
+        if self.right_line_only_mode:
+            return self.estimate_center_from_right_line(observations)
+
         centers = []
         weights = []
         total = len(observations)
@@ -804,6 +839,42 @@ class RightLineFollowNode:
         if not centers:
             return None
         return float(np.average(centers, weights=weights))
+
+    def estimate_center_from_right_line(self, observations: Sequence[RowObservation]) -> Optional[float]:
+        right_lines = []
+        weights = []
+        total = len(observations)
+        for index, obs in enumerate(observations):
+            if obs.right_x is None:
+                continue
+            weight = 1.0 + (float(index) / max(total - 1, 1)) * (self.target_row_weight_bottom - 1.0)
+            right_lines.append(obs.right_x)
+            weights.append(weight)
+
+        if not right_lines:
+            if self.last_right_line_x is not None and self.right_line_lost_frames < self.right_line_lost_hold_frames:
+                self.right_line_lost_frames += 1
+                return self.center_from_right_line(self.last_right_line_x)
+            self.right_line_lost_frames += 1
+            return None
+
+        raw_right_x = float(np.average(right_lines, weights=weights))
+        if (
+            self.last_right_line_x is not None
+            and abs(raw_right_x - self.last_right_line_x) > self.right_line_jump_reject_px
+        ):
+            self.right_line_lost_frames += 1
+            return self.center_from_right_line(self.last_right_line_x)
+
+        alpha = max(0.0, min(1.0, self.right_line_smooth_alpha))
+        if self.last_right_line_x is None:
+            smoothed_right_x = raw_right_x
+        else:
+            smoothed_right_x = (1.0 - alpha) * self.last_right_line_x + alpha * raw_right_x
+
+        self.last_right_line_x = smoothed_right_x
+        self.right_line_lost_frames = 0
+        return self.center_from_right_line(smoothed_right_x)
 
     def detect_parking(
         self, mask: np.ndarray, roi_origin_y: int, image_height: int, image_width: int
@@ -1067,6 +1138,12 @@ class RightLineFollowNode:
             "parking_roi_origin_y": parking_roi_origin_y,
             "lane_center_px": lane_center,
             "lane_center_ratio": None if lane_center is None else lane_center / max(1.0, float(width)),
+            "right_line_only_mode": self.right_line_only_mode,
+            "right_line_target_side": self.right_line_target_side,
+            "right_line_target_offset_ratio": self.right_line_target_offset_ratio,
+            "startup_min_target_x_ratio": self.startup_min_target_x_ratio,
+            "last_right_line_x": self.last_right_line_x,
+            "right_line_lost_frames": self.right_line_lost_frames,
             "last_error_px": self.last_error_px,
             "startup_force_right_mode": self.startup_force_right_mode,
             "parking_detection_enabled": self.parking_detection_enabled,
@@ -1176,16 +1253,16 @@ class RightLineFollowNode:
         debug[0:wh, 0:ww] = white_bgr
         debug[0:bh, ww : ww + bw] = black_bgr
 
-        turn_left_sec = max(0.0, self.right_turn_until - now)
-        text = "status={} phase={} right_mode={} fork_rows={} fork={} turn={:.2f}s park={} reached={} odom={}".format(
+        text = "status={} phase={} right_mode={} side={} rline={} lost={} fork_rows={} fork={} park={} odom={}".format(
             self.status,
             self.parking_phase,
             int(self.startup_force_right_mode),
+            self.right_line_target_side,
+            -1 if self.last_right_line_x is None else int(self.last_right_line_x),
+            self.right_line_lost_frames,
             fork_rows,
             int(fork_detected),
-            turn_left_sec,
             int(parking_result.detected),
-            int(parking_result.reached),
             int(self.parking_odom_active),
         )
         cv2.putText(debug, text, (10, max(wh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 2)
