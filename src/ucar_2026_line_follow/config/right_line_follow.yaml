@@ -70,6 +70,10 @@ right_line_max_error_px: 70
 right_line_deadband_px: 8
 right_line_max_angular_speed: 0.25
 startup_min_target_x_ratio: 0.52
+startup_straight_lock_time: 1.6
+startup_fork_straight_time: 3.6
+startup_straight_lock_speed: 0.09
+startup_straight_lock_angular: 0.0
 right_turn_bias_px: 0
 right_turn_hold_time: 1.15
 right_turn_linear_speed: 0.08

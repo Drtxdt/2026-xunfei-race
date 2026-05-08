@@ -204,6 +204,18 @@ class RightLineFollowNode:
         self.startup_min_target_x_ratio = float(
             rospy.get_param("~startup_min_target_x_ratio", rospy.get_param("startup_min_target_x_ratio", 0.52))
         )
+        self.startup_straight_lock_time = float(
+            rospy.get_param("~startup_straight_lock_time", rospy.get_param("startup_straight_lock_time", 1.6))
+        )
+        self.startup_straight_lock_speed = float(
+            rospy.get_param("~startup_straight_lock_speed", rospy.get_param("startup_straight_lock_speed", 0.09))
+        )
+        self.startup_straight_lock_angular = float(
+            rospy.get_param("~startup_straight_lock_angular", rospy.get_param("startup_straight_lock_angular", 0.0))
+        )
+        self.startup_fork_straight_time = float(
+            rospy.get_param("~startup_fork_straight_time", rospy.get_param("startup_fork_straight_time", 3.6))
+        )
         self.right_turn_bias_px = float(
             rospy.get_param("~right_turn_bias_px", rospy.get_param("right_turn_bias_px", 0.0))
         )
@@ -569,6 +581,20 @@ class RightLineFollowNode:
             self.publish_status()
             return
 
+        startup_elapsed = now - self.start_time
+        if self.startup_straight_lock_active(startup_elapsed, fork_rows):
+            self.pid.reset()
+            self.last_lane_center = None
+            self.last_right_line_x = None
+            self.right_line_lost_frames = 0
+            self.single_line_frames = 0
+            self.dual_line_stable_frames = 0
+            self.set_status("startup_straight")
+            self.publish_startup_straight_control()
+            self.publish_debug_image(frame, white_mask, parking_mask, roi_origin_y, parking_roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
+            self.publish_status()
+            return
+
         if lane_center is not None:
             self.last_detection_time = now
             if self.parking_candidate_frames > 0 and self.last_lane_center is not None:
@@ -588,7 +614,6 @@ class RightLineFollowNode:
                 self.single_line_frames += 1
                 self.dual_line_stable_frames = 0
 
-            startup_elapsed = now - self.start_time
             if self.startup_force_right_mode and self.dual_line_stable_frames >= self.startup_force_right_until_dual_frames:
                 if (
                     startup_elapsed >= self.startup_force_right_min_duration
@@ -628,6 +653,24 @@ class RightLineFollowNode:
 
         self.publish_debug_image(frame, white_mask, parking_mask, roi_origin_y, parking_roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
         self.publish_status()
+
+    def startup_straight_lock_active(self, startup_elapsed: float, fork_rows: int) -> bool:
+        if not self.started:
+            return False
+        if self.startup_straight_lock_time > 0.0 and startup_elapsed < self.startup_straight_lock_time:
+            return True
+        return (
+            self.startup_force_right_mode
+            and self.startup_fork_straight_time > 0.0
+            and startup_elapsed < self.startup_fork_straight_time
+            and fork_rows > 0
+        )
+
+    def publish_startup_straight_control(self):
+        twist = Twist()
+        twist.linear.x = max(0.0, self.startup_straight_lock_speed)
+        twist.angular.z = self.startup_straight_lock_angular
+        self.cmd_pub.publish(twist)
 
     def extract_white_mask(self, frame: np.ndarray) -> Tuple[np.ndarray, int]:
         height = frame.shape[0]
@@ -1172,6 +1215,10 @@ class RightLineFollowNode:
             "right_line_deadband_px": self.right_line_deadband_px,
             "right_line_max_angular_speed": self.right_line_max_angular_speed,
             "startup_min_target_x_ratio": self.startup_min_target_x_ratio,
+            "startup_straight_lock_time": self.startup_straight_lock_time,
+            "startup_fork_straight_time": self.startup_fork_straight_time,
+            "startup_straight_lock_speed": self.startup_straight_lock_speed,
+            "startup_straight_lock_angular": self.startup_straight_lock_angular,
             "last_right_line_x": self.last_right_line_x,
             "right_line_lost_frames": self.right_line_lost_frames,
             "last_error_px": self.last_error_px,
