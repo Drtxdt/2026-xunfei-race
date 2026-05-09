@@ -59,6 +59,15 @@ View its debug image:
 rosrun image_view image_view image:=/right_line_follow/debug_image
 ```
 
+The right-hand launch also starts `right_debug_relay_node.py`, which republishes
+the processed debug image as JPEG for viewing from another computer:
+
+```bash
+rosrun image_view image_view image:=/right_line_follow/debug_image _image_transport:=compressed
+rostopic echo /right_line_follow/debug_info
+rostopic echo /right_line_follow/debug_relay/status
+```
+
 View the debug image:
 
 ```bash

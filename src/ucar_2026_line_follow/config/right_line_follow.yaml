@@ -3,6 +3,7 @@ image_topic: /usb_cam/image_raw
 cmd_vel_topic: /cmd_vel
 status_topic: /right_line_follow/status
 debug_image_topic: /right_line_follow/debug_image
+debug_info_topic: /right_line_follow/debug_info
 start_topic: /right_line_follow/start
 
 # Startup and route. This node is fixed to the right-hand route from the car's
@@ -37,10 +38,10 @@ scan_row_ratios: [0.20, 0.35, 0.50, 0.65, 0.80, 0.92]
 target_row_weight_bottom: 1.6
 
 # PID control.
-base_linear_speed: 0.15
+base_linear_speed: 0.12
 min_linear_speed: 0.055
 search_linear_speed: 0.035
-turn_linear_speed: 0.075
+turn_linear_speed: 0.065
 kp: 0.0045
 ki: 0.0
 kd: 0.0015
@@ -58,10 +59,13 @@ fork_candidate_count: 3
 fork_center_tolerance_px: 220
 fork_latch_time: 0.45
 fork_cooldown_sec: 1.0
-right_turn_bias_px: 65
-turn_hold_time: 1.2
-startup_right_bias_duration: 1.5
-startup_right_bias_px: 100
+right_turn_bias_px: 135
+turn_hold_time: 1.8
+right_route_lock_duration: 8.0
+right_route_relock_duration: 3.5
+right_route_pair_width_slack: 1.45
+startup_right_bias_duration: 2.5
+startup_right_bias_px: 150
 
 # P1 parking-box finish detection.
 finish_enable_delay: 5.5
@@ -76,3 +80,13 @@ finish_min_box_width_ratio: 0.55
 finish_min_bottom_y_ratio: 0.82
 finish_approach_speed_scale: 0.65
 finish_final_linear_speed: 0.03
+
+# Debug relay. The launch file starts a relay that republishes the processed
+# debug image as JPEG so it is lighter to view from another computer.
+compressed_debug_topic: /right_line_follow/debug_image/compressed
+compressed_raw_topic: /right_line_follow/raw_image/compressed
+debug_relay_status_topic: /right_line_follow/debug_relay/status
+jpeg_quality: 75
+debug_resize_width: 0
+debug_max_publish_fps: 12.0
+publish_raw_compressed: true
