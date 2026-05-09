@@ -39,16 +39,16 @@ scan_row_ratios: [0.20, 0.35, 0.50, 0.65, 0.80, 0.92]
 target_row_weight_bottom: 1.6
 
 # PID control.
-base_linear_speed: 0.09
-min_linear_speed: 0.055
-search_linear_speed: 0.035
-turn_linear_speed: 0.065
+base_linear_speed: 0.12
+min_linear_speed: 0.070
+search_linear_speed: 0.045
+turn_linear_speed: 0.075
 kp: 0.0045
 ki: 0.0
-kd: 0.0004
+kd: 0.00035
 max_integral: 80.0
-max_angular_speed: 0.48
-error_slowdown_px: 160.0
+max_angular_speed: 0.52
+error_slowdown_px: 220.0
 
 # Lost-line handling.
 search_angular_speed: 0.25
@@ -77,8 +77,9 @@ startup_forward2_distance_m: 0.50
 startup_forward_speed: 0.12
 startup_turn_angular_speed: 0.35
 rightmost_line_only_duration: 3.0
-rightmost_line_only_speed: 0.045
-rightmost_line_target_offset_px: 70
+rightmost_line_only_speed: 0.075
+rightmost_line_target_offset_px: 115
+rightmost_line_target_offset_ratio: 0.50
 rightmost_max_angular_speed: 0.35
 post_rightmost_route_lock_duration: 8.0
 

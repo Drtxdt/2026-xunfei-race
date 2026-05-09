@@ -217,7 +217,13 @@ class RightLineFollowNode:
         self.rightmost_line_target_offset_px = float(
             rospy.get_param(
                 "~rightmost_line_target_offset_px",
-                rospy.get_param("rightmost_line_target_offset_px", 70.0),
+                rospy.get_param("rightmost_line_target_offset_px", 115.0),
+            )
+        )
+        self.rightmost_line_target_offset_ratio = float(
+            rospy.get_param(
+                "~rightmost_line_target_offset_ratio",
+                rospy.get_param("rightmost_line_target_offset_ratio", 0.50),
             )
         )
         self.rightmost_max_angular_speed = float(
@@ -565,7 +571,7 @@ class RightLineFollowNode:
         lane_width_px = self.current_lane_width_px()
         if selection_mode == "rightmost_line" and segments:
             segment = segments[-1]
-            center = segment.center - self.rightmost_line_target_offset_px
+            center = self.center_from_right_boundary(segment.center)
             multi_candidate = len(segments) >= self.fork_candidate_count
             return None, segment.center, center, multi_candidate, "rightmost_line"
 
@@ -584,10 +590,20 @@ class RightLineFollowNode:
             if segment.center < image_width / 2.0:
                 center = segment.center + lane_width_px / 2.0
                 return segment.center, None, center, False, "single_left_border"
-            center = segment.center - lane_width_px / 2.0
+            center = self.center_from_right_boundary(segment.center)
             return None, segment.center, center, False, "single_right_border"
 
         return None, None, None, False, "none"
+
+    def center_from_right_boundary(self, right_x: float) -> float:
+        lane_width_px = self.current_lane_width_px()
+        configured_offset = self.rightmost_line_target_offset_px
+        if configured_offset <= 0.0:
+            configured_offset = lane_width_px * self.rightmost_line_target_offset_ratio
+        min_offset = max(55.0, lane_width_px * 0.35)
+        max_offset = min(150.0, lane_width_px * 0.65)
+        offset = max(min_offset, min(max_offset, configured_offset))
+        return right_x - offset
 
     def best_right_route_pair(self, segments: List[Segment]) -> Tuple[Segment, Segment]:
         lane_width_px = self.current_lane_width_px()
