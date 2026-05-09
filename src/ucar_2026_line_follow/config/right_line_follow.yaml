@@ -70,7 +70,7 @@ startup_right_bias_px: 0
 # Open-loop startup entry. IMU/odom is not used here because field logs show
 # intermittent IMU CRC warnings; tune speeds to the real car before full speed.
 startup_maneuver_enabled: true
-startup_forward1_distance_m: 0.70
+startup_forward1_distance_m: 0.45
 startup_turn_angle_deg: 60.0
 startup_forward2_distance_m: 0.50
 startup_forward_speed: 0.12

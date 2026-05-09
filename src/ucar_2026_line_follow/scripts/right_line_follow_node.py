@@ -191,7 +191,7 @@ class RightLineFollowNode:
             rospy.get_param("~startup_maneuver_enabled", rospy.get_param("startup_maneuver_enabled", True))
         )
         self.startup_forward1_distance_m = float(
-            rospy.get_param("~startup_forward1_distance_m", rospy.get_param("startup_forward1_distance_m", 0.45))
+            rospy.get_param("~startup_forward1_distance_m", rospy.get_param("startup_forward1_distance_m", 0.70))
         )
         self.startup_turn_angle_deg = float(
             rospy.get_param("~startup_turn_angle_deg", rospy.get_param("startup_turn_angle_deg", 60.0))
