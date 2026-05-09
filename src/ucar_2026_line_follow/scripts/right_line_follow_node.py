@@ -42,6 +42,20 @@ class ParkingBoxResult:
     bottom_y_ratio: float
 
 
+@dataclass
+class SeniorFollowResult:
+    found: bool
+    target_x: Optional[float]
+    target_y: Optional[float]
+    error: float
+    linear_x: float
+    linear_y: float
+    angular_z: float
+    right_count: int
+    left_count: int
+    path: List[Tuple[float, float]]
+
+
 class PidController:
     def __init__(self, kp: float, ki: float, kd: float, max_integral: float):
         self.kp = kp
@@ -73,6 +87,245 @@ class PidController:
         self.last_error = error
         self.last_time = now
         return self.kp * error + self.ki * self.integral + self.kd * derivative
+
+
+class SeniorRightLineTracker:
+    RESULT_ROW = 480
+    RESULT_COL = 640
+    POINTS_MAX_LEN = 300
+    DIR_FRONT = ((0, -1), (1, 0), (0, 1), (-1, 0))
+    DIR_FRONTLEFT = ((-1, -1), (1, -1), (1, 1), (-1, 1))
+    DIR_FRONTRIGHT = ((1, -1), (1, 1), (-1, 1), (-1, -1))
+    CHANGE_UN_MAT = np.array(
+        [
+            [-2.897018, 2.446196, -388.368977],
+            [-0.061836, 1.194630, -756.140464],
+            [-0.000272, 0.008324, -4.335235],
+        ],
+        dtype=np.float32,
+    )
+
+    def __init__(self):
+        self.inv_mat = np.linalg.inv(self.CHANGE_UN_MAT)
+        self.begin_x = float(rospy.get_param("~senior_begin_x", rospy.get_param("senior_begin_x", 25.0)))
+        self.begin_y = float(rospy.get_param("~senior_begin_y", rospy.get_param("senior_begin_y", 400.0)))
+        self.thres = float(rospy.get_param("~senior_thres", rospy.get_param("senior_thres", 30.0)))
+        self.block_size = int(rospy.get_param("~senior_block_size", rospy.get_param("senior_block_size", 7)))
+        if self.block_size % 2 == 0:
+            self.block_size += 1
+        self.clip_value = float(rospy.get_param("~senior_clip_value", rospy.get_param("senior_clip_value", 1.0)))
+        self.line_blur_kernel = int(
+            rospy.get_param("~senior_line_blur_kernel", rospy.get_param("senior_line_blur_kernel", 7))
+        )
+        if self.line_blur_kernel % 2 == 0:
+            self.line_blur_kernel += 1
+        self.pixel_per_meter = float(
+            rospy.get_param("~senior_pixel_per_meter", rospy.get_param("senior_pixel_per_meter", 500.0))
+        )
+        self.road_width_m = float(rospy.get_param("~senior_road_width_m", rospy.get_param("senior_road_width_m", 0.36)))
+        self.sample_dist_m = float(
+            rospy.get_param("~senior_sample_dist_m", rospy.get_param("senior_sample_dist_m", 0.01))
+        )
+        self.aim_dist_m = float(rospy.get_param("~senior_aim_dist_m", rospy.get_param("senior_aim_dist_m", 0.10)))
+        self.forward_bias_m = float(
+            rospy.get_param("~senior_forward_bias_m", rospy.get_param("senior_forward_bias_m", 0.20))
+        )
+        self.base_speed = float(rospy.get_param("~senior_base_speed", rospy.get_param("senior_base_speed", 0.24)))
+        self.speed_error_scale = float(
+            rospy.get_param("~senior_speed_error_scale", rospy.get_param("senior_speed_error_scale", 0.24))
+        )
+        self.min_speed = float(rospy.get_param("~senior_min_speed", rospy.get_param("senior_min_speed", 0.08)))
+        self.max_speed = float(rospy.get_param("~senior_max_speed", rospy.get_param("senior_max_speed", 0.28)))
+        self.max_angular = float(
+            rospy.get_param("~senior_max_angular_speed", rospy.get_param("senior_max_angular_speed", 0.75))
+        )
+        self.lost_speed = float(rospy.get_param("~senior_lost_speed", rospy.get_param("senior_lost_speed", 0.12)))
+        self.lost_error = float(rospy.get_param("~senior_lost_error", rospy.get_param("senior_lost_error", -0.30)))
+        self.lost_lateral_speed = float(
+            rospy.get_param("~senior_lost_lateral_speed", rospy.get_param("senior_lost_lateral_speed", -0.05))
+        )
+
+    def compute(self, frame: np.ndarray) -> SeniorFollowResult:
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if gray.shape[:2] != (self.RESULT_ROW, self.RESULT_COL):
+            gray = cv2.resize(gray, (self.RESULT_COL, self.RESULT_ROW))
+        img = 255 - gray
+        left_path, right_path = self.process_image(img)
+        path = right_path if right_path else left_path
+        if not path:
+            angular = max(-self.max_angular, min(self.max_angular, -self.lost_error))
+            return SeniorFollowResult(
+                False, None, None, self.lost_error, self.lost_speed, self.lost_lateral_speed,
+                angular, len(right_path), len(left_path), []
+            )
+
+        aim_idx = max(0, min(int(round(self.aim_dist_m / self.sample_dist_m)), len(path) - 1))
+        target_x, target_y = path[aim_idx]
+        dx = target_x - self.RESULT_COL / 2.0
+        dy = 490.0 - target_y + self.forward_bias_m * self.pixel_per_meter
+        error = -math.atan2(dx, max(dy, 1e-3))
+        linear = self.base_speed - abs(error) * self.speed_error_scale
+        linear = max(self.min_speed, min(self.max_speed, linear))
+        angular = max(-self.max_angular, min(self.max_angular, -error))
+        return SeniorFollowResult(
+            True, target_x, target_y, error, linear, 0.0, angular, len(right_path), len(left_path), path
+        )
+
+    def process_image(self, img: np.ndarray) -> Tuple[List[Tuple[float, float]], List[Tuple[float, float]]]:
+        left_raw = self.find_seed_and_trace_left(img)
+        right_raw = self.find_seed_and_trace_right(img)
+        left_path = self.make_center_path([self.map_point(x, y) for x, y in left_raw], is_right=False)
+        right_path = self.make_center_path([self.map_point(x, y) for x, y in right_raw], is_right=True)
+        return left_path, right_path
+
+    def find_seed_and_trace_left(self, img: np.ndarray) -> List[Tuple[int, int]]:
+        half = self.block_size // 2
+        d = 6
+        for idx in range(5):
+            y = int(self.begin_y - idx * 25)
+            for x in range(int(self.RESULT_COL / 2 - self.begin_x), 0, -1):
+                local = 0.0
+                for dy in range(-half, half + 1):
+                    local += self.at(img, x + d, y + dy) - self.at(img, x - d, y + dy)
+                if local / self.block_size >= self.thres:
+                    return self.findline_adaptive(img, x - d, y, self.DIR_FRONTLEFT, left_hand=True)
+        return []
+
+    def find_seed_and_trace_right(self, img: np.ndarray) -> List[Tuple[int, int]]:
+        half = self.block_size // 2
+        d = 6
+        for idx in range(5):
+            y = int(self.begin_y - idx * 25)
+            for x in range(int(self.RESULT_COL / 2 + self.begin_x), self.RESULT_COL - 1):
+                local = 0.0
+                for dy in range(-half, half + 1):
+                    local -= self.at(img, x + d, y + dy) - self.at(img, x - d, y + dy)
+                if local / self.block_size >= self.thres:
+                    return self.findline_adaptive(img, x + d, y, self.DIR_FRONTRIGHT, left_hand=False)
+        return []
+
+    def findline_adaptive(
+        self, img: np.ndarray, x: int, y: int, side_dirs: Sequence[Tuple[int, int]], left_hand: bool
+    ) -> List[Tuple[int, int]]:
+        half = self.block_size // 2
+        step, direction, turn = 0, 0, 0
+        pts: List[Tuple[int, int]] = []
+        while step < self.POINTS_MAX_LEN and 0 < x < self.RESULT_COL - 1 and 0 < y < self.RESULT_ROW - 1 and turn < 4:
+            local_thres = 0.0
+            for dy in range(-half, half + 1):
+                for dx in range(-half, half + 1):
+                    local_thres += self.at(img, x + dx, y + dy)
+            local_thres = local_thres / float(self.block_size * self.block_size) - self.clip_value
+
+            fx, fy = self.DIR_FRONT[direction]
+            sx, sy = side_dirs[direction]
+            if self.at(img, x + fx, y + fy) < local_thres:
+                direction = (direction + (1 if left_hand else 3)) % 4
+                turn += 1
+            elif self.at(img, x + sx, y + sy) < local_thres:
+                x += fx
+                y += fy
+                pts.append((x, y))
+                step += 1
+                turn = 0
+            else:
+                x += sx
+                y += sy
+                direction = (direction + (3 if left_hand else 1)) % 4
+                pts.append((x, y))
+                step += 1
+                turn = 0
+        return pts
+
+    def make_center_path(self, mapped: List[Tuple[float, float]], is_right: bool) -> List[Tuple[float, float]]:
+        if len(mapped) < 3:
+            return []
+        blurred = self.blur_points(mapped, self.line_blur_kernel)
+        sampled = self.resample_points(blurred, self.sample_dist_m * self.pixel_per_meter, self.POINTS_MAX_LEN)
+        if len(sampled) < 3:
+            return []
+        approx_num = int(round(0.2 / self.sample_dist_m))
+        dist = self.pixel_per_meter * self.road_width_m / 2.0
+        tracked = self.track_rightline(sampled, approx_num, dist) if is_right else self.track_leftline(sampled, approx_num, dist)
+        return self.resample_points(tracked, self.sample_dist_m * self.pixel_per_meter, self.POINTS_MAX_LEN)
+
+    def track_leftline(self, pts: Sequence[Tuple[float, float]], approx_num: int, dist: float) -> List[Tuple[float, float]]:
+        out = [(self.RESULT_COL / 2.0, self.RESULT_ROW + 50.0)]
+        for i in range(1, len(pts)):
+            dx, dy, dn = self.tangent(pts, i, approx_num)
+            if dn > 1e-6:
+                out.append((pts[i][0] - dy * dist, pts[i][1] + dx * dist))
+        return out
+
+    def track_rightline(self, pts: Sequence[Tuple[float, float]], approx_num: int, dist: float) -> List[Tuple[float, float]]:
+        out = [(self.RESULT_COL / 2.0, self.RESULT_ROW + 50.0)]
+        for i in range(1, len(pts)):
+            dx, dy, dn = self.tangent(pts, i, approx_num)
+            if dn > 1e-6:
+                out.append((pts[i][0] + dy * dist, pts[i][1] - dx * dist))
+        return out
+
+    def tangent(self, pts: Sequence[Tuple[float, float]], index: int, approx_num: int) -> Tuple[float, float, float]:
+        left = max(0, min(len(pts) - 1, index - approx_num))
+        right = max(0, min(len(pts) - 1, index + approx_num))
+        dx = pts[right][0] - pts[left][0]
+        dy = pts[right][1] - pts[left][1]
+        dn = math.hypot(dx, dy)
+        if dn > 1e-6:
+            dx /= dn
+            dy /= dn
+        return dx, dy, dn
+
+    def blur_points(self, pts: Sequence[Tuple[float, float]], kernel: int) -> List[Tuple[float, float]]:
+        half = kernel // 2
+        denom = (2 * half + 2) * (half + 1) / 2.0
+        out = []
+        for i in range(len(pts)):
+            sx = 0.0
+            sy = 0.0
+            for j in range(-half, half + 1):
+                idx = max(0, min(len(pts) - 1, i + j))
+                weight = half + 1 - abs(j)
+                sx += pts[idx][0] * weight
+                sy += pts[idx][1] * weight
+            out.append((sx / denom, sy / denom))
+        return out
+
+    def resample_points(self, pts: Sequence[Tuple[float, float]], dist: float, max_len: int) -> List[Tuple[float, float]]:
+        out = []
+        remain = 0.0
+        for i in range(len(pts) - 1):
+            if len(out) >= max_len:
+                break
+            x0, y0 = pts[i]
+            dx = pts[i + 1][0] - x0
+            dy = pts[i + 1][1] - y0
+            dn = math.hypot(dx, dy)
+            if dn <= 1e-6:
+                continue
+            dx /= dn
+            dy /= dn
+            while remain < dn and len(out) < max_len:
+                x0 += dx * remain
+                y0 += dy * remain
+                out.append((x0, y0))
+                dn -= remain
+                remain = dist
+            remain -= dn
+        return out
+
+    def map_point(self, x: int, y: int) -> Tuple[float, float]:
+        denom = self.inv_mat[2, 0] * x + self.inv_mat[2, 1] * y + self.inv_mat[2, 2]
+        if abs(denom) <= 1e-6:
+            return float(x), float(y)
+        map_x = (self.inv_mat[0, 0] * x + self.inv_mat[0, 1] * y + self.inv_mat[0, 2]) / denom
+        map_y = (self.inv_mat[1, 0] * x + self.inv_mat[1, 1] * y + self.inv_mat[1, 2]) / denom
+        return float(map_x), float(map_y)
+
+    def at(self, img: np.ndarray, x: int, y: int) -> int:
+        x = max(0, min(self.RESULT_COL - 1, int(x)))
+        y = max(0, min(self.RESULT_ROW - 1, int(y)))
+        return int(img[y, x])
 
 
 class RightLineFollowNode:
@@ -282,6 +535,13 @@ class RightLineFollowNode:
         self.finish_final_linear_speed = float(
             rospy.get_param("~finish_final_linear_speed", rospy.get_param("finish_final_linear_speed", 0.03))
         )
+        self.use_senior_follow_after_entry = bool(
+            rospy.get_param(
+                "~use_senior_follow_after_entry",
+                rospy.get_param("use_senior_follow_after_entry", True),
+            )
+        )
+        self.senior_tracker = SeniorRightLineTracker()
 
         self.cmd_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1, latch=True)
@@ -313,6 +573,7 @@ class RightLineFollowNode:
         self.last_cmd_angular = 0.0
         self.last_route_locked = self.started
         self.last_two_sided = False
+        self.last_senior_path: List[Tuple[float, float]] = []
 
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
@@ -439,6 +700,10 @@ class RightLineFollowNode:
             self.stop_robot()
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
+            return
+
+        if self.use_senior_follow_after_entry and self.startup_maneuver_done and not rightmost_only:
+            self.handle_senior_follow(frame, mask, roi_origin_y, parking_result, fork_rows, fork_detected_latched, route_locked, now)
             return
 
         if lane_center is None:
@@ -751,6 +1016,56 @@ class RightLineFollowNode:
         ys = np.flatnonzero(row_hits)
         return float(ys[-1] - ys[0] + 1) / float(image.shape[0])
 
+    def handle_senior_follow(
+        self,
+        frame: np.ndarray,
+        mask: np.ndarray,
+        roi_origin_y: int,
+        parking_result: ParkingBoxResult,
+        fork_rows: int,
+        fork_detected_latched: bool,
+        route_locked: bool,
+        now: float,
+    ):
+        result = self.senior_tracker.compute(frame)
+        twist = Twist()
+        twist.linear.x = result.linear_x
+        twist.linear.y = result.linear_y
+        twist.angular.z = result.angular_z
+        self.cmd_pub.publish(twist)
+
+        self.last_cmd_linear = twist.linear.x
+        self.last_cmd_angular = twist.angular.z
+        self.last_senior_path = result.path
+        self.last_target_center = result.target_x
+        self.last_lane_center = result.target_x
+        self.last_error_px = 0.0 if result.target_x is None else result.target_x - frame.shape[1] / 2.0
+        self.last_route_locked = route_locked
+        self.last_two_sided = False
+        self.single_line_frames = 0 if result.found else self.single_line_frames + 1
+        if result.found:
+            self.last_detection_time = now
+            self.set_status("senior_tracking")
+        else:
+            self.set_status("senior_searching")
+
+        rospy.loginfo_throttle(
+            0.5,
+            "senior_right_follow: found=%d right_count=%d left_count=%d target=(%s,%s) error=%.3f cmd=(%.3f,%.3f,%.3f)",
+            int(result.found),
+            result.right_count,
+            result.left_count,
+            "None" if result.target_x is None else "%.1f" % result.target_x,
+            "None" if result.target_y is None else "%.1f" % result.target_y,
+            result.error,
+            twist.linear.x,
+            twist.linear.y,
+            twist.angular.z,
+        )
+        self.publish_debug_image(frame, mask, roi_origin_y, [], result.target_x, parking_result, fork_rows, fork_detected_latched, now)
+        self.publish_debug_info(now, result.target_x, parking_result, fork_rows, fork_detected_latched, route_locked)
+        self.publish_status()
+
     def publish_control(self, lane_center: float, image_width: int, now: float, two_sided_tracking: bool):
         image_center = image_width / 2.0
         error = lane_center - image_center
@@ -901,6 +1216,12 @@ class RightLineFollowNode:
 
         if lane_center is not None:
             cv2.line(debug, (int(lane_center), roi_origin_y), (int(lane_center), height - 1), (0, 0, 255), 2)
+
+        if self.last_senior_path:
+            for x, y in self.last_senior_path[::5]:
+                px = max(0, min(width - 1, int(round(x))))
+                py = max(0, min(height - 1, int(round(y))))
+                cv2.circle(debug, (px, py), 2, (255, 0, 255), -1)
 
         if parking_result.box is not None:
             x, y, w, h = parking_result.box

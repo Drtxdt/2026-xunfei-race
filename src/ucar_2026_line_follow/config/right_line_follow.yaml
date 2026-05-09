@@ -98,6 +98,30 @@ finish_require_vertical_sides: true
 finish_approach_speed_scale: 0.65
 finish_final_linear_speed: 0.03
 
+# Senior follow-line logic. After the open-loop entry and rightmost-line entry
+# phase, this replaces the row-scan PID with the previous team's right-hand
+# line tracing, normal offset and atan2 preview controller.
+use_senior_follow_after_entry: true
+senior_begin_x: 25.0
+senior_begin_y: 400.0
+senior_thres: 30.0
+senior_block_size: 7
+senior_clip_value: 1.0
+senior_line_blur_kernel: 7
+senior_pixel_per_meter: 500.0
+senior_road_width_m: 0.36
+senior_sample_dist_m: 0.01
+senior_aim_dist_m: 0.10
+senior_forward_bias_m: 0.20
+senior_base_speed: 0.24
+senior_speed_error_scale: 0.24
+senior_min_speed: 0.08
+senior_max_speed: 0.28
+senior_max_angular_speed: 0.75
+senior_lost_speed: 0.12
+senior_lost_error: -0.30
+senior_lost_lateral_speed: -0.05
+
 # Debug relay. The launch file starts a relay that republishes the processed
 # debug image as JPEG so it is lighter to view from another computer.
 compressed_debug_topic: /right_line_follow/debug_image/compressed
