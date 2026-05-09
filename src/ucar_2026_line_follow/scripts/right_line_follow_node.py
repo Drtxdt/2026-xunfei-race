@@ -214,6 +214,12 @@ class RightLineFollowNode:
         self.rightmost_line_only_speed = float(
             rospy.get_param("~rightmost_line_only_speed", rospy.get_param("rightmost_line_only_speed", 0.045))
         )
+        self.rightmost_line_target_offset_px = float(
+            rospy.get_param(
+                "~rightmost_line_target_offset_px",
+                rospy.get_param("rightmost_line_target_offset_px", 70.0),
+            )
+        )
         self.rightmost_max_angular_speed = float(
             rospy.get_param("~rightmost_max_angular_speed", rospy.get_param("rightmost_max_angular_speed", 0.35))
         )
@@ -559,8 +565,9 @@ class RightLineFollowNode:
         lane_width_px = self.current_lane_width_px()
         if selection_mode == "rightmost_line" and segments:
             segment = segments[-1]
+            center = segment.center - self.rightmost_line_target_offset_px
             multi_candidate = len(segments) >= self.fork_candidate_count
-            return None, segment.center, segment.center, multi_candidate, "rightmost_line"
+            return None, segment.center, center, multi_candidate, "rightmost_line"
 
         if len(segments) >= 2:
             multi_candidate = len(segments) >= self.fork_candidate_count

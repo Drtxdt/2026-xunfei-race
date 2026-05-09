@@ -78,11 +78,12 @@ startup_forward_speed: 0.12
 startup_turn_angular_speed: 0.35
 rightmost_line_only_duration: 3.0
 rightmost_line_only_speed: 0.045
+rightmost_line_target_offset_px: 70
 rightmost_max_angular_speed: 0.35
 post_rightmost_route_lock_duration: 8.0
 
 # P1 parking-box finish detection.
-finish_enable_delay: 8.0
+finish_enable_delay: 30.0
 finish_confirm_frames: 12
 finish_release_frames: 2
 finish_stop_time: 1.0
