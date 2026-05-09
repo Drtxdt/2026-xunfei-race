@@ -559,9 +559,8 @@ class RightLineFollowNode:
         lane_width_px = self.current_lane_width_px()
         if selection_mode == "rightmost_line" and segments:
             segment = segments[-1]
-            center = segment.center - lane_width_px / 2.0
             multi_candidate = len(segments) >= self.fork_candidate_count
-            return None, segment.center, center, multi_candidate, "rightmost_line"
+            return None, segment.center, segment.center, multi_candidate, "rightmost_line"
 
         if len(segments) >= 2:
             multi_candidate = len(segments) >= self.fork_candidate_count
