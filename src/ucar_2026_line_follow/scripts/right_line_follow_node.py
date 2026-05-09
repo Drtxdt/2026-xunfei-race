@@ -120,6 +120,9 @@ class RightLineFollowNode:
         self.morph_kernel_size = int(rospy.get_param("~morph_kernel_size", rospy.get_param("morph_kernel_size", 5)))
         self.min_contour_area = float(rospy.get_param("~min_contour_area", rospy.get_param("min_contour_area", 60.0)))
         self.min_line_width_px = int(rospy.get_param("~min_line_width_px", rospy.get_param("min_line_width_px", 6)))
+        self.max_lane_segment_width_px = int(
+            rospy.get_param("~max_lane_segment_width_px", rospy.get_param("max_lane_segment_width_px", 90))
+        )
         self.min_segment_gap_px = int(
             rospy.get_param("~min_segment_gap_px", rospy.get_param("min_segment_gap_px", 12))
         )
@@ -208,6 +211,18 @@ class RightLineFollowNode:
         self.rightmost_line_only_duration = float(
             rospy.get_param("~rightmost_line_only_duration", rospy.get_param("rightmost_line_only_duration", 3.0))
         )
+        self.rightmost_line_only_speed = float(
+            rospy.get_param("~rightmost_line_only_speed", rospy.get_param("rightmost_line_only_speed", 0.045))
+        )
+        self.rightmost_max_angular_speed = float(
+            rospy.get_param("~rightmost_max_angular_speed", rospy.get_param("rightmost_max_angular_speed", 0.35))
+        )
+        self.post_rightmost_route_lock_duration = float(
+            rospy.get_param(
+                "~post_rightmost_route_lock_duration",
+                rospy.get_param("post_rightmost_route_lock_duration", 8.0),
+            )
+        )
 
         self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 5.5)))
         self.finish_confirm_frames = int(
@@ -243,6 +258,12 @@ class RightLineFollowNode:
         self.finish_min_bottom_y_ratio = float(
             rospy.get_param("~finish_min_bottom_y_ratio", rospy.get_param("finish_min_bottom_y_ratio", 0.82))
         )
+        self.finish_require_vertical_sides = bool(
+            rospy.get_param(
+                "~finish_require_vertical_sides",
+                rospy.get_param("finish_require_vertical_sides", True),
+            )
+        )
         self.finish_approach_speed_scale = float(
             rospy.get_param("~finish_approach_speed_scale", rospy.get_param("finish_approach_speed_scale", 0.65))
         )
@@ -266,6 +287,7 @@ class RightLineFollowNode:
         self.startup_sequence_start = self.start_time
         self.startup_maneuver_done = not (self.started and self.startup_maneuver_enabled)
         self.rightmost_line_only_until = 0.0
+        self.startup_maneuver_done_time = self.start_time if self.startup_maneuver_done else None
         self.startup_phase = "none"
         self.fork_latch_until = 0.0
         self.last_fork_time = -1e9
@@ -304,6 +326,7 @@ class RightLineFollowNode:
             self.startup_sequence_start = self.start_time
             self.startup_maneuver_done = not self.startup_maneuver_enabled
             self.rightmost_line_only_until = 0.0
+            self.startup_maneuver_done_time = self.start_time if self.startup_maneuver_done else None
             self.startup_phase = "startup_forward1" if self.startup_maneuver_enabled else "none"
             self.pid.reset()
             self.set_status("searching")
@@ -330,8 +353,10 @@ class RightLineFollowNode:
         if not self.finish_detection_enabled:
             self.finish_detection_enabled = (
                 self.startup_maneuver_done
+                and self.startup_maneuver_done_time is not None
+                and (now - self.startup_maneuver_done_time) >= self.finish_enable_delay
                 and not rightmost_only
-                and (now - self.start_time) >= self.finish_enable_delay
+                and not self.is_right_route_locked(now)
             )
         route_locked = self.is_right_route_locked(now) or rightmost_only or startup_active
         observations = self.observe_lane(mask, frame.shape[1], self.selection_mode(route_locked, rightmost_only))
@@ -342,7 +367,7 @@ class RightLineFollowNode:
         image_center = frame.shape[1] / 2.0
         lane_offset_ok = lane_center is not None and abs(lane_center - image_center) <= self.fork_center_tolerance_px
         fork_detected = fork_rows >= self.fork_candidate_count and lane_offset_ok
-        if fork_detected:
+        if fork_detected and not startup_active and not rightmost_only and not self.is_right_route_locked(now):
             self.fork_latch_until = max(self.fork_latch_until, now + self.fork_latch_time)
             self.right_route_lock_until = max(self.right_route_lock_until, now + self.right_route_relock_duration)
         fork_detected_latched = now < self.fork_latch_until
@@ -353,13 +378,18 @@ class RightLineFollowNode:
             lane_center = self.estimate_lane_center(observations, frame.shape[1])
             fork_rows = sum(1 for obs in observations if obs.multi_candidate)
 
-        if fork_detected_latched and (now - self.last_fork_time) >= self.fork_cooldown_sec:
+        if (
+            fork_detected_latched
+            and not rightmost_only
+            and not route_locked
+            and (now - self.last_fork_time) >= self.fork_cooldown_sec
+        ):
             self.turn_until = max(self.turn_until, now + self.turn_hold_time)
             self.last_fork_time = now
 
         parking_result = self.detect_parking_box(mask)
         self.last_parking_result = parking_result
-        if self.finish_detection_enabled and parking_result.detected:
+        if self.finish_detection_enabled and (not route_locked) and parking_result.detected:
             self.finish_frames += 1
             self.finish_lost_frames = 0
         else:
@@ -416,7 +446,9 @@ class RightLineFollowNode:
                 self.single_line_frames += 1
 
             target_center = lane_center
-            if now < self.turn_until:
+            if rightmost_only:
+                self.set_status("rightmost_line_only")
+            elif now < self.turn_until and not route_locked:
                 target_center += self.right_turn_bias_px
                 self.set_status("turn_right")
             elif route_locked:
@@ -521,6 +553,9 @@ class RightLineFollowNode:
     def choose_right_lane_pair(
         self, segments: List[Segment], image_width: int, selection_mode: str
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, str]:
+        lane_segments = [segment for segment in segments if segment.width <= self.max_lane_segment_width_px]
+        if lane_segments:
+            segments = lane_segments
         lane_width_px = self.current_lane_width_px()
         if selection_mode == "rightmost_line" and segments:
             segment = segments[-1]
@@ -675,14 +710,13 @@ class RightLineFollowNode:
             _, box_y, _, box_h = best_box
             bottom_y_ratio = max(bottom_y_ratio, (box_y + box_h) / float(height))
 
+        vertical_sides_ok = min(left_h_ratio, right_h_ratio) >= self.finish_min_vertical_height_ratio
+        box_shape_ok = best_box is not None and (vertical_sides_ok or not self.finish_require_vertical_sides)
         detected = (
             horizontal_rows >= self.finish_min_horizontal_rows
             and horizontal_width_ratio >= self.finish_min_horizontal_width_ratio
             and bottom_y_ratio >= self.finish_min_bottom_y_ratio
-            and (
-                best_box is not None
-                or min(left_h_ratio, right_h_ratio) >= self.finish_min_vertical_height_ratio
-            )
+            and (box_shape_ok or vertical_sides_ok)
         )
         return ParkingBoxResult(detected, best_box, horizontal_width_ratio, left_h_ratio, right_h_ratio, bottom_y_ratio)
 
@@ -701,9 +735,14 @@ class RightLineFollowNode:
         self.last_error_px = error
         angular = -self.pid.update(error, now)
         angular = max(-self.max_angular_speed, min(self.max_angular_speed, angular))
+        if self.status == "rightmost_line_only":
+            angular_limit = max(0.05, min(self.max_angular_speed, self.rightmost_max_angular_speed))
+            angular = max(-angular_limit, min(angular_limit, angular))
 
-        if now < self.turn_until:
+        if self.status == "turn_right" and now < self.turn_until:
             linear = self.turn_linear_speed
+        elif self.status == "rightmost_line_only":
+            linear = self.rightmost_line_only_speed
         elif not two_sided_tracking and self.single_line_frames > self.single_line_hold_frames:
             linear = self.search_linear_speed
         else:
@@ -778,17 +817,26 @@ class RightLineFollowNode:
             twist.linear.x = forward_speed
         else:
             self.startup_maneuver_done = True
+            self.startup_maneuver_done_time = now
             self.startup_phase = "rightmost_line_only"
-            self.rightmost_line_only_until = now + max(0.0, self.rightmost_line_only_duration)
-            self.right_route_lock_until = max(self.right_route_lock_until, self.rightmost_line_only_until)
+            rightmost_duration = max(0.0, self.rightmost_line_only_duration)
+            post_lock_duration = max(0.0, self.post_rightmost_route_lock_duration)
+            self.rightmost_line_only_until = now + rightmost_duration
+            self.right_route_lock_until = max(
+                self.right_route_lock_until,
+                self.rightmost_line_only_until + post_lock_duration,
+            )
+            self.turn_until = 0.0
+            self.fork_latch_until = 0.0
             self.pid.reset()
             self.hard_stop_robot()
             rospy.loginfo(
-                "startup maneuver finished: forward1=%.2fm turn=%.1fdeg forward2=%.2fm rightmost_only=%.2fs",
+                "startup maneuver finished: forward1=%.2fm turn=%.1fdeg forward2=%.2fm rightmost_only=%.2fs post_route_lock=%.2fs",
                 self.startup_forward1_distance_m,
                 self.startup_turn_angle_deg,
                 self.startup_forward2_distance_m,
                 self.rightmost_line_only_duration,
+                self.post_rightmost_route_lock_duration,
             )
             return False
 
