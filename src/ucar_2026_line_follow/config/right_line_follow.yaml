@@ -59,13 +59,23 @@ fork_candidate_count: 3
 fork_center_tolerance_px: 220
 fork_latch_time: 0.45
 fork_cooldown_sec: 1.0
-right_turn_bias_px: 135
-turn_hold_time: 1.8
-right_route_lock_duration: 8.0
+right_turn_bias_px: 25
+turn_hold_time: 1.0
+right_route_lock_duration: 0.0
 right_route_relock_duration: 3.5
 right_route_pair_width_slack: 1.45
-startup_right_bias_duration: 2.5
-startup_right_bias_px: 150
+startup_right_bias_duration: 0.0
+startup_right_bias_px: 0
+
+# Open-loop startup entry. IMU/odom is not used here because field logs show
+# intermittent IMU CRC warnings; tune speeds to the real car before full speed.
+startup_maneuver_enabled: true
+startup_forward1_distance_m: 0.70
+startup_turn_angle_deg: 60.0
+startup_forward2_distance_m: 0.50
+startup_forward_speed: 0.12
+startup_turn_angular_speed: 0.35
+rightmost_line_only_duration: 3.0
 
 # P1 parking-box finish detection.
 finish_enable_delay: 5.5

@@ -68,6 +68,12 @@ rostopic echo /right_line_follow/debug_info
 rostopic echo /right_line_follow/debug_relay/status
 ```
 
+The right-hand node starts with an open-loop entry maneuver before vision takes
+over: forward 0.70 m, turn right 60 degrees in place, forward 0.50 m, then use
+only the rightmost visible white line for `rightmost_line_only_duration` seconds.
+Tune these values in `config/right_line_follow.yaml` if the real chassis speed
+does not match the configured speed.
+
 View the debug image:
 
 ```bash

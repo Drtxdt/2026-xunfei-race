@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import math
 import time
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
@@ -168,11 +169,11 @@ class RightLineFollowNode:
         self.fork_latch_time = float(rospy.get_param("~fork_latch_time", rospy.get_param("fork_latch_time", 0.45)))
         self.fork_cooldown_sec = float(rospy.get_param("~fork_cooldown_sec", rospy.get_param("fork_cooldown_sec", 1.0)))
         self.right_turn_bias_px = abs(
-            float(rospy.get_param("~right_turn_bias_px", rospy.get_param("right_turn_bias_px", 65.0)))
+            float(rospy.get_param("~right_turn_bias_px", rospy.get_param("right_turn_bias_px", 25.0)))
         )
         self.turn_hold_time = float(rospy.get_param("~turn_hold_time", rospy.get_param("turn_hold_time", 1.2)))
         self.right_route_lock_duration = float(
-            rospy.get_param("~right_route_lock_duration", rospy.get_param("right_route_lock_duration", 7.0))
+            rospy.get_param("~right_route_lock_duration", rospy.get_param("right_route_lock_duration", 0.0))
         )
         self.right_route_relock_duration = float(
             rospy.get_param("~right_route_relock_duration", rospy.get_param("right_route_relock_duration", 3.0))
@@ -181,10 +182,31 @@ class RightLineFollowNode:
             rospy.get_param("~right_route_pair_width_slack", rospy.get_param("right_route_pair_width_slack", 1.45))
         )
         self.startup_right_bias_duration = float(
-            rospy.get_param("~startup_right_bias_duration", rospy.get_param("startup_right_bias_duration", 1.5))
+            rospy.get_param("~startup_right_bias_duration", rospy.get_param("startup_right_bias_duration", 0.0))
         )
         self.startup_right_bias_px = abs(
-            float(rospy.get_param("~startup_right_bias_px", rospy.get_param("startup_right_bias_px", 100.0)))
+            float(rospy.get_param("~startup_right_bias_px", rospy.get_param("startup_right_bias_px", 0.0)))
+        )
+        self.startup_maneuver_enabled = bool(
+            rospy.get_param("~startup_maneuver_enabled", rospy.get_param("startup_maneuver_enabled", True))
+        )
+        self.startup_forward1_distance_m = float(
+            rospy.get_param("~startup_forward1_distance_m", rospy.get_param("startup_forward1_distance_m", 0.70))
+        )
+        self.startup_turn_angle_deg = float(
+            rospy.get_param("~startup_turn_angle_deg", rospy.get_param("startup_turn_angle_deg", 60.0))
+        )
+        self.startup_forward2_distance_m = float(
+            rospy.get_param("~startup_forward2_distance_m", rospy.get_param("startup_forward2_distance_m", 0.50))
+        )
+        self.startup_forward_speed = abs(
+            float(rospy.get_param("~startup_forward_speed", rospy.get_param("startup_forward_speed", 0.12)))
+        )
+        self.startup_turn_angular_speed = abs(
+            float(rospy.get_param("~startup_turn_angular_speed", rospy.get_param("startup_turn_angular_speed", 0.35)))
+        )
+        self.rightmost_line_only_duration = float(
+            rospy.get_param("~rightmost_line_only_duration", rospy.get_param("rightmost_line_only_duration", 3.0))
         )
 
         self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 5.5)))
@@ -241,6 +263,10 @@ class RightLineFollowNode:
         self.single_line_frames = 0
         self.turn_until = self.start_time + self.startup_right_bias_duration if self.started else 0.0
         self.right_route_lock_until = self.start_time + self.right_route_lock_duration if self.started else 0.0
+        self.startup_sequence_start = self.start_time
+        self.startup_maneuver_done = not (self.started and self.startup_maneuver_enabled)
+        self.rightmost_line_only_until = 0.0
+        self.startup_phase = "none"
         self.fork_latch_until = 0.0
         self.last_fork_time = -1e9
         self.finish_frames = 0
@@ -275,6 +301,10 @@ class RightLineFollowNode:
             self.finish_time = None
             self.turn_until = self.start_time + self.startup_right_bias_duration
             self.right_route_lock_until = self.start_time + self.right_route_lock_duration
+            self.startup_sequence_start = self.start_time
+            self.startup_maneuver_done = not self.startup_maneuver_enabled
+            self.rightmost_line_only_until = 0.0
+            self.startup_phase = "startup_forward1" if self.startup_maneuver_enabled else "none"
             self.pid.reset()
             self.set_status("searching")
         else:
@@ -294,12 +324,17 @@ class RightLineFollowNode:
             self.handle_finish(now)
             return
 
-        if not self.finish_detection_enabled:
-            self.finish_detection_enabled = (now - self.start_time) >= self.finish_enable_delay
-
         mask, roi_origin_y = self.extract_white_mask(frame)
-        route_locked = self.is_right_route_locked(now)
-        observations = self.observe_lane(mask, frame.shape[1], route_locked)
+        startup_active = self.handle_startup_maneuver(now)
+        rightmost_only = self.is_rightmost_line_only(now)
+        if not self.finish_detection_enabled:
+            self.finish_detection_enabled = (
+                self.startup_maneuver_done
+                and not rightmost_only
+                and (now - self.start_time) >= self.finish_enable_delay
+            )
+        route_locked = self.is_right_route_locked(now) or rightmost_only or startup_active
+        observations = self.observe_lane(mask, frame.shape[1], self.selection_mode(route_locked, rightmost_only))
         self.update_lane_width_estimate(observations)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
 
@@ -311,9 +346,9 @@ class RightLineFollowNode:
             self.fork_latch_until = max(self.fork_latch_until, now + self.fork_latch_time)
             self.right_route_lock_until = max(self.right_route_lock_until, now + self.right_route_relock_duration)
         fork_detected_latched = now < self.fork_latch_until
-        route_locked = self.is_right_route_locked(now)
+        route_locked = self.is_right_route_locked(now) or rightmost_only or startup_active
         if route_locked and not any(obs.selection.startswith("right") for obs in observations):
-            observations = self.observe_lane(mask, frame.shape[1], route_locked)
+            observations = self.observe_lane(mask, frame.shape[1], self.selection_mode(route_locked, rightmost_only))
             self.update_lane_width_estimate(observations)
             lane_center = self.estimate_lane_center(observations, frame.shape[1])
             fork_rows = sum(1 for obs in observations if obs.multi_candidate)
@@ -349,6 +384,15 @@ class RightLineFollowNode:
             self.publish_status()
             return
 
+        if startup_active:
+            self.last_target_center = lane_center
+            self.last_route_locked = route_locked
+            self.last_two_sided = any(obs.left_x is not None and obs.right_x is not None for obs in observations)
+            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
+            self.publish_debug_info(now, lane_center, parking_result, fork_rows, fork_detected_latched, route_locked)
+            self.publish_status()
+            return
+
         if not self.started:
             self.stop_robot()
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
@@ -376,8 +420,7 @@ class RightLineFollowNode:
                 target_center += self.right_turn_bias_px
                 self.set_status("turn_right")
             elif route_locked:
-                target_center += self.right_turn_bias_px
-                self.set_status("right_route_lock")
+                self.set_status("rightmost_line_only" if rightmost_only else "right_route_lock")
             elif not two_sided and self.single_line_frames > self.single_line_hold_frames:
                 self.set_status("searching")
             elif self.finish_frames > 0:
@@ -430,14 +473,14 @@ class RightLineFollowNode:
                 cv2.drawContours(filtered, [contour], -1, 255, thickness=cv2.FILLED)
         return filtered
 
-    def observe_lane(self, mask: np.ndarray, image_width: int, prefer_right_route: bool) -> List[RowObservation]:
+    def observe_lane(self, mask: np.ndarray, image_width: int, selection_mode: str) -> List[RowObservation]:
         observations = []
         roi_height = mask.shape[0]
         for ratio in self.scan_row_ratios:
             y = int(max(0, min(roi_height - 1, roi_height * ratio)))
             segments = self.find_segments(mask[y, :])
             left_x, right_x, center_x, multi_candidate, selection = self.choose_right_lane_pair(
-                segments, image_width, prefer_right_route
+                segments, image_width, selection_mode
             )
             observations.append(RowObservation(y, segments, left_x, right_x, center_x, multi_candidate, selection))
         return observations
@@ -476,12 +519,18 @@ class RightLineFollowNode:
         return merged
 
     def choose_right_lane_pair(
-        self, segments: List[Segment], image_width: int, prefer_right_route: bool
+        self, segments: List[Segment], image_width: int, selection_mode: str
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, str]:
         lane_width_px = self.current_lane_width_px()
+        if selection_mode == "rightmost_line" and segments:
+            segment = segments[-1]
+            center = segment.center - lane_width_px / 2.0
+            multi_candidate = len(segments) >= self.fork_candidate_count
+            return None, segment.center, center, multi_candidate, "rightmost_line"
+
         if len(segments) >= 2:
             multi_candidate = len(segments) >= self.fork_candidate_count
-            if multi_candidate or prefer_right_route:
+            if multi_candidate or selection_mode == "right_route":
                 left, right = self.best_right_route_pair(segments)
                 selection = "right_pair_fork" if multi_candidate else "right_pair_lock"
             else:
@@ -491,9 +540,6 @@ class RightLineFollowNode:
 
         if len(segments) == 1:
             segment = segments[0]
-            if prefer_right_route:
-                center = segment.center + lane_width_px / 2.0
-                return segment.center, None, center, False, "right_lock_single_left_border"
             if segment.center < image_width / 2.0:
                 center = segment.center + lane_width_px / 2.0
                 return segment.center, None, center, False, "single_left_border"
@@ -705,6 +751,52 @@ class RightLineFollowNode:
             self.set_status("finish_stop")
         self.publish_status()
 
+    def handle_startup_maneuver(self, now: float) -> bool:
+        if not self.started or self.startup_maneuver_done:
+            return False
+
+        forward_speed = max(self.startup_forward_speed, 1e-3)
+        turn_speed = max(self.startup_turn_angular_speed, 1e-3)
+        forward1_duration = max(0.0, self.startup_forward1_distance_m) / forward_speed
+        turn_duration = math.radians(max(0.0, self.startup_turn_angle_deg)) / turn_speed
+        forward2_duration = max(0.0, self.startup_forward2_distance_m) / forward_speed
+
+        elapsed = now - self.startup_sequence_start
+        twist = Twist()
+
+        if elapsed < forward1_duration:
+            self.startup_phase = "startup_forward1"
+            self.set_status(self.startup_phase)
+            twist.linear.x = forward_speed
+        elif elapsed < forward1_duration + turn_duration:
+            self.startup_phase = "startup_turn_right_60"
+            self.set_status(self.startup_phase)
+            twist.angular.z = -turn_speed
+        elif elapsed < forward1_duration + turn_duration + forward2_duration:
+            self.startup_phase = "startup_forward2"
+            self.set_status(self.startup_phase)
+            twist.linear.x = forward_speed
+        else:
+            self.startup_maneuver_done = True
+            self.startup_phase = "rightmost_line_only"
+            self.rightmost_line_only_until = now + max(0.0, self.rightmost_line_only_duration)
+            self.right_route_lock_until = max(self.right_route_lock_until, self.rightmost_line_only_until)
+            self.pid.reset()
+            self.hard_stop_robot()
+            rospy.loginfo(
+                "startup maneuver finished: forward1=%.2fm turn=%.1fdeg forward2=%.2fm rightmost_only=%.2fs",
+                self.startup_forward1_distance_m,
+                self.startup_turn_angle_deg,
+                self.startup_forward2_distance_m,
+                self.rightmost_line_only_duration,
+            )
+            return False
+
+        self.last_cmd_linear = twist.linear.x
+        self.last_cmd_angular = twist.angular.z
+        self.cmd_pub.publish(twist)
+        return True
+
     def publish_debug_image(
         self,
         frame: np.ndarray,
@@ -761,13 +853,15 @@ class RightLineFollowNode:
         cv2.putText(debug, text, (10, max(mh + 25, 30)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 0), 2)
         route_sec = max(0.0, self.right_route_lock_until - now)
         target = -1.0 if self.last_target_center is None else self.last_target_center
-        text2 = "route_lock={:.2f}s target={:.1f} err={:.1f} cmd=({:.2f},{:.2f}) two_sided={}".format(
+        rightmost_sec = max(0.0, self.rightmost_line_only_until - now)
+        text2 = "phase={} route_lock={:.2f}s rightmost={:.2f}s target={:.1f} err={:.1f} cmd=({:.2f},{:.2f})".format(
+            self.startup_phase,
             route_sec,
+            rightmost_sec,
             target,
             self.last_error_px,
             self.last_cmd_linear,
             self.last_cmd_angular,
-            int(self.last_two_sided),
         )
         cv2.putText(debug, text2, (10, max(mh + 50, 55)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 200, 255), 2)
         text3 = "park_w={:.2f} vl={:.2f} vr={:.2f} bottom={:.2f} lane_w={:.1f}px sel={}".format(
@@ -810,6 +904,16 @@ class RightLineFollowNode:
     def is_right_route_locked(self, now: float) -> bool:
         return now < self.right_route_lock_until
 
+    def is_rightmost_line_only(self, now: float) -> bool:
+        return self.startup_maneuver_done and now < self.rightmost_line_only_until
+
+    def selection_mode(self, route_locked: bool, rightmost_only: bool) -> str:
+        if rightmost_only:
+            return "rightmost_line"
+        if route_locked:
+            return "right_route"
+        return "normal"
+
     def selection_summary(self, observations: Sequence[RowObservation]) -> str:
         counts = {}
         for obs in observations:
@@ -830,7 +934,8 @@ class RightLineFollowNode:
         target = None if self.last_target_center is None else round(float(self.last_target_center), 2)
         lane = None if lane_center is None else round(float(lane_center), 2)
         msg = (
-            "status={status} route_locked={route_locked} route_lock_left={route_left:.2f} "
+            "status={status} startup_phase={startup_phase} route_locked={route_locked} "
+            "route_lock_left={route_left:.2f} rightmost_left={rightmost_left:.2f} "
             "lane_center={lane_center} target_center={target_center} error_px={error:.2f} "
             "cmd_linear={linear:.3f} cmd_angular={angular:.3f} two_sided={two_sided} "
             "fork_rows={fork_rows} fork={fork} finish_frames={finish_frames} "
@@ -838,8 +943,10 @@ class RightLineFollowNode:
             "parking_bottom={parking_bottom:.2f}"
         ).format(
             status=self.status,
+            startup_phase=self.startup_phase,
             route_locked=int(route_locked),
             route_left=max(0.0, self.right_route_lock_until - now),
+            rightmost_left=max(0.0, self.rightmost_line_only_until - now),
             lane_center=lane,
             target_center=target,
             error=self.last_error_px,
