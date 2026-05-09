@@ -1,0 +1,11 @@
+<launch>
+  <arg name="config_file" default="$(find ucar_2026_smart_factory_llm)/config/llm_defaults.yaml" />
+  <rosparam command="load" file="$(arg config_file)" />
+
+  <!-- 推荐：在 shell 中 export XF_SPARK_API_PASSWORD=控制台 APIPassword -->
+  <arg name="api_password" default="$(optenv XF_SPARK_API_PASSWORD)" />
+
+  <node pkg="ucar_2026_smart_factory_llm" type="reason_pickup_server.py" name="smart_factory_llm" output="screen">
+    <param name="api_password" value="$(arg api_password)" />
+  </node>
+</launch>

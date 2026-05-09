@@ -1,0 +1,21 @@
+# 三个二维码解析得到的子类名称（与扫描顺序一致即可）
+string item_a
+string item_b
+string item_c
+# 语音唤醒后的完整指令文本（含目标大类）
+string voice_instruction
+---
+bool success
+string error_message
+# 赛方要求的播报格式（可拆成两句给 TTS）
+string announcement_physical
+string announcement_simulation
+string announcement_full
+# 结构化结果，便于下游记录 / 调试
+string pickup_item
+string pickup_major
+string pickup_workshop
+string sim_item
+string sim_major
+string sim_workshop
+string raw_model_reply
