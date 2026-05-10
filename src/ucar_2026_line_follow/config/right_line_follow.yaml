@@ -88,9 +88,7 @@ finish_enable_delay: 30.0
 finish_confirm_frames: 12
 finish_release_frames: 2
 finish_stop_time: 1.0
-finish_forward_distance_m: 0.50
-finish_forward_speed: 0.08
-finish_forward_timeout_sec: 8.0
+finish_auto_stop: true
 finish_bottom_roi_ratio: 0.55
 finish_min_horizontal_width_ratio: 0.70
 finish_min_horizontal_rows: 6

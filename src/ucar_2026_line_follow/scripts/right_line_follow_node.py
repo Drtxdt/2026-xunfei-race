@@ -9,7 +9,6 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
@@ -335,7 +334,6 @@ class RightLineFollowNode:
 
         self.image_topic = rospy.get_param("~image_topic", rospy.get_param("image_topic", "/usb_cam/image_raw"))
         self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", rospy.get_param("cmd_vel_topic", "/cmd_vel"))
-        self.odom_topic = rospy.get_param("~odom_topic", rospy.get_param("odom_topic", "/odom"))
         self.status_topic = rospy.get_param("~status_topic", rospy.get_param("status_topic", "/right_line_follow/status"))
         self.debug_image_topic = rospy.get_param(
             "~debug_image_topic", rospy.get_param("debug_image_topic", "/right_line_follow/debug_image")
@@ -501,15 +499,7 @@ class RightLineFollowNode:
         self.finish_stop_time = float(
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
-        self.finish_forward_distance_m = float(
-            rospy.get_param("~finish_forward_distance_m", rospy.get_param("finish_forward_distance_m", 0.50))
-        )
-        self.finish_forward_speed = abs(
-            float(rospy.get_param("~finish_forward_speed", rospy.get_param("finish_forward_speed", 0.08)))
-        )
-        self.finish_forward_timeout_sec = float(
-            rospy.get_param("~finish_forward_timeout_sec", rospy.get_param("finish_forward_timeout_sec", 8.0))
-        )
+        self.finish_auto_stop = bool(rospy.get_param("~finish_auto_stop", rospy.get_param("finish_auto_stop", True)))
         self.finish_bottom_roi_ratio = float(
             rospy.get_param("~finish_bottom_roi_ratio", rospy.get_param("finish_bottom_roi_ratio", 0.55))
         )
@@ -578,12 +568,6 @@ class RightLineFollowNode:
         self.finish_lost_frames = 0
         self.finish_time = None
         self.finish_detection_enabled = False
-        self.current_odom_xy: Optional[Tuple[float, float]] = None
-        self.last_odom_time = None
-        self.finish_forward_active = False
-        self.finish_forward_start_xy: Optional[Tuple[float, float]] = None
-        self.finish_forward_start_time = None
-        self.finish_forward_distance_traveled_m = 0.0
         self.last_parking_result = ParkingBoxResult(False, None, 0.0, 0.0, 0.0, 0.0)
         self.last_target_center = None
         self.last_cmd_linear = 0.0
@@ -591,10 +575,10 @@ class RightLineFollowNode:
         self.last_route_locked = self.started
         self.last_two_sided = False
         self.last_senior_path: List[Tuple[float, float]] = []
+        self.last_debug_snapshot = {}
 
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
-        self.odom_sub = rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
 
         rospy.on_shutdown(self.stop_robot)
         self.publish_status(force=True)
@@ -612,7 +596,6 @@ class RightLineFollowNode:
             self.finish_frames = 0
             self.finish_lost_frames = 0
             self.finish_time = None
-            self.reset_finish_forward()
             self.turn_until = self.start_time + self.startup_right_bias_duration
             self.right_route_lock_until = self.start_time + self.right_route_lock_duration
             self.startup_sequence_start = self.start_time
@@ -623,21 +606,9 @@ class RightLineFollowNode:
             self.pid.reset()
             self.set_status("searching")
         else:
-            self.reset_finish_forward()
             self.pid.reset()
             self.stop_robot()
             self.set_status("idle")
-
-    def odom_callback(self, msg: Odometry):
-        position = msg.pose.pose.position
-        self.current_odom_xy = (float(position.x), float(position.y))
-        self.last_odom_time = time.time()
-
-    def reset_finish_forward(self):
-        self.finish_forward_active = False
-        self.finish_forward_start_xy = None
-        self.finish_forward_start_time = None
-        self.finish_forward_distance_traveled_m = 0.0
 
     def image_callback(self, msg: Image):
         try:
@@ -649,9 +620,6 @@ class RightLineFollowNode:
         now = time.time()
         if self.finish_time is not None:
             self.handle_finish(now)
-            return
-        if self.finish_forward_active:
-            self.handle_finish_forward(now)
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
@@ -706,19 +674,23 @@ class RightLineFollowNode:
                 self.finish_lost_frames = 0
 
         if self.finish_frames >= self.finish_confirm_frames:
-            rospy.loginfo(
-                "P1 parking line detected: frames=%d width=%.2f vl=%.2f vr=%.2f bottom=%.2f; leaving line follow and driving %.2fm forward",
+            rospy.loginfo_throttle(
+                0.5,
+                "P1 parking box reached: frames=%d width=%.2f vl=%.2f vr=%.2f bottom=%.2f auto_stop=%d",
                 self.finish_frames,
                 parking_result.horizontal_width_ratio,
                 parking_result.vertical_left_height_ratio,
                 parking_result.vertical_right_height_ratio,
                 parking_result.bottom_y_ratio,
-                self.finish_forward_distance_m,
+                int(self.finish_auto_stop),
             )
-            self.start_finish_forward(now)
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
-            self.publish_status()
-            return
+            if self.finish_auto_stop:
+                self.finish_time = now
+                self.set_status("finish_stop")
+                self.hard_stop_robot()
+                self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
+                self.publish_status()
+                return
 
         if startup_active:
             self.last_target_center = lane_center
@@ -1160,80 +1132,6 @@ class RightLineFollowNode:
             self.set_status("finish_stop")
         self.publish_status()
 
-    def start_finish_forward(self, now: float):
-        self.pid.reset()
-        self.finish_forward_active = True
-        self.finish_forward_start_time = now
-        self.finish_forward_start_xy = self.current_odom_xy if self.odom_age(now) <= self.finish_forward_timeout_sec else None
-        self.finish_forward_distance_traveled_m = 0.0
-        self.finish_detection_enabled = False
-        self.finish_frames = 0
-        self.finish_lost_frames = 0
-        self.set_status("finish_forward")
-        if self.finish_forward_start_xy is None:
-            rospy.logwarn(
-                "finish forward started without fresh odom on %s; estimating %.2fm by time at %.3fm/s",
-                self.odom_topic,
-                self.finish_forward_distance_m,
-                self.finish_forward_speed,
-            )
-        else:
-            rospy.loginfo(
-                "finish forward started: topic=%s distance=%.2fm speed=%.3fm/s",
-                self.odom_topic,
-                self.finish_forward_distance_m,
-                self.finish_forward_speed,
-            )
-
-    def update_finish_forward_distance(self, now: float):
-        if (
-            self.finish_forward_start_xy is not None
-            and self.current_odom_xy is not None
-            and self.odom_age(now) <= self.finish_forward_timeout_sec
-        ):
-            dx = self.current_odom_xy[0] - self.finish_forward_start_xy[0]
-            dy = self.current_odom_xy[1] - self.finish_forward_start_xy[1]
-            self.finish_forward_distance_traveled_m = math.hypot(dx, dy)
-            return
-
-        elapsed = max(0.0, now - self.finish_forward_start_time) if self.finish_forward_start_time is not None else 0.0
-        self.finish_forward_distance_traveled_m = elapsed * max(self.finish_forward_speed, 1e-3)
-
-    def handle_finish_forward(self, now: float):
-        self.update_finish_forward_distance(now)
-        elapsed = max(0.0, now - self.finish_forward_start_time) if self.finish_forward_start_time is not None else 0.0
-        reached = self.finish_forward_distance_traveled_m >= max(0.0, self.finish_forward_distance_m)
-        timed_out = elapsed >= max(0.1, self.finish_forward_timeout_sec)
-
-        if reached or timed_out:
-            rospy.loginfo(
-                "finish forward done: distance=%.3fm target=%.3fm elapsed=%.2fs timed_out=%d",
-                self.finish_forward_distance_traveled_m,
-                self.finish_forward_distance_m,
-                elapsed,
-                int(timed_out and not reached),
-            )
-            self.reset_finish_forward()
-            self.finish_time = now
-            self.set_status("finish_stop")
-            self.hard_stop_robot()
-            self.publish_status()
-            return
-
-        twist = Twist()
-        twist.linear.x = self.finish_forward_speed
-        twist.angular.z = 0.0
-        self.last_cmd_linear = twist.linear.x
-        self.last_cmd_angular = twist.angular.z
-        self.cmd_pub.publish(twist)
-        self.set_status("finish_forward")
-        self.publish_status()
-
-    def odom_age(self, now: float) -> float:
-        if self.last_odom_time is None:
-            return float("inf")
-        return max(0.0, now - self.last_odom_time)
-
     def handle_startup_maneuver(self, now: float) -> bool:
         if not self.started or self.startup_maneuver_done:
             return False
@@ -1301,6 +1199,10 @@ class RightLineFollowNode:
         fork_detected: bool,
         now: float,
     ):
+        self.last_debug_snapshot = self.build_debug_snapshot(
+            frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected, now
+        )
+
         if not self.publish_debug:
             return
 
@@ -1376,6 +1278,95 @@ class RightLineFollowNode:
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(debug, encoding="bgr8"))
         except CvBridgeError as exc:
             rospy.logwarn_throttle(2.0, "debug image conversion failed: %s", exc)
+
+    def build_debug_snapshot(
+        self,
+        frame: np.ndarray,
+        mask: np.ndarray,
+        roi_origin_y: int,
+        observations: Sequence[RowObservation],
+        lane_center: Optional[float],
+        parking_result: ParkingBoxResult,
+        fork_rows: int,
+        fork_detected: bool,
+        now: float,
+    ):
+        height, width = frame.shape[:2]
+        box = parking_result.box
+        box_width_ratio = 0.0
+        box_height_ratio = 0.0
+        box_bottom_y_ratio = 0.0
+        if box is not None:
+            _, y, w, h = box
+            box_width_ratio = w / float(max(1, width))
+            box_height_ratio = h / float(max(1, height))
+            box_bottom_y_ratio = (y + h) / float(max(1, height))
+
+        return {
+            "timestamp": now,
+            "status": self.status,
+            "startup_phase": self.startup_phase,
+            "image_width": width,
+            "image_height": height,
+            "roi_origin_y": roi_origin_y,
+            "mask_height": int(mask.shape[0]),
+            "mask_width": int(mask.shape[1]),
+            "lane_center_px": None if lane_center is None else float(lane_center),
+            "target_center_px": None if self.last_target_center is None else float(self.last_target_center),
+            "image_center_px": width / 2.0,
+            "error_px": float(self.last_error_px),
+            "cmd_linear": float(self.last_cmd_linear),
+            "cmd_angular": float(self.last_cmd_angular),
+            "route_locked": bool(self.last_route_locked),
+            "route_lock_left_sec": max(0.0, self.right_route_lock_until - now),
+            "rightmost_left_sec": max(0.0, self.rightmost_line_only_until - now),
+            "fork_rows": int(fork_rows),
+            "fork_detected": bool(fork_detected),
+            "two_sided": bool(self.last_two_sided),
+            "selection_summary": self.selection_summary(observations),
+            "finish_detection_enabled": bool(self.finish_detection_enabled),
+            "finish_auto_stop": bool(self.finish_auto_stop),
+            "finish_frames": int(self.finish_frames),
+            "finish_confirm_frames": int(self.finish_confirm_frames),
+            "finish_release_frames": int(self.finish_release_frames),
+            "finish_candidate_box": None if box is None else [int(v) for v in box],
+            "finish_metrics": {
+                "parking_detected": bool(parking_result.detected),
+                "horizontal_width_ratio": float(parking_result.horizontal_width_ratio),
+                "vertical_left_height_ratio": float(parking_result.vertical_left_height_ratio),
+                "vertical_right_height_ratio": float(parking_result.vertical_right_height_ratio),
+                "bottom_y_ratio": float(parking_result.bottom_y_ratio),
+                "box_width_ratio": float(box_width_ratio),
+                "box_height_ratio": float(box_height_ratio),
+                "box_bottom_y_ratio": float(box_bottom_y_ratio),
+                "min_horizontal_width_ratio": float(self.finish_min_horizontal_width_ratio),
+                "min_horizontal_rows": int(self.finish_min_horizontal_rows),
+                "min_vertical_height_ratio": float(self.finish_min_vertical_height_ratio),
+                "min_box_width_ratio": float(self.finish_min_box_width_ratio),
+                "min_bottom_y_ratio": float(self.finish_min_bottom_y_ratio),
+                "require_vertical_sides": bool(self.finish_require_vertical_sides),
+            },
+            "observations": [
+                {
+                    "y": int(obs.y),
+                    "left_x": None if obs.left_x is None else float(obs.left_x),
+                    "right_x": None if obs.right_x is None else float(obs.right_x),
+                    "center_x": None if obs.center_x is None else float(obs.center_x),
+                    "multi_candidate": bool(obs.multi_candidate),
+                    "selection": obs.selection,
+                    "segments": [
+                        {
+                            "left": int(segment.left),
+                            "right": int(segment.right),
+                            "center": float(segment.center),
+                            "width": int(segment.width),
+                        }
+                        for segment in obs.segments
+                    ],
+                }
+                for obs in observations
+            ],
+        }
 
     def set_status(self, status: str):
         if self.status != status:
