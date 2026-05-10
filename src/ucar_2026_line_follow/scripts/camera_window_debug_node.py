@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
+import os
+import sys
+import threading
 import time
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -13,6 +17,7 @@ from std_msgs.msg import String
 class CameraWindowDebugNode:
     def __init__(self):
         self.bridge = CvBridge()
+        self.lock = threading.Lock()
 
         self.image_topic = rospy.get_param("~image_topic", rospy.get_param("image_topic", "/usb_cam/image_raw"))
         self.compressed_image_topic = rospy.get_param(
@@ -24,7 +29,14 @@ class CameraWindowDebugNode:
             "~status_topic", rospy.get_param("status_topic", "/camera_window_debug/status")
         )
         self.use_compressed = bool(rospy.get_param("~use_compressed", rospy.get_param("use_compressed", False)))
-        self.window_prefix = rospy.get_param("~window_prefix", rospy.get_param("window_prefix", "ucar camera debug"))
+        default_output_dir = os.path.join(
+            os.environ.get("ROS_HOME", os.path.expanduser("~/.ros")), "ucar_2026_line_follow"
+        )
+        configured_output_dir = rospy.get_param(
+            "~output_dir",
+            rospy.get_param("camera_debug_output_dir", default_output_dir),
+        )
+        self.output_dir = configured_output_dir or default_output_dir
 
         self.roi_y_start_ratio = float(rospy.get_param("~roi_y_start_ratio", rospy.get_param("roi_y_start_ratio", 0.45)))
         self.roi_y_end_ratio = float(rospy.get_param("~roi_y_end_ratio", rospy.get_param("roi_y_end_ratio", 1.0)))
@@ -36,20 +48,20 @@ class CameraWindowDebugNode:
         self.morph_kernel_size = int(rospy.get_param("~morph_kernel_size", rospy.get_param("morph_kernel_size", 5)))
         self.min_contour_area = float(rospy.get_param("~min_contour_area", rospy.get_param("min_contour_area", 60.0)))
 
-        self.resize_width = int(rospy.get_param("~window_resize_width", rospy.get_param("window_resize_width", 960)))
         self.zero_publish_hz = float(rospy.get_param("~zero_publish_hz", rospy.get_param("zero_publish_hz", 20.0)))
-        self.max_display_fps = float(rospy.get_param("~max_display_fps", rospy.get_param("max_display_fps", 15.0)))
         self.stop_publish_count = int(rospy.get_param("~stop_publish_count", rospy.get_param("stop_publish_count", 20)))
         self.stop_publish_interval = float(
             rospy.get_param("~stop_publish_interval", rospy.get_param("stop_publish_interval", 0.02))
         )
 
+        self.latest_raw = None
+        self.latest_processed = None
+        self.latest_stamp = 0.0
+        self.frames = 0
+        self.saved_count = 0
+
         self.cmd_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1)
-        self.last_display_time = 0.0
-        self.frames = 0
-        self.last_frame_time = 0.0
-        self.windows_ready = False
 
         if self.use_compressed:
             self.image_sub = rospy.Subscriber(
@@ -65,12 +77,16 @@ class CameraWindowDebugNode:
         rospy.Timer(rospy.Duration(1.0), self.publish_status)
         rospy.on_shutdown(self.shutdown)
 
+        self.input_thread = threading.Thread(target=self.keyboard_loop, daemon=True)
+        self.input_thread.start()
+
         rospy.loginfo(
-            "camera_window_debug_node started. source=%s use_compressed=%d cmd_vel=%s",
+            "camera_window_debug_node started in SSH snapshot mode. source=%s use_compressed=%d output_dir=%s",
             source,
             int(self.use_compressed),
-            self.cmd_vel_topic,
+            self.resolve_output_dir(),
         )
+        rospy.loginfo("Press Enter in this SSH terminal to save raw, processed, and combined images on the car.")
 
     def image_callback(self, msg: Image):
         try:
@@ -78,7 +94,7 @@ class CameraWindowDebugNode:
         except CvBridgeError as exc:
             rospy.logwarn_throttle(2.0, "camera debug cv_bridge conversion failed: %s", exc)
             return
-        self.display_frame(frame)
+        self.update_latest_frame(frame)
 
     def compressed_callback(self, msg: CompressedImage):
         data = np.frombuffer(msg.data, dtype=np.uint8)
@@ -86,37 +102,81 @@ class CameraWindowDebugNode:
         if frame is None:
             rospy.logwarn_throttle(2.0, "camera debug JPEG decode failed")
             return
-        self.display_frame(frame)
+        self.update_latest_frame(frame)
 
-    def display_frame(self, frame: np.ndarray):
-        now = time.time()
-        if self.max_display_fps > 0.0 and now - self.last_display_time < 1.0 / self.max_display_fps:
-            return
-        self.last_display_time = now
-        self.last_frame_time = now
-        self.frames += 1
-
-        raw = self.resize_for_window(frame)
+    def update_latest_frame(self, frame: np.ndarray):
         processed = self.build_processed_view(frame)
+        with self.lock:
+            self.latest_raw = frame.copy()
+            self.latest_processed = processed
+            self.latest_stamp = time.time()
+            self.frames += 1
 
-        try:
-            if not self.windows_ready:
-                cv2.namedWindow(self.raw_window_name, cv2.WINDOW_NORMAL)
-                cv2.namedWindow(self.processed_window_name, cv2.WINDOW_NORMAL)
-                self.windows_ready = True
-            cv2.imshow(self.raw_window_name, raw)
-            cv2.imshow(self.processed_window_name, processed)
-            cv2.waitKey(1)
-        except cv2.error as exc:
-            rospy.logerr_throttle(2.0, "OpenCV window failed. Run this node on a machine with a GUI display: %s", exc)
+    def keyboard_loop(self):
+        while not rospy.is_shutdown():
+            try:
+                line = sys.stdin.readline()
+            except Exception as exc:
+                rospy.logwarn("camera debug stdin read failed: %s", exc)
+                time.sleep(0.5)
+                continue
 
-    @property
-    def raw_window_name(self) -> str:
-        return "%s - raw" % self.window_prefix
+            if rospy.is_shutdown():
+                return
+            if line == "":
+                time.sleep(0.2)
+                continue
+            self.save_snapshot()
 
-    @property
-    def processed_window_name(self) -> str:
-        return "%s - opencv processed" % self.window_prefix
+    def save_snapshot(self):
+        with self.lock:
+            raw = None if self.latest_raw is None else self.latest_raw.copy()
+            processed = None if self.latest_processed is None else self.latest_processed.copy()
+            stamp_sec = self.latest_stamp
+
+        if raw is None or processed is None:
+            rospy.logwarn("no camera frame is available yet; wait for /usb_cam/image_raw and press Enter again")
+            return
+
+        out_dir = self.resolve_output_dir()
+        os.makedirs(out_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = "camera_debug_%s_%03d" % (stamp, self.saved_count + 1)
+        raw_path = os.path.join(out_dir, base + "_raw.jpg")
+        processed_path = os.path.join(out_dir, base + "_processed.jpg")
+        combined_path = os.path.join(out_dir, base + "_combined.jpg")
+
+        combined = self.make_combined(raw, processed)
+        ok_raw = cv2.imwrite(raw_path, raw)
+        ok_processed = cv2.imwrite(processed_path, processed)
+        ok_combined = cv2.imwrite(combined_path, combined)
+        if ok_raw and ok_processed and ok_combined:
+            self.saved_count += 1
+            age = max(0.0, time.time() - stamp_sec)
+            rospy.loginfo(
+                "saved camera snapshot #%d age=%.2fs raw=%s processed=%s combined=%s",
+                self.saved_count,
+                age,
+                raw_path,
+                processed_path,
+                combined_path,
+            )
+        else:
+            rospy.logerr(
+                "failed to save camera snapshot: raw_ok=%d processed_ok=%d combined_ok=%d dir=%s",
+                int(ok_raw),
+                int(ok_processed),
+                int(ok_combined),
+                out_dir,
+            )
+
+    def resolve_output_dir(self) -> str:
+        return os.path.abspath(os.path.expanduser(self.output_dir))
+
+    def make_combined(self, raw: np.ndarray, processed: np.ndarray) -> np.ndarray:
+        if raw.shape[:2] != processed.shape[:2]:
+            processed = cv2.resize(processed, (raw.shape[1], raw.shape[0]), interpolation=cv2.INTER_AREA)
+        return np.hstack((raw, processed))
 
     def build_processed_view(self, frame: np.ndarray) -> np.ndarray:
         mask, roi_origin_y = self.extract_white_mask(frame)
@@ -124,32 +184,31 @@ class CameraWindowDebugNode:
 
         mask_full = np.zeros((height, width), dtype=np.uint8)
         mask_full[roi_origin_y : roi_origin_y + mask.shape[0], :] = mask
-        processed = cv2.cvtColor(mask_full, cv2.COLOR_GRAY2BGR)
-
-        overlay = frame.copy()
-        overlay[mask_full > 0] = (0, 255, 255)
-        processed = cv2.addWeighted(overlay, 0.45, processed, 0.55, 0.0)
+        processed = frame.copy()
+        processed[mask_full > 0] = (0, 255, 255)
 
         contour_result = cv2.findContours(mask_full, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = contour_result[0] if len(contour_result) == 2 else contour_result[1]
+        contour_count = 0
         for contour in contours:
             area = cv2.contourArea(contour)
             if area < self.min_contour_area:
                 continue
+            contour_count += 1
             x, y, w, h = cv2.boundingRect(contour)
             cv2.rectangle(processed, (x, y), (x + w, y + h), (0, 180, 255), 1)
 
         cv2.line(processed, (0, roi_origin_y), (width - 1, roi_origin_y), (255, 0, 0), 2)
-        text = "mask: hsv(S<={},V>={}) OR gray>{}; morph={}; contours={}".format(
+        text = "opencv: S<={} V>={} gray>{} morph={} contours={}".format(
             self.white_s_max,
             self.white_v_min,
             self.gray_white_threshold,
             self.morph_kernel_size,
-            len(contours),
+            contour_count,
         )
         cv2.putText(processed, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 0), 2)
-        cv2.putText(processed, "publishing zero cmd_vel", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 0), 2)
-        return self.resize_for_window(processed)
+        cv2.putText(processed, "SSH Enter saves snapshot; zero cmd_vel active", (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0, 255, 0), 2)
+        return processed
 
     def extract_white_mask(self, frame: np.ndarray):
         height = frame.shape[0]
@@ -184,29 +243,23 @@ class CameraWindowDebugNode:
                 cv2.drawContours(filtered, [contour], -1, 255, thickness=cv2.FILLED)
         return filtered
 
-    def resize_for_window(self, frame: np.ndarray) -> np.ndarray:
-        if self.resize_width <= 0 or frame.shape[1] <= self.resize_width:
-            return frame
-        scale = self.resize_width / float(frame.shape[1])
-        return cv2.resize(frame, (self.resize_width, int(frame.shape[0] * scale)), interpolation=cv2.INTER_AREA)
-
     def publish_zero(self, _event=None):
         self.cmd_pub.publish(Twist())
 
     def publish_status(self, _event=None):
-        age = float("inf") if self.last_frame_time <= 0.0 else max(0.0, time.time() - self.last_frame_time)
+        with self.lock:
+            frames = self.frames
+            saved = self.saved_count
+            stamp = self.latest_stamp
+        age = float("inf") if stamp <= 0.0 else max(0.0, time.time() - stamp)
         self.status_pub.publish(
-            String(data="frames={} last_frame_age={:.2f}s zero_cmd_hz={:.1f}".format(self.frames, age, self.zero_publish_hz))
+            String(data="frames={} saved={} last_frame_age={:.2f}s output_dir={}".format(frames, saved, age, self.resolve_output_dir()))
         )
 
     def shutdown(self):
         for _ in range(max(0, self.stop_publish_count)):
             self.publish_zero()
             time.sleep(max(0.0, self.stop_publish_interval))
-        try:
-            cv2.destroyAllWindows()
-        except cv2.error:
-            pass
 
 
 def main():

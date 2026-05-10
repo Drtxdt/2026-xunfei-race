@@ -5,6 +5,7 @@
   <arg name="use_compressed" default="false" />
   <arg name="image_topic" default="/usb_cam/image_raw" />
   <arg name="compressed_image_topic" default="/right_line_follow/raw_image/compressed" />
+  <arg name="output_dir" default="" />
 
   <group if="$(arg start_driver)">
     <include file="$(find ucar_controller)/launch/base_driver.launch" />
@@ -19,5 +20,6 @@
     <param name="use_compressed" value="$(arg use_compressed)" />
     <param name="image_topic" value="$(arg image_topic)" />
     <param name="compressed_image_topic" value="$(arg compressed_image_topic)" />
+    <param name="output_dir" value="$(arg output_dir)" />
   </node>
 </launch>
