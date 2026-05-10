@@ -502,6 +502,12 @@ class RightLineFollowNode:
         )
 
         self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 5.5)))
+        self.finish_detection_start_delay = float(
+            rospy.get_param(
+                "~finish_detection_start_delay",
+                rospy.get_param("finish_detection_start_delay", 15.0),
+            )
+        )
         self.finish_confirm_frames = int(
             rospy.get_param("~finish_confirm_frames", rospy.get_param("finish_confirm_frames", 8))
         )
@@ -1215,6 +1221,10 @@ class RightLineFollowNode:
         return best
 
     def should_count_finish_detection(self, parking_result: ParkingBoxResult, route_locked: bool) -> bool:
+        now = time.time()
+        if now - self.start_time < self.finish_detection_start_delay:
+            return False
+
         if self.finish_closed_instant_stop and parking_result.closed_shape_detected:
             return self.finish_closed_ignore_route_lock or not route_locked
 
@@ -1558,6 +1568,8 @@ class RightLineFollowNode:
             "selection_summary": self.selection_summary(observations),
             "finish_detection_enabled": bool(self.finish_detection_enabled),
             "finish_auto_stop": bool(self.finish_auto_stop),
+            "finish_detection_start_delay": float(self.finish_detection_start_delay),
+            "finish_detection_start_delay_left": max(0.0, self.finish_detection_start_delay - (now - self.start_time)),
             "finish_frames": int(self.finish_frames),
             "finish_confirm_frames": int(self.finish_confirm_frames),
             "finish_release_frames": int(self.finish_release_frames),
@@ -1688,7 +1700,7 @@ class RightLineFollowNode:
             "route_lock_left={route_left:.2f} rightmost_left={rightmost_left:.2f} "
             "lane_center={lane_center} target_center={target_center} error_px={error:.2f} "
             "cmd_linear={linear:.3f} cmd_angular={angular:.3f} two_sided={two_sided} "
-            "fork_rows={fork_rows} fork={fork} finish_frames={finish_frames} "
+            "fork_rows={fork_rows} fork={fork} finish_frames={finish_frames} finish_delay_left={finish_delay_left:.1f} "
             "parking_detected={parking_detected} parking_width={parking_width:.2f} "
             "parking_bottom={parking_bottom:.2f} parking_rows={parking_rows} parking_x=({parking_left:.2f},{parking_right:.2f}) "
             "parking_full_box={parking_full_box} parking_stop_pose={parking_stop_pose} "
@@ -1708,6 +1720,7 @@ class RightLineFollowNode:
             fork_rows=fork_rows,
             fork=int(fork_detected),
             finish_frames=self.finish_frames,
+            finish_delay_left=max(0.0, self.finish_detection_start_delay - (now - self.start_time)),
             parking_detected=int(parking_result.detected),
             parking_width=parking_result.horizontal_width_ratio,
             parking_bottom=parking_result.bottom_y_ratio,

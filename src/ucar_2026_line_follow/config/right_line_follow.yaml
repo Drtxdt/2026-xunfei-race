@@ -85,6 +85,7 @@ post_rightmost_route_lock_duration: 8.0
 
 # P1 parking-box finish detection.
 finish_enable_delay: 30.0
+finish_detection_start_delay: 15.0
 finish_confirm_frames: 1
 finish_release_frames: 1
 finish_stop_time: 1.0
