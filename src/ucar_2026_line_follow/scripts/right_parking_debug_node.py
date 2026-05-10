@@ -57,6 +57,8 @@ class RightParkingDebugNode(RightLineFollowNode):
                 "last_parking_closed_left_ratio": self.last_parking_result.closed_left_ratio,
                 "last_parking_closed_right_ratio": self.last_parking_result.closed_right_ratio,
                 "last_parking_horizontal_rows": self.last_parking_result.horizontal_rows,
+                "last_parking_horizontal_left_x_ratio": self.last_parking_result.horizontal_left_x_ratio,
+                "last_parking_horizontal_right_x_ratio": self.last_parking_result.horizontal_right_x_ratio,
                 "last_parking_bottom_y_ratio": self.last_parking_result.bottom_y_ratio,
                 "last_parking_horizontal_width_ratio": self.last_parking_result.horizontal_width_ratio,
                 "last_parking_vertical_left_height_ratio": self.last_parking_result.vertical_left_height_ratio,

@@ -105,11 +105,13 @@ finish_closed_min_horizontal_presence: 0.50
 finish_closed_min_vertical_presence: 0.45
 finish_closed_band_ratio: 0.14
 finish_closed_morph_kernel: 11
-finish_stop_min_horizontal_width_ratio: 0.90
-finish_stop_min_horizontal_rows: 1
-finish_stop_min_vertical_height_ratio: 0.35
-finish_stop_bottom_y_min_ratio: 0.52
-finish_stop_bottom_y_max_ratio: 0.62
+finish_stop_min_horizontal_width_ratio: 0.62
+finish_stop_max_horizontal_width_ratio: 0.88
+finish_stop_min_horizontal_rows: 5
+finish_stop_max_horizontal_rows: 40
+finish_stop_min_right_edge_ratio: 0.90
+finish_stop_bottom_y_min_ratio: 0.75
+finish_stop_bottom_y_max_ratio: 0.88
 finish_approach_speed_scale: 0.65
 finish_final_linear_speed: 0.03
 

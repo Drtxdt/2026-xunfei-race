@@ -6,3 +6,4 @@ devel/
 src/ucar_2026_line_follow/scripts/__pycache__/
 .catkin_workspace
 .remote_snapshot
+picture/*.jpg

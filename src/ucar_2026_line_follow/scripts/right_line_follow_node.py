@@ -41,6 +41,8 @@ class ParkingBoxResult:
     vertical_right_height_ratio: float
     bottom_y_ratio: float
     horizontal_rows: int = 0
+    horizontal_left_x_ratio: float = 0.0
+    horizontal_right_x_ratio: float = 0.0
     full_box_detected: bool = False
     stop_pose_detected: bool = False
     closed_shape_detected: bool = False
@@ -585,31 +587,43 @@ class RightLineFollowNode:
         self.finish_stop_min_horizontal_width_ratio = float(
             rospy.get_param(
                 "~finish_stop_min_horizontal_width_ratio",
-                rospy.get_param("finish_stop_min_horizontal_width_ratio", 0.90),
+                rospy.get_param("finish_stop_min_horizontal_width_ratio", 0.62),
+            )
+        )
+        self.finish_stop_max_horizontal_width_ratio = float(
+            rospy.get_param(
+                "~finish_stop_max_horizontal_width_ratio",
+                rospy.get_param("finish_stop_max_horizontal_width_ratio", 0.88),
             )
         )
         self.finish_stop_min_horizontal_rows = int(
             rospy.get_param(
                 "~finish_stop_min_horizontal_rows",
-                rospy.get_param("finish_stop_min_horizontal_rows", 1),
+                rospy.get_param("finish_stop_min_horizontal_rows", 5),
             )
         )
-        self.finish_stop_min_vertical_height_ratio = float(
+        self.finish_stop_max_horizontal_rows = int(
             rospy.get_param(
-                "~finish_stop_min_vertical_height_ratio",
-                rospy.get_param("finish_stop_min_vertical_height_ratio", 0.35),
+                "~finish_stop_max_horizontal_rows",
+                rospy.get_param("finish_stop_max_horizontal_rows", 40),
+            )
+        )
+        self.finish_stop_min_right_edge_ratio = float(
+            rospy.get_param(
+                "~finish_stop_min_right_edge_ratio",
+                rospy.get_param("finish_stop_min_right_edge_ratio", 0.90),
             )
         )
         self.finish_stop_bottom_y_min_ratio = float(
             rospy.get_param(
                 "~finish_stop_bottom_y_min_ratio",
-                rospy.get_param("finish_stop_bottom_y_min_ratio", 0.52),
+                rospy.get_param("finish_stop_bottom_y_min_ratio", 0.75),
             )
         )
         self.finish_stop_bottom_y_max_ratio = float(
             rospy.get_param(
                 "~finish_stop_bottom_y_max_ratio",
-                rospy.get_param("finish_stop_bottom_y_max_ratio", 0.62),
+                rospy.get_param("finish_stop_bottom_y_max_ratio", 0.88),
             )
         )
         self.finish_approach_speed_scale = float(
@@ -1049,6 +1063,8 @@ class RightLineFollowNode:
         horizontal_width_ratio = 0.0
         horizontal_rows = 0
         best_span = None
+        best_span_left_ratio = 0.0
+        best_span_right_ratio = 0.0
         for row_index in range(bottom.shape[0]):
             xs = np.flatnonzero(bottom[row_index, :] > 0)
             if xs.size == 0:
@@ -1058,6 +1074,8 @@ class RightLineFollowNode:
             if ratio > horizontal_width_ratio:
                 horizontal_width_ratio = ratio
                 best_span = (int(xs[0]), int(xs[-1]), y0 + row_index)
+                best_span_left_ratio = float(xs[0]) / float(width)
+                best_span_right_ratio = float(xs[-1]) / float(width)
             if ratio >= self.finish_min_horizontal_width_ratio:
                 horizontal_rows += 1
 
@@ -1104,10 +1122,12 @@ class RightLineFollowNode:
             and (box_shape_ok or vertical_sides_ok)
         )
         stop_pose_detected = (
-            horizontal_rows >= self.finish_stop_min_horizontal_rows
-            and horizontal_width_ratio >= self.finish_stop_min_horizontal_width_ratio
-            and min(left_h_ratio, right_h_ratio) >= self.finish_stop_min_vertical_height_ratio
+            self.finish_stop_min_horizontal_rows <= horizontal_rows <= self.finish_stop_max_horizontal_rows
+            and self.finish_stop_min_horizontal_width_ratio
+            <= horizontal_width_ratio
+            <= self.finish_stop_max_horizontal_width_ratio
             and self.finish_stop_bottom_y_min_ratio <= bottom_y_ratio <= self.finish_stop_bottom_y_max_ratio
+            and best_span_right_ratio >= self.finish_stop_min_right_edge_ratio
         )
         return ParkingBoxResult(
             full_box_detected or stop_pose_detected or closed_shape[0],
@@ -1117,6 +1137,8 @@ class RightLineFollowNode:
             right_h_ratio,
             bottom_y_ratio,
             horizontal_rows,
+            best_span_left_ratio,
+            best_span_right_ratio,
             full_box_detected,
             stop_pose_detected,
             closed_shape[0],
@@ -1189,9 +1211,6 @@ class RightLineFollowNode:
     def should_count_finish_detection(self, parking_result: ParkingBoxResult, route_locked: bool) -> bool:
         if not self.startup_maneuver_done:
             return False
-
-        if parking_result.closed_shape_detected:
-            return self.finish_closed_ignore_route_lock or not route_locked
 
         if route_locked:
             return False
@@ -1547,6 +1566,8 @@ class RightLineFollowNode:
                 "closed_right_ratio": float(parking_result.closed_right_ratio),
                 "horizontal_width_ratio": float(parking_result.horizontal_width_ratio),
                 "horizontal_rows": int(parking_result.horizontal_rows),
+                "horizontal_left_x_ratio": float(parking_result.horizontal_left_x_ratio),
+                "horizontal_right_x_ratio": float(parking_result.horizontal_right_x_ratio),
                 "vertical_left_height_ratio": float(parking_result.vertical_left_height_ratio),
                 "vertical_right_height_ratio": float(parking_result.vertical_right_height_ratio),
                 "bottom_y_ratio": float(parking_result.bottom_y_ratio),
@@ -1569,8 +1590,10 @@ class RightLineFollowNode:
                 "closed_band_ratio": float(self.finish_closed_band_ratio),
                 "closed_morph_kernel": int(self.finish_closed_morph_kernel),
                 "stop_min_horizontal_width_ratio": float(self.finish_stop_min_horizontal_width_ratio),
+                "stop_max_horizontal_width_ratio": float(self.finish_stop_max_horizontal_width_ratio),
                 "stop_min_horizontal_rows": int(self.finish_stop_min_horizontal_rows),
-                "stop_min_vertical_height_ratio": float(self.finish_stop_min_vertical_height_ratio),
+                "stop_max_horizontal_rows": int(self.finish_stop_max_horizontal_rows),
+                "stop_min_right_edge_ratio": float(self.finish_stop_min_right_edge_ratio),
                 "stop_bottom_y_min_ratio": float(self.finish_stop_bottom_y_min_ratio),
                 "stop_bottom_y_max_ratio": float(self.finish_stop_bottom_y_max_ratio),
             },
@@ -1657,7 +1680,7 @@ class RightLineFollowNode:
             "cmd_linear={linear:.3f} cmd_angular={angular:.3f} two_sided={two_sided} "
             "fork_rows={fork_rows} fork={fork} finish_frames={finish_frames} "
             "parking_detected={parking_detected} parking_width={parking_width:.2f} "
-            "parking_bottom={parking_bottom:.2f} parking_rows={parking_rows} "
+            "parking_bottom={parking_bottom:.2f} parking_rows={parking_rows} parking_x=({parking_left:.2f},{parking_right:.2f}) "
             "parking_full_box={parking_full_box} parking_stop_pose={parking_stop_pose} "
             "parking_closed={parking_closed} closed_score={closed_score:.2f}"
         ).format(
@@ -1679,6 +1702,8 @@ class RightLineFollowNode:
             parking_width=parking_result.horizontal_width_ratio,
             parking_bottom=parking_result.bottom_y_ratio,
             parking_rows=parking_result.horizontal_rows,
+            parking_left=parking_result.horizontal_left_x_ratio,
+            parking_right=parking_result.horizontal_right_x_ratio,
             parking_full_box=int(parking_result.full_box_detected),
             parking_stop_pose=int(parking_result.stop_pose_detected),
             parking_closed=int(parking_result.closed_shape_detected),
