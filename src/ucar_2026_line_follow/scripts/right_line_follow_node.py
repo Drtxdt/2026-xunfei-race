@@ -518,6 +518,18 @@ class RightLineFollowNode:
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
         )
         self.finish_auto_stop = bool(rospy.get_param("~finish_auto_stop", rospy.get_param("finish_auto_stop", True)))
+        self.finish_forward_after_stop_enabled = bool(
+            rospy.get_param(
+                "~finish_forward_after_stop_enabled",
+                rospy.get_param("finish_forward_after_stop_enabled", True),
+            )
+        )
+        self.finish_forward_distance_m = float(
+            rospy.get_param("~finish_forward_distance_m", rospy.get_param("finish_forward_distance_m", 0.50))
+        )
+        self.finish_forward_speed = abs(
+            float(rospy.get_param("~finish_forward_speed", rospy.get_param("finish_forward_speed", 0.10)))
+        )
         self.finish_bottom_roi_ratio = float(
             rospy.get_param("~finish_bottom_roi_ratio", rospy.get_param("finish_bottom_roi_ratio", 0.55))
         )
@@ -676,6 +688,9 @@ class RightLineFollowNode:
         self.finish_lost_frames = 0
         self.finish_time = None
         self.finish_detection_enabled = False
+        self.finish_forward_active = False
+        self.finish_forward_start_time = None
+        self.finish_forward_duration = 0.0
         self.last_parking_result = ParkingBoxResult(False, None, 0.0, 0.0, 0.0, 0.0)
         self.last_target_center = None
         self.last_cmd_linear = 0.0
@@ -704,6 +719,7 @@ class RightLineFollowNode:
             self.finish_frames = 0
             self.finish_lost_frames = 0
             self.finish_time = None
+            self.reset_finish_forward()
             self.turn_until = self.start_time + self.startup_right_bias_duration
             self.right_route_lock_until = self.start_time + self.right_route_lock_duration
             self.startup_sequence_start = self.start_time
@@ -714,9 +730,15 @@ class RightLineFollowNode:
             self.pid.reset()
             self.set_status("searching")
         else:
+            self.reset_finish_forward()
             self.pid.reset()
             self.stop_robot()
             self.set_status("idle")
+
+    def reset_finish_forward(self):
+        self.finish_forward_active = False
+        self.finish_forward_start_time = None
+        self.finish_forward_duration = 0.0
 
     def image_callback(self, msg: Image):
         try:
@@ -728,6 +750,9 @@ class RightLineFollowNode:
         now = time.time()
         if self.finish_time is not None:
             self.handle_finish(now)
+            return
+        if self.finish_forward_active:
+            self.handle_finish_forward(now)
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
@@ -794,9 +819,12 @@ class RightLineFollowNode:
                 int(self.finish_auto_stop),
             )
             if self.finish_auto_stop:
-                self.finish_time = now
-                self.set_status("finish_stop")
-                self.hard_stop_robot()
+                if self.finish_forward_after_stop_enabled and self.finish_forward_distance_m > 0.0:
+                    self.start_finish_forward(now)
+                else:
+                    self.finish_time = now
+                    self.set_status("finish_stop")
+                    self.hard_stop_robot()
                 self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
                 self.publish_status()
                 return
@@ -1369,6 +1397,52 @@ class RightLineFollowNode:
             self.set_status("finish_stop")
         self.publish_status()
 
+    def start_finish_forward(self, now: float):
+        self.pid.reset()
+        self.finish_frames = 0
+        self.finish_lost_frames = 0
+        self.finish_detection_enabled = False
+        self.finish_forward_active = True
+        self.finish_forward_start_time = now
+        speed = max(self.finish_forward_speed, 1e-3)
+        self.finish_forward_duration = max(0.0, self.finish_forward_distance_m) / speed
+        self.set_status("finish_forward")
+        self.hard_stop_robot()
+        self.publish_finish_forward_cmd()
+        rospy.loginfo(
+            "finish forward started: distance=%.2fm speed=%.3fm/s duration=%.2fs",
+            self.finish_forward_distance_m,
+            speed,
+            self.finish_forward_duration,
+        )
+
+    def handle_finish_forward(self, now: float):
+        elapsed = 0.0 if self.finish_forward_start_time is None else max(0.0, now - self.finish_forward_start_time)
+        if elapsed >= self.finish_forward_duration:
+            rospy.loginfo(
+                "finish forward done: elapsed=%.2fs duration=%.2fs",
+                elapsed,
+                self.finish_forward_duration,
+            )
+            self.reset_finish_forward()
+            self.finish_time = now
+            self.set_status("finish_stop")
+            self.hard_stop_robot()
+            self.publish_status()
+            return
+
+        self.set_status("finish_forward")
+        self.publish_finish_forward_cmd()
+        self.publish_status()
+
+    def publish_finish_forward_cmd(self):
+        twist = Twist()
+        twist.linear.x = self.finish_forward_speed
+        twist.angular.z = 0.0
+        self.last_cmd_linear = twist.linear.x
+        self.last_cmd_angular = twist.angular.z
+        self.cmd_pub.publish(twist)
+
     def handle_startup_maneuver(self, now: float) -> bool:
         if not self.started or self.startup_maneuver_done:
             return False
@@ -1574,6 +1648,11 @@ class RightLineFollowNode:
             "finish_frames": int(self.finish_frames),
             "finish_confirm_frames": int(self.finish_confirm_frames),
             "finish_release_frames": int(self.finish_release_frames),
+            "finish_forward_active": bool(self.finish_forward_active),
+            "finish_forward_after_stop_enabled": bool(self.finish_forward_after_stop_enabled),
+            "finish_forward_distance_m": float(self.finish_forward_distance_m),
+            "finish_forward_speed": float(self.finish_forward_speed),
+            "finish_forward_duration": float(self.finish_forward_duration),
             "finish_candidate_box": None if box is None else [int(v) for v in box],
             "finish_closed_shape_box": None if closed_box is None else [int(v) for v in closed_box],
             "finish_metrics": {
