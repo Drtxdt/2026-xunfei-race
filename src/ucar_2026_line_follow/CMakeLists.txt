@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package()
 
 catkin_install_python(PROGRAMS
+  scripts/camera_window_debug_node.py
   scripts/line_follow_node.py
   scripts/parking_debug_node.py
   scripts/right_debug_relay_node.py
