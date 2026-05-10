@@ -9,6 +9,7 @@ import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
@@ -334,6 +335,7 @@ class RightLineFollowNode:
 
         self.image_topic = rospy.get_param("~image_topic", rospy.get_param("image_topic", "/usb_cam/image_raw"))
         self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", rospy.get_param("cmd_vel_topic", "/cmd_vel"))
+        self.odom_topic = rospy.get_param("~odom_topic", rospy.get_param("odom_topic", "/odom"))
         self.status_topic = rospy.get_param("~status_topic", rospy.get_param("status_topic", "/right_line_follow/status"))
         self.debug_image_topic = rospy.get_param(
             "~debug_image_topic", rospy.get_param("debug_image_topic", "/right_line_follow/debug_image")
@@ -447,7 +449,7 @@ class RightLineFollowNode:
             rospy.get_param("~startup_maneuver_enabled", rospy.get_param("startup_maneuver_enabled", True))
         )
         self.startup_forward1_distance_m = float(
-            rospy.get_param("~startup_forward1_distance_m", rospy.get_param("startup_forward1_distance_m", 0.70))
+            rospy.get_param("~startup_forward1_distance_m", rospy.get_param("startup_forward1_distance_m", 0.40))
         )
         self.startup_turn_angle_deg = float(
             rospy.get_param("~startup_turn_angle_deg", rospy.get_param("startup_turn_angle_deg", 60.0))
@@ -498,6 +500,15 @@ class RightLineFollowNode:
         )
         self.finish_stop_time = float(
             rospy.get_param("~finish_stop_time", rospy.get_param("finish_stop_time", 1.0))
+        )
+        self.finish_forward_distance_m = float(
+            rospy.get_param("~finish_forward_distance_m", rospy.get_param("finish_forward_distance_m", 0.50))
+        )
+        self.finish_forward_speed = abs(
+            float(rospy.get_param("~finish_forward_speed", rospy.get_param("finish_forward_speed", 0.08)))
+        )
+        self.finish_forward_timeout_sec = float(
+            rospy.get_param("~finish_forward_timeout_sec", rospy.get_param("finish_forward_timeout_sec", 8.0))
         )
         self.finish_bottom_roi_ratio = float(
             rospy.get_param("~finish_bottom_roi_ratio", rospy.get_param("finish_bottom_roi_ratio", 0.55))
@@ -567,6 +578,12 @@ class RightLineFollowNode:
         self.finish_lost_frames = 0
         self.finish_time = None
         self.finish_detection_enabled = False
+        self.current_odom_xy: Optional[Tuple[float, float]] = None
+        self.last_odom_time = None
+        self.finish_forward_active = False
+        self.finish_forward_start_xy: Optional[Tuple[float, float]] = None
+        self.finish_forward_start_time = None
+        self.finish_forward_distance_traveled_m = 0.0
         self.last_parking_result = ParkingBoxResult(False, None, 0.0, 0.0, 0.0, 0.0)
         self.last_target_center = None
         self.last_cmd_linear = 0.0
@@ -577,6 +594,7 @@ class RightLineFollowNode:
 
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
+        self.odom_sub = rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
 
         rospy.on_shutdown(self.stop_robot)
         self.publish_status(force=True)
@@ -594,6 +612,7 @@ class RightLineFollowNode:
             self.finish_frames = 0
             self.finish_lost_frames = 0
             self.finish_time = None
+            self.reset_finish_forward()
             self.turn_until = self.start_time + self.startup_right_bias_duration
             self.right_route_lock_until = self.start_time + self.right_route_lock_duration
             self.startup_sequence_start = self.start_time
@@ -604,9 +623,21 @@ class RightLineFollowNode:
             self.pid.reset()
             self.set_status("searching")
         else:
+            self.reset_finish_forward()
             self.pid.reset()
             self.stop_robot()
             self.set_status("idle")
+
+    def odom_callback(self, msg: Odometry):
+        position = msg.pose.pose.position
+        self.current_odom_xy = (float(position.x), float(position.y))
+        self.last_odom_time = time.time()
+
+    def reset_finish_forward(self):
+        self.finish_forward_active = False
+        self.finish_forward_start_xy = None
+        self.finish_forward_start_time = None
+        self.finish_forward_distance_traveled_m = 0.0
 
     def image_callback(self, msg: Image):
         try:
@@ -618,6 +649,9 @@ class RightLineFollowNode:
         now = time.time()
         if self.finish_time is not None:
             self.handle_finish(now)
+            return
+        if self.finish_forward_active:
+            self.handle_finish_forward(now)
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
@@ -673,16 +707,15 @@ class RightLineFollowNode:
 
         if self.finish_frames >= self.finish_confirm_frames:
             rospy.loginfo(
-                "P1 parking box reached: frames=%d width=%.2f vl=%.2f vr=%.2f bottom=%.2f",
+                "P1 parking line detected: frames=%d width=%.2f vl=%.2f vr=%.2f bottom=%.2f; leaving line follow and driving %.2fm forward",
                 self.finish_frames,
                 parking_result.horizontal_width_ratio,
                 parking_result.vertical_left_height_ratio,
                 parking_result.vertical_right_height_ratio,
                 parking_result.bottom_y_ratio,
+                self.finish_forward_distance_m,
             )
-            self.finish_time = now
-            self.set_status("finish_stop")
-            self.hard_stop_robot()
+            self.start_finish_forward(now)
             self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center, parking_result, fork_rows, fork_detected_latched, now)
             self.publish_status()
             return
@@ -1126,6 +1159,80 @@ class RightLineFollowNode:
         else:
             self.set_status("finish_stop")
         self.publish_status()
+
+    def start_finish_forward(self, now: float):
+        self.pid.reset()
+        self.finish_forward_active = True
+        self.finish_forward_start_time = now
+        self.finish_forward_start_xy = self.current_odom_xy if self.odom_age(now) <= self.finish_forward_timeout_sec else None
+        self.finish_forward_distance_traveled_m = 0.0
+        self.finish_detection_enabled = False
+        self.finish_frames = 0
+        self.finish_lost_frames = 0
+        self.set_status("finish_forward")
+        if self.finish_forward_start_xy is None:
+            rospy.logwarn(
+                "finish forward started without fresh odom on %s; estimating %.2fm by time at %.3fm/s",
+                self.odom_topic,
+                self.finish_forward_distance_m,
+                self.finish_forward_speed,
+            )
+        else:
+            rospy.loginfo(
+                "finish forward started: topic=%s distance=%.2fm speed=%.3fm/s",
+                self.odom_topic,
+                self.finish_forward_distance_m,
+                self.finish_forward_speed,
+            )
+
+    def update_finish_forward_distance(self, now: float):
+        if (
+            self.finish_forward_start_xy is not None
+            and self.current_odom_xy is not None
+            and self.odom_age(now) <= self.finish_forward_timeout_sec
+        ):
+            dx = self.current_odom_xy[0] - self.finish_forward_start_xy[0]
+            dy = self.current_odom_xy[1] - self.finish_forward_start_xy[1]
+            self.finish_forward_distance_traveled_m = math.hypot(dx, dy)
+            return
+
+        elapsed = max(0.0, now - self.finish_forward_start_time) if self.finish_forward_start_time is not None else 0.0
+        self.finish_forward_distance_traveled_m = elapsed * max(self.finish_forward_speed, 1e-3)
+
+    def handle_finish_forward(self, now: float):
+        self.update_finish_forward_distance(now)
+        elapsed = max(0.0, now - self.finish_forward_start_time) if self.finish_forward_start_time is not None else 0.0
+        reached = self.finish_forward_distance_traveled_m >= max(0.0, self.finish_forward_distance_m)
+        timed_out = elapsed >= max(0.1, self.finish_forward_timeout_sec)
+
+        if reached or timed_out:
+            rospy.loginfo(
+                "finish forward done: distance=%.3fm target=%.3fm elapsed=%.2fs timed_out=%d",
+                self.finish_forward_distance_traveled_m,
+                self.finish_forward_distance_m,
+                elapsed,
+                int(timed_out and not reached),
+            )
+            self.reset_finish_forward()
+            self.finish_time = now
+            self.set_status("finish_stop")
+            self.hard_stop_robot()
+            self.publish_status()
+            return
+
+        twist = Twist()
+        twist.linear.x = self.finish_forward_speed
+        twist.angular.z = 0.0
+        self.last_cmd_linear = twist.linear.x
+        self.last_cmd_angular = twist.angular.z
+        self.cmd_pub.publish(twist)
+        self.set_status("finish_forward")
+        self.publish_status()
+
+    def odom_age(self, now: float) -> float:
+        if self.last_odom_time is None:
+            return float("inf")
+        return max(0.0, now - self.last_odom_time)
 
     def handle_startup_maneuver(self, now: float) -> bool:
         if not self.started or self.startup_maneuver_done:
