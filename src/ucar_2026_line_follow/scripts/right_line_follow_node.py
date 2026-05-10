@@ -40,6 +40,9 @@ class ParkingBoxResult:
     vertical_left_height_ratio: float
     vertical_right_height_ratio: float
     bottom_y_ratio: float
+    horizontal_rows: int = 0
+    full_box_detected: bool = False
+    stop_pose_detected: bool = False
 
 
 @dataclass
@@ -530,6 +533,39 @@ class RightLineFollowNode:
                 rospy.get_param("finish_require_vertical_sides", True),
             )
         )
+        self.finish_use_full_box_stop = bool(
+            rospy.get_param("~finish_use_full_box_stop", rospy.get_param("finish_use_full_box_stop", False))
+        )
+        self.finish_stop_min_horizontal_width_ratio = float(
+            rospy.get_param(
+                "~finish_stop_min_horizontal_width_ratio",
+                rospy.get_param("finish_stop_min_horizontal_width_ratio", 0.90),
+            )
+        )
+        self.finish_stop_min_horizontal_rows = int(
+            rospy.get_param(
+                "~finish_stop_min_horizontal_rows",
+                rospy.get_param("finish_stop_min_horizontal_rows", 1),
+            )
+        )
+        self.finish_stop_min_vertical_height_ratio = float(
+            rospy.get_param(
+                "~finish_stop_min_vertical_height_ratio",
+                rospy.get_param("finish_stop_min_vertical_height_ratio", 0.35),
+            )
+        )
+        self.finish_stop_bottom_y_min_ratio = float(
+            rospy.get_param(
+                "~finish_stop_bottom_y_min_ratio",
+                rospy.get_param("finish_stop_bottom_y_min_ratio", 0.52),
+            )
+        )
+        self.finish_stop_bottom_y_max_ratio = float(
+            rospy.get_param(
+                "~finish_stop_bottom_y_max_ratio",
+                rospy.get_param("finish_stop_bottom_y_max_ratio", 0.62),
+            )
+        )
         self.finish_approach_speed_scale = float(
             rospy.get_param("~finish_approach_speed_scale", rospy.get_param("finish_approach_speed_scale", 0.65))
         )
@@ -664,7 +700,8 @@ class RightLineFollowNode:
 
         parking_result = self.detect_parking_box(mask)
         self.last_parking_result = parking_result
-        if self.finish_detection_enabled and (not route_locked) and parking_result.detected:
+        parking_should_count = self.should_count_finish_detection(parking_result, route_locked)
+        if parking_should_count:
             self.finish_frames += 1
             self.finish_lost_frames = 0
         else:
@@ -1004,13 +1041,38 @@ class RightLineFollowNode:
 
         vertical_sides_ok = min(left_h_ratio, right_h_ratio) >= self.finish_min_vertical_height_ratio
         box_shape_ok = best_box is not None and (vertical_sides_ok or not self.finish_require_vertical_sides)
-        detected = (
+        full_box_detected = (
             horizontal_rows >= self.finish_min_horizontal_rows
             and horizontal_width_ratio >= self.finish_min_horizontal_width_ratio
             and bottom_y_ratio >= self.finish_min_bottom_y_ratio
             and (box_shape_ok or vertical_sides_ok)
         )
-        return ParkingBoxResult(detected, best_box, horizontal_width_ratio, left_h_ratio, right_h_ratio, bottom_y_ratio)
+        stop_pose_detected = (
+            horizontal_rows >= self.finish_stop_min_horizontal_rows
+            and horizontal_width_ratio >= self.finish_stop_min_horizontal_width_ratio
+            and min(left_h_ratio, right_h_ratio) >= self.finish_stop_min_vertical_height_ratio
+            and self.finish_stop_bottom_y_min_ratio <= bottom_y_ratio <= self.finish_stop_bottom_y_max_ratio
+        )
+        return ParkingBoxResult(
+            full_box_detected or stop_pose_detected,
+            best_box,
+            horizontal_width_ratio,
+            left_h_ratio,
+            right_h_ratio,
+            bottom_y_ratio,
+            horizontal_rows,
+            full_box_detected,
+            stop_pose_detected,
+        )
+
+    def should_count_finish_detection(self, parking_result: ParkingBoxResult, route_locked: bool) -> bool:
+        if route_locked or not self.startup_maneuver_done:
+            return False
+
+        if parking_result.stop_pose_detected:
+            return True
+
+        return self.finish_use_full_box_stop and self.finish_detection_enabled and parking_result.full_box_detected
 
     def vertical_presence_ratio(self, image: np.ndarray) -> float:
         if image.size == 0:
@@ -1332,7 +1394,10 @@ class RightLineFollowNode:
             "finish_candidate_box": None if box is None else [int(v) for v in box],
             "finish_metrics": {
                 "parking_detected": bool(parking_result.detected),
+                "full_box_detected": bool(parking_result.full_box_detected),
+                "stop_pose_detected": bool(parking_result.stop_pose_detected),
                 "horizontal_width_ratio": float(parking_result.horizontal_width_ratio),
+                "horizontal_rows": int(parking_result.horizontal_rows),
                 "vertical_left_height_ratio": float(parking_result.vertical_left_height_ratio),
                 "vertical_right_height_ratio": float(parking_result.vertical_right_height_ratio),
                 "bottom_y_ratio": float(parking_result.bottom_y_ratio),
@@ -1345,6 +1410,12 @@ class RightLineFollowNode:
                 "min_box_width_ratio": float(self.finish_min_box_width_ratio),
                 "min_bottom_y_ratio": float(self.finish_min_bottom_y_ratio),
                 "require_vertical_sides": bool(self.finish_require_vertical_sides),
+                "use_full_box_stop": bool(self.finish_use_full_box_stop),
+                "stop_min_horizontal_width_ratio": float(self.finish_stop_min_horizontal_width_ratio),
+                "stop_min_horizontal_rows": int(self.finish_stop_min_horizontal_rows),
+                "stop_min_vertical_height_ratio": float(self.finish_stop_min_vertical_height_ratio),
+                "stop_bottom_y_min_ratio": float(self.finish_stop_bottom_y_min_ratio),
+                "stop_bottom_y_max_ratio": float(self.finish_stop_bottom_y_max_ratio),
             },
             "observations": [
                 {
@@ -1429,7 +1500,8 @@ class RightLineFollowNode:
             "cmd_linear={linear:.3f} cmd_angular={angular:.3f} two_sided={two_sided} "
             "fork_rows={fork_rows} fork={fork} finish_frames={finish_frames} "
             "parking_detected={parking_detected} parking_width={parking_width:.2f} "
-            "parking_bottom={parking_bottom:.2f}"
+            "parking_bottom={parking_bottom:.2f} parking_rows={parking_rows} "
+            "parking_full_box={parking_full_box} parking_stop_pose={parking_stop_pose}"
         ).format(
             status=self.status,
             startup_phase=self.startup_phase,
@@ -1448,6 +1520,9 @@ class RightLineFollowNode:
             parking_detected=int(parking_result.detected),
             parking_width=parking_result.horizontal_width_ratio,
             parking_bottom=parking_result.bottom_y_ratio,
+            parking_rows=parking_result.horizontal_rows,
+            parking_full_box=int(parking_result.full_box_detected),
+            parking_stop_pose=int(parking_result.stop_pose_detected),
         )
         self.debug_info_pub.publish(String(data=msg))
         rospy.loginfo_throttle(0.5, "right_line_debug: %s", msg)

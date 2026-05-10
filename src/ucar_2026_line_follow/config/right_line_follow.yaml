@@ -85,8 +85,8 @@ post_rightmost_route_lock_duration: 8.0
 
 # P1 parking-box finish detection.
 finish_enable_delay: 30.0
-finish_confirm_frames: 12
-finish_release_frames: 2
+finish_confirm_frames: 3
+finish_release_frames: 1
 finish_stop_time: 1.0
 finish_auto_stop: true
 finish_bottom_roi_ratio: 0.55
@@ -96,6 +96,12 @@ finish_min_vertical_height_ratio: 0.30
 finish_min_box_width_ratio: 0.70
 finish_min_bottom_y_ratio: 0.96
 finish_require_vertical_sides: true
+finish_use_full_box_stop: false
+finish_stop_min_horizontal_width_ratio: 0.90
+finish_stop_min_horizontal_rows: 1
+finish_stop_min_vertical_height_ratio: 0.35
+finish_stop_bottom_y_min_ratio: 0.52
+finish_stop_bottom_y_max_ratio: 0.62
 finish_approach_speed_scale: 0.65
 finish_final_linear_speed: 0.03
 
