@@ -1225,16 +1225,17 @@ class RightLineFollowNode:
         if now - self.start_time < self.finish_detection_start_delay:
             return False
 
-        if self.finish_closed_instant_stop and parking_result.closed_shape_detected:
-            return self.finish_closed_ignore_route_lock or not route_locked
-
         if not self.startup_maneuver_done:
             return False
 
-        if route_locked:
+        if route_locked and not (
+            self.finish_closed_instant_stop
+            and self.finish_closed_ignore_route_lock
+            and parking_result.closed_shape_detected
+        ):
             return False
 
-        if parking_result.stop_pose_detected:
+        if parking_result.stop_pose_detected or parking_result.closed_shape_detected:
             return True
 
         return self.finish_use_full_box_stop and self.finish_detection_enabled and parking_result.full_box_detected
