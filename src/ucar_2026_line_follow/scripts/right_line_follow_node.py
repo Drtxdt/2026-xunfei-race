@@ -43,6 +43,13 @@ class ParkingBoxResult:
     horizontal_rows: int = 0
     full_box_detected: bool = False
     stop_pose_detected: bool = False
+    closed_shape_detected: bool = False
+    closed_shape_box: Optional[Tuple[int, int, int, int]] = None
+    closed_shape_score: float = 0.0
+    closed_top_ratio: float = 0.0
+    closed_bottom_ratio: float = 0.0
+    closed_left_ratio: float = 0.0
+    closed_right_ratio: float = 0.0
 
 
 @dataclass
@@ -536,6 +543,45 @@ class RightLineFollowNode:
         self.finish_use_full_box_stop = bool(
             rospy.get_param("~finish_use_full_box_stop", rospy.get_param("finish_use_full_box_stop", False))
         )
+        self.finish_closed_shape_enabled = bool(
+            rospy.get_param("~finish_closed_shape_enabled", rospy.get_param("finish_closed_shape_enabled", True))
+        )
+        self.finish_closed_ignore_route_lock = bool(
+            rospy.get_param(
+                "~finish_closed_ignore_route_lock",
+                rospy.get_param("finish_closed_ignore_route_lock", True),
+            )
+        )
+        self.finish_closed_min_width_ratio = float(
+            rospy.get_param(
+                "~finish_closed_min_width_ratio",
+                rospy.get_param("finish_closed_min_width_ratio", 0.35),
+            )
+        )
+        self.finish_closed_min_height_ratio = float(
+            rospy.get_param(
+                "~finish_closed_min_height_ratio",
+                rospy.get_param("finish_closed_min_height_ratio", 0.25),
+            )
+        )
+        self.finish_closed_min_horizontal_presence = float(
+            rospy.get_param(
+                "~finish_closed_min_horizontal_presence",
+                rospy.get_param("finish_closed_min_horizontal_presence", 0.50),
+            )
+        )
+        self.finish_closed_min_vertical_presence = float(
+            rospy.get_param(
+                "~finish_closed_min_vertical_presence",
+                rospy.get_param("finish_closed_min_vertical_presence", 0.45),
+            )
+        )
+        self.finish_closed_band_ratio = float(
+            rospy.get_param("~finish_closed_band_ratio", rospy.get_param("finish_closed_band_ratio", 0.14))
+        )
+        self.finish_closed_morph_kernel = int(
+            rospy.get_param("~finish_closed_morph_kernel", rospy.get_param("finish_closed_morph_kernel", 11))
+        )
         self.finish_stop_min_horizontal_width_ratio = float(
             rospy.get_param(
                 "~finish_stop_min_horizontal_width_ratio",
@@ -984,11 +1030,21 @@ class RightLineFollowNode:
 
     def detect_parking_box(self, mask: np.ndarray) -> ParkingBoxResult:
         height, width = mask.shape[:2]
+        closed_shape = self.detect_closed_parking_shape(mask)
         y0 = int(height * self.finish_bottom_roi_ratio)
         y0 = max(0, min(height - 1, y0))
         bottom = mask[y0:, :]
         if bottom.size == 0:
-            return ParkingBoxResult(False, None, 0.0, 0.0, 0.0, 0.0)
+            return ParkingBoxResult(
+                closed_shape[0], None, 0.0, 0.0, 0.0, 0.0,
+                closed_shape_detected=closed_shape[0],
+                closed_shape_box=closed_shape[1],
+                closed_shape_score=closed_shape[2],
+                closed_top_ratio=closed_shape[3],
+                closed_bottom_ratio=closed_shape[4],
+                closed_left_ratio=closed_shape[5],
+                closed_right_ratio=closed_shape[6],
+            )
 
         horizontal_width_ratio = 0.0
         horizontal_rows = 0
@@ -1054,7 +1110,7 @@ class RightLineFollowNode:
             and self.finish_stop_bottom_y_min_ratio <= bottom_y_ratio <= self.finish_stop_bottom_y_max_ratio
         )
         return ParkingBoxResult(
-            full_box_detected or stop_pose_detected,
+            full_box_detected or stop_pose_detected or closed_shape[0],
             best_box,
             horizontal_width_ratio,
             left_h_ratio,
@@ -1063,16 +1119,96 @@ class RightLineFollowNode:
             horizontal_rows,
             full_box_detected,
             stop_pose_detected,
+            closed_shape[0],
+            closed_shape[1],
+            closed_shape[2],
+            closed_shape[3],
+            closed_shape[4],
+            closed_shape[5],
+            closed_shape[6],
         )
 
+    def detect_closed_parking_shape(
+        self, mask: np.ndarray
+    ) -> Tuple[bool, Optional[Tuple[int, int, int, int]], float, float, float, float, float]:
+        if not self.finish_closed_shape_enabled:
+            return False, None, 0.0, 0.0, 0.0, 0.0, 0.0
+
+        height, width = mask.shape[:2]
+        if height <= 0 or width <= 0:
+            return False, None, 0.0, 0.0, 0.0, 0.0, 0.0
+
+        kernel_size = max(3, int(self.finish_closed_morph_kernel))
+        if kernel_size % 2 == 0:
+            kernel_size += 1
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        closed = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        closed = cv2.dilate(closed, kernel, iterations=1)
+
+        contour_result = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = contour_result[0] if len(contour_result) == 2 else contour_result[1]
+
+        best = (False, None, 0.0, 0.0, 0.0, 0.0, 0.0)
+        best_score = 0.0
+        min_w = width * self.finish_closed_min_width_ratio
+        min_h = height * self.finish_closed_min_height_ratio
+        for contour in contours:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w < min_w or h < min_h:
+                continue
+            if w <= 0 or h <= 0:
+                continue
+
+            roi = closed[y : y + h, x : x + w]
+            band_y = max(3, int(round(h * self.finish_closed_band_ratio)))
+            band_x = max(3, int(round(w * self.finish_closed_band_ratio)))
+
+            top_ratio = self.column_presence_ratio(roi[:band_y, :])
+            bottom_ratio = self.column_presence_ratio(roi[h - band_y :, :])
+            left_ratio = self.vertical_presence_ratio(roi[:, :band_x])
+            right_ratio = self.vertical_presence_ratio(roi[:, w - band_x :])
+            side_ratio = max(left_ratio, right_ratio)
+
+            width_ratio = w / float(width)
+            height_ratio = h / float(height)
+            shape_ok = (
+                top_ratio >= self.finish_closed_min_horizontal_presence
+                and bottom_ratio >= self.finish_closed_min_horizontal_presence
+                and side_ratio >= self.finish_closed_min_vertical_presence
+            )
+            if not shape_ok:
+                continue
+
+            score = top_ratio + bottom_ratio + side_ratio + 0.5 * width_ratio + 0.5 * height_ratio
+            if score > best_score:
+                best_score = score
+                best = (True, (x, y, w, h), score, top_ratio, bottom_ratio, left_ratio, right_ratio)
+
+        return best
+
     def should_count_finish_detection(self, parking_result: ParkingBoxResult, route_locked: bool) -> bool:
-        if route_locked or not self.startup_maneuver_done:
+        if not self.startup_maneuver_done:
+            return False
+
+        if parking_result.closed_shape_detected:
+            return self.finish_closed_ignore_route_lock or not route_locked
+
+        if route_locked:
             return False
 
         if parking_result.stop_pose_detected:
             return True
 
         return self.finish_use_full_box_stop and self.finish_detection_enabled and parking_result.full_box_detected
+
+    def column_presence_ratio(self, image: np.ndarray) -> float:
+        if image.size == 0:
+            return 0.0
+        col_hits = np.any(image > 0, axis=0)
+        if not np.any(col_hits):
+            return 0.0
+        xs = np.flatnonzero(col_hits)
+        return float(xs[-1] - xs[0] + 1) / float(image.shape[1])
 
     def vertical_presence_ratio(self, image: np.ndarray) -> float:
         if image.size == 0:
@@ -1298,6 +1434,10 @@ class RightLineFollowNode:
             x, y, w, h = parking_result.box
             cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 120, 0), 2)
 
+        if parking_result.closed_shape_box is not None:
+            x, y, w, h = parking_result.closed_shape_box
+            cv2.rectangle(debug, (x, roi_origin_y + y), (x + w, roi_origin_y + y + h), (0, 255, 0), 2)
+
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         mask_bgr = cv2.resize(mask_bgr, (width // 3, max(1, mask_bgr.shape[0] // 3)))
         mh, mw = mask_bgr.shape[:2]
@@ -1326,11 +1466,12 @@ class RightLineFollowNode:
             self.last_cmd_angular,
         )
         cv2.putText(debug, text2, (10, max(mh + 50, 55)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 200, 255), 2)
-        text3 = "park_w={:.2f} vl={:.2f} vr={:.2f} bottom={:.2f} lane_w={:.1f}px sel={}".format(
+        text3 = "park_w={:.2f} vl={:.2f} vr={:.2f} bottom={:.2f} closed={} lane_w={:.1f}px sel={}".format(
             parking_result.horizontal_width_ratio,
             parking_result.vertical_left_height_ratio,
             parking_result.vertical_right_height_ratio,
             parking_result.bottom_y_ratio,
+            int(parking_result.closed_shape_detected),
             self.current_lane_width_px(),
             self.selection_summary(observations),
         )
@@ -1363,6 +1504,7 @@ class RightLineFollowNode:
             box_width_ratio = w / float(max(1, width))
             box_height_ratio = h / float(max(1, height))
             box_bottom_y_ratio = (y + h) / float(max(1, height))
+        closed_box = parking_result.closed_shape_box
 
         return {
             "timestamp": now,
@@ -1392,10 +1534,17 @@ class RightLineFollowNode:
             "finish_confirm_frames": int(self.finish_confirm_frames),
             "finish_release_frames": int(self.finish_release_frames),
             "finish_candidate_box": None if box is None else [int(v) for v in box],
+            "finish_closed_shape_box": None if closed_box is None else [int(v) for v in closed_box],
             "finish_metrics": {
                 "parking_detected": bool(parking_result.detected),
                 "full_box_detected": bool(parking_result.full_box_detected),
                 "stop_pose_detected": bool(parking_result.stop_pose_detected),
+                "closed_shape_detected": bool(parking_result.closed_shape_detected),
+                "closed_shape_score": float(parking_result.closed_shape_score),
+                "closed_top_ratio": float(parking_result.closed_top_ratio),
+                "closed_bottom_ratio": float(parking_result.closed_bottom_ratio),
+                "closed_left_ratio": float(parking_result.closed_left_ratio),
+                "closed_right_ratio": float(parking_result.closed_right_ratio),
                 "horizontal_width_ratio": float(parking_result.horizontal_width_ratio),
                 "horizontal_rows": int(parking_result.horizontal_rows),
                 "vertical_left_height_ratio": float(parking_result.vertical_left_height_ratio),
@@ -1411,6 +1560,14 @@ class RightLineFollowNode:
                 "min_bottom_y_ratio": float(self.finish_min_bottom_y_ratio),
                 "require_vertical_sides": bool(self.finish_require_vertical_sides),
                 "use_full_box_stop": bool(self.finish_use_full_box_stop),
+                "closed_shape_enabled": bool(self.finish_closed_shape_enabled),
+                "closed_ignore_route_lock": bool(self.finish_closed_ignore_route_lock),
+                "closed_min_width_ratio": float(self.finish_closed_min_width_ratio),
+                "closed_min_height_ratio": float(self.finish_closed_min_height_ratio),
+                "closed_min_horizontal_presence": float(self.finish_closed_min_horizontal_presence),
+                "closed_min_vertical_presence": float(self.finish_closed_min_vertical_presence),
+                "closed_band_ratio": float(self.finish_closed_band_ratio),
+                "closed_morph_kernel": int(self.finish_closed_morph_kernel),
                 "stop_min_horizontal_width_ratio": float(self.finish_stop_min_horizontal_width_ratio),
                 "stop_min_horizontal_rows": int(self.finish_stop_min_horizontal_rows),
                 "stop_min_vertical_height_ratio": float(self.finish_stop_min_vertical_height_ratio),
@@ -1501,7 +1658,8 @@ class RightLineFollowNode:
             "fork_rows={fork_rows} fork={fork} finish_frames={finish_frames} "
             "parking_detected={parking_detected} parking_width={parking_width:.2f} "
             "parking_bottom={parking_bottom:.2f} parking_rows={parking_rows} "
-            "parking_full_box={parking_full_box} parking_stop_pose={parking_stop_pose}"
+            "parking_full_box={parking_full_box} parking_stop_pose={parking_stop_pose} "
+            "parking_closed={parking_closed} closed_score={closed_score:.2f}"
         ).format(
             status=self.status,
             startup_phase=self.startup_phase,
@@ -1523,6 +1681,8 @@ class RightLineFollowNode:
             parking_rows=parking_result.horizontal_rows,
             parking_full_box=int(parking_result.full_box_detected),
             parking_stop_pose=int(parking_result.stop_pose_detected),
+            parking_closed=int(parking_result.closed_shape_detected),
+            closed_score=parking_result.closed_shape_score,
         )
         self.debug_info_pub.publish(String(data=msg))
         rospy.loginfo_throttle(0.5, "right_line_debug: %s", msg)
