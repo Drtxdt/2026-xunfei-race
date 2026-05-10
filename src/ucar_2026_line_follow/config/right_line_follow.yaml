@@ -91,7 +91,7 @@ finish_release_frames: 1
 finish_stop_time: 1.0
 finish_auto_stop: true
 finish_forward_after_stop_enabled: true
-finish_forward_distance_m: 0.50
+finish_forward_distance_m: 0.55
 finish_forward_speed: 0.10
 finish_bottom_roi_ratio: 0.55
 finish_min_horizontal_width_ratio: 0.70
