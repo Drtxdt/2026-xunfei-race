@@ -15,6 +15,8 @@ catkin_package()
 catkin_install_python(PROGRAMS
   scripts/line_follow_node.py
   scripts/parking_debug_node.py
+  scripts/line_follow_straight_right.py
+  scripts/parking_debug_straight_right.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
