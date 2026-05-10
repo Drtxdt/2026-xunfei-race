@@ -554,6 +554,12 @@ class RightLineFollowNode:
                 rospy.get_param("finish_closed_ignore_route_lock", True),
             )
         )
+        self.finish_closed_instant_stop = bool(
+            rospy.get_param(
+                "~finish_closed_instant_stop",
+                rospy.get_param("finish_closed_instant_stop", True),
+            )
+        )
         self.finish_closed_min_width_ratio = float(
             rospy.get_param(
                 "~finish_closed_min_width_ratio",
@@ -1209,6 +1215,9 @@ class RightLineFollowNode:
         return best
 
     def should_count_finish_detection(self, parking_result: ParkingBoxResult, route_locked: bool) -> bool:
+        if self.finish_closed_instant_stop and parking_result.closed_shape_detected:
+            return self.finish_closed_ignore_route_lock or not route_locked
+
         if not self.startup_maneuver_done:
             return False
 
@@ -1583,6 +1592,7 @@ class RightLineFollowNode:
                 "use_full_box_stop": bool(self.finish_use_full_box_stop),
                 "closed_shape_enabled": bool(self.finish_closed_shape_enabled),
                 "closed_ignore_route_lock": bool(self.finish_closed_ignore_route_lock),
+                "closed_instant_stop": bool(self.finish_closed_instant_stop),
                 "closed_min_width_ratio": float(self.finish_closed_min_width_ratio),
                 "closed_min_height_ratio": float(self.finish_closed_min_height_ratio),
                 "closed_min_horizontal_presence": float(self.finish_closed_min_horizontal_presence),

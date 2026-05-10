@@ -99,6 +99,7 @@ finish_require_vertical_sides: true
 finish_use_full_box_stop: false
 finish_closed_shape_enabled: true
 finish_closed_ignore_route_lock: true
+finish_closed_instant_stop: true
 finish_closed_min_width_ratio: 0.35
 finish_closed_min_height_ratio: 0.25
 finish_closed_min_horizontal_presence: 0.50
