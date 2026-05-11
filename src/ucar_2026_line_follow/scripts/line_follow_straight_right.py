@@ -533,16 +533,18 @@ class LineFollowStraightRightNode:
                 merged.append(seg)
         return merged
 
-    def choose_lane_pair(self, segments: List[Segment], image_width: int, force_right: bool = False):
+    def choose_lane_pair(
+        self, segments: List[Segment], image_width: int, force_right: bool = False
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], bool]:
         lane_width_px = self.current_lane_width_px()
         if len(segments) >= 2:
             multi = len(segments) >= self.fork_candidate_count
             if force_right:
                 left = segments[-2]
                 right = segments[-1]
-                return left.center, right.center, (left.center + right.center) / 2.0, multi
             else:
-                return self.best_pair_near_image_center(segments, image_width)
+                left, right = self.best_pair_near_image_center(segments, image_width)
+            return left.center, right.center, (left.center + right.center) / 2.0, multi
         if len(segments) == 1:
             seg = segments[0]
             if force_right:
@@ -557,7 +559,7 @@ class LineFollowStraightRightNode:
                     return None, seg.center, center, False
         return None, None, None, False
 
-    def best_pair_near_image_center(self, segments: List[Segment], image_width: int):
+    def best_pair_near_image_center(self, segments: List[Segment], image_width: int) -> Tuple[Segment, Segment]:
         image_center = image_width / 2.0
         lane_width_px = self.current_lane_width_px()
         best_pair = (segments[0], segments[1])
