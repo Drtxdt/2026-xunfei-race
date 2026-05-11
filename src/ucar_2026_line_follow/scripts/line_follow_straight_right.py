@@ -34,6 +34,7 @@ class RowObservation:
     right_x: Optional[float]
     center_x: Optional[float]
     multi_candidate: bool
+    selection: str = "none"
 
 
 @dataclass
@@ -113,6 +114,9 @@ class LineFollowStraightRightNode:
         self.gray_white_threshold = int(rospy.get_param("~gray_white_threshold", rospy.get_param("gray_white_threshold", 185)))
         self.morph_kernel_size = int(rospy.get_param("~morph_kernel_size", rospy.get_param("morph_kernel_size", 5)))
         self.min_line_width_px = int(rospy.get_param("~min_line_width_px", rospy.get_param("min_line_width_px", 6)))
+        self.max_lane_segment_width_px = int(
+            rospy.get_param("~max_lane_segment_width_px", rospy.get_param("max_lane_segment_width_px", 90))
+        )
         self.min_segment_gap_px = int(rospy.get_param("~min_segment_gap_px", rospy.get_param("min_segment_gap_px", 12)))
         self.min_contour_area = float(rospy.get_param("~min_contour_area", rospy.get_param("min_contour_area", 60.0)))
         self.scan_row_ratios = self._get_float_list("scan_row_ratios", [0.20, 0.35, 0.50, 0.65, 0.80, 0.92])
@@ -144,6 +148,15 @@ class LineFollowStraightRightNode:
         self.turn_bias_px = float(rospy.get_param("~turn_bias_px", rospy.get_param("turn_bias_px", 55.0)))   # 右转正偏移
         self.turn_hold_time = float(rospy.get_param("~turn_hold_time", rospy.get_param("turn_hold_time", 1.2)))
         self.turn_linear_speed = float(rospy.get_param("~turn_linear_speed", rospy.get_param("turn_linear_speed", 0.08)))
+        self.right_route_pair_width_slack = float(
+            rospy.get_param("~right_route_pair_width_slack", rospy.get_param("right_route_pair_width_slack", 1.45))
+        )
+        self.rightmost_line_target_offset_px = float(
+            rospy.get_param("~rightmost_line_target_offset_px", rospy.get_param("rightmost_line_target_offset_px", 115.0))
+        )
+        self.rightmost_line_target_offset_ratio = float(
+            rospy.get_param("~rightmost_line_target_offset_ratio", rospy.get_param("rightmost_line_target_offset_ratio", 0.50))
+        )
 
         # 直行+右转状态机
         self.fork_handled_count = 0
@@ -303,7 +316,8 @@ class LineFollowStraightRightNode:
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
-        observations = self.observe_lane(mask, frame.shape[1], self.right_turn_active)
+        selection_mode = "right_route" if self.right_turn_active else "center"
+        observations = self.observe_lane(mask, frame.shape[1], selection_mode)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
         self.update_lane_width_estimate(observations)
 
@@ -490,14 +504,16 @@ class LineFollowStraightRightNode:
                 cv2.drawContours(filtered, [contour], -1, 255, thickness=cv2.FILLED)
         return filtered
 
-    def observe_lane(self, mask: np.ndarray, image_width: int, force_right: bool = False) -> List[RowObservation]:
+    def observe_lane(self, mask: np.ndarray, image_width: int, selection_mode: str = "center") -> List[RowObservation]:
         observations = []
         roi_height = mask.shape[0]
         for ratio in self.scan_row_ratios:
             y = int(max(0, min(roi_height - 1, roi_height * ratio)))
             segments = self.find_segments(mask[y, :])
-            left_x, right_x, center_x, multi_candidate = self.choose_lane_pair(segments, image_width, force_right)
-            observations.append(RowObservation(y, segments, left_x, right_x, center_x, multi_candidate))
+            left_x, right_x, center_x, multi_candidate, selection = self.choose_lane_pair(
+                segments, image_width, selection_mode
+            )
+            observations.append(RowObservation(y, segments, left_x, right_x, center_x, multi_candidate, selection))
         return observations
 
     def find_segments(self, row: np.ndarray) -> List[Segment]:
@@ -534,30 +550,58 @@ class LineFollowStraightRightNode:
         return merged
 
     def choose_lane_pair(
-        self, segments: List[Segment], image_width: int, force_right: bool = False
-    ) -> Tuple[Optional[float], Optional[float], Optional[float], bool]:
+        self, segments: List[Segment], image_width: int, selection_mode: str = "center"
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, str]:
+        lane_segments = [segment for segment in segments if segment.width <= self.max_lane_segment_width_px]
+        if lane_segments:
+            segments = lane_segments
+
         lane_width_px = self.current_lane_width_px()
         if len(segments) >= 2:
             multi = len(segments) >= self.fork_candidate_count
-            if force_right:
-                left = segments[-2]
-                right = segments[-1]
+            if selection_mode == "right_route":
+                left, right = self.best_right_route_pair(segments)
+                selection = "right_pair_fork" if multi else "right_pair_lock"
             else:
                 left, right = self.best_pair_near_image_center(segments, image_width)
-            return left.center, right.center, (left.center + right.center) / 2.0, multi
+                selection = "center_pair"
+            return left.center, right.center, (left.center + right.center) / 2.0, multi, selection
         if len(segments) == 1:
             seg = segments[0]
-            if force_right:
-                center = seg.center - lane_width_px / 2.0
-                return None, seg.center, center, False
+            if seg.center < image_width / 2.0:
+                center = seg.center + lane_width_px / 2.0
+                return seg.center, None, center, False, "single_left_border"
+            if selection_mode == "right_route":
+                center = self.center_from_right_boundary(seg.center)
             else:
-                if seg.center < image_width / 2.0:
-                    center = seg.center + lane_width_px / 2.0
-                    return seg.center, None, center, False
-                else:
-                    center = seg.center - lane_width_px / 2.0
-                    return None, seg.center, center, False
-        return None, None, None, False
+                center = seg.center - lane_width_px / 2.0
+            return None, seg.center, center, False, "single_right_border"
+        return None, None, None, False, "none"
+
+    def center_from_right_boundary(self, right_x: float) -> float:
+        lane_width_px = self.current_lane_width_px()
+        configured_offset = self.rightmost_line_target_offset_px
+        if configured_offset <= 0.0:
+            configured_offset = lane_width_px * self.rightmost_line_target_offset_ratio
+        min_offset = max(55.0, lane_width_px * 0.35)
+        max_offset = min(150.0, lane_width_px * 0.65)
+        offset = max(min_offset, min(max_offset, configured_offset))
+        return right_x - offset
+
+    def best_right_route_pair(self, segments: List[Segment]) -> Tuple[Segment, Segment]:
+        lane_width_px = self.current_lane_width_px()
+        min_width = max(self.lane_width_px_min * 0.65, lane_width_px * 0.45)
+        max_width = min(self.lane_width_px_max * self.right_route_pair_width_slack, lane_width_px * 1.8)
+        candidates = []
+        for left, right in zip(segments, segments[1:]):
+            width = right.center - left.center
+            center = (left.center + right.center) / 2.0
+            if min_width <= width <= max_width:
+                candidates.append((center, left, right))
+        if candidates:
+            _, left, right = max(candidates, key=lambda item: item[0])
+            return left, right
+        return segments[-2], segments[-1]
 
     def best_pair_near_image_center(self, segments: List[Segment], image_width: int) -> Tuple[Segment, Segment]:
         image_center = image_width / 2.0
@@ -582,7 +626,7 @@ class LineFollowStraightRightNode:
             return
         samples = []
         for obs in observations:
-            if obs.left_x and obs.right_x and not obs.multi_candidate:
+            if obs.left_x is not None and obs.right_x is not None and not obs.multi_candidate:
                 w = obs.right_x - obs.left_x
                 if self.lane_width_px_min <= w <= self.lane_width_px_max:
                     samples.append(w)
@@ -746,10 +790,7 @@ class LineFollowStraightRightNode:
     def handle_lost_or_search(self, now: float):
         if self.last_detection_time is None or now - self.last_detection_time <= self.lost_timeout:
             self.set_status("searching")
-            twist = Twist()
-            twist.linear.x = self.search_linear_speed
-            twist.angular.z = 0.0
-            self.cmd_pub.publish(twist)
+            self.publish_search_cmd()
             return
         if self.stop_on_lost:
             self.pid.reset()
@@ -757,9 +798,16 @@ class LineFollowStraightRightNode:
             self.set_status("lost")
             return
         self.set_status("searching")
+        self.publish_search_cmd()
+
+    def publish_search_cmd(self):
         twist = Twist()
         twist.linear.x = self.search_linear_speed
-        twist.angular.z = 0.0
+        if abs(self.last_error_px) > 1.0:
+            direction = -1.0 if self.last_error_px > 0.0 else 1.0
+        else:
+            direction = -1.0
+        twist.angular.z = direction * self.search_angular_speed
         self.cmd_pub.publish(twist)
 
     def handle_finish_maneuver(self, now: float):
@@ -847,6 +895,7 @@ class LineFollowStraightRightNode:
                     "right_x": obs.right_x,
                     "center_x": obs.center_x,
                     "multi_candidate": obs.multi_candidate,
+                    "selection": obs.selection,
                     "segments": [{"left": s.left, "right": s.right, "center": s.center, "width": s.width} for s in obs.segments],
                 }
                 for obs in observations
