@@ -1,0 +1,24 @@
+<launch>
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/right_line_follow.yaml" />
+  <arg name="debug_output_path" default="" />
+
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <node pkg="ucar_2026_line_follow" type="right_parking_debug_node.py" name="right_parking_debug_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="debug_output_path" value="$(arg debug_output_path)" />
+    <param name="finish_auto_stop" value="false" />
+  </node>
+
+  <node pkg="ucar_2026_line_follow" type="right_debug_relay_node.py" name="right_debug_relay_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+</launch>

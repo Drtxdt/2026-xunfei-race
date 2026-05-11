@@ -46,6 +46,34 @@ Run only the line-follow node when the base driver and camera are already up:
 roslaunch ucar_2026_line_follow line_follow_test.launch start_driver:=false start_camera:=false
 ```
 
+Run the independent right-hand visual line follower. This assumes the traffic
+light is a right-turn signal and follows the right route to P1:
+
+```bash
+roslaunch ucar_2026_line_follow right_line_follow.launch
+```
+
+View its debug image:
+
+```bash
+rosrun image_view image_view image:=/right_line_follow/debug_image
+```
+
+The right-hand launch also starts `right_debug_relay_node.py`, which republishes
+the processed debug image as JPEG for viewing from another computer:
+
+```bash
+rosrun image_view image_view image:=/right_line_follow/debug_image _image_transport:=compressed
+rostopic echo /right_line_follow/debug_info
+rostopic echo /right_line_follow/debug_relay/status
+```
+
+The right-hand node starts with an open-loop entry maneuver before vision takes
+over: forward 0.70 m, turn right 60 degrees in place, forward 0.50 m, then use
+only the rightmost visible white line for `rightmost_line_only_duration` seconds.
+Tune these values in `config/right_line_follow.yaml` if the real chassis speed
+does not match the configured speed.
+
 View the debug image:
 
 ```bash

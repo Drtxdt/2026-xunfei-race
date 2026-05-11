@@ -1,0 +1,155 @@
+# ROS topics
+image_topic: /usb_cam/image_raw
+cmd_vel_topic: /cmd_vel
+status_topic: /right_line_follow/status
+debug_image_topic: /right_line_follow/debug_image
+debug_info_topic: /right_line_follow/debug_info
+start_topic: /right_line_follow/start
+
+# Startup and route. This node is fixed to the right-hand route from the car's
+# point of view. Traffic-light recognition is not connected yet.
+auto_start: true
+publish_debug: true
+
+# Track geometry from the rules and field notes.
+lane_width_m: 0.42
+line_width_m: 0.02
+parking_box_size_m: 0.50
+lane_width_px: 230
+lane_width_px_min: 150
+lane_width_px_max: 340
+lane_width_adapt_alpha: 0.15
+enable_lane_width_adapt: true
+single_line_hold_frames: 12
+
+# Image region and white-line extraction.
+roi_y_start_ratio: 0.45
+roi_y_end_ratio: 1.0
+white_s_max: 85
+white_v_min: 150
+gray_white_threshold: 185
+morph_kernel_size: 5
+min_line_width_px: 6
+max_lane_segment_width_px: 90
+min_segment_gap_px: 12
+min_contour_area: 60
+
+# Horizontal scan rows inside ROI, top to bottom.
+scan_row_ratios: [0.20, 0.35, 0.50, 0.65, 0.80, 0.92]
+target_row_weight_bottom: 1.6
+
+# PID control.
+base_linear_speed: 0.12
+min_linear_speed: 0.070
+search_linear_speed: 0.045
+turn_linear_speed: 0.075
+kp: 0.0045
+ki: 0.0
+kd: 0.00035
+max_integral: 80.0
+max_angular_speed: 0.52
+error_slowdown_px: 220.0
+
+# Lost-line handling.
+search_angular_speed: 0.25
+lost_timeout: 1.0
+stop_on_lost: false
+
+# Right fork handling.
+fork_candidate_count: 3
+fork_center_tolerance_px: 220
+fork_latch_time: 0.45
+fork_cooldown_sec: 1.0
+right_turn_bias_px: 25
+turn_hold_time: 1.0
+right_route_lock_duration: 0.0
+right_route_relock_duration: 3.5
+right_route_pair_width_slack: 1.45
+startup_right_bias_duration: 0.0
+startup_right_bias_px: 0
+
+# Open-loop startup entry. IMU/odom is not used here because field logs show
+# intermittent IMU CRC warnings; tune speeds to the real car before full speed.
+startup_maneuver_enabled: true
+startup_forward1_distance_m: 0.40
+startup_turn_angle_deg: 75.0
+startup_forward2_distance_m: 0.50
+startup_forward_speed: 0.12
+startup_turn_angular_speed: 0.35
+rightmost_line_only_duration: 3.0
+rightmost_line_only_speed: 0.075
+rightmost_line_target_offset_px: 115
+rightmost_line_target_offset_ratio: 0.50
+rightmost_max_angular_speed: 0.35
+post_rightmost_route_lock_duration: 8.0
+
+# P1 parking-box finish detection.
+finish_enable_delay: 30.0
+finish_detection_start_delay: 29.0
+finish_confirm_frames: 2
+finish_release_frames: 1
+finish_stop_time: 1.0
+finish_auto_stop: true
+finish_forward_after_stop_enabled: true
+finish_forward_distance_m: 0.55
+finish_forward_speed: 0.10
+finish_bottom_roi_ratio: 0.55
+finish_min_horizontal_width_ratio: 0.70
+finish_min_horizontal_rows: 6
+finish_min_vertical_height_ratio: 0.30
+finish_min_box_width_ratio: 0.70
+finish_min_bottom_y_ratio: 0.96
+finish_require_vertical_sides: true
+finish_use_full_box_stop: false
+finish_closed_shape_enabled: true
+finish_closed_ignore_route_lock: false
+finish_closed_instant_stop: false
+finish_closed_min_width_ratio: 0.35
+finish_closed_min_height_ratio: 0.25
+finish_closed_min_horizontal_presence: 0.58
+finish_closed_min_vertical_presence: 0.52
+finish_closed_band_ratio: 0.14
+finish_closed_morph_kernel: 11
+finish_stop_min_horizontal_width_ratio: 0.62
+finish_stop_max_horizontal_width_ratio: 0.88
+finish_stop_min_horizontal_rows: 5
+finish_stop_max_horizontal_rows: 40
+finish_stop_min_right_edge_ratio: 0.90
+finish_stop_bottom_y_min_ratio: 0.75
+finish_stop_bottom_y_max_ratio: 0.88
+finish_approach_speed_scale: 0.65
+finish_final_linear_speed: 0.03
+
+# Senior follow-line logic. After the open-loop entry and rightmost-line entry
+# phase, this replaces the row-scan PID with the previous team's right-hand
+# line tracing, normal offset and atan2 preview controller.
+use_senior_follow_after_entry: true
+senior_begin_x: 25.0
+senior_begin_y: 400.0
+senior_thres: 30.0
+senior_block_size: 7
+senior_clip_value: 1.0
+senior_line_blur_kernel: 7
+senior_pixel_per_meter: 500.0
+senior_road_width_m: 0.36
+senior_sample_dist_m: 0.01
+senior_aim_dist_m: 0.10
+senior_forward_bias_m: 0.20
+senior_base_speed: 0.24
+senior_speed_error_scale: 0.24
+senior_min_speed: 0.08
+senior_max_speed: 0.28
+senior_max_angular_speed: 0.75
+senior_lost_speed: 0.12
+senior_lost_error: -0.30
+senior_lost_lateral_speed: -0.05
+
+# Debug relay. The launch file starts a relay that republishes the processed
+# debug image as JPEG so it is lighter to view from another computer.
+compressed_debug_topic: /right_line_follow/debug_image/compressed
+compressed_raw_topic: /right_line_follow/raw_image/compressed
+debug_relay_status_topic: /right_line_follow/debug_relay/status
+jpeg_quality: 75
+debug_resize_width: 0
+debug_max_publish_fps: 12.0
+publish_raw_compressed: true
