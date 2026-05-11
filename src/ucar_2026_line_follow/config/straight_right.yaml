@@ -1,0 +1,4 @@
+# 直行+右转专属参数
+turn_bias_px: 55.0
+turn_hold_time: 1.2
+finish_parking_target_bottom_y_ratio: 0.955

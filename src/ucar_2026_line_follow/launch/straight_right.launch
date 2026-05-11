@@ -1,0 +1,6 @@
+<launch>
+    <node name="line_follow_straight_right" pkg="ucar_2026_line_follow" type="line_follow_straight_right.py" output="screen">
+        <rosparam file="$(find ucar_2026_line_follow)/config/straight_right.yaml" command="load"/>
+        <param name="image_topic" value="/usb_cam/image_raw"/>
+    </node>
+</launch>

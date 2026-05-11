@@ -16,6 +16,8 @@ catkin_install_python(PROGRAMS
   scripts/camera_window_debug_node.py
   scripts/line_follow_node.py
   scripts/parking_debug_node.py
+  scripts/line_follow_straight_right.py
+  scripts/parking_debug_straight_right.py
   scripts/right_debug_relay_node.py
   scripts/right_line_follow_node.py
   scripts/right_parking_debug_node.py
