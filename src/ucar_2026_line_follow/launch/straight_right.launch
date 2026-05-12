@@ -12,7 +12,6 @@
   </group>
 
   <node name="line_follow_straight_right" pkg="ucar_2026_line_follow" type="line_follow_straight_right.py" output="screen">
-<<<<<<< HEAD
     <!-- 先加载原有的配置文件（可覆盖部分参数） -->
     <rosparam file="$(arg config_file)" command="load"/>
 
@@ -44,9 +43,5 @@
     <param name="gray_white_threshold" value="200" />
     <param name="gray_white_max" value="255" />
 
-=======
-    <rosparam file="$(arg config_file)" command="load"/>
-    <param name="image_topic" value="/usb_cam/image_raw"/>
->>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
   </node>
 </launch>
