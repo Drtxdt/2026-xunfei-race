@@ -1,4 +1,31 @@
 # 直行+右转专属参数
+lane_width_px_init: 230
+lane_width_px_min: 150
+lane_width_px_max: 340
+lane_width_adapt_alpha: 0.15
+enable_lane_width_adapt: true
+target_row_weight_bottom: 1.6
+max_lane_segment_width_px: 90
+
+base_linear_speed: 0.12
+min_linear_speed: 0.070
+search_linear_speed: 0.045
+turn_linear_speed: 0.075
+kp: 0.0045
+ki: 0.0
+kd: 0.00035
+max_angular_speed: 0.52
+error_slowdown_px: 220.0
+search_angular_speed: 0.25
+
+fork_center_tolerance_px: 220
+fork_latch_time: 0.45
+fork_cooldown_sec: 1.0
 turn_bias_px: 55.0
-turn_hold_time: 1.2
+turn_hold_time: 1.0
+right_route_pair_width_slack: 1.45
+rightmost_line_target_offset_px: 115
+rightmost_line_target_offset_ratio: 0.50
+
+finish_enable_delay: 30.0
 finish_parking_target_bottom_y_ratio: 0.955
