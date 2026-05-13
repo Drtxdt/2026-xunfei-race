@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-直行+右转巡线节点
-路径：第一个岔路口直行，第二个岔路口右转，末端停车
+直行+右转巡线节点（跟随右侧白线 + 横线停车 + 抗灯光反光）
+基于原完整代码修改，保留所有原有功能框架，新增：跟随右线、起步直行、横线停车、
+去除里程计、抗反光参数、50秒超时保护。
 """
 import math
 import time
@@ -87,6 +89,7 @@ class LineFollowStraightRightNode:
 
         self.image_topic = rospy.get_param("~image_topic", rospy.get_param("image_topic", "/usb_cam/image_raw"))
         self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", rospy.get_param("cmd_vel_topic", "/cmd_vel"))
+        # 里程计话题保留参数但不订阅
         self.odom_topic = rospy.get_param("~odom_topic", rospy.get_param("odom_topic", "/odom"))
         self.status_topic = rospy.get_param("~status_topic", rospy.get_param("status_topic", "/line_follow/status"))
         self.debug_image_topic = rospy.get_param(
@@ -109,9 +112,12 @@ class LineFollowStraightRightNode:
 
         self.roi_y_start_ratio = float(rospy.get_param("~roi_y_start_ratio", rospy.get_param("roi_y_start_ratio", 0.45)))
         self.roi_y_end_ratio = float(rospy.get_param("~roi_y_end_ratio", rospy.get_param("roi_y_end_ratio", 1.0)))
-        self.white_s_max = int(rospy.get_param("~white_s_max", rospy.get_param("white_s_max", 85)))
-        self.white_v_min = int(rospy.get_param("~white_v_min", rospy.get_param("white_v_min", 150)))
-        self.gray_white_threshold = int(rospy.get_param("~gray_white_threshold", rospy.get_param("gray_white_threshold", 185)))
+        # 抗反光：提高白线亮度下限
+        self.white_v_min = int(rospy.get_param("~white_v_min", 200))
+        self.white_v_max = int(rospy.get_param("~white_v_max", 255))
+        self.white_s_max = int(rospy.get_param("~white_s_max", 85))
+        self.gray_white_threshold = int(rospy.get_param("~gray_white_threshold", 200))
+        self.gray_white_max = int(rospy.get_param("~gray_white_max", 255))
         self.morph_kernel_size = int(rospy.get_param("~morph_kernel_size", rospy.get_param("morph_kernel_size", 5)))
         self.min_line_width_px = int(rospy.get_param("~min_line_width_px", rospy.get_param("min_line_width_px", 6)))
         self.max_lane_segment_width_px = int(
@@ -135,17 +141,16 @@ class LineFollowStraightRightNode:
         self.search_linear_speed = float(rospy.get_param("~search_linear_speed", rospy.get_param("search_linear_speed", 0.035)))
         self.max_angular_speed = float(rospy.get_param("~max_angular_speed", rospy.get_param("max_angular_speed", 0.8)))
         self.error_slowdown_px = float(rospy.get_param("~error_slowdown_px", rospy.get_param("error_slowdown_px", 160.0)))
-
         self.search_angular_speed = float(rospy.get_param("~search_angular_speed", rospy.get_param("search_angular_speed", 0.25)))
         self.lost_timeout = float(rospy.get_param("~lost_timeout", rospy.get_param("lost_timeout", 1.0)))
         self.stop_on_lost = bool(rospy.get_param("~stop_on_lost", rospy.get_param("stop_on_lost", False)))
 
-        # 岔路参数
+        # 岔路参数（保留，但本逻辑使用跟随右线，不使用 fork 逻辑）
         self.fork_candidate_count = int(rospy.get_param("~fork_candidate_count", rospy.get_param("fork_candidate_count", 3)))
         self.fork_center_tolerance_px = float(rospy.get_param("~fork_center_tolerance_px", rospy.get_param("fork_center_tolerance_px", 180.0)))
         self.fork_cooldown_sec = float(rospy.get_param("~fork_cooldown_sec", rospy.get_param("fork_cooldown_sec", 1.0)))
         self.fork_latch_time = float(rospy.get_param("~fork_latch_time", rospy.get_param("fork_latch_time", 0.35)))
-        self.turn_bias_px = float(rospy.get_param("~turn_bias_px", rospy.get_param("turn_bias_px", 55.0)))   # 右转正偏移
+        self.turn_bias_px = float(rospy.get_param("~turn_bias_px", rospy.get_param("turn_bias_px", 55.0)))
         self.turn_hold_time = float(rospy.get_param("~turn_hold_time", rospy.get_param("turn_hold_time", 1.2)))
         self.turn_linear_speed = float(rospy.get_param("~turn_linear_speed", rospy.get_param("turn_linear_speed", 0.08)))
         self.right_route_pair_width_slack = float(
@@ -158,12 +163,18 @@ class LineFollowStraightRightNode:
             rospy.get_param("~rightmost_line_target_offset_ratio", rospy.get_param("rightmost_line_target_offset_ratio", 0.50))
         )
 
-        # 直行+右转状态机
-        self.fork_handled_count = 0
-        self.right_turn_active = False
-        self.fork_cool_until = 0.0
+        # 新增：跟随右线参数
+        self.right_offset_px = float(rospy.get_param("~right_offset_px", 180.0))  # 21cm 对应像素
+        # 起步直行参数
+        self.start_straight_duration = float(rospy.get_param("~start_straight_duration", 2.8))
+        # 横线检测参数
+        self.first_line_y_threshold = float(rospy.get_param("~first_line_y_threshold", 0.7))
+        self.second_line_y_threshold = float(rospy.get_param("~second_line_y_threshold", 0.85))
+        self.after_first_line_duration = float(rospy.get_param("~after_first_line_duration", 8.0))
+        self.after_first_line_speed = float(rospy.get_param("~after_first_line_speed", 0.05))
+        self.stop_after_seconds = float(rospy.get_param("~stop_after_seconds", 50.0))
 
-        # 停车相关
+        # 停车相关参数（保留但不一定使用，为兼容原有框架）
         self.finish_enable_delay = float(rospy.get_param("~finish_enable_delay", rospy.get_param("finish_enable_delay", 6.0)))
         self.finish_confirm_frames = int(rospy.get_param("~finish_confirm_frames", rospy.get_param("finish_confirm_frames", 5)))
         self.finish_release_frames = int(rospy.get_param("~finish_release_frames", rospy.get_param("finish_release_frames", 1)))
@@ -220,6 +231,7 @@ class LineFollowStraightRightNode:
         self.finish_parking_candidate_frames = 0
         self.finish_parking_reached_frames = 0
         self.finish_parking_bottom_y_ratio = 0.0
+        # 里程计变量保留但不使用
         self.current_odom_xy: Optional[Tuple[float, float]] = None
         self.last_odom_time = None
         self.finish_odom_active = False
@@ -234,13 +246,18 @@ class LineFollowStraightRightNode:
         self.dual_line_stable_frames = 0
         self.nonfork_stable_frames = 0
 
+        # 新增状态机变量
+        self.state = "START_STRAIGHT"  # START_STRAIGHT | FOLLOW_RIGHT | FIRST_LINE_STOP | AFTER_FIRST_MOVE | DONE
+        self.first_line_stop_time = None
+        self.after_first_move_start_time = None
+
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self.image_callback, queue_size=1, buff_size=2**24)
         self.start_sub = rospy.Subscriber(self.start_topic, Bool, self.start_callback, queue_size=1)
-        self.odom_sub = rospy.Subscriber(self.odom_topic, Odometry, self.odom_callback, queue_size=10)
+        # 不再订阅里程计
 
         rospy.on_shutdown(self.stop_robot)
         self.publish_status(force=True)
-        rospy.loginfo("Straight+Right node started. image=%s cmd_vel=%s", self.image_topic, self.cmd_vel_topic)
+        rospy.loginfo("Straight+Right (follow right) node started. image=%s cmd_vel=%s", self.image_topic, self.cmd_vel_topic)
 
     # ---------- 工具函数 ----------
     def _get_float_list(self, name, default):
@@ -266,34 +283,17 @@ class LineFollowStraightRightNode:
             self.finish_frames = 0
             self.finish_lost_frames = 0
             self.finish_time = None
-            self.finish_parking_candidate_frames = 0
-            self.finish_parking_reached_frames = 0
-            self.finish_parking_bottom_y_ratio = 0.0
-            self.reset_finish_odom_approach()
-            self.finish_phase = "search"
-            self.fork_handled_count = 0
-            self.right_turn_active = False
-            self.fork_cool_until = 0.0
-            self.turn_until = 0.0
-            self.dual_line_stable_frames = 0
-            self.nonfork_stable_frames = 0
-            self.set_status("searching")
+            self.state = "START_STRAIGHT"
+            self.first_line_stop_time = None
+            self.after_first_move_start_time = None
+            self.set_status("start_straight")
         if not self.started:
             self.pid.reset()
             self.finish_time = None
-            self.finish_parking_candidate_frames = 0
-            self.finish_parking_reached_frames = 0
-            self.finish_parking_bottom_y_ratio = 0.0
-            self.reset_finish_odom_approach()
-            self.finish_phase = "search"
             self.stop_robot()
             self.set_status("idle")
 
-    def odom_callback(self, msg: Odometry):
-        position = msg.pose.pose.position
-        self.current_odom_xy = (float(position.x), float(position.y))
-        self.last_odom_time = time.time()
-
+    # 删除 odom_callback
     def reset_finish_odom_approach(self):
         self.finish_odom_active = False
         self.finish_odom_start_xy = None
@@ -309,169 +309,128 @@ class LineFollowStraightRightNode:
             return
 
         now = time.time()
-        if self.finish_time is None and not self.finish_detection_enabled:
-            self.finish_detection_enabled = (now - self.start_time) >= self.finish_enable_delay
-        if self.finish_time is not None:
-            self.handle_finish_maneuver(now)
+        elapsed = now - self.start_time
+
+        # 50 秒强制停车
+        if elapsed > self.stop_after_seconds:
+            self.stop_robot()
+            self.set_status("timeout_stop")
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
+<<<<<<< HEAD
+=======
         selection_mode = "right_route" if self.right_turn_active else "center"
         observations = self.observe_lane(mask, frame.shape[1], selection_mode)
         lane_center = self.estimate_lane_center(observations, frame.shape[1])
         self.update_lane_width_estimate(observations)
+>>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
 
-        fork_rows = sum(1 for obs in observations if obs.multi_candidate)
-        if fork_rows > 0:
-            self.nonfork_stable_frames = 0
-        else:
-            self.nonfork_stable_frames += 1
+        # ---------- 新状态机 ----------
+        if self.state == "START_STRAIGHT":
+            if elapsed < self.start_straight_duration:
+                twist = Twist()
+                twist.linear.x = self.base_linear_speed
+                twist.angular.z = 0.0
+                self.cmd_pub.publish(twist)
+                self.set_status("start_straight")
+                return
+            else:
+                self.state = "FOLLOW_RIGHT"
 
-        image_center = frame.shape[1] / 2.0
-        lane_center_offset = None if lane_center is None else abs(lane_center - image_center)
-        fork_geometry_ok = lane_center_offset is not None and lane_center_offset <= self.fork_center_tolerance_px
-        fork_detected = fork_rows >= self.fork_candidate_count and fork_geometry_ok
-        if fork_detected:
-            self.fork_latch_until = max(self.fork_latch_until, now + self.fork_latch_time)
-        fork_detected_latched = now < self.fork_latch_until
+        if self.state in ("FOLLOW_RIGHT", "FIRST_LINE_STOP", "AFTER_FIRST_MOVE"):
+            horizontal_detected, line_bottom_ratio = self.detect_horizontal_line(mask)
 
-        # 两岔路状态机
-        if fork_detected_latched and now > self.fork_cool_until:
-            if self.fork_handled_count == 0:
-                self.fork_handled_count = 1
-                self.fork_cool_until = now + self.fork_cooldown_sec
-                rospy.loginfo("First fork passed (straight)")
-            elif self.fork_handled_count == 1:
-                self.right_turn_active = True
-                self.turn_until = max(self.turn_until, now + self.turn_hold_time)
-                self.last_fork_time = now
-                self.fork_handled_count = 2
-                self.fork_cool_until = now + self.fork_cooldown_sec
-                rospy.loginfo("Second fork detected, turning right")
-
-        # 停车检测
-        finish_result = self.detect_finish(mask)
-        finish_detected = finish_result.detected
-        self.last_finish_result = finish_result
-        parking_candidate, parking_reached, parking_bottom_y_ratio = self.evaluate_parking_target(
-            finish_result, roi_origin_y, frame.shape[0], frame.shape[1]
-        )
-        if parking_candidate and lane_center is None:
-            lane_center = frame.shape[1] / 2.0
-
-        if not self.finish_detection_enabled:
-            finish_detected = False
-            parking_candidate = False
-            parking_reached = False
-
-        self.finish_parking_bottom_y_ratio = parking_bottom_y_ratio if parking_candidate else 0.0
-        if parking_candidate:
-            self.finish_parking_candidate_frames += 1
-        else:
-            self.finish_parking_candidate_frames = 0
-        if parking_reached:
-            self.finish_parking_reached_frames += 1
-        else:
-            self.finish_parking_reached_frames = 0
-
-        # odom 辅助接近
-        if self.finish_use_odom_approach:
-            if (not self.finish_odom_active and
-                    self.finish_parking_candidate_frames >= max(1, self.finish_odom_min_trigger_frames)):
-                self.start_finish_odom_approach(now)
-            if self.finish_odom_active:
-                self.update_finish_odom_distance()
-                if self.finish_odom_distance_m >= self.finish_odom_approach_distance_m:
-                    if self.finish_auto_stop:
-                        rospy.loginfo("Odom parking target reached")
-                        self.finish_time = now
-                        self.finish_phase = "finish_stop"
-                        self.set_status("finish_stop")
-                        self.hard_stop_robot()
-                        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center,
-                                                 finish_result, fork_rows, fork_detected_latched, now)
-                        self.publish_status()
+            if self.state == "FOLLOW_RIGHT":
+                if horizontal_detected:
+                    if line_bottom_ratio > self.second_line_y_threshold:
+                        self.state = "DONE"
+                        self.stop_robot()
+                        self.set_status("second_line_direct_stop")
                         return
-                if self.finish_auto_stop and self.finish_odom_timed_out(now):
-                    rospy.logwarn("Odom parking timed out")
-                    self.finish_time = now
-                    self.finish_phase = "finish_stop"
-                    self.set_status("finish_stop")
-                    self.hard_stop_robot()
-                    self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center,
-                                             finish_result, fork_rows, fork_detected_latched, now)
-                    self.publish_status()
+                    elif line_bottom_ratio > self.first_line_y_threshold:
+                        self.state = "FIRST_LINE_STOP"
+                        self.first_line_stop_time = now
+                        self.set_status("first_line_stop")
+                        self.cmd_pub.publish(Twist())
+                        return
+
+            elif self.state == "FIRST_LINE_STOP":
+                if now - self.first_line_stop_time < 1.0:
+                    self.stop_robot()
+                    self.set_status("first_line_wait")
+                    return
+                else:
+                    self.state = "AFTER_FIRST_MOVE"
+                    self.after_first_move_start_time = now
+
+            if self.state == "AFTER_FIRST_MOVE":
+                if now - self.after_first_move_start_time < self.after_first_line_duration:
+                    if horizontal_detected and line_bottom_ratio > self.second_line_y_threshold:
+                        self.state = "DONE"
+                        self.stop_robot()
+                        self.set_status("second_line_during_forward")
+                        return
+                    angular = self.compute_right_follow_angular(mask, frame.shape[1])
+                    twist = Twist()
+                    twist.linear.x = self.after_first_line_speed
+                    twist.angular.z = angular
+                    self.cmd_pub.publish(twist)
+                    self.set_status("after_first_move")
+                    return
+                else:
+                    self.state = "DONE"
+                    self.stop_robot()
+                    self.set_status("after_first_done")
                     return
 
-        # 停车状态机
-        if finish_detected or parking_candidate or self.finish_odom_active:
-            self.finish_frames += 1
-            self.finish_lost_frames = 0
-            if parking_reached:
-                self.finish_phase = "parking_ready"
-            elif parking_candidate:
-                self.finish_phase = "parking_approach"
-            else:
-                self.finish_phase = "approach_finish"
-        else:
-            self.finish_lost_frames += 1
-            self.finish_frames = 0
-            self.finish_phase = "search"
+        # FOLLOW_RIGHT 正常巡线
+        angular = self.compute_right_follow_angular(mask, frame.shape[1])
+        twist = Twist()
+        twist.linear.x = self.base_linear_speed
+        twist.angular.z = angular
+        self.cmd_pub.publish(twist)
+        self.set_status("follow_right")
 
-        if (not self.finish_use_odom_approach) and self.finish_parking_reached_frames >= self.finish_parking_confirm_frames:
-            if self.finish_auto_stop:
-                rospy.loginfo("Visual parking target reached")
-                self.finish_time = now
-                self.finish_phase = "finish_stop"
-                self.set_status("finish_stop")
-                self.hard_stop_robot()
-                self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center,
-                                         finish_result, fork_rows, fork_detected_latched, now)
-                self.publish_status()
-                return
+    # ---------- 新增：跟随右边线控制 ----------
+    def compute_right_follow_angular(self, mask: np.ndarray, image_width: int) -> float:
+        right_x = self.find_rightmost_line_x(mask)
+        if right_x is None:
+            return 0.0
+        target_x = right_x - self.right_offset_px
+        error = target_x - image_width / 2.0
+        self.last_error_px = error
+        angular = -self.pid.update(error, time.time())
+        return max(-self.max_angular_speed, min(self.max_angular_speed, angular))
 
-        if not self.started:
-            self.stop_robot()
-            self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center,
-                                     finish_result, fork_rows, fork_detected_latched, now)
-            return
+    def find_rightmost_line_x(self, mask: np.ndarray) -> Optional[float]:
+        height = mask.shape[0]
+        y = int(height * 0.95)
+        if y >= height:
+            y = height - 1
+        row = mask[y, :]
+        segments = self.find_segments(row)
+        if not segments:
+            return None
+        return segments[-1].center
 
-        # 控制信号
-        if lane_center is not None:
-            self.last_detection_time = now
-            raw = lane_center
-            if self.finish_frames > 0 and self.last_lane_center is not None:
-                if abs(raw - self.last_lane_center) > self.finish_center_jump_reject_px:
-                    raw = self.last_lane_center
-                alpha = max(0.0, min(1.0, self.finish_approach_center_alpha))
-                lane_center = alpha * self.last_lane_center + (1.0 - alpha) * raw
-            self.last_lane_center = lane_center
+    def detect_horizontal_line(self, mask: np.ndarray) -> Tuple[bool, float]:
+        height, width = mask.shape[:2]
+        bottom_zone = int(height * 0.8)
+        bottom = mask[bottom_zone:, :]
+        if bottom.size == 0:
+            return False, 0.0
+        min_width = int(width * 0.4)
+        for r in range(bottom.shape[0] - 1, -1, -1):
+            row = bottom[r, :]
+            segments = self.find_segments(row)
+            for seg in segments:
+                if seg.width >= min_width:
+                    y_ratio = (bottom_zone + r) / float(height)
+                    return True, y_ratio
+        return False, 0.0
 
-            two_sided = any(obs.left_x is not None and obs.right_x is not None for obs in observations)
-            if two_sided:
-                self.single_line_frames = 0
-            else:
-                self.single_line_frames += 1
-
-            target = lane_center
-            if self.right_turn_active and now < self.turn_until:
-                target += self.turn_bias_px
-                self.set_status("turn_right")
-            elif not two_sided and self.single_line_frames > self.single_line_hold_frames:
-                self.set_status("searching")
-            else:
-                self.set_status("tracking")
-
-            self.publish_control(target, frame.shape[1], now, two_sided)
-        else:
-            self.single_line_frames += 1
-            self.handle_lost_or_search(now)
-
-        self.publish_debug_image(frame, mask, roi_origin_y, observations, lane_center,
-                                 finish_result, fork_rows, fork_detected_latched, now)
-        self.publish_status()
-
-    # ---------- 图像处理 ----------
+    # ---------- 原有图像处理函数（保留不变）----------
     def extract_white_mask(self, frame: np.ndarray) -> Tuple[np.ndarray, int]:
         height = frame.shape[0]
         y0 = int(height * self.roi_y_start_ratio)
@@ -481,9 +440,10 @@ class LineFollowStraightRightNode:
         roi = frame[y0:y1, :]
 
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        white_hsv = cv2.inRange(hsv, (0, 0, self.white_v_min), (179, self.white_s_max, 255))
+        # 抗反光：使用 V 上限和下限
+        white_hsv = cv2.inRange(hsv, (0, 0, self.white_v_min), (179, self.white_s_max, self.white_v_max))
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        _, white_gray = cv2.threshold(gray, self.gray_white_threshold, 255, cv2.THRESH_BINARY)
+        white_gray = cv2.inRange(gray, self.gray_white_threshold, self.gray_white_max)
         mask = cv2.bitwise_or(white_hsv, white_gray)
         mask = self.remove_small_components(mask)
 
@@ -549,6 +509,10 @@ class LineFollowStraightRightNode:
                 merged.append(seg)
         return merged
 
+<<<<<<< HEAD
+    def choose_lane_pair(self, segments: List[Segment], image_width: int, force_right: bool = False):
+        # 为兼容保留，但实际上不再用于控制
+=======
     def choose_lane_pair(
         self, segments: List[Segment], image_width: int, selection_mode: str = "center"
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, str]:
@@ -556,6 +520,7 @@ class LineFollowStraightRightNode:
         if lane_segments:
             segments = lane_segments
 
+>>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
         lane_width_px = self.current_lane_width_px()
         if len(segments) >= 2:
             multi = len(segments) >= self.fork_candidate_count
@@ -650,7 +615,7 @@ class LineFollowStraightRightNode:
         center = float(np.average(np.array(centers), weights=np.array(weights)))
         return max(0.0, min(float(image_width - 1), center))
 
-    # ---------- 停车检测函数 ----------
+    # ---------- 原有停车检测函数（保留但本逻辑不再调用）----------
     def detect_finish(self, mask: np.ndarray) -> FinishDetectionResult:
         height, width = mask.shape[:2]
         y0 = int(height * self.finish_bottom_ratio)
@@ -733,61 +698,29 @@ class LineFollowStraightRightNode:
         return candidate, reached, bottom_y_ratio
 
     def start_finish_odom_approach(self, now: float) -> bool:
-        if self.current_odom_xy is None:
-            rospy.logwarn_throttle(1.0, "No odom available for parking approach")
-            return False
-        if self.odom_age(now) > self.finish_odom_timeout_sec:
-            rospy.logwarn_throttle(1.0, "Odom stale for parking approach")
-            return False
-        self.finish_odom_active = True
-        self.finish_odom_start_xy = self.current_odom_xy
-        self.finish_odom_start_time = now
-        self.finish_odom_distance_m = 0.0
-        rospy.loginfo("Parking odom approach started")
-        return True
+        # 无里程计，直接返回 False
+        rospy.logwarn_throttle(1.0, "Odom approach disabled")
+        return False
 
     def update_finish_odom_distance(self):
-        if self.current_odom_xy is None or self.finish_odom_start_xy is None:
-            return
-        dx = self.current_odom_xy[0] - self.finish_odom_start_xy[0]
-        dy = self.current_odom_xy[1] - self.finish_odom_start_xy[1]
-        self.finish_odom_distance_m = math.hypot(dx, dy)
+        pass
 
     def odom_age(self, now: float) -> float:
-        if self.last_odom_time is None:
-            return float("inf")
-        return max(0.0, now - self.last_odom_time)
+        return float("inf")
 
     def finish_odom_timed_out(self, now: float) -> bool:
-        return self.finish_odom_active and self.odom_age(now) > self.finish_odom_timeout_sec
+        return False
 
-    # ---------- 运动控制 ----------
+    # ---------- 运动控制函数（保留原有 publish_control 但不使用）----------
     def publish_control(self, lane_center: float, image_width: int, now: float, two_sided: bool):
-        error = lane_center - image_width / 2.0
-        self.last_error_px = error
-        angular = -self.pid.update(error, now)
-        limit = self.max_angular_speed
-        if self.finish_frames > 0 or self.finish_parking_candidate_frames > 0:
-            limit = min(limit, self.finish_approach_max_angular_speed)
-        angular = max(-limit, min(limit, angular))
-
-        if self.right_turn_active and now < self.turn_until:
-            linear = self.turn_linear_speed
-        elif not two_sided and self.single_line_frames > self.single_line_hold_frames:
-            linear = self.search_linear_speed
-        else:
-            slowdown = min(abs(error) / max(self.error_slowdown_px, 1.0), 1.0)
-            linear = self.base_linear_speed - slowdown * (self.base_linear_speed - self.min_linear_speed)
-            linear = max(self.min_linear_speed, min(self.base_linear_speed, linear))
-            if self.finish_frames > 0 or self.finish_parking_candidate_frames > 0:
-                linear *= max(0.2, min(1.0, self.finish_approach_linear_speed_scale))
-
-        twist = Twist()
-        twist.linear.x = linear
-        twist.angular.z = angular
-        self.cmd_pub.publish(twist)
+        # 本逻辑不再使用，保留接口
+        pass
 
     def handle_lost_or_search(self, now: float):
+<<<<<<< HEAD
+        # 保留接口，但新逻辑不使用
+        pass
+=======
         if self.last_detection_time is None or now - self.last_detection_time <= self.lost_timeout:
             self.set_status("searching")
             self.publish_search_cmd()
@@ -809,15 +742,12 @@ class LineFollowStraightRightNode:
             direction = -1.0
         twist.angular.z = direction * self.search_angular_speed
         self.cmd_pub.publish(twist)
+>>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
 
     def handle_finish_maneuver(self, now: float):
-        if now - self.finish_time < self.finish_stop_time:
-            self.stop_robot()
-            self.set_status("finish_stop")
-        else:
-            self.stop_robot()
-            self.set_status("finish")
+        pass
 
+    # ---------- 运动基本控制 ----------
     def stop_robot(self):
         self.cmd_pub.publish(Twist())
 
@@ -825,7 +755,7 @@ class LineFollowStraightRightNode:
         for _ in range(4):
             self.cmd_pub.publish(Twist())
 
-    # ---------- 状态与调试 ----------
+    # ---------- 状态与调试（保留）----------
     def set_status(self, status: str):
         if self.status != status:
             self.status = status
@@ -886,7 +816,7 @@ class LineFollowStraightRightNode:
             },
             "fork_rows": fork_rows,
             "fork_detected": fork_detected,
-            "fork_handled_count": self.fork_handled_count,
+            "fork_handled_count": 0,
             "estimated_lane_width_px": self.current_lane_width_px(),
             "observations": [
                 {
@@ -937,7 +867,7 @@ class LineFollowStraightRightNode:
             full_y = roi_origin_y + y
             cv2.rectangle(debug, (x, full_y), (x+w, full_y+h), (255,120,0), 2)
         turn_sec = max(0.0, self.turn_until - now)
-        text = f"status={self.status} phase={self.finish_phase} finish={self.finish_frames} forks={self.fork_handled_count} turn={turn_sec:.1f}s"
+        text = f"status={self.status} phase={self.finish_phase} finish={self.finish_frames} turn={turn_sec:.1f}s"
         cv2.putText(debug, text, (10, max(mh+25,30)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0,255,0), 2)
         text2 = f"bias={self.turn_bias_px} h={finish_result.horizontal_width_ratio:.2f} vl={finish_result.vertical_left_height_ratio:.2f} vr={finish_result.vertical_right_height_ratio:.2f}"
         cv2.putText(debug, text2, (10, max(mh+50,55)), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0,200,255), 2)
@@ -954,5 +884,9 @@ def main():
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
+    main()
+=======
     main()
     
+>>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
