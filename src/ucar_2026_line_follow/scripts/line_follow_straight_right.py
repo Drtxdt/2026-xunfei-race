@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-#!/usr/bin/env python3
 """
 直行+右转巡线节点（跟随右侧白线 + 横线停车 + 抗灯光反光）
 基于原完整代码修改，保留所有原有功能框架，新增：跟随右线、起步直行、横线停车、
@@ -293,7 +292,6 @@ class LineFollowStraightRightNode:
             self.stop_robot()
             self.set_status("idle")
 
-    # 删除 odom_callback
     def reset_finish_odom_approach(self):
         self.finish_odom_active = False
         self.finish_odom_start_xy = None
@@ -318,13 +316,6 @@ class LineFollowStraightRightNode:
             return
 
         mask, roi_origin_y = self.extract_white_mask(frame)
-<<<<<<< HEAD
-=======
-        selection_mode = "right_route" if self.right_turn_active else "center"
-        observations = self.observe_lane(mask, frame.shape[1], selection_mode)
-        lane_center = self.estimate_lane_center(observations, frame.shape[1])
-        self.update_lane_width_estimate(observations)
->>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
 
         # ---------- 新状态机 ----------
         if self.state == "START_STRAIGHT":
@@ -509,10 +500,6 @@ class LineFollowStraightRightNode:
                 merged.append(seg)
         return merged
 
-<<<<<<< HEAD
-    def choose_lane_pair(self, segments: List[Segment], image_width: int, force_right: bool = False):
-        # 为兼容保留，但实际上不再用于控制
-=======
     def choose_lane_pair(
         self, segments: List[Segment], image_width: int, selection_mode: str = "center"
     ) -> Tuple[Optional[float], Optional[float], Optional[float], bool, str]:
@@ -520,7 +507,6 @@ class LineFollowStraightRightNode:
         if lane_segments:
             segments = lane_segments
 
->>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
         lane_width_px = self.current_lane_width_px()
         if len(segments) >= 2:
             multi = len(segments) >= self.fork_candidate_count
@@ -717,10 +703,6 @@ class LineFollowStraightRightNode:
         pass
 
     def handle_lost_or_search(self, now: float):
-<<<<<<< HEAD
-        # 保留接口，但新逻辑不使用
-        pass
-=======
         if self.last_detection_time is None or now - self.last_detection_time <= self.lost_timeout:
             self.set_status("searching")
             self.publish_search_cmd()
@@ -742,7 +724,6 @@ class LineFollowStraightRightNode:
             direction = -1.0
         twist.angular.z = direction * self.search_angular_speed
         self.cmd_pub.publish(twist)
->>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
 
     def handle_finish_maneuver(self, now: float):
         pass
@@ -884,9 +865,4 @@ def main():
 
 
 if __name__ == "__main__":
-<<<<<<< HEAD
     main()
-=======
-    main()
-    
->>>>>>> 9a765689230071323a0f8b569a3726af0911f8f8
