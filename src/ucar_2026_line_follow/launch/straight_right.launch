@@ -1,47 +1,31 @@
 <launch>
-  <arg name="start_driver" default="true" />
-  <arg name="start_camera" default="true" />
-  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
 
-  <group if="$(arg start_driver)">
-    <include file="$(find ucar_controller)/launch/base_driver.launch" />
-  </group>
+    <!-- 摄像头 -->
+    <node pkg="usb_cam"
+          type="usb_cam_node"
+          name="usb_cam"
+          output="screen">
 
-  <group if="$(arg start_camera)">
-    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
-  </group>
+        <param name="video_device" value="/dev/video0" />
+        <param name="image_width" value="640" />
+        <param name="image_height" value="480" />
+        <param name="pixel_format" value="yuyv" />
+        <param name="camera_frame_id" value="usb_cam" />
+        <param name="io_method" value="mmap" />
 
-  <node name="line_follow_straight_right" pkg="ucar_2026_line_follow" type="line_follow_straight_right.py" output="screen">
-    <!-- 先加载原有的配置文件（可覆盖部分参数） -->
-    <rosparam file="$(arg config_file)" command="load"/>
+    </node>
 
-    <!-- 图像话题 -->
-    <param name="image_topic" value="/usb_cam/image_raw"/>
 
-    <!-- ******************* 新参数（全部可调） ******************* -->
+    <!-- 加载参数 -->
+    <rosparam command="load"
+              file="$(find your_package_name)/config/straight_right.yaml" />
 
-    <!-- 跟随右侧白线：离右边线距离（像素，需根据实际 21 cm 标定） -->
-    <param name="right_offset_px" value="180" />
 
-    <!-- 起步直行时间（秒），对应 45 cm @ 0.16 m/s -->
-    <param name="start_straight_duration" value="2.8" />
+    <!-- 巡线节点 -->
+    <node pkg="your_package_name"
+          type="stable_right_follow.py"
+          name="stable_right_follow"
+          output="screen">
+    </node>
 
-    <!-- 横线检测阈值（图像底部纵坐标比例，值越大越靠近底部） -->
-    <param name="first_line_y_threshold" value="0.7" />
-    <param name="second_line_y_threshold" value="0.85" />
-
-    <!-- 过第一条线后低速前进的时间和速度（40cm @0.05m/s） -->
-    <param name="after_first_line_duration" value="8.0" />
-    <param name="after_first_line_speed" value="0.05" />
-
-    <!-- 安全超时（秒） -->
-    <param name="stop_after_seconds" value="50.0" />
-
-    <!-- 抗反光白线提取参数（提高亮度下限滤除灯光散射） -->
-    <param name="white_v_min" value="200" />
-    <param name="white_v_max" value="255" />
-    <param name="gray_white_threshold" value="200" />
-    <param name="gray_white_max" value="255" />
-
-  </node>
 </launch>

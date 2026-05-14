@@ -1,61 +1,54 @@
-# 直行+右转巡线参数（跟随右侧白线）
 
-# 车道线宽度估计
-lane_width_px_init: 230
-lane_width_px_min: 150
-lane_width_px_max: 340
-lane_width_adapt_alpha: 0.15
-enable_lane_width_adapt: true
-target_row_weight_bottom: 1.6
-max_lane_segment_width_px: 90
+image_topic: "/usb_cam/image_raw"
+# 巡线参数
+# ================================
 
-# 运动速度
+# 越小越靠近右边线
+right_offset_px: 150
+
+# 基础速度
 base_linear_speed: 0.12
-min_linear_speed: 0.070
-search_linear_speed: 0.045
-turn_linear_speed: 0.075
-max_angular_speed: 0.52
-error_slowdown_px: 220.0
-search_angular_speed: 0.25
 
-# PID 参数
-kp: 0.0045
+# 最大转向
+max_angular_speed: 1.0
+
+# 丢线搜索
+search_linear_speed: 0.03
+search_angular_speed: 0.40
+
+# ================================
+# PID
+# ================================
+
+kp: 0.0050
 ki: 0.0
-kd: 0.00035
+kd: 0.0018
+max_integral: 100
 
-# 岔路参数（仅保留，本次逻辑未使用）
-fork_center_tolerance_px: 220
-fork_latch_time: 0.45
-fork_cooldown_sec: 1.0
-turn_bias_px: 55.0
-turn_hold_time: 1.0
+# ================================
+# 起步
+# ================================
 
-# 右线跟随控制
-right_route_pair_width_slack: 1.45
-# 以下两参数为新增偏移量定义（像素和比例），当前代码使用 right_offset_px 即可
-rightmost_line_target_offset_px: 115
-rightmost_line_target_offset_ratio: 0.50
+start_straight_duration: 2.5
 
-# 停车相关
-finish_enable_delay: 30.0
-finish_parking_target_bottom_y_ratio: 0.955
+# ================================
+# 横线停车
+# ================================
 
-# 起步直行时间（秒）——对应 45cm 距离
-start_straight_duration: 2.8
+# 第一根横线位置
+first_line_y_threshold: 0.72
 
-# 横线检测阈值
-first_line_y_threshold: 0.7
-second_line_y_threshold: 0.85
+# 第二根横线位置
+second_line_y_threshold: 0.88
 
-# 第一条线后低速前进参数
-after_first_line_duration: 8.0
-after_first_line_speed: 0.05
+# 第一根线后低速前进
+after_first_line_speed: 0.035
 
-# 安全超时（秒）
-stop_after_seconds: 50.0
+# 约30厘米
+after_first_line_duration: 7.0
 
-# 抗反光白线提取阈值
-white_v_min: 200
-white_v_max: 255
-gray_white_threshold: 200
-gray_white_max: 255
+# ================================
+# 超时保护
+# ================================
+
+max_run_time: 50.0
