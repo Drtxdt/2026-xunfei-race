@@ -1,48 +1,45 @@
 <launch>
-    <!-- ======================= -->
-    <!-- Load parameters -->
-    <!-- ======================= -->
-    <rosparam file="$(find ucar_2026_line_follow)/config/straight_right.yaml" command="load" />
+  <!-- =============================== -->
+  <!-- 启动参数 -->
+  <!-- =============================== -->
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
 
-    <!-- ======================= -->
-    <!-- Camera Node -->
-    <!-- ======================= -->
-    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
-        <param name="video_device" value="/dev/video0"/>
-        <param name="image_width" value="640"/>
-        <param name="image_height" value="480"/>
-        <param name="pixel_format" value="yuyv"/>
-        <param name="framerate" value="30"/>
-        <param name="camera_frame_id" value="camera_link"/>
-    </node>
+  <!-- =============================== -->
+  <!-- 启动底盘驱动 -->
+  <!-- =============================== -->
+  <group if="$(arg start_driver)">
+    <!-- 替换成你实际底盘启动 launch 文件 -->
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
 
-    <!-- ======================= -->
-    <!-- Line Follow Node -->
-    <!-- ======================= -->
-    <node name="stable_right_follow" pkg="ucar_2026_line_follow" type="stable_right_follow.py" output="screen" required="true">
-        <param name="image_topic" value="/usb_cam/image_raw"/>
-        <param name="cmd_vel_topic" value="/cmd_vel"/>
-        <param name="start_topic" value="/line_follow/start"/>
-        <param name="status_topic" value="/line_follow/status"/>
-    </node>
+  <!-- =============================== -->
+  <!-- 启动摄像头 -->
+  <!-- =============================== -->
+  <group if="$(arg start_camera)">
+    <!-- 使用 usb_cam 的 launch 文件 -->
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
 
-    <!-- ======================= -->
-    <!-- Base Controller Node (底盘) -->
-    <!-- ======================= -->
-    <node name="diff_drive_controller" pkg="diff_drive_controller" type="diff_drive_controller" output="screen">
-        <!-- 发布cmd_vel和里程计 -->
-        <param name="cmd_vel_topic" value="/cmd_vel"/>
-        <param name="odom_topic" value="/odom"/>
-        <param name="wheel_separation" value="0.15"/>
-        <param name="wheel_radius" value="0.03"/>
-        <param name="rate" value="50"/>
-    </node>
+  <!-- =============================== -->
+  <!-- 启动巡线节点 -->
+  <!-- =============================== -->
+  <node pkg="ucar_2026_line_follow" type="stable_right_follow.py" name="stable_right_follow" output="screen" required="true">
+    <!-- 加载 YAML 配置 -->
+    <rosparam command="load" file="$(arg config_file)" />
+    <!-- 可选参数覆盖 -->
+    <param name="image_topic" value="/usb_cam/image_raw"/>
+    <param name="cmd_vel_topic" value="/cmd_vel"/>
+    <param name="start_topic" value="/line_follow/start"/>
+    <param name="status_topic" value="/line_follow/status"/>
+  </node>
 
-    <!-- ======================= -->
-    <!-- Optional: start signal -->
-    <!-- ======================= -->
-    <node name="line_follow_start" pkg="std_msgs" type="publisher" output="screen">
-        <param name="topic_name" value="/line_follow/start"/>
-        <param name="message_type" value="std_msgs/Bool"/>
-    </node>
+  <!-- =============================== -->
+  <!-- 调试节点（可选） -->
+  <!-- =============================== -->
+  <node pkg="ucar_2026_line_follow" type="right_debug_relay_node.py" name="right_debug_relay_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+
 </launch>
