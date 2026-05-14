@@ -469,11 +469,17 @@ class StableRightFollowNode:
 
     def remove_small_components(self, mask):
 
-        contours, _ = cv2.findContours(
+        contours_info = cv2.findContours(
             mask,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
+
+        # OpenCV3 / OpenCV4兼容
+        if len(contours_info) == 3:
+            _, contours, _ = contours_info
+        else:
+            contours, _ = contours_info
 
         result = np.zeros_like(mask)
 
