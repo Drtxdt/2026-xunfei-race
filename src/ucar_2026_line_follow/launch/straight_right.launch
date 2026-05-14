@@ -18,11 +18,11 @@
 
     <!-- 加载参数 -->
     <rosparam command="load"
-              file="$(find your_package_name)/config/straight_right.yaml" />
+              file="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
 
 
     <!-- 巡线节点 -->
-    <node pkg="your_package_name"
+    <node pkg="ucar_2026_line_follow"
           type="stable_right_follow.py"
           name="stable_right_follow"
           output="screen">
