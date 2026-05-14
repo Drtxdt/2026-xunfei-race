@@ -1,31 +1,48 @@
 <launch>
+    <!-- ======================= -->
+    <!-- Load parameters -->
+    <!-- ======================= -->
+    <rosparam file="$(find ucar_2026_line_follow)/config/straight_right.yaml" command="load" />
 
-    <!-- 摄像头 -->
-    <node pkg="usb_cam"
-          type="usb_cam_node"
-          name="usb_cam"
-          output="screen">
-
-        <param name="video_device" value="/dev/video0" />
-        <param name="image_width" value="640" />
-        <param name="image_height" value="480" />
-        <param name="pixel_format" value="yuyv" />
-        <param name="camera_frame_id" value="usb_cam" />
-        <param name="io_method" value="mmap" />
-
+    <!-- ======================= -->
+    <!-- Camera Node -->
+    <!-- ======================= -->
+    <node name="usb_cam" pkg="usb_cam" type="usb_cam_node" output="screen">
+        <param name="video_device" value="/dev/video0"/>
+        <param name="image_width" value="640"/>
+        <param name="image_height" value="480"/>
+        <param name="pixel_format" value="yuyv"/>
+        <param name="framerate" value="30"/>
+        <param name="camera_frame_id" value="camera_link"/>
     </node>
 
-
-    <!-- 加载参数 -->
-    <rosparam command="load"
-              file="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
-
-
-    <!-- 巡线节点 -->
-    <node pkg="ucar_2026_line_follow"
-          type="stable_right_follow.py"
-          name="stable_right_follow"
-          output="screen">
+    <!-- ======================= -->
+    <!-- Line Follow Node -->
+    <!-- ======================= -->
+    <node name="stable_right_follow" pkg="ucar_2026_line_follow" type="stable_right_follow.py" output="screen" required="true">
+        <param name="image_topic" value="/usb_cam/image_raw"/>
+        <param name="cmd_vel_topic" value="/cmd_vel"/>
+        <param name="start_topic" value="/line_follow/start"/>
+        <param name="status_topic" value="/line_follow/status"/>
     </node>
 
+    <!-- ======================= -->
+    <!-- Base Controller Node (底盘) -->
+    <!-- ======================= -->
+    <node name="diff_drive_controller" pkg="diff_drive_controller" type="diff_drive_controller" output="screen">
+        <!-- 发布cmd_vel和里程计 -->
+        <param name="cmd_vel_topic" value="/cmd_vel"/>
+        <param name="odom_topic" value="/odom"/>
+        <param name="wheel_separation" value="0.15"/>
+        <param name="wheel_radius" value="0.03"/>
+        <param name="rate" value="50"/>
+    </node>
+
+    <!-- ======================= -->
+    <!-- Optional: start signal -->
+    <!-- ======================= -->
+    <node name="line_follow_start" pkg="std_msgs" type="publisher" output="screen">
+        <param name="topic_name" value="/line_follow/start"/>
+        <param name="message_type" value="std_msgs/Bool"/>
+    </node>
 </launch>
