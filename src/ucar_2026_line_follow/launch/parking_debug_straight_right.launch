@@ -1,0 +1,6 @@
+<launch>
+    <node name="parking_debug_straight_right" pkg="ucar_2026_line_follow" type="parking_debug_straight_right.py" output="screen">
+        <rosparam file="$(find ucar_2026_line_follow)/config/straight_right.yaml" command="load"/>
+        <param name="finish_auto_stop" value="false"/>
+    </node>
+</launch>
