@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucar_2026_smart_factory_llm</name>
+  <version>0.1.0</version>
+  <description>讯飞智慧工厂赛项子任务1：星火 Spark X2 智能接单与货品筛选推理。</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>rospy</build_depend>
+
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+  </export>
+</package>

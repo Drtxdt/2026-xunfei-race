@@ -1,0 +1,25 @@
+<launch>
+  <arg name="start_driver" default="false" />
+  <arg name="start_camera" default="false" />
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/right_line_follow.yaml" />
+  <arg name="use_compressed" default="false" />
+  <arg name="image_topic" default="/usb_cam/image_raw" />
+  <arg name="compressed_image_topic" default="/right_line_follow/raw_image/compressed" />
+  <arg name="output_dir" default="" />
+
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <node pkg="ucar_2026_line_follow" type="camera_window_debug_node.py" name="camera_window_debug_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="use_compressed" value="$(arg use_compressed)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="compressed_image_topic" value="$(arg compressed_image_topic)" />
+    <param name="output_dir" value="$(arg output_dir)" />
+  </node>
+</launch>

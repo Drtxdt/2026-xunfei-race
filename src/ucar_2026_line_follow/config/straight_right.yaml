@@ -1,0 +1,45 @@
+# ================================
+# 巡线视觉参数
+# ================================
+roi_y_start_ratio: 0.45
+roi_y_end_ratio: 1.0
+white_v_min: 200
+white_v_max: 255
+white_s_max: 80
+gray_white_threshold: 205
+gray_white_max: 255
+morph_kernel_size: 5
+min_contour_area: 80
+min_line_width_px: 6
+min_segment_gap_px: 10
+
+# ================================
+# 巡线运动参数
+# ================================
+right_offset_px: 150
+base_linear_speed: 0.12
+after_first_line_speed: 0.035
+after_first_line_duration: 7.0
+start_straight_duration: 2.5
+search_linear_speed: 0.03
+search_angular_speed: 0.40
+max_angular_speed: 1.0
+
+# ================================
+# 横线停车阈值
+# ================================
+first_line_y_threshold: 0.72
+second_line_y_threshold: 0.88
+
+# ================================
+# PID 参数
+# ================================
+kp: 0.005
+ki: 0.0
+kd: 0.0018
+max_integral: 100.0
+
+# ================================
+# 超时保护
+# ================================
+stop_after_seconds: 50.0

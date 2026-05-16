@@ -1,4 +1,4 @@
 # 左侧巡线
 roslaunch ucar_2026_line_follow line_follow_test.launch
 # 右侧巡线
-roslaunch ucar_2026_line_follow right_line_follow_test.launch
+roslaunch ucar_2026_line_follow right_line_follow.launch
