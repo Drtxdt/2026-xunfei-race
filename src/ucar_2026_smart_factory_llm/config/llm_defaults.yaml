@@ -1,0 +1,5 @@
+# 讯飞星火 Spark X2（HTTP OpenAI 兼容）
+spark_base_url: "https://spark-api-open.xf-yun.com/x2/chat/completions"
+spark_model: "spark-x"
+request_timeout_sec: 90.0
+# 不在仓库中写密钥：使用环境变量 XF_SPARK_API_PASSWORD 或在 launch 中传 api_password
