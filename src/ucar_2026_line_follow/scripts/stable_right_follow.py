@@ -8,7 +8,8 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 import rospy
-from cv_bridge import CvBridge, CvBridgeError
+
+from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
@@ -99,6 +100,10 @@ class StableRightFollowNode:
             "/line_follow/start"
         )
 
+        # ============================
+        # ROI
+        # ============================
+
         self.roi_y_start_ratio = rospy.get_param(
             "~roi_y_start_ratio",
             0.45
@@ -108,6 +113,10 @@ class StableRightFollowNode:
             "~roi_y_end_ratio",
             1.0
         )
+
+        # ============================
+        # 白线阈值
+        # ============================
 
         self.white_v_min = rospy.get_param(
             "~white_v_min",
@@ -134,6 +143,10 @@ class StableRightFollowNode:
             255
         )
 
+        # ============================
+        # 形态学
+        # ============================
+
         self.morph_kernel_size = rospy.get_param(
             "~morph_kernel_size",
             5
@@ -143,6 +156,10 @@ class StableRightFollowNode:
             "~min_contour_area",
             80
         )
+
+        # ============================
+        # 线段
+        # ============================
 
         self.min_line_width_px = rospy.get_param(
             "~min_line_width_px",
@@ -154,9 +171,14 @@ class StableRightFollowNode:
             10
         )
 
+        # ============================
+        # 巡线
+        # ============================
+
+        # 更靠中间
         self.right_offset_px = rospy.get_param(
             "~right_offset_px",
-            150
+            210
         )
 
         self.base_linear_speed = rospy.get_param(
@@ -169,27 +191,49 @@ class StableRightFollowNode:
             1.0
         )
 
+        # 丢线恢复更慢更稳
         self.search_linear_speed = rospy.get_param(
             "~search_linear_speed",
-            0.03
+            0.020
         )
 
         self.search_angular_speed = rospy.get_param(
             "~search_angular_speed",
-            0.40
+            0.26
         )
+
+        # ============================
+        # PID
+        # ============================
 
         kp = rospy.get_param("~kp", 0.0050)
         ki = rospy.get_param("~ki", 0.0)
         kd = rospy.get_param("~kd", 0.0018)
-        max_integral = rospy.get_param("~max_integral", 100)
 
-        self.pid = PID(kp, ki, kd, max_integral)
+        max_integral = rospy.get_param(
+            "~max_integral",
+            100
+        )
+
+        self.pid = PID(
+            kp,
+            ki,
+            kd,
+            max_integral
+        )
+
+        # ============================
+        # 起步
+        # ============================
 
         self.start_straight_duration = rospy.get_param(
             "~start_straight_duration",
             2.5
         )
+
+        # ============================
+        # 停车
+        # ============================
 
         self.first_line_y_threshold = rospy.get_param(
             "~first_line_y_threshold",
@@ -206,10 +250,13 @@ class StableRightFollowNode:
             0.035
         )
 
+        # 25cm
         self.after_first_line_duration = rospy.get_param(
             "~after_first_line_duration",
-            7.0
+            5.8
         )
+
+        # ============================
 
         self.max_run_time = rospy.get_param(
             "~max_run_time",
@@ -226,6 +273,8 @@ class StableRightFollowNode:
         self.last_error_px = -1.0
 
         self.started = True
+
+        # ============================
 
         self.cmd_pub = rospy.Publisher(
             self.cmd_vel_topic,
@@ -258,6 +307,8 @@ class StableRightFollowNode:
 
         rospy.loginfo("Stable Right Follow Node Started")
 
+    # =========================================================
+
     def start_callback(self, msg):
 
         self.started = bool(msg.data)
@@ -277,6 +328,8 @@ class StableRightFollowNode:
 
             self.stop_robot()
 
+    # =========================================================
+
     def image_callback(self, msg):
 
         if not self.started:
@@ -289,7 +342,7 @@ class StableRightFollowNode:
                 desired_encoding="bgr8"
             )
 
-        except CvBridgeError:
+        except Exception:
             return
 
         now = time.time()
@@ -305,6 +358,10 @@ class StableRightFollowNode:
             return
 
         mask = self.extract_white_mask(frame)
+
+        # =====================================================
+        # 起步直行
+        # =====================================================
 
         if self.state == "START_STRAIGHT":
 
@@ -323,8 +380,14 @@ class StableRightFollowNode:
 
                 self.state = "FOLLOW_RIGHT"
 
+        # =====================================================
+
         horizontal_detected, line_y_ratio = \
             self.detect_horizontal_line(mask)
+
+        # =====================================================
+        # 正常巡线
+        # =====================================================
 
         if self.state == "FOLLOW_RIGHT":
 
@@ -334,8 +397,6 @@ class StableRightFollowNode:
                 self.stop_robot()
 
                 self.state = "DONE"
-
-                rospy.loginfo("Second line stop")
 
                 return
 
@@ -348,14 +409,16 @@ class StableRightFollowNode:
 
                 self.first_line_stop_time = now
 
-                rospy.loginfo("First line detected")
-
                 return
 
             angular = self.compute_right_follow_angular(
                 mask,
                 frame.shape[1]
             )
+
+            # 丢线恢复已内部发布
+            if angular is None:
+                return
 
             twist = Twist()
 
@@ -365,6 +428,10 @@ class StableRightFollowNode:
             self.cmd_pub.publish(twist)
 
             return
+
+        # =====================================================
+        # 第一根横线停车
+        # =====================================================
 
         if self.state == "FIRST_LINE_STOP":
 
@@ -378,6 +445,10 @@ class StableRightFollowNode:
 
             return
 
+        # =====================================================
+        # 停车前前进25cm
+        # =====================================================
+
         if self.state == "AFTER_FIRST_MOVE":
 
             move_elapsed = now - self.after_first_move_start_time
@@ -389,8 +460,6 @@ class StableRightFollowNode:
 
                 self.state = "DONE"
 
-                rospy.loginfo("Second line final stop")
-
                 return
 
             if move_elapsed > self.after_first_line_duration:
@@ -399,14 +468,15 @@ class StableRightFollowNode:
 
                 self.state = "DONE"
 
-                rospy.loginfo("Distance stop")
-
                 return
 
             angular = self.compute_right_follow_angular(
                 mask,
                 frame.shape[1]
             )
+
+            if angular is None:
+                return
 
             twist = Twist()
 
@@ -417,6 +487,8 @@ class StableRightFollowNode:
 
             return
 
+    # =========================================================
+
     def extract_white_mask(self, frame):
 
         h = frame.shape[0]
@@ -426,7 +498,10 @@ class StableRightFollowNode:
 
         roi = frame[y0:y1, :]
 
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(
+            roi,
+            cv2.COLOR_BGR2HSV
+        )
 
         mask_hsv = cv2.inRange(
             hsv,
@@ -434,7 +509,10 @@ class StableRightFollowNode:
             (179, self.white_s_max, self.white_v_max)
         )
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(
+            roi,
+            cv2.COLOR_BGR2GRAY
+        )
 
         mask_gray = cv2.inRange(
             gray,
@@ -442,7 +520,10 @@ class StableRightFollowNode:
             self.gray_white_max
         )
 
-        mask = cv2.bitwise_or(mask_hsv, mask_gray)
+        mask = cv2.bitwise_or(
+            mask_hsv,
+            mask_gray
+        )
 
         mask = self.remove_small_components(mask)
 
@@ -467,6 +548,8 @@ class StableRightFollowNode:
 
         return mask
 
+    # =========================================================
+
     def remove_small_components(self, mask):
 
         contours_info = cv2.findContours(
@@ -475,7 +558,6 @@ class StableRightFollowNode:
             cv2.CHAIN_APPROX_SIMPLE
         )
 
-        # OpenCV3 / OpenCV4兼容
         if len(contours_info) == 3:
             _, contours, _ = contours_info
         else:
@@ -498,6 +580,8 @@ class StableRightFollowNode:
                 )
 
         return result
+
+    # =========================================================
 
     def find_segments(self, row) -> List[Segment]:
 
@@ -551,6 +635,8 @@ class StableRightFollowNode:
 
         return self.merge_close_segments(segments)
 
+    # =========================================================
+
     def merge_close_segments(self, segments):
 
         if not segments:
@@ -576,6 +662,8 @@ class StableRightFollowNode:
                 merged.append(seg)
 
         return merged
+
+    # =========================================================
 
     def find_rightmost_line_x(self, mask) -> Optional[float]:
 
@@ -605,6 +693,8 @@ class StableRightFollowNode:
 
         return None
 
+    # =========================================================
+
     def compute_right_follow_angular(
             self,
             mask,
@@ -612,13 +702,30 @@ class StableRightFollowNode:
 
         right_x = self.find_rightmost_line_x(mask)
 
+        # =====================================================
+        # 丢线恢复
+        # =====================================================
+
         if right_x is None:
 
+            twist = Twist()
+
+            # 缓慢前进
+            twist.linear.x = self.search_linear_speed
+
+            # 缓慢右转
             if self.last_error_px < 0:
+                twist.angular.z = -self.search_angular_speed
+            else:
+                twist.angular.z = -self.search_angular_speed * 0.8
 
-                return -self.search_angular_speed * 1.2
+            self.cmd_pub.publish(twist)
 
-            return -self.search_angular_speed
+            return None
+
+        # =====================================================
+        # 正常巡线
+        # =====================================================
 
         target_x = right_x - self.right_offset_px
 
@@ -637,6 +744,8 @@ class StableRightFollowNode:
         )
 
         return angular
+
+    # =========================================================
 
     def detect_horizontal_line(
             self,
@@ -672,6 +781,8 @@ class StableRightFollowNode:
 
         return False, 0.0
 
+    # =========================================================
+
     def stop_robot(self):
 
         twist = Twist()
@@ -681,6 +792,8 @@ class StableRightFollowNode:
 
         self.cmd_pub.publish(twist)
 
+
+# =============================================================
 
 def main():
 
@@ -693,4 +806,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
