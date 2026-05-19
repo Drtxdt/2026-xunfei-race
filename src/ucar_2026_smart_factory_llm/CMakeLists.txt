@@ -23,6 +23,7 @@ catkin_package(
 
 catkin_install_python(PROGRAMS
   scripts/reason_pickup_server.py
+  scripts/reason_and_speak_once.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
