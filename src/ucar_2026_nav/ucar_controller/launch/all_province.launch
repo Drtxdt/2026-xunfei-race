@@ -1,0 +1,15 @@
+<launch>
+
+    <!-- 启动YOLOv5检测节点 -->
+    <include file="$(find yolov5_rknn_ros)/launch/detect.launch" />
+
+    <!-- 启动语音命令节点 -->
+    <include file="$(find speech_command)/launch/speech_command.launch" />
+
+    <!-- 启动导航节点 -->
+    <include file="$(find ucar_nav)/launch/ucar_navigation.launch" />
+
+    <!-- 启动跟随节点 -->
+    <node name="follow_node" pkg="flow_test" type="follow_test" output="log" />
+
+</launch>
