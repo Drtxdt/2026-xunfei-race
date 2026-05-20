@@ -1,43 +1,86 @@
-<!-- straight_right.launch -->
-
 <launch>
 
+    <!-- ===================================================== -->
     <!-- 底盘 -->
-    <node pkg="base_driver"
-          type="base_driver"
-          name="base_driver"
-          output="screen" />
+    <!-- ===================================================== -->
 
-    <!-- 摄像头 -->
-    <node pkg="usb_cam"
-          type="usb_cam_node"
-          name="usb_cam"
-          output="screen">
+    <node
+        pkg="base_driver"
+        type="base_driver"
+        name="base_driver"
+        output="screen" />
 
-        <param name="video_device" value="/dev/video0" />
+    <!-- ===================================================== -->
+    <!-- USB摄像头 -->
+    <!-- ===================================================== -->
 
-        <param name="image_width" value="640" />
-        <param name="image_height" value="480" />
+    <node
+        pkg="usb_cam"
+        type="usb_cam_node"
+        name="usb_cam"
+        output="screen">
 
-        <!-- MJPEG更稳定 -->
-        <param name="pixel_format" value="mjpeg" />
+        <!-- 摄像头设备 -->
 
-        <!-- 提高帧率 -->
-        <param name="framerate" value="30" />
+        <param name="video_device"
+               value="/dev/video0" />
 
-        <!-- 降低曝光波动 -->
-        <param name="io_method" value="mmap" />
+        <!-- 分辨率 -->
+
+        <param name="image_width"
+               value="640" />
+
+        <param name="image_height"
+               value="480" />
+
+        <!-- 帧率 -->
+
+        <param name="framerate"
+               value="30" />
+
+        <!-- MJPEG抗卡顿 -->
+
+        <param name="pixel_format"
+               value="mjpeg" />
+
+        <!-- 自动曝光 -->
+
+        <param name="autoexposure"
+               value="true" />
+
+        <!-- 自动白平衡 -->
+
+        <param name="auto_white_balance"
+               value="true" />
+
+        <!-- 降低曝光闪烁 -->
+
+        <param name="io_method"
+               value="mmap" />
+
+        <!-- topic -->
+
+        <param name="camera_frame_id"
+               value="usb_cam" />
 
     </node>
 
+    <!-- ===================================================== -->
     <!-- 巡线节点 -->
-    <node pkg="ucar_2026_line_follow"
-          type="stable_right_follow.py"
-          name="stable_right_follow"
-          output="screen">
+    <!-- ===================================================== -->
 
-        <rosparam command="load"
-                  file="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
+    <node
+        pkg="ucar_2026_line_follow"
+        type="stable_right_follow.py"
+        name="stable_right_follow"
+        output="screen"
+        respawn="true"
+        respawn_delay="1">
+
+        <!-- 高优先级 -->
+
+        <env name="ROSCONSOLE_FORMAT"
+             value="[${severity}] [${time}]: ${message}" />
 
     </node>
 
