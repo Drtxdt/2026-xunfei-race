@@ -8,3 +8,5 @@ src/ucar_2026_smart_factory_llm/scripts/__pycache__/
 .catkin_workspace
 .remote_snapshot
 picture/*.jpg
+src/ucar_2026_aikit_tts/third_party/aikit/*.log
+src/ucar_2026_aikit_tts/third_party/aikit/*.pcm
