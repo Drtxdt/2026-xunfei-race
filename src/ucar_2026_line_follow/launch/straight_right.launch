@@ -1,87 +1,31 @@
 <launch>
+  <!-- 可选：是否启动底盘驱动和摄像头 -->
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  
+  <!-- 配置文件路径（可自定义） -->
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
 
-    <!-- ===================================================== -->
-    <!-- 底盘 -->
-    <!-- ===================================================== -->
+  <!-- 底盘驱动（模仿原文件，使用 ucar_controller 的 launch） -->
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
 
-    <node
-        pkg="base_driver"
-        type="base_driver"
-        name="base_driver"
-        output="screen" />
+  <!-- 摄像头驱动（模仿原文件，使用 usb_cam 的标准 launch） -->
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
 
-    <!-- ===================================================== -->
-    <!-- USB摄像头 -->
-    <!-- ===================================================== -->
+  <!-- 主巡线节点 -->
+  <node pkg="ucar_2026_line_follow" type="stable_right_follow.py" name="stable_right_follow" output="screen">
+    <!-- 加载 YAML 配置文件中的所有参数到参数服务器 -->
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
 
-    <node
-        pkg="usb_cam"
-        type="usb_cam_node"
-        name="usb_cam"
-        output="screen">
-
-        <!-- 摄像头设备 -->
-
-        <param name="video_device"
-               value="/dev/video0" />
-
-        <!-- 分辨率 -->
-
-        <param name="image_width"
-               value="640" />
-
-        <param name="image_height"
-               value="480" />
-
-        <!-- 帧率 -->
-
-        <param name="framerate"
-               value="30" />
-
-        <!-- MJPEG抗卡顿 -->
-
-        <param name="pixel_format"
-               value="mjpeg" />
-
-        <!-- 自动曝光 -->
-
-        <param name="autoexposure"
-               value="true" />
-
-        <!-- 自动白平衡 -->
-
-        <param name="auto_white_balance"
-               value="true" />
-
-        <!-- 降低曝光闪烁 -->
-
-        <param name="io_method"
-               value="mmap" />
-
-        <!-- topic -->
-
-        <param name="camera_frame_id"
-               value="usb_cam" />
-
-    </node>
-
-    <!-- ===================================================== -->
-    <!-- 巡线节点 -->
-    <!-- ===================================================== -->
-
-    <node
-        pkg="ucar_2026_line_follow"
-        type="stable_right_follow.py"
-        name="stable_right_follow"
-        output="screen"
-        respawn="true"
-        respawn_delay="1">
-
-        <!-- 高优先级 -->
-
-        <env name="ROSCONSOLE_FORMAT"
-             value="[${severity}] [${time}]: ${message}" />
-
-    </node>
-
+  <!-- 可选：调试节点（若您没有 right_debug_relay_node，可以注释或删除） -->
+  <!-- 
+  <node pkg="ucar_2026_line_follow" type="right_debug_relay_node.py" name="right_debug_relay_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+  -->
 </launch>
