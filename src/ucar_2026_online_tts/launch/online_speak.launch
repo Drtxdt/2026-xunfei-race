@@ -1,0 +1,11 @@
+<launch>
+  <arg name="speak_topic" default="/speak" />
+  <arg name="voice_name" default="x4_xiaoyan" />
+  <arg name="audio_device" default="" />
+
+  <node pkg="ucar_2026_online_tts" type="xfyun_online_speak_node.py" name="xfyun_online_speak_node" output="screen">
+    <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="voice_name" value="$(arg voice_name)" />
+    <param name="audio_device" value="$(arg audio_device)" />
+  </node>
+</launch>
