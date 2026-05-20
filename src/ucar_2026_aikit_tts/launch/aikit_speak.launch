@@ -1,0 +1,12 @@
+<launch>
+  <arg name="speak_topic" default="/speak" />
+  <arg name="voice_name" default="xiaoyan" />
+  <arg name="audio_device" default="" />
+
+  <node pkg="ucar_2026_aikit_tts" type="aikit_speak_node" name="aikit_speak_node" output="screen">
+    <env name="LD_LIBRARY_PATH" value="$(find ucar_2026_aikit_tts)/third_party/aikit/libs:$(optenv LD_LIBRARY_PATH)" />
+    <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="voice_name" value="$(arg voice_name)" />
+    <param name="audio_device" value="$(arg audio_device)" />
+  </node>
+</launch>

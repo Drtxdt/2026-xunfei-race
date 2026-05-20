@@ -2,35 +2,25 @@
 # -*- coding: utf-8 -*-
 
 import time
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
-
+import math
 import cv2
 import numpy as np
 import rospy
-from cv_bridge import CvBridge, CvBridgeError
+
+from collections import deque
+
+from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import Image
-from std_msgs.msg import Bool, String
-
-
-@dataclass
-class Segment:
-    left: int
-    right: int
-    center: float
-    width: int
 
 
 class PID:
 
-    def __init__(self, kp, ki, kd, max_integral):
+    def __init__(self, kp, ki, kd):
 
         self.kp = kp
         self.ki = ki
         self.kd = kd
-
-        self.max_integral = abs(max_integral)
 
         self.integral = 0.0
         self.last_error = 0.0
@@ -42,245 +32,133 @@ class PID:
         self.last_error = 0.0
         self.last_time = None
 
-    def update(self, error, now):
+    def update(self, error):
+
+        now = time.time()
 
         if self.last_time is None:
-            dt = 0.0
-        else:
-            dt = max(now - self.last_time, 1e-3)
 
-        if dt > 0:
-
-            self.integral += error * dt
-
-            self.integral = max(
-                -self.max_integral,
-                min(self.max_integral, self.integral)
-            )
-
-            derivative = (error - self.last_error) / dt
+            dt = 0.01
 
         else:
-            derivative = 0.0
 
-        self.last_error = error
-        self.last_time = now
+            dt = now - self.last_time
 
-        return (
+            if dt <= 0:
+                dt = 0.01
+
+        self.integral += error * dt
+
+        self.integral = max(
+            -300,
+            min(300, self.integral)
+        )
+
+        derivative = (
+            error - self.last_error
+        ) / dt
+
+        output = (
             self.kp * error +
             self.ki * self.integral +
             self.kd * derivative
         )
+
+        self.last_error = error
+        self.last_time = now
+
+        return output
 
 
 class StableRightFollowNode:
 
     def __init__(self):
 
+        rospy.init_node("stable_right_follow")
+
         self.bridge = CvBridge()
 
-        self.image_topic = rospy.get_param(
-            "~image_topic",
-            "/usb_cam/image_raw"
-        )
-
-        self.cmd_vel_topic = rospy.get_param(
-            "~cmd_vel_topic",
-            "/cmd_vel"
-        )
-
-        self.status_topic = rospy.get_param(
-            "~status_topic",
-            "/line_follow/status"
-        )
-
-        self.start_topic = rospy.get_param(
-            "~start_topic",
-            "/line_follow/start"
-        )
-
-        self.roi_y_start_ratio = rospy.get_param(
-            "~roi_y_start_ratio",
-            0.45
-        )
-
-        self.roi_y_end_ratio = rospy.get_param(
-            "~roi_y_end_ratio",
-            1.0
-        )
-
-        self.white_v_min = rospy.get_param(
-            "~white_v_min",
-            200
-        )
-
-        self.white_v_max = rospy.get_param(
-            "~white_v_max",
-            255
-        )
-
-        self.white_s_max = rospy.get_param(
-            "~white_s_max",
-            80
-        )
-
-        self.gray_white_threshold = rospy.get_param(
-            "~gray_white_threshold",
-            205
-        )
-
-        self.gray_white_max = rospy.get_param(
-            "~gray_white_max",
-            255
-        )
-
-        self.morph_kernel_size = rospy.get_param(
-            "~morph_kernel_size",
-            5
-        )
-
-        self.min_contour_area = rospy.get_param(
-            "~min_contour_area",
-            80
-        )
-
-        self.min_line_width_px = rospy.get_param(
-            "~min_line_width_px",
-            6
-        )
-
-        self.min_segment_gap_px = rospy.get_param(
-            "~min_segment_gap_px",
-            10
-        )
-
-        self.right_offset_px = rospy.get_param(
-            "~right_offset_px",
-            150
-        )
-
-        self.base_linear_speed = rospy.get_param(
-            "~base_linear_speed",
-            0.12
-        )
-
-        self.max_angular_speed = rospy.get_param(
-            "~max_angular_speed",
-            1.0
-        )
-
-        self.search_linear_speed = rospy.get_param(
-            "~search_linear_speed",
-            0.03
-        )
-
-        self.search_angular_speed = rospy.get_param(
-            "~search_angular_speed",
-            0.40
-        )
-
-        kp = rospy.get_param("~kp", 0.0050)
-        ki = rospy.get_param("~ki", 0.0)
-        kd = rospy.get_param("~kd", 0.0018)
-        max_integral = rospy.get_param("~max_integral", 100)
-
-        self.pid = PID(kp, ki, kd, max_integral)
-
-        self.start_straight_duration = rospy.get_param(
-            "~start_straight_duration",
-            2.5
-        )
-
-        self.first_line_y_threshold = rospy.get_param(
-            "~first_line_y_threshold",
-            0.72
-        )
-
-        self.second_line_y_threshold = rospy.get_param(
-            "~second_line_y_threshold",
-            0.88
-        )
-
-        self.after_first_line_speed = rospy.get_param(
-            "~after_first_line_speed",
-            0.035
-        )
-
-        self.after_first_line_duration = rospy.get_param(
-            "~after_first_line_duration",
-            7.0
-        )
-
-        self.max_run_time = rospy.get_param(
-            "~max_run_time",
-            50.0
-        )
-
-        self.state = "START_STRAIGHT"
-
-        self.start_time = time.time()
-
-        self.first_line_stop_time = None
-        self.after_first_move_start_time = None
-
-        self.last_error_px = -1.0
-
-        self.started = True
+        # =====================================================
+        # 发布
+        # =====================================================
 
         self.cmd_pub = rospy.Publisher(
-            self.cmd_vel_topic,
+            "/cmd_vel",
             Twist,
             queue_size=1
         )
 
-        self.status_pub = rospy.Publisher(
-            self.status_topic,
-            String,
-            queue_size=1
-        )
+        # =====================================================
+        # 订阅
+        # =====================================================
 
         self.image_sub = rospy.Subscriber(
-            self.image_topic,
+            "/usb_cam/image_raw",
             Image,
             self.image_callback,
             queue_size=1,
             buff_size=2 ** 24
         )
 
-        self.start_sub = rospy.Subscriber(
-            self.start_topic,
-            Bool,
-            self.start_callback,
-            queue_size=1
+        # =====================================================
+        # PID
+        # =====================================================
+
+        self.pid = PID(
+            kp=0.0042,
+            ki=0.0000,
+            kd=0.0014
         )
 
-        rospy.on_shutdown(self.stop_robot)
+        # =====================================================
+        # 参数
+        # =====================================================
+
+        self.base_speed = 0.18
+
+        self.curve_speed = 0.22
+
+        self.search_speed = 0.03
+
+        self.max_angular = 0.72
+
+        self.search_angular = 0.20
+
+        self.right_offset = 235
+
+        self.start_time = time.time()
+
+        self.state = "START"
+
+        self.last_angular = 0.0
+
+        self.angular_alpha = 0.86
+
+        self.error_buffer = deque(maxlen=6)
+
+        self.lost_count = 0
+
+        self.max_lost = 8
+
+        self.last_valid_x = None
+
+        self.horizontal_counter = 0
+
+        self.stop_time = None
+
+        self.forward_time = None
+
+        self.forward_duration = 1.8
+
+        self.search_direction = -1
 
         rospy.loginfo("Stable Right Follow Node Started")
 
-    def start_callback(self, msg):
-
-        self.started = bool(msg.data)
-
-        if self.started:
-
-            self.state = "START_STRAIGHT"
-
-            self.start_time = time.time()
-
-            self.first_line_stop_time = None
-            self.after_first_move_start_time = None
-
-            self.pid.reset()
-
-        else:
-
-            self.stop_robot()
+    # =====================================================
+    # 图像回调
+    # =====================================================
 
     def image_callback(self, msg):
-
-        if not self.started:
-            return
 
         try:
 
@@ -289,30 +167,28 @@ class StableRightFollowNode:
                 desired_encoding="bgr8"
             )
 
-        except CvBridgeError:
+        except:
             return
 
-        now = time.time()
+        h, w = frame.shape[:2]
 
-        elapsed = now - self.start_time
+        roi = frame[int(h * 0.42):, :]
 
-        if elapsed > self.max_run_time:
+        mask = self.extract_white_mask(roi)
 
-            self.stop_robot()
+        elapsed = time.time() - self.start_time
 
-            self.state = "DONE"
+        # =====================================================
+        # 起步直行
+        # =====================================================
 
-            return
+        if self.state == "START":
 
-        mask = self.extract_white_mask(frame)
-
-        if self.state == "START_STRAIGHT":
-
-            if elapsed < self.start_straight_duration:
+            if elapsed < 1.4:
 
                 twist = Twist()
 
-                twist.linear.x = self.base_linear_speed
+                twist.linear.x = 0.12
                 twist.angular.z = 0.0
 
                 self.cmd_pub.publish(twist)
@@ -321,137 +197,268 @@ class StableRightFollowNode:
 
             else:
 
-                self.state = "FOLLOW_RIGHT"
+                self.state = "FOLLOW"
 
-        horizontal_detected, line_y_ratio = \
-            self.detect_horizontal_line(mask)
+        # =====================================================
+        # 横线停车
+        # =====================================================
 
-        if self.state == "FOLLOW_RIGHT":
+        if self.state == "FOLLOW":
 
-            if horizontal_detected and \
-               line_y_ratio > self.second_line_y_threshold:
+            if self.detect_horizontal_line(mask):
+
+                self.horizontal_counter += 1
+
+            else:
+
+                self.horizontal_counter = 0
+
+            if self.horizontal_counter >= 4:
+
+                self.state = "WAIT"
+
+                self.stop_time = time.time()
 
                 self.stop_robot()
 
-                self.state = "DONE"
-
-                rospy.loginfo("Second line stop")
-
                 return
 
-            if horizontal_detected and \
-               line_y_ratio > self.first_line_y_threshold:
+        # =====================================================
+        # 等待
+        # =====================================================
 
-                self.stop_robot()
-
-                self.state = "FIRST_LINE_STOP"
-
-                self.first_line_stop_time = now
-
-                rospy.loginfo("First line detected")
-
-                return
-
-            angular = self.compute_right_follow_angular(
-                mask,
-                frame.shape[1]
-            )
-
-            twist = Twist()
-
-            twist.linear.x = self.base_linear_speed
-            twist.angular.z = angular
-
-            self.cmd_pub.publish(twist)
-
-            return
-
-        if self.state == "FIRST_LINE_STOP":
+        if self.state == "WAIT":
 
             self.stop_robot()
 
-            if now - self.first_line_stop_time > 0.8:
+            if time.time() - self.stop_time > 0.5:
 
-                self.state = "AFTER_FIRST_MOVE"
+                self.state = "FORWARD"
 
-                self.after_first_move_start_time = now
+                self.forward_time = time.time()
 
             return
 
-        if self.state == "AFTER_FIRST_MOVE":
+        # =====================================================
+        # 前进25cm
+        # =====================================================
 
-            move_elapsed = now - self.after_first_move_start_time
+        if self.state == "FORWARD":
 
-            if horizontal_detected and \
-               line_y_ratio > self.second_line_y_threshold:
+            if time.time() - self.forward_time > self.forward_duration:
 
-                self.stop_robot()
-
-                self.state = "DONE"
-
-                rospy.loginfo("Second line final stop")
-
-                return
-
-            if move_elapsed > self.after_first_line_duration:
+                self.state = "STOP"
 
                 self.stop_robot()
 
-                self.state = "DONE"
-
-                rospy.loginfo("Distance stop")
-
                 return
 
-            angular = self.compute_right_follow_angular(
-                mask,
-                frame.shape[1]
+        # =====================================================
+        # STOP
+        # =====================================================
+
+        if self.state == "STOP":
+
+            self.stop_robot()
+
+            return
+
+        # =====================================================
+        # 巡线
+        # =====================================================
+
+        right_x = self.find_right_line(mask)
+
+        twist = Twist()
+
+        # =====================================================
+        # 丢线恢复
+        # =====================================================
+
+        if right_x is None:
+
+            self.lost_count += 1
+
+            twist.linear.x = self.search_speed
+
+            twist.angular.z = (
+                self.search_direction *
+                self.search_angular
             )
-
-            twist = Twist()
-
-            twist.linear.x = self.after_first_line_speed
-            twist.angular.z = angular
 
             self.cmd_pub.publish(twist)
 
             return
 
+        self.lost_count = 0
+
+        self.last_valid_x = right_x
+
+        # =====================================================
+        # 目标点
+        # =====================================================
+
+        target_x = right_x - self.right_offset
+
+        error = target_x - (w / 2)
+
+        self.error_buffer.append(error)
+
+        avg_error = np.mean(self.error_buffer)
+
+        # =====================================================
+        # PID
+        # =====================================================
+
+        angular = -self.pid.update(avg_error)
+
+        # =====================================================
+        # 平滑
+        # =====================================================
+
+        angular = (
+            self.angular_alpha *
+            self.last_angular
+            +
+            (1.0 - self.angular_alpha)
+            *
+            angular
+        )
+
+        self.last_angular = angular
+
+        angular = max(
+            -self.max_angular,
+            min(self.max_angular, angular)
+        )
+
+        # =====================================================
+        # 动态速度
+        # =====================================================
+
+        abs_error = abs(avg_error)
+
+        # 直线
+
+        if abs_error < 18:
+
+            speed = self.base_speed
+
+            angular *= 0.35
+
+        # 小弯
+
+        elif abs_error < 55:
+
+            speed = 0.17
+
+            angular *= 0.75
+
+        # 大弯
+
+        else:
+
+            speed = self.curve_speed
+
+            angular *= 0.92
+
+        # FORWARD阶段
+
+        if self.state == "FORWARD":
+
+            speed = 0.04
+
+            angular *= 0.4
+
+        twist.linear.x = speed
+        twist.angular.z = angular
+
+        self.cmd_pub.publish(twist)
+
+    # =====================================================
+    # 白线提取
+    # =====================================================
+
     def extract_white_mask(self, frame):
 
-        h = frame.shape[0]
+        # =====================================================
+        # CLAHE
+        # =====================================================
 
-        y0 = int(h * self.roi_y_start_ratio)
-        y1 = int(h * self.roi_y_end_ratio)
+        lab = cv2.cvtColor(
+            frame,
+            cv2.COLOR_BGR2LAB
+        )
 
-        roi = frame[y0:y1, :]
+        l, a, b = cv2.split(lab)
 
-        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        clahe = cv2.createCLAHE(
+            clipLimit=2.0,
+            tileGridSize=(8, 8)
+        )
 
-        mask_hsv = cv2.inRange(
+        l = clahe.apply(l)
+
+        lab = cv2.merge((l, a, b))
+
+        frame = cv2.cvtColor(
+            lab,
+            cv2.COLOR_LAB2BGR
+        )
+
+        # =====================================================
+        # 高斯滤波
+        # =====================================================
+
+        blur = cv2.GaussianBlur(
+            frame,
+            (5, 5),
+            0
+        )
+
+        # =====================================================
+        # HSV
+        # =====================================================
+
+        hsv = cv2.cvtColor(
+            blur,
+            cv2.COLOR_BGR2HSV
+        )
+
+        gray = cv2.cvtColor(
+            blur,
+            cv2.COLOR_BGR2GRAY
+        )
+
+        v_mean = np.mean(hsv[:, :, 2])
+
+        dynamic_v = max(
+            185,
+            int(v_mean + 35)
+        )
+
+        hsv_mask = cv2.inRange(
             hsv,
-            (0, 0, self.white_v_min),
-            (179, self.white_s_max, self.white_v_max)
+            (0, 0, dynamic_v),
+            (179, 70, 255)
         )
 
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-
-        mask_gray = cv2.inRange(
+        gray_mask = cv2.inRange(
             gray,
-            self.gray_white_threshold,
-            self.gray_white_max
+            195,
+            255
         )
 
-        mask = cv2.bitwise_or(mask_hsv, mask_gray)
+        mask = cv2.bitwise_and(
+            hsv_mask,
+            gray_mask
+        )
 
-        mask = self.remove_small_components(mask)
+        # =====================================================
+        # 去反光
+        # =====================================================
 
-        k = self.morph_kernel_size
-
-        if k % 2 == 0:
-            k += 1
-
-        kernel = np.ones((k, k), np.uint8)
+        kernel = np.ones((5, 5), np.uint8)
 
         mask = cv2.morphologyEx(
             mask,
@@ -465,212 +472,132 @@ class StableRightFollowNode:
             kernel
         )
 
-        return mask
+        # =====================================================
+        # 面积过滤
+        # =====================================================
 
-    def remove_small_components(self, mask):
-
-        contours_info = cv2.findContours(
+        contours, _ = cv2.findContours(
             mask,
             cv2.RETR_EXTERNAL,
             cv2.CHAIN_APPROX_SIMPLE
         )
 
-        # OpenCV3 / OpenCV4兼容
-        if len(contours_info) == 3:
-            _, contours, _ = contours_info
-        else:
-            contours, _ = contours_info
-
-        result = np.zeros_like(mask)
+        clean = np.zeros_like(mask)
 
         for c in contours:
 
             area = cv2.contourArea(c)
 
-            if area >= self.min_contour_area:
+            if area < 120:
+                continue
 
-                cv2.drawContours(
-                    result,
-                    [c],
-                    -1,
-                    255,
-                    thickness=cv2.FILLED
-                )
+            x, y, w, h = cv2.boundingRect(c)
 
-        return result
+            # 过滤小亮点
 
-    def find_segments(self, row) -> List[Segment]:
+            if w < 8 and h < 8:
+                continue
 
-        active = row > 0
+            # 过滤大反光
 
-        segments = []
+            if area > (
+                mask.shape[0] *
+                mask.shape[1] *
+                0.55
+            ):
+                continue
 
-        start = None
+            cv2.drawContours(
+                clean,
+                [c],
+                -1,
+                255,
+                thickness=cv2.FILLED
+            )
 
-        for i, val in enumerate(active):
+        return clean
 
-            if val and start is None:
+    # =====================================================
+    # 找右边线
+    # =====================================================
 
-                start = i
-
-            elif not val and start is not None:
-
-                end = i - 1
-
-                width = end - start + 1
-
-                if width >= self.min_line_width_px:
-
-                    segments.append(
-                        Segment(
-                            start,
-                            end,
-                            (start + end) / 2.0,
-                            width
-                        )
-                    )
-
-                start = None
-
-        if start is not None:
-
-            end = len(active) - 1
-
-            width = end - start + 1
-
-            if width >= self.min_line_width_px:
-
-                segments.append(
-                    Segment(
-                        start,
-                        end,
-                        (start + end) / 2.0,
-                        width
-                    )
-                )
-
-        return self.merge_close_segments(segments)
-
-    def merge_close_segments(self, segments):
-
-        if not segments:
-            return []
-
-        merged = [segments[0]]
-
-        for seg in segments[1:]:
-
-            prev = merged[-1]
-
-            if seg.left - prev.right <= self.min_segment_gap_px:
-
-                merged[-1] = Segment(
-                    prev.left,
-                    seg.right,
-                    (prev.left + seg.right) / 2.0,
-                    seg.right - prev.left + 1
-                )
-
-            else:
-
-                merged.append(seg)
-
-        return merged
-
-    def find_rightmost_line_x(self, mask) -> Optional[float]:
+    def find_right_line(self, mask):
 
         h = mask.shape[0]
 
-        scan_ratios = [
-            0.95,
-            0.92,
-            0.88,
-            0.84,
-            0.80,
-            0.75,
-            0.70
+        scan_rows = [
+            int(h * 0.96),
+            int(h * 0.92),
+            int(h * 0.88),
+            int(h * 0.84),
+            int(h * 0.80),
+            int(h * 0.76)
         ]
 
-        for ratio in scan_ratios:
+        weights = [
+            6,
+            5,
+            4,
+            3,
+            2,
+            1
+        ]
 
-            y = int(h * ratio)
+        points = []
 
-            row = mask[y, :]
+        total_weight = 0
 
-            segments = self.find_segments(row)
+        for i, y in enumerate(scan_rows):
 
-            if segments:
+            row = mask[y]
 
-                return segments[-1].center
+            idx = np.where(row > 0)[0]
 
-        return None
+            if len(idx) < 10:
+                continue
 
-    def compute_right_follow_angular(
-            self,
-            mask,
-            image_width):
+            right_x = idx[-1]
 
-        right_x = self.find_rightmost_line_x(mask)
+            points.append(
+                right_x * weights[i]
+            )
 
-        if right_x is None:
+            total_weight += weights[i]
 
-            if self.last_error_px < 0:
+        if total_weight == 0:
+            return None
 
-                return -self.search_angular_speed * 1.2
+        return sum(points) / total_weight
 
-            return -self.search_angular_speed
+    # =====================================================
+    # 横线检测
+    # =====================================================
 
-        target_x = right_x - self.right_offset_px
+    def detect_horizontal_line(self, mask):
 
-        error = target_x - image_width / 2.0
+        h, w = mask.shape
 
-        self.last_error_px = error
+        roi = mask[int(h * 0.82):, :]
 
-        angular = -self.pid.update(
-            error,
-            time.time()
-        )
+        rows = roi.shape[0]
 
-        angular = max(
-            -self.max_angular_speed,
-            min(self.max_angular_speed, angular)
-        )
+        count = 0
 
-        return angular
+        for y in range(rows):
 
-    def detect_horizontal_line(
-            self,
-            mask) -> Tuple[bool, float]:
+            row = roi[y]
 
-        h, w = mask.shape[:2]
+            white = np.sum(row > 0)
 
-        bottom_start = int(h * 0.80)
+            if white > w * 0.55:
 
-        bottom = mask[bottom_start:, :]
+                count += 1
 
-        if bottom.size == 0:
-            return False, 0.0
+        return count >= 4
 
-        min_width = int(w * 0.45)
-
-        for r in range(bottom.shape[0] - 1, -1, -1):
-
-            row = bottom[r, :]
-
-            segments = self.find_segments(row)
-
-            for seg in segments:
-
-                if seg.width >= min_width and \
-                   r > bottom.shape[0] * 0.45:
-
-                    y_ratio = (
-                        bottom_start + r
-                    ) / float(h)
-
-                    return True, y_ratio
-
-        return False, 0.0
+    # =====================================================
+    # 停车
+    # =====================================================
 
     def stop_robot(self):
 
@@ -682,15 +609,8 @@ class StableRightFollowNode:
         self.cmd_pub.publish(twist)
 
 
-def main():
-
-    rospy.init_node("stable_right_follow")
+if __name__ == "__main__":
 
     StableRightFollowNode()
 
     rospy.spin()
-
-
-if __name__ == "__main__":
-    main()
-
