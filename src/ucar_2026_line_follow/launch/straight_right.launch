@@ -1,74 +1,44 @@
+<!-- straight_right.launch -->
+
 <launch>
 
-  <!-- ================================= -->
-  <!-- 参数 -->
-  <!-- ================================= -->
+    <!-- 底盘 -->
+    <node pkg="base_driver"
+          type="base_driver"
+          name="base_driver"
+          output="screen" />
 
-  <arg name="start_driver" default="true" />
-  <arg name="start_camera" default="true" />
+    <!-- 摄像头 -->
+    <node pkg="usb_cam"
+          type="usb_cam_node"
+          name="usb_cam"
+          output="screen">
 
-  <arg name="config_file"
-       default="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
+        <param name="video_device" value="/dev/video0" />
 
-  <!-- ================================= -->
-  <!-- 启动底盘 -->
-  <!-- ================================= -->
+        <param name="image_width" value="640" />
+        <param name="image_height" value="480" />
 
-  <group if="$(arg start_driver)">
+        <!-- MJPEG更稳定 -->
+        <param name="pixel_format" value="mjpeg" />
 
-    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+        <!-- 提高帧率 -->
+        <param name="framerate" value="30" />
 
-  </group>
+        <!-- 降低曝光波动 -->
+        <param name="io_method" value="mmap" />
 
-  <!-- ================================= -->
-  <!-- 启动摄像头 -->
-  <!-- ================================= -->
+    </node>
 
-  <group if="$(arg start_camera)">
+    <!-- 巡线节点 -->
+    <node pkg="ucar_2026_line_follow"
+          type="stable_right_follow.py"
+          name="stable_right_follow"
+          output="screen">
 
-    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+        <rosparam command="load"
+                  file="$(find ucar_2026_line_follow)/config/straight_right.yaml" />
 
-  </group>
-
-  <!-- ================================= -->
-  <!-- 巡线节点 -->
-  <!-- ================================= -->
-
-  <node pkg="ucar_2026_line_follow"
-        type="stable_right_follow.py"
-        name="stable_right_follow"
-        output="screen"
-        required="true">
-
-    <rosparam command="load"
-              file="$(arg config_file)" />
-
-    <param name="image_topic"
-           value="/usb_cam/image_raw" />
-
-    <param name="cmd_vel_topic"
-           value="/cmd_vel" />
-
-    <param name="start_topic"
-           value="/line_follow/start" />
-
-    <param name="status_topic"
-           value="/line_follow/status" />
-
-  </node>
-
-  <!-- ================================= -->
-  <!-- 调试节点 -->
-  <!-- ================================= -->
-
-  <node pkg="ucar_2026_line_follow"
-        type="right_debug_relay_node.py"
-        name="right_debug_relay_node"
-        output="screen">
-
-    <rosparam command="load"
-              file="$(arg config_file)" />
-
-  </node>
+    </node>
 
 </launch>
