@@ -12,11 +12,8 @@ from cv_bridge import CvBridge
 
 
 class StableRightFollowNode:
-
     def __init__(self):
-
-        rospy.init_node("stable_right_follow")
-
+        rospy.init_node("stable_right_follow", anonymous=False)
         self.bridge = CvBridge()
 
         self.cmd_pub = rospy.Publisher(
@@ -59,12 +56,14 @@ class StableRightFollowNode:
 
         rospy.loginfo("Stable Right Follow Node Started")
 
-    # =====================================================
-    # 图像回调
-    # =====================================================
+        rospy.loginfo("Stable Right Follow Node Started (with YAML support)")
+        rospy.loginfo("Parameters: offset=%d, base_speed=%.2f, curve_speed=%.2f",
+                      self.right_offset, self.base_speed, self.curve_speed)
 
+    # ------------------------------------------------------------
+    # 图像回调主逻辑（与之前完全相同，无需修改）
+    # ------------------------------------------------------------
     def image_callback(self, msg):
-
         try:
             frame = self.bridge.imgmsg_to_cv2(
                 msg,
@@ -139,7 +138,6 @@ class StableRightFollowNode:
         # ========================================
 
         right_x = self.find_right_line(mask)
-
         twist = Twist()
 
         # ========================================
@@ -156,7 +154,6 @@ class StableRightFollowNode:
             twist.angular.z = -0.25
 
             self.cmd_pub.publish(twist)
-
             return
 
         self.line_lost_count = 0
@@ -195,7 +192,6 @@ class StableRightFollowNode:
 
         twist.linear.x = linear_speed
         twist.angular.z = angular
-
         self.cmd_pub.publish(twist)
 
         # 调试窗口
@@ -286,10 +282,9 @@ class StableRightFollowNode:
 
         return clean_mask
 
-    # =====================================================
-    # 找右边线
-    # =====================================================
-
+    # ------------------------------------------------------------
+    # 寻找右侧白线
+    # ------------------------------------------------------------
     def find_right_line(self, mask):
 
         h, w = mask.shape
