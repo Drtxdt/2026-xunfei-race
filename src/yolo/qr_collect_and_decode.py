@@ -12,6 +12,7 @@ import os
 import time
 import json
 import argparse
+import urllib.request
 
 import cv2
 import rospy
@@ -34,20 +35,25 @@ class QRCollectAndDecode:
     def __init__(self, args):
         self.args = args
         self.bridge = CvBridge()
-        self.detector = cv2.QRCodeDetector()
+        self.detector = None
+        try:
+            self.detector = cv2.QRCodeDetector()
+        except AttributeError:
+            rospy.logwarn("cv2.QRCodeDetector not available (need opencv-contrib). "
+                          "Will rely on pyzbar for QR decoding.")
         self.out_dir = os.path.expanduser(args.output)
         os.makedirs(self.out_dir, exist_ok=True)
         self.last_save_time = 0.0
-        self.count = 0
+        self.save_count = 0
         self.last_publish_text = ""
         self.last_publish_time = 0.0
 
-        self.pub = rospy.Publisher(args.output_topic, String, queue_size=10)
-        self.sub = rospy.Subscriber(args.image_topic, Image, self.image_cb, queue_size=1)
+        self.pub = rospy.Publisher(args.pub_topic, String, queue_size=10)
+        self.sub = rospy.Subscriber(args.topic, Image, self.image_cb, queue_size=1)
 
-        rospy.loginfo("QR image topic: %s", args.image_topic)
+        rospy.loginfo("QR image topic: %s", args.topic)
         rospy.loginfo("QR images save to: %s", self.out_dir)
-        rospy.loginfo("QR result topic: %s", args.output_topic)
+        rospy.loginfo("QR result topic: %s", args.pub_topic)
 
     def image_cb(self, msg):
         try:
@@ -104,14 +110,15 @@ class QRCollectAndDecode:
         texts = []
 
         # Method 1: OpenCV detectAndDecodeMulti
-        try:
-            ok, decoded_info, points, straight_qrcode = self.detector.detectAndDecodeMulti(img)
-            if ok and decoded_info:
-                for s in decoded_info:
-                    if s and s.strip() and s not in texts:
-                        texts.append(s.strip())
-        except Exception:
-            pass
+        if self.detector is not None:
+            try:
+                ok, decoded_info, points, straight_qrcode = self.detector.detectAndDecodeMulti(img)
+                if ok and decoded_info:
+                    for s in decoded_info:
+                        if s and s.strip() and s not in texts:
+                            texts.append(s.strip())
+            except Exception:
+                pass
 
         # Method 2: pyzbar fallback, often better for tilted QR codes
         if pyzbar is not None:
@@ -157,7 +164,7 @@ class QRCollectAndDecode:
 def main():
     parser = argparse.ArgumentParser(description='QR code collector and decoder for ROS U-CAR')
     parser.add_argument('--topic', default='/usb_cam/image_raw', help='camera image topic')
-    parser.add_argument('--output', default=os.path.expanduser('~/yolo_dataset/qr_images'), help='QR image save dir')
+    parser.add_argument('--output', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolo_dataset', 'qr_images'), help='QR image save dir')
     parser.add_argument('--pub-topic', default='/qr_code_data', help='publish decoded QR json to this topic')
     parser.add_argument('--fetch', action='store_true', help='if QR content is URL, request it and parse JSON')
     parser.add_argument('--save-on-detect', action='store_true', help='save image whenever QR is detected')

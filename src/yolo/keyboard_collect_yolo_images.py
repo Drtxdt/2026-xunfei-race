@@ -244,8 +244,8 @@ class KeyboardDatasetCollector:
 
 def main():
     parser = argparse.ArgumentParser(description='Keyboard teleop + auto image collector for YOLO dataset')
-    parser.add_argument('--cls', required=True, help='类别/采集会话名，例如 red_light、straight、left、right、food_sign')
-    parser.add_argument('--output', default=os.path.expanduser('~/yolo_dataset/raw_images'), help='图片保存根目录')
+    parser.add_argument('--cls', required=True, help='类别/采集会话名，例如 red_light、straight、left、right')
+    parser.add_argument('--output', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolo_dataset', 'raw_images'), help='图片保存根目录')
     parser.add_argument('--topic', default='/usb_cam/image_raw', help='相机图像话题')
     parser.add_argument('--cmd-topic', default='/cmd_vel', help='速度控制话题')
     parser.add_argument('--interval', type=float, default=0.5, help='自动保存间隔，单位秒')
