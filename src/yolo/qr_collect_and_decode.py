@@ -39,13 +39,8 @@ class QRCollectAndDecode:
         try:
             self.detector = cv2.QRCodeDetector()
         except AttributeError:
-            rospy.logwarn(
-                "cv2.QRCodeDetector is unavailable. Falling back to pyzbar."
-            )
-        if self.detector is None and pyzbar is None:
-            rospy.logerr(
-                "No QR decoder available. Install pyzbar/zbar or use OpenCV with QRCodeDetector."
-            )
+            rospy.logwarn("cv2.QRCodeDetector not available (need opencv-contrib). "
+                          "Will rely on pyzbar for QR decoding.")
         self.out_dir = os.path.expanduser(args.output)
         os.makedirs(self.out_dir, exist_ok=True)
         self.last_save_time = 0.0
@@ -180,7 +175,7 @@ class QRCollectAndDecode:
 def main():
     parser = argparse.ArgumentParser(description='QR code collector and decoder for ROS U-CAR')
     parser.add_argument('--topic', default='/usb_cam/image_raw', help='camera image topic')
-    parser.add_argument('--output', default=os.path.expanduser('~/yolo_dataset/qr_images'), help='QR image save dir')
+    parser.add_argument('--output', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolo_dataset', 'qr_images'), help='QR image save dir')
     parser.add_argument('--pub-topic', default='/qr_code_data', help='publish decoded QR json to this topic')
     parser.add_argument('--fetch', action='store_true', help='if QR content is URL, request it and parse JSON')
     parser.add_argument('--save-on-detect', action='store_true', help='save image whenever QR is detected')
