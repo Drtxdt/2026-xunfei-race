@@ -26,7 +26,16 @@ add_executable(right_line_follow_cpp_node
   src/right_line_follow_cpp_node.cpp
 )
 
+add_executable(left_line_follow_cpp_node
+  src/left_line_follow_cpp_node.cpp
+)
+
 target_link_libraries(right_line_follow_cpp_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+target_link_libraries(left_line_follow_cpp_node
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
 )
@@ -43,7 +52,7 @@ catkin_install_python(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-install(TARGETS right_line_follow_cpp_node
+install(TARGETS right_line_follow_cpp_node left_line_follow_cpp_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
