@@ -1,0 +1,82 @@
+# Topics
+image_topic: /usb_cam/image_raw
+cmd_vel_topic: /cmd_vel
+status_topic: /right_line_follow_cpp/status
+debug_image_topic: /right_line_follow_cpp/debug_image
+debug_info_topic: /right_line_follow_cpp/debug_info
+
+# Startup from the car's point of view: leave the red area, turn right, then
+# enter the rightmost lane before visual tracking takes over.
+auto_start: true
+startup_forward_duration: 2.8
+startup_forward_speed: 0.16
+startup_turn_duration: 3.6
+startup_turn_angular_speed: -0.34
+startup_enter_duration: 1.8
+startup_enter_speed: 0.10
+
+# White-line extraction. Raise V/gray thresholds if the floor reflection is
+# being detected as white line; lower them only if real white lines disappear.
+white_s_max: 75
+white_v_min: 170
+gray_white_threshold: 190
+morph_kernel_size: 5
+min_component_area: 80
+max_component_area_ratio: 0.42
+
+# Senior-style right-hand line tracing.
+begin_x: 25.0
+begin_y: 400.0
+seed_search_rows: 6
+seed_row_step_px: 25
+edge_probe_px: 6
+edge_threshold: 90
+trace_max_points: 300
+trace_step_guard: 4
+line_blur_kernel: 7
+sample_dist_m: 0.01
+aim_dist_m: 0.12
+forward_bias_m: 0.20
+pixel_per_meter: 500.0
+lane_width_m: 0.42
+right_center_bias_m: 0.035
+
+# Fallback row scan for frames where wall tracing misses the right line.
+fallback_roi_y_start_ratio: 0.48
+fallback_rows: [0.52, 0.62, 0.72, 0.82, 0.92]
+fallback_right_offset_px: 125
+
+# Motion control. Conservative defaults are intentional for first field tests.
+base_speed: 0.16
+min_speed: 0.07
+curve_speed_error_scale: 0.18
+max_angular_speed: 0.55
+angular_alpha: 0.65
+lost_timeout: 0.8
+lost_speed: 0.06
+lost_angular_speed: -0.22
+
+# Finish box. The stop box is 50 cm * 50 cm, white-line rectangle.
+finish_enable_delay: 18.0
+finish_min_width_ratio: 0.48
+finish_max_width_ratio: 0.92
+finish_min_height_ratio: 0.18
+finish_min_bottom_y_ratio: 0.70
+finish_roi_y_start_ratio: 0.52
+finish_min_horizontal_presence: 0.55
+finish_min_vertical_presence: 0.42
+finish_confirm_frames: 4
+finish_release_frames: 2
+finish_approach_speed: 0.06
+finish_forward_duration: 1.65
+finish_forward_speed: 0.08
+finish_stop_hold: 2.0
+
+# Debug relay parameters consumed by right_debug_relay_node.py.
+compressed_debug_topic: /right_line_follow_cpp/debug_image/compressed
+compressed_raw_topic: /right_line_follow_cpp/raw_image/compressed
+debug_relay_status_topic: /right_line_follow_cpp/debug_relay/status
+jpeg_quality: 75
+debug_resize_width: 0
+debug_max_publish_fps: 12.0
+publish_raw_compressed: true
