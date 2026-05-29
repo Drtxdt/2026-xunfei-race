@@ -305,7 +305,7 @@ class StableRightFollowNode:
             cv2.circle(
                 debug,
                 (right_x, int(mask.shape[0] / 2)),
-                6,
+                5,
                 (0, 0, 255),
                 -1
             )
