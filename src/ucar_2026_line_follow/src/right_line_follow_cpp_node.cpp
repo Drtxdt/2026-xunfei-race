@@ -118,19 +118,22 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/right_line_follow_cpp/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_forward_duration", startup_forward_duration_, 2.8);
+    private_nh_.param("startup_forward_duration", startup_forward_duration_, 2.2);
     private_nh_.param("startup_forward_speed", startup_forward_speed_, 0.16);
-    private_nh_.param("startup_turn_duration", startup_turn_duration_, 3.6);
+    private_nh_.param("startup_turn_duration", startup_turn_duration_, 3.85);
     private_nh_.param("startup_turn_angular_speed", startup_turn_angular_speed_, -0.34);
     private_nh_.param("startup_enter_duration", startup_enter_duration_, 1.8);
     private_nh_.param("startup_enter_speed", startup_enter_speed_, 0.10);
 
-    private_nh_.param("white_s_max", white_s_max_, 75);
-    private_nh_.param("white_v_min", white_v_min_, 170);
-    private_nh_.param("gray_white_threshold", gray_white_threshold_, 190);
+    private_nh_.param("white_s_max", white_s_max_, 85);
+    private_nh_.param("white_v_min", white_v_min_, 155);
+    private_nh_.param("gray_white_threshold", gray_white_threshold_, 175);
     private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
     private_nh_.param("min_component_area", min_component_area_, 80.0);
-    private_nh_.param("max_component_area_ratio", max_component_area_ratio_, 0.42);
+    private_nh_.param("max_component_area_ratio", max_component_area_ratio_, 0.70);
+    private_nh_.param("min_white_mask_ratio", min_white_mask_ratio_, 0.002);
+    private_nh_.param("max_white_mask_ratio", max_white_mask_ratio_, 0.32);
+    private_nh_.param("adaptive_threshold_delta", adaptive_threshold_delta_, 28);
 
     private_nh_.param("begin_x", begin_x_, 25.0);
     private_nh_.param("begin_y", begin_y_, 400.0);
@@ -149,7 +152,7 @@ private:
     private_nh_.param("right_center_bias_m", right_center_bias_m_, 0.035);
 
     private_nh_.param("fallback_roi_y_start_ratio", fallback_roi_y_start_ratio_, 0.48);
-    private_nh_.param("right_offset_px", right_offset_px_, 235.0);
+    private_nh_.param("right_offset_px", right_offset_px_, 180.0);
     private_nh_.param("right_scan_bottom_weight", right_scan_bottom_weight_, 1.8);
     private_nh_.param("min_line_width_px", min_line_width_px_, 5);
     private_nh_.param("max_line_segment_width_px", max_line_segment_width_px_, 90);
@@ -367,22 +370,54 @@ private:
 
     cv::Mat hsv;
     cv::cvtColor(blur, hsv, cv::COLOR_BGR2HSV);
-    cv::Mat hsv_mask;
-    cv::inRange(hsv, cv::Scalar(0, 0, white_v_min_), cv::Scalar(179, white_s_max_, 255), hsv_mask);
-
     cv::Mat gray;
     cv::cvtColor(blur, gray, cv::COLOR_BGR2GRAY);
-    cv::Mat gray_mask;
-    cv::threshold(gray, gray_mask, gray_white_threshold_, 255, cv::THRESH_BINARY);
 
-    cv::Mat mask;
-    cv::bitwise_or(hsv_mask, gray_mask, mask);
+    cv::Mat mask = buildWhiteMask(hsv, gray, white_s_max_, white_v_min_, gray_white_threshold_, false);
+    last_mask_ratio_ = static_cast<double>(cv::countNonZero(mask)) / static_cast<double>(std::max(1, mask.rows * mask.cols));
+    last_mask_mode_ = "normal";
+
+    if (last_mask_ratio_ > max_white_mask_ratio_)
+    {
+      const int strict_s = std::max(20, white_s_max_ - adaptive_threshold_delta_);
+      const int strict_v = std::min(245, white_v_min_ + adaptive_threshold_delta_);
+      const int strict_gray = std::min(245, gray_white_threshold_ + adaptive_threshold_delta_);
+      mask = buildWhiteMask(hsv, gray, strict_s, strict_v, strict_gray, true);
+      last_mask_ratio_ = static_cast<double>(cv::countNonZero(mask)) / static_cast<double>(std::max(1, mask.rows * mask.cols));
+      last_mask_mode_ = "strict";
+    }
+    else if (last_mask_ratio_ < min_white_mask_ratio_)
+    {
+      const int loose_s = std::min(140, white_s_max_ + adaptive_threshold_delta_);
+      const int loose_v = std::max(80, white_v_min_ - adaptive_threshold_delta_);
+      const int loose_gray = std::max(100, gray_white_threshold_ - adaptive_threshold_delta_);
+      mask = buildWhiteMask(hsv, gray, loose_s, loose_v, loose_gray, false);
+      last_mask_ratio_ = static_cast<double>(cv::countNonZero(mask)) / static_cast<double>(std::max(1, mask.rows * mask.cols));
+      last_mask_mode_ = "loose";
+    }
+
     mask = filterComponents(mask);
 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(morph_kernel_size_, morph_kernel_size_));
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
     cv::medianBlur(mask, mask, 5);
+    return mask;
+  }
+
+  cv::Mat buildWhiteMask(const cv::Mat& hsv, const cv::Mat& gray, int s_max, int v_min, int gray_threshold,
+                         bool require_both) const
+  {
+    cv::Mat hsv_mask;
+    cv::inRange(hsv, cv::Scalar(0, 0, v_min), cv::Scalar(179, s_max, 255), hsv_mask);
+    cv::Mat gray_mask;
+    cv::threshold(gray, gray_mask, gray_threshold, 255, cv::THRESH_BINARY);
+
+    cv::Mat mask;
+    if (require_both)
+      cv::bitwise_and(hsv_mask, gray_mask, mask);
+    else
+      cv::bitwise_or(hsv_mask, gray_mask, mask);
     return mask;
   }
 
@@ -952,6 +987,8 @@ private:
     std::ostringstream ss;
     ss << "status=" << status_
        << " elapsed=" << std::fixed << std::setprecision(2) << (now - start_time_).toSec()
+       << " mask_mode=" << last_mask_mode_
+       << " mask_ratio=" << last_mask_ratio_
        << " found=" << boolText(follow.found)
        << " fallback=" << boolText(follow.used_fallback)
        << " target_x=" << follow.target_x
@@ -1014,19 +1051,22 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_forward_duration_ = 2.8;
+  double startup_forward_duration_ = 2.2;
   double startup_forward_speed_ = 0.16;
-  double startup_turn_duration_ = 3.6;
+  double startup_turn_duration_ = 3.85;
   double startup_turn_angular_speed_ = -0.34;
   double startup_enter_duration_ = 1.8;
   double startup_enter_speed_ = 0.10;
 
-  int white_s_max_ = 75;
-  int white_v_min_ = 170;
-  int gray_white_threshold_ = 190;
+  int white_s_max_ = 85;
+  int white_v_min_ = 155;
+  int gray_white_threshold_ = 175;
   int morph_kernel_size_ = 5;
   double min_component_area_ = 80.0;
-  double max_component_area_ratio_ = 0.42;
+  double max_component_area_ratio_ = 0.70;
+  double min_white_mask_ratio_ = 0.002;
+  double max_white_mask_ratio_ = 0.32;
+  int adaptive_threshold_delta_ = 28;
 
   double begin_x_ = 25.0;
   double begin_y_ = 400.0;
@@ -1047,7 +1087,7 @@ private:
   double fallback_roi_y_start_ratio_ = 0.48;
   std::vector<double> right_scan_rows_;
   std::vector<double> fallback_rows_;
-  double right_offset_px_ = 235.0;
+  double right_offset_px_ = 180.0;
   double fallback_right_offset_px_ = 125.0;
   double right_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;
@@ -1101,6 +1141,8 @@ private:
   bool has_last_target_ = false;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
+  double last_mask_ratio_ = 0.0;
+  std::string last_mask_mode_ = "normal";
 };
 
 int main(int argc, char** argv)

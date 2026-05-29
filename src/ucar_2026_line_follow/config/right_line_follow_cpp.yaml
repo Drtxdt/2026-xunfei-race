@@ -8,21 +8,24 @@ debug_info_topic: /right_line_follow_cpp/debug_info
 # Startup from the car's point of view: leave the red area, turn right, then
 # enter the rightmost lane before visual tracking takes over.
 auto_start: true
-startup_forward_duration: 2.8
+startup_forward_duration: 2.2
 startup_forward_speed: 0.16
-startup_turn_duration: 3.6
+startup_turn_duration: 3.85
 startup_turn_angular_speed: -0.34
 startup_enter_duration: 1.8
 startup_enter_speed: 0.10
 
 # White-line extraction. Raise V/gray thresholds if the floor reflection is
 # being detected as white line; lower them only if real white lines disappear.
-white_s_max: 75
-white_v_min: 170
-gray_white_threshold: 190
+white_s_max: 85
+white_v_min: 155
+gray_white_threshold: 175
 morph_kernel_size: 5
 min_component_area: 80
-max_component_area_ratio: 0.42
+max_component_area_ratio: 0.70
+min_white_mask_ratio: 0.002
+max_white_mask_ratio: 0.32
+adaptive_threshold_delta: 28
 
 # Senior-style right-hand line tracing.
 begin_x: 25.0
@@ -45,7 +48,7 @@ right_center_bias_m: 0.035
 fallback_roi_y_start_ratio: 0.48
 # Main C++ controller intentionally uses only the rightmost visible line.
 right_scan_rows: [0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58]
-right_offset_px: 235
+right_offset_px: 180
 right_scan_bottom_weight: 1.8
 min_line_width_px: 5
 max_line_segment_width_px: 90
