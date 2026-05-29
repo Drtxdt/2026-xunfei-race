@@ -85,6 +85,11 @@ finish_release_frames: 2
 finish_stop_on_box_count: 2
 finish_box_cooldown_sec: 2.0
 finish_approach_speed: 0.06
+finish_centering_enabled: true
+finish_center_target_bottom_ratio: 0.90
+finish_center_max_duration: 1.20
+finish_center_angular_kp: 0.0020
+finish_center_max_angular: 0.16
 finish_forward_duration: 1.65
 finish_forward_speed: 0.08
 finish_stop_hold: 2.0

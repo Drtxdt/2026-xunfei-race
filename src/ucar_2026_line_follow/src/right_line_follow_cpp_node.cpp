@@ -185,6 +185,11 @@ private:
     private_nh_.param("finish_stop_on_box_count", finish_stop_on_box_count_, 2);
     private_nh_.param("finish_box_cooldown_sec", finish_box_cooldown_sec_, 2.0);
     private_nh_.param("finish_approach_speed", finish_approach_speed_, 0.06);
+    private_nh_.param("finish_centering_enabled", finish_centering_enabled_, true);
+    private_nh_.param("finish_center_target_bottom_ratio", finish_center_target_bottom_ratio_, 0.90);
+    private_nh_.param("finish_center_max_duration", finish_center_max_duration_, 1.20);
+    private_nh_.param("finish_center_angular_kp", finish_center_angular_kp_, 0.0020);
+    private_nh_.param("finish_center_max_angular", finish_center_max_angular_, 0.16);
     private_nh_.param("finish_forward_duration", finish_forward_duration_, 1.65);
     private_nh_.param("finish_forward_speed", finish_forward_speed_, 0.08);
     private_nh_.param("finish_stop_hold", finish_stop_hold_, 2.0);
@@ -301,10 +306,19 @@ private:
 
       if (finish_event && finish_box_count_ >= finish_stop_on_box_count_)
       {
-        state_ = State::FinishStop;
         state_start_time_ = now;
-        setStatus("finish_second_box_stop");
-        hardStop();
+        if (finish_centering_enabled_)
+        {
+          state_ = State::FinishApproach;
+          setStatus("finish_centering");
+          publishFinishCenteringCommand(finish, now);
+        }
+        else
+        {
+          state_ = State::FinishStop;
+          setStatus("finish_second_box_stop");
+          hardStop();
+        }
       }
       else
       {
@@ -313,14 +327,20 @@ private:
     }
     else if (state_ == State::FinishApproach)
     {
-      setStatus("finish_approach");
-      if ((now - state_start_time_).toSec() > 0.35)
+      setStatus("finish_centering");
+      const double elapsed_centering = (now - state_start_time_).toSec();
+      const bool target_reached = finish.detected && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
+      const bool timed_out = elapsed_centering >= finish_center_max_duration_;
+      if (target_reached || timed_out)
       {
-        state_ = State::FinishForward;
+        state_ = State::FinishStop;
         state_start_time_ = now;
+        hardStop();
       }
-      cmd.linear.x = finish_approach_speed_;
-      publishCmd(cmd);
+      else
+      {
+        publishFinishCenteringCommand(finish, now);
+      }
     }
     else if (state_ == State::FinishForward)
     {
@@ -847,6 +867,27 @@ private:
     return false;
   }
 
+  void publishFinishCenteringCommand(const FinishResult& finish, const ros::Time& now)
+  {
+    (void)now;
+    geometry_msgs::Twist cmd;
+    cmd.linear.x = finish_approach_speed_;
+    if (finish.detected && finish.box.area() > 0)
+    {
+      const double box_center_x = finish.box.x + finish.box.width * 0.5;
+      const double center_error = box_center_x - kImageCols * 0.5;
+      cmd.angular.z = clampDouble(-finish_center_angular_kp_ * center_error,
+                                  -finish_center_max_angular_, finish_center_max_angular_);
+      last_finish_center_error_px_ = center_error;
+    }
+    else
+    {
+      cmd.angular.z = 0.0;
+      last_finish_center_error_px_ = 0.0;
+    }
+    publishCmd(cmd);
+  }
+
   double horizontalPresence(const cv::Mat& image) const
   {
     if (image.empty())
@@ -984,7 +1025,12 @@ private:
       cv::circle(debug, cv::Point(static_cast<int>(follow.target_x), static_cast<int>(follow.target_y)), 6,
                  cv::Scalar(0, 0, 255), -1);
     if (finish.box.area() > 0)
+    {
       cv::rectangle(debug, finish.box, finish.detected ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 160, 255), 2);
+      cv::Point box_center(finish.box.x + finish.box.width / 2, finish.box.y + finish.box.height / 2);
+      cv::circle(debug, box_center, 5, cv::Scalar(255, 255, 0), -1);
+      cv::line(debug, cv::Point(kImageCols / 2, box_center.y), box_center, cv::Scalar(255, 255, 0), 1);
+    }
 
     std::ostringstream line1;
     line1 << "state=" << status_ << " cmd=(" << std::fixed << std::setprecision(2) << last_linear_ << ","
@@ -993,7 +1039,8 @@ private:
 
     std::ostringstream line2;
     line2 << "target=(" << std::fixed << std::setprecision(1) << follow.target_x << "," << follow.target_y
-          << ") err=" << follow.error << " box_w=" << finish.width_ratio << " bottom=" << finish.bottom_ratio;
+          << ") err=" << follow.error << " c_err=" << last_finish_center_error_px_
+          << " bottom=" << finish.bottom_ratio;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
     try
@@ -1028,6 +1075,8 @@ private:
        << " finish_frames=" << finish_frames_
        << " finish_box_count=" << finish_box_count_
        << " finish_box_armed=" << boolText(finish_box_armed_)
+       << " finish_center_err=" << last_finish_center_error_px_
+       << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " box_w=" << finish.width_ratio
        << " box_h=" << finish.height_ratio
        << " box_bottom=" << finish.bottom_ratio
@@ -1148,6 +1197,11 @@ private:
   int finish_stop_on_box_count_ = 2;
   double finish_box_cooldown_sec_ = 2.0;
   double finish_approach_speed_ = 0.06;
+  bool finish_centering_enabled_ = true;
+  double finish_center_target_bottom_ratio_ = 0.90;
+  double finish_center_max_duration_ = 1.20;
+  double finish_center_angular_kp_ = 0.0020;
+  double finish_center_max_angular_ = 0.16;
   double finish_forward_duration_ = 1.65;
   double finish_forward_speed_ = 0.08;
   double finish_stop_hold_ = 2.0;
@@ -1165,6 +1219,7 @@ private:
   int finish_box_count_ = 0;
   bool finish_box_armed_ = true;
   ros::Time finish_box_cooldown_until_;
+  double last_finish_center_error_px_ = 0.0;
   double filtered_angular_ = 0.0;
   double filtered_error_px_ = 0.0;
   double last_error_px_ = 0.0;
