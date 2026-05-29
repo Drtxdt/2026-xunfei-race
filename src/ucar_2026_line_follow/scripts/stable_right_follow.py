@@ -29,46 +29,69 @@ class StableRightFollowNode:
             "/usb_cam/image_raw",
             Image,
             self.image_callback,
-            queue_size=1
+            queue_size=1,
+            buff_size=2**24
         )
 
-        # =============================
+        # ==================================================
         # 参数
-        # =============================
+        # ==================================================
 
-        # 右边线目标位置（距离更远）
-        self.target_right_x = 180
+        # =========================
+        # 巡线目标
+        # =========================
 
-        # 速度
-        self.base_speed = 0.17
-        self.curve_speed = 0.20
-        self.search_speed = 0.05
+        # 往左偏一点
+        # 防止贴右边线
+        self.target_right_x = 155
 
-        # PID
-        self.kp = 0.0028
-        self.kd = 0.0008
+        # =========================
+        # 速度参数
+        # =========================
 
+        # 直线速度
+        self.base_speed = 0.32
+
+        # 弯道速度
+        self.curve_speed = 0.28
+
+        # 丢线搜索速度
+        self.search_speed = 0.10
+
+        # =========================
+        # PID参数
+        # =========================
+
+        # 更激进
+        self.kp = 0.0052
+        self.kd = 0.0018
+
+        # PID缓存
         self.last_error = 0
+        self.filtered_error = 0
 
+        # =========================
         # 状态机
+        # =========================
+
         self.stage = 0
 
         """
-        0 = 起步直冲120cm
-        1 = 低速右转找线
+        0 = 起步直行
+        1 = 右转找线
         2 = 稳定右巡线
-        3 = 检测到横线后前进25cm
-        4 = 最终停车
+        3 = 检测横线后前进
+        4 = 停车
         """
 
         self.start_time = time.time()
 
         self.forward_25_start = None
 
-        self.cross_detected = False
+        # 丢线缓存
+        self.last_right_x = None
 
         rospy.loginfo("Stable Right Follow Node Started")
-
 
     # ==================================================
     # 图像回调
@@ -90,24 +113,31 @@ class StableRightFollowNode:
 
         h, w = frame.shape[:2]
 
+        # ==================================================
+        # ROI
+        # ==================================================
+
         roi = frame[int(h * 0.60):h, :]
+
+        # ==================================================
+        # 白线提取
+        # ==================================================
 
         mask = self.extract_white_mask(roi)
 
         twist = Twist()
 
         # ==================================================
-        # 阶段0：强制直行120cm
+        # 阶段0：起步直行
         # ==================================================
 
         if self.stage == 0:
 
             elapsed = time.time() - self.start_time
 
-            # 约1.9秒 ≈ 120cm
-            if elapsed < 3.2:
+            if elapsed < 2.8:
 
-                twist.linear.x = 0.42
+                twist.linear.x = 0.45
                 twist.angular.z = 0.0
 
                 self.cmd_pub.publish(twist)
@@ -121,17 +151,21 @@ class StableRightFollowNode:
                 self.stage = 1
 
         # ==================================================
-        # 阶段1：慢速右转找线
+        # 找右边线
         # ==================================================
 
         right_x = self.find_right_line(mask)
+
+        # ==================================================
+        # 阶段1：快速右转找线
+        # ==================================================
 
         if self.stage == 1:
 
             if right_x is None:
 
-                twist.linear.x = 0.05
-                twist.angular.z = -0.22
+                twist.linear.x = 0.10
+                twist.angular.z = -0.26
 
                 self.cmd_pub.publish(twist)
 
@@ -141,6 +175,8 @@ class StableRightFollowNode:
 
                 rospy.loginfo("RIGHT LINE FOUND")
 
+                self.last_right_x = right_x
+
                 self.stage = 2
 
         # ==================================================
@@ -149,10 +185,13 @@ class StableRightFollowNode:
 
         if self.stage == 2:
 
+            # ==============================================
             # 横线检测
+            # ==============================================
+
             cross_area = np.sum(mask > 0)
 
-            if cross_area > 42000:
+            if cross_area > 48000:
 
                 rospy.loginfo("STOP LINE DETECTED")
 
@@ -162,68 +201,123 @@ class StableRightFollowNode:
 
                 return
 
+            # ==============================================
             # 丢线处理
+            # ==============================================
+
             if right_x is None:
 
-                twist.linear.x = 0.04
-                twist.angular.z = -0.18
+                # 使用上一次位置继续推测
+                if self.last_right_x is not None:
+
+                    twist.linear.x = 0.14
+                    twist.angular.z = -0.22
+
+                else:
+
+                    twist.linear.x = 0.10
+                    twist.angular.z = -0.24
 
                 self.cmd_pub.publish(twist)
 
                 return
 
-            # ==========================
+            self.last_right_x = right_x
+
+            # ==============================================
             # PID
-            # ==========================
+            # ==============================================
 
             error = self.target_right_x - right_x
 
-            # 增大容错，避免左右摆
-            error = (
-                0.82 * self.last_error +
-                0.18 * error
+            # ==============================================
+            # 低通滤波
+            # ==============================================
+
+            alpha = 0.22
+
+            self.filtered_error = (
+                (1 - alpha) * self.filtered_error +
+                alpha * error
             )
 
-            d_error = error - self.last_error
+            d_error = (
+                self.filtered_error -
+                self.last_error
+            )
 
-            self.last_error = error
+            self.last_error = self.filtered_error
+
+            # ==============================================
+            # PID输出
+            # ==============================================
 
             angular = (
-                self.kp * error +
+                self.kp * self.filtered_error +
                 self.kd * d_error
             )
 
-            # 弯道
-            if abs(error) > 45:
+            # ==============================================
+            # 弯道增强
+            # ==============================================
+
+            if abs(self.filtered_error) > 38:
 
                 linear_speed = self.curve_speed
 
-                angular *= 1.05
+                angular *= 1.18
 
             else:
 
                 linear_speed = self.base_speed
 
+            # ==============================================
             # 限制角速度
-            angular = max(min(angular, 0.32), -0.32)
+            # ==============================================
+
+            angular = max(
+                min(angular, 0.55),
+                -0.55
+            )
 
             twist.linear.x = linear_speed
             twist.angular.z = angular
 
             self.cmd_pub.publish(twist)
 
-            # 调试窗口
+            # ==============================================
+            # 调试显示
+            # ==============================================
+
             debug = cv2.cvtColor(
                 mask,
                 cv2.COLOR_GRAY2BGR
             )
 
+            cv2.line(
+                debug,
+                (self.target_right_x, 0),
+                (self.target_right_x, mask.shape[0]),
+                (255, 0, 0),
+                2
+            )
+
             cv2.circle(
                 debug,
                 (right_x, int(mask.shape[0] / 2)),
-                5,
+                6,
                 (0, 0, 255),
                 -1
+            )
+
+            cv2.putText(
+                debug,
+                "ERR:{:.1f}".format(self.filtered_error),
+                (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2
             )
 
             cv2.imshow("right_follow", debug)
@@ -233,16 +327,16 @@ class StableRightFollowNode:
             return
 
         # ==================================================
-        # 阶段3：再前进25cm
+        # 阶段3：前进25cm
         # ==================================================
 
         if self.stage == 3:
 
             elapsed = time.time() - self.forward_25_start
 
-            if elapsed < 1.0:
+            if elapsed < 0.9:
 
-                twist.linear.x = 0.09
+                twist.linear.x = 0.12
                 twist.angular.z = 0.0
 
                 self.cmd_pub.publish(twist)
@@ -265,12 +359,15 @@ class StableRightFollowNode:
 
             return
 
-
     # ==================================================
     # 白线提取
     # ==================================================
 
     def extract_white_mask(self, roi):
+
+        # ==============================================
+        # 高斯滤波
+        # ==============================================
 
         blur = cv2.GaussianBlur(
             roi,
@@ -278,15 +375,21 @@ class StableRightFollowNode:
             0
         )
 
+        # ==============================================
+        # HSV
+        # ==============================================
+
         hsv = cv2.cvtColor(
             blur,
             cv2.COLOR_BGR2HSV
         )
 
-        # 抗反光
-        lower_white = np.array([0, 0, 185])
+        # ==============================================
+        # 更强抗灯光
+        # ==============================================
 
-        upper_white = np.array([180, 60, 255])
+        lower_white = np.array([0, 0, 200])
+        upper_white = np.array([180, 45, 255])
 
         mask = cv2.inRange(
             hsv,
@@ -294,7 +397,11 @@ class StableRightFollowNode:
             upper_white
         )
 
-        kernel = np.ones((3, 3), np.uint8)
+        # ==============================================
+        # 形态学滤波
+        # ==============================================
+
+        kernel = np.ones((5, 5), np.uint8)
 
         mask = cv2.morphologyEx(
             mask,
@@ -308,9 +415,26 @@ class StableRightFollowNode:
             kernel
         )
 
+        # ==============================================
+        # 中值滤波
+        # ==============================================
+
         mask = cv2.medianBlur(mask, 5)
 
-        # OpenCV3/4兼容
+        # ==============================================
+        # 再次平滑
+        # ==============================================
+
+        mask = cv2.GaussianBlur(
+            mask,
+            (5, 5),
+            0
+        )
+
+        # ==============================================
+        # 轮廓提取
+        # ==============================================
+
         contours_info = cv2.findContours(
             mask,
             cv2.RETR_EXTERNAL,
@@ -331,8 +455,8 @@ class StableRightFollowNode:
 
             area = cv2.contourArea(cnt)
 
-            # 去掉小反光
-            if area > 180:
+            # 去除小反光
+            if area > 260:
 
                 cv2.drawContours(
                     clean_mask,
@@ -344,7 +468,6 @@ class StableRightFollowNode:
 
         return clean_mask
 
-
     # ==================================================
     # 找右边线
     # ==================================================
@@ -353,18 +476,37 @@ class StableRightFollowNode:
 
         h, w = mask.shape
 
-        search_y = int(h * 0.55)
+        # ==============================================
+        # 多行采样
+        # ==============================================
 
-        row = mask[search_y]
+        rows = [
+            int(h * 0.50),
+            int(h * 0.60),
+            int(h * 0.70)
+        ]
 
-        white_points = np.where(row > 0)[0]
+        points = []
 
-        if len(white_points) == 0:
+        for y in rows:
+
+            row = mask[y]
+
+            white_points = np.where(row > 0)[0]
+
+            if len(white_points) > 0:
+
+                points.append(np.max(white_points))
+
+        if len(points) == 0:
 
             return None
 
-        return np.max(white_points)
+        # ==============================================
+        # 多行均值
+        # ==============================================
 
+        return int(np.mean(points))
 
     # ==================================================
     # 停车
@@ -378,7 +520,6 @@ class StableRightFollowNode:
         twist.angular.z = 0.0
 
         self.cmd_pub.publish(twist)
-
 
     # ==================================================
     # 主循环
