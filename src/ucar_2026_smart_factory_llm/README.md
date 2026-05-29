@@ -49,3 +49,25 @@ rosservice call /smart_factory_llm/reason_pickup_order \
 - **二维码节点**：将三次 `result` 填入 `item_a/b/c`（顺序与车队约定一致即可）。
 - **语音节点**：将 ASR 文本填入 `voice_instruction`。
 - **语音播报**：使用 `announcement_physical` 与 `announcement_simulation`，或整段 `announcement_full`。
+
+## 播报联调
+
+车上 TTS 节点订阅 `/speak`（`std_msgs/String`）。先启动语音包：
+
+```bash
+roslaunch speech_command speech_command.launch
+```
+
+再启动大模型服务：
+
+```bash
+roslaunch ucar_2026_smart_factory_llm reason_pickup.launch
+```
+
+可以用一次性联调节点测试“大模型推理 → /speak 播报”：
+
+```bash
+roslaunch ucar_2026_smart_factory_llm reason_and_speak_once.launch \
+  item_a:=草莓 item_b:=纸巾 item_c:=手机 \
+  voice_instruction:=小飞小飞，前往物品领取区，取得食品类，放置在对应仓库，并领取仿真环境中需要的日用品类放置在对应仓库
+```
