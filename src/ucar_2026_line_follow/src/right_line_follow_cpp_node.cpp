@@ -182,6 +182,8 @@ private:
     private_nh_.param("finish_min_vertical_presence", finish_min_vertical_presence_, 0.42);
     private_nh_.param("finish_confirm_frames", finish_confirm_frames_, 4);
     private_nh_.param("finish_release_frames", finish_release_frames_, 2);
+    private_nh_.param("finish_stop_on_box_count", finish_stop_on_box_count_, 2);
+    private_nh_.param("finish_box_cooldown_sec", finish_box_cooldown_sec_, 2.0);
     private_nh_.param("finish_approach_speed", finish_approach_speed_, 0.06);
     private_nh_.param("finish_forward_duration", finish_forward_duration_, 1.65);
     private_nh_.param("finish_forward_speed", finish_forward_speed_, 0.08);
@@ -291,28 +293,18 @@ private:
     }
     else if (state_ == State::Follow)
     {
-      if (finish.detected)
+      const bool finish_event = updateFinishEncounter(finish, now);
+      if (finish_event)
       {
-        ++finish_frames_;
-        finish_lost_frames_ = 0;
-      }
-      else
-      {
-        ++finish_lost_frames_;
-        if (finish_lost_frames_ >= finish_release_frames_)
-        {
-          finish_frames_ = 0;
-          finish_lost_frames_ = 0;
-        }
+        ROS_INFO("finish box encounter %d/%d", finish_box_count_, finish_stop_on_box_count_);
       }
 
-      if (finish_frames_ >= finish_confirm_frames_)
+      if (finish_event && finish_box_count_ >= finish_stop_on_box_count_)
       {
-        state_ = State::FinishApproach;
+        state_ = State::FinishStop;
         state_start_time_ = now;
-        setStatus("finish_approach");
-        cmd.linear.x = finish_approach_speed_;
-        publishCmd(cmd);
+        setStatus("finish_second_box_stop");
+        hardStop();
       }
       else
       {
@@ -821,6 +813,40 @@ private:
     return result;
   }
 
+  bool updateFinishEncounter(const FinishResult& finish, const ros::Time& now)
+  {
+    if (now < finish_box_cooldown_until_)
+      return false;
+
+    if (finish.detected)
+    {
+      ++finish_frames_;
+      finish_lost_frames_ = 0;
+    }
+    else
+    {
+      ++finish_lost_frames_;
+      if (finish_lost_frames_ >= finish_release_frames_)
+      {
+        finish_frames_ = 0;
+        finish_lost_frames_ = 0;
+        finish_box_armed_ = true;
+      }
+      return false;
+    }
+
+    if (finish_box_armed_ && finish_frames_ >= finish_confirm_frames_)
+    {
+      ++finish_box_count_;
+      finish_box_armed_ = false;
+      finish_frames_ = 0;
+      finish_lost_frames_ = 0;
+      finish_box_cooldown_until_ = now + ros::Duration(finish_box_cooldown_sec_);
+      return true;
+    }
+    return false;
+  }
+
   double horizontalPresence(const cv::Mat& image) const
   {
     if (image.empty())
@@ -1000,6 +1026,8 @@ private:
        << " path_points=" << follow.center_path.size()
        << " finish_detected=" << boolText(finish.detected)
        << " finish_frames=" << finish_frames_
+       << " finish_box_count=" << finish_box_count_
+       << " finish_box_armed=" << boolText(finish_box_armed_)
        << " box_w=" << finish.width_ratio
        << " box_h=" << finish.height_ratio
        << " box_bottom=" << finish.bottom_ratio
@@ -1117,6 +1145,8 @@ private:
   double finish_min_vertical_presence_ = 0.42;
   int finish_confirm_frames_ = 4;
   int finish_release_frames_ = 2;
+  int finish_stop_on_box_count_ = 2;
+  double finish_box_cooldown_sec_ = 2.0;
   double finish_approach_speed_ = 0.06;
   double finish_forward_duration_ = 1.65;
   double finish_forward_speed_ = 0.08;
@@ -1132,6 +1162,9 @@ private:
 
   int finish_frames_ = 0;
   int finish_lost_frames_ = 0;
+  int finish_box_count_ = 0;
+  bool finish_box_armed_ = true;
+  ros::Time finish_box_cooldown_until_;
   double filtered_angular_ = 0.0;
   double filtered_error_px_ = 0.0;
   double last_error_px_ = 0.0;

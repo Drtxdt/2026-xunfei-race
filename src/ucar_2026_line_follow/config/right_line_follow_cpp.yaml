@@ -82,6 +82,8 @@ finish_min_horizontal_presence: 0.55
 finish_min_vertical_presence: 0.42
 finish_confirm_frames: 4
 finish_release_frames: 2
+finish_stop_on_box_count: 2
+finish_box_cooldown_sec: 2.0
 finish_approach_speed: 0.06
 finish_forward_duration: 1.65
 finish_forward_speed: 0.08
