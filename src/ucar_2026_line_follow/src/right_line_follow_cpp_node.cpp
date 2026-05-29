@@ -90,6 +90,14 @@ private:
     std::vector<cv::Point2f> center_path;
   };
 
+  struct Segment
+  {
+    int left = 0;
+    int right = 0;
+    double center = 0.0;
+    int width = 0;
+  };
+
   struct FinishResult
   {
     bool detected = false;
@@ -141,8 +149,15 @@ private:
     private_nh_.param("right_center_bias_m", right_center_bias_m_, 0.035);
 
     private_nh_.param("fallback_roi_y_start_ratio", fallback_roi_y_start_ratio_, 0.48);
-    private_nh_.param("fallback_right_offset_px", fallback_right_offset_px_, 125.0);
-    loadDoubleList("fallback_rows", fallback_rows_, {0.52, 0.62, 0.72, 0.82, 0.92});
+    private_nh_.param("right_offset_px", right_offset_px_, 235.0);
+    private_nh_.param("right_scan_bottom_weight", right_scan_bottom_weight_, 1.8);
+    private_nh_.param("min_line_width_px", min_line_width_px_, 5);
+    private_nh_.param("max_line_segment_width_px", max_line_segment_width_px_, 90);
+    private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
+    private_nh_.param("max_target_jump_px", max_target_jump_px_, 120.0);
+    private_nh_.param("kp", kp_, 0.0042);
+    private_nh_.param("kd", kd_, 0.0014);
+    loadDoubleList("right_scan_rows", right_scan_rows_, {0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70});
 
     private_nh_.param("base_speed", base_speed_, 0.16);
     private_nh_.param("min_speed", min_speed_, 0.07);
@@ -268,6 +283,7 @@ private:
         state_start_time_ = now;
         state_ = State::Follow;
         last_detection_time_ = now;
+        resetRightLinePid();
       }
     }
     else if (state_ == State::Follow)
@@ -389,40 +405,7 @@ private:
   {
     (void)frame;
     FollowResult result;
-    std::vector<cv::Point> raw = traceRightLine(mask);
-    for (const auto& point : raw)
-      result.raw_line.emplace_back(static_cast<float>(point.x), static_cast<float>(point.y));
-
-    if (raw.size() >= 8)
-    {
-      std::vector<cv::Point2f> mapped;
-      mapped.reserve(raw.size());
-      for (const auto& point : raw)
-        mapped.push_back(mapPoint(point));
-
-      std::vector<cv::Point2f> blurred = blurPoints(mapped, line_blur_kernel_);
-      std::vector<cv::Point2f> sampled = resamplePoints(blurred, sample_dist_m_ * pixel_per_meter_, trace_max_points_);
-      const double dist_px = pixel_per_meter_ * (lane_width_m_ * 0.5 + right_center_bias_m_);
-      result.center_path = trackRightLine(sampled, static_cast<int>(std::round(0.2 / sample_dist_m_)), dist_px);
-      result.center_path = resamplePoints(result.center_path, sample_dist_m_ * pixel_per_meter_, trace_max_points_);
-    }
-
-    if (result.center_path.size() >= 3)
-    {
-      int aim_idx = clampInt(static_cast<int>(std::round(aim_dist_m_ / sample_dist_m_)), 0,
-                             static_cast<int>(result.center_path.size()) - 1);
-      cv::Point2f target = result.center_path[aim_idx];
-      const double dx = target.x - kImageCols / 2.0;
-      const double dy = (kImageRows + 10.0) - target.y + forward_bias_m_ * pixel_per_meter_;
-      result.error = -std::atan2(dx, std::max(dy, 1e-3));
-      result.target_x = target.x;
-      result.target_y = target.y;
-      result.found = true;
-    }
-    else
-    {
-      result = computeFallback(mask);
-    }
+    result = computeRightmostLineFollow(mask);
 
     if (result.found)
     {
@@ -431,6 +414,121 @@ private:
       last_target_x_ = result.target_x;
     }
     return result;
+  }
+
+  FollowResult computeRightmostLineFollow(const cv::Mat& mask)
+  {
+    FollowResult result;
+    std::vector<double> xs;
+    std::vector<double> ys;
+    std::vector<double> weights;
+
+    for (size_t i = 0; i < right_scan_rows_.size(); ++i)
+    {
+      double ratio = right_scan_rows_[i];
+      int y = clampInt(static_cast<int>(mask.rows * ratio), 0, mask.rows - 1);
+      std::vector<Segment> segments = findSegments(mask.row(y));
+      segments.erase(
+          std::remove_if(segments.begin(), segments.end(),
+                         [this](const Segment& segment) {
+                           return segment.width > max_line_segment_width_px_;
+                         }),
+          segments.end());
+      if (segments.empty())
+        continue;
+
+      const Segment& rightmost = segments.back();
+      double weight = 1.0 + (static_cast<double>(right_scan_rows_.size() - i) /
+                             std::max(1.0, static_cast<double>(right_scan_rows_.size() - 1))) *
+                                (right_scan_bottom_weight_ - 1.0);
+      xs.push_back(rightmost.center);
+      ys.push_back(y);
+      weights.push_back(weight);
+      result.raw_line.emplace_back(static_cast<float>(rightmost.center), static_cast<float>(y));
+    }
+
+    if (xs.empty())
+      return result;
+
+    double weight_sum = std::accumulate(weights.begin(), weights.end(), 0.0);
+    double right_x = 0.0;
+    double target_y = 0.0;
+    for (size_t i = 0; i < xs.size(); ++i)
+    {
+      right_x += xs[i] * weights[i];
+      target_y += ys[i] * weights[i];
+    }
+    right_x /= std::max(weight_sum, 1e-6);
+    target_y /= std::max(weight_sum, 1e-6);
+
+    double target_x = right_x - right_offset_px_;
+    if (has_last_target_)
+    {
+      target_x = clampDouble(target_x, last_target_x_ - max_target_jump_px_, last_target_x_ + max_target_jump_px_);
+    }
+    target_x = clampDouble(target_x, 0.0, static_cast<double>(kImageCols - 1));
+
+    result.found = true;
+    result.used_fallback = false;
+    result.target_x = target_x;
+    result.target_y = target_y;
+    result.error = target_x - kImageCols / 2.0;
+    result.center_path.emplace_back(static_cast<float>(target_x), static_cast<float>(target_y));
+    has_last_target_ = true;
+    return result;
+  }
+
+  std::vector<Segment> findSegments(const cv::Mat& row) const
+  {
+    std::vector<Segment> segments;
+    int start = -1;
+    for (int x = 0; x < row.cols; ++x)
+    {
+      bool active = row.at<uchar>(0, x) > 0;
+      if (active && start < 0)
+      {
+        start = x;
+      }
+      else if (!active && start >= 0)
+      {
+        appendSegment(segments, start, x - 1);
+        start = -1;
+      }
+    }
+    if (start >= 0)
+      appendSegment(segments, start, row.cols - 1);
+    return mergeCloseSegments(segments);
+  }
+
+  void appendSegment(std::vector<Segment>& segments, int left, int right) const
+  {
+    int width = right - left + 1;
+    if (width >= min_line_width_px_)
+      segments.push_back(Segment{left, right, (left + right) / 2.0, width});
+  }
+
+  std::vector<Segment> mergeCloseSegments(const std::vector<Segment>& segments) const
+  {
+    if (segments.empty())
+      return {};
+    std::vector<Segment> merged;
+    merged.push_back(segments.front());
+    for (size_t i = 1; i < segments.size(); ++i)
+    {
+      Segment& previous = merged.back();
+      const Segment& current = segments[i];
+      if (current.left - previous.right <= min_segment_gap_px_)
+      {
+        previous.right = current.right;
+        previous.width = previous.right - previous.left + 1;
+        previous.center = (previous.left + previous.right) / 2.0;
+      }
+      else
+      {
+        merged.push_back(current);
+      }
+    }
+    return merged;
   }
 
   std::vector<cv::Point> traceRightLine(const cv::Mat& mask)
@@ -742,6 +840,7 @@ private:
       if (stop_on_lost_ || timed_out)
       {
         setStatus(timed_out ? "lost_stop" : "line_wait");
+        resetRightLinePid();
         hardStop();
         return;
       }
@@ -754,15 +853,24 @@ private:
       return;
     }
 
-    double linear = base_speed_ - std::abs(follow.error) * curve_speed_error_scale_;
+    const double now_sec = now.toSec();
+    const double dt = last_pid_time_ > 0.0 ? std::max(1e-3, now_sec - last_pid_time_) : 0.0;
+    last_pid_time_ = now_sec;
+    filtered_error_px_ = 0.78 * filtered_error_px_ + 0.22 * follow.error;
+    const double derivative = dt > 0.0 ? (filtered_error_px_ - last_error_px_) / dt : 0.0;
+    last_error_px_ = filtered_error_px_;
+
+    double angular = -(kp_ * filtered_error_px_ + kd_ * derivative);
+    angular = clampDouble(angular, -max_angular_speed_, max_angular_speed_);
+
+    double linear = base_speed_ - std::min(std::abs(filtered_error_px_) / 180.0, 1.0) * (base_speed_ - min_speed_);
     linear = clampDouble(linear, min_speed_, base_speed_);
-    double angular = clampDouble(-follow.error, -max_angular_speed_, max_angular_speed_);
     filtered_angular_ = angular_alpha_ * filtered_angular_ + (1.0 - angular_alpha_) * angular;
 
     geometry_msgs::Twist cmd;
     cmd.linear.x = linear;
     cmd.angular.z = filtered_angular_;
-    setStatus(follow.used_fallback ? "tracking_fallback" : "tracking_right");
+    setStatus("tracking_rightmost");
     publishCmd(cmd);
   }
 
@@ -786,6 +894,15 @@ private:
     last_angular_ = 0.0;
     for (int i = 0; i < 4; ++i)
       cmd_pub_.publish(stop);
+  }
+
+  void resetRightLinePid()
+  {
+    filtered_angular_ = 0.0;
+    filtered_error_px_ = 0.0;
+    last_error_px_ = 0.0;
+    last_pid_time_ = 0.0;
+    has_last_target_ = false;
   }
 
   void publishDebug(const cv::Mat& frame, const cv::Mat& mask, const FollowResult& follow,
@@ -928,8 +1045,17 @@ private:
   double right_center_bias_m_ = 0.035;
 
   double fallback_roi_y_start_ratio_ = 0.48;
+  std::vector<double> right_scan_rows_;
   std::vector<double> fallback_rows_;
+  double right_offset_px_ = 235.0;
   double fallback_right_offset_px_ = 125.0;
+  double right_scan_bottom_weight_ = 1.8;
+  int min_line_width_px_ = 5;
+  int max_line_segment_width_px_ = 90;
+  int min_segment_gap_px_ = 10;
+  double max_target_jump_px_ = 120.0;
+  double kp_ = 0.0042;
+  double kd_ = 0.0014;
 
   double base_speed_ = 0.16;
   double min_speed_ = 0.07;
@@ -967,8 +1093,12 @@ private:
   int finish_frames_ = 0;
   int finish_lost_frames_ = 0;
   double filtered_angular_ = 0.0;
+  double filtered_error_px_ = 0.0;
+  double last_error_px_ = 0.0;
+  double last_pid_time_ = 0.0;
   double last_error_ = 0.0;
   double last_target_x_ = 0.0;
+  bool has_last_target_ = false;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };

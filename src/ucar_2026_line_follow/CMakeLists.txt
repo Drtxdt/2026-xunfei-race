@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(ucar_2026_line_follow)
 
+add_compile_options(-std=c++14)
+
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   geometry_msgs
