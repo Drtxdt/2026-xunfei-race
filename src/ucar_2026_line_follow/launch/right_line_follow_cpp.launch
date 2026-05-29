@@ -1,6 +1,9 @@
 <launch>
   <arg name="start_driver" default="true" />
   <arg name="start_camera" default="true" />
+  <!-- start_viewer requires MobaXterm/X11 forwarding. It displays the raw
+       debug image locally on the car, while the relay below still publishes
+       compressed topics for remote ROS subscribers. -->
   <arg name="start_viewer" default="true" />
   <arg name="config_file" default="$(find ucar_2026_line_follow)/config/right_line_follow_cpp.yaml" />
 
@@ -25,7 +28,7 @@
   <group if="$(arg start_viewer)">
     <node pkg="image_view" type="image_view" name="right_line_follow_cpp_viewer" output="screen">
       <remap from="image" to="/right_line_follow_cpp/debug_image" />
-      <param name="image_transport" value="compressed" />
+      <param name="image_transport" value="raw" />
     </node>
   </group>
 </launch>

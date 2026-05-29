@@ -151,7 +151,8 @@ private:
     private_nh_.param("angular_alpha", angular_alpha_, 0.65);
     private_nh_.param("lost_timeout", lost_timeout_, 0.8);
     private_nh_.param("lost_speed", lost_speed_, 0.06);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.22);
+    private_nh_.param("lost_angular_speed", lost_angular_speed_, 0.0);
+    private_nh_.param("stop_on_lost", stop_on_lost_, true);
 
     private_nh_.param("finish_enable_delay", finish_enable_delay_, 18.0);
     private_nh_.param("finish_min_width_ratio", finish_min_width_ratio_, 0.48);
@@ -266,6 +267,7 @@ private:
       {
         state_start_time_ = now;
         state_ = State::Follow;
+        last_detection_time_ = now;
       }
     }
     else if (state_ == State::Follow)
@@ -737,7 +739,14 @@ private:
     if (!follow.found)
     {
       const bool timed_out = (now - last_detection_time_).toSec() > lost_timeout_;
-      setStatus(timed_out ? "lost_search" : "searching");
+      if (stop_on_lost_ || timed_out)
+      {
+        setStatus(timed_out ? "lost_stop" : "line_wait");
+        hardStop();
+        return;
+      }
+
+      setStatus("line_wait_slow");
       geometry_msgs::Twist cmd;
       cmd.linear.x = lost_speed_;
       cmd.angular.z = lost_angular_speed_;
@@ -929,7 +938,8 @@ private:
   double angular_alpha_ = 0.65;
   double lost_timeout_ = 0.8;
   double lost_speed_ = 0.06;
-  double lost_angular_speed_ = -0.22;
+  double lost_angular_speed_ = 0.0;
+  bool stop_on_lost_ = true;
 
   double finish_enable_delay_ = 18.0;
   double finish_min_width_ratio_ = 0.48;
