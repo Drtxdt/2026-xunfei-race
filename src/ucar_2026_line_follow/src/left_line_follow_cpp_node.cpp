@@ -164,8 +164,8 @@ private:
     private_nh_.param("kd", kd_, 0.0014);
     loadDoubleList("left_scan_rows", left_scan_rows_, {0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70});
 
-    private_nh_.param("base_speed", base_speed_, 0.16);
-    private_nh_.param("min_speed", min_speed_, 0.07);
+    private_nh_.param("base_speed", base_speed_, 0.18);
+    private_nh_.param("min_speed", min_speed_, 0.075);
     private_nh_.param("curve_speed_error_scale", curve_speed_error_scale_, 0.18);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.55);
     private_nh_.param("angular_alpha", angular_alpha_, 0.65);
@@ -182,7 +182,7 @@ private:
     private_nh_.param("finish_oversize_min_height_ratio", finish_oversize_min_height_ratio_, 0.16);
     private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.78);
     private_nh_.param("finish_oversize_min_fill_ratio", finish_oversize_min_fill_ratio_, 0.18);
-    private_nh_.param("finish_oversize_follow_speed", finish_oversize_follow_speed_, 0.09);
+    private_nh_.param("finish_oversize_follow_speed", finish_oversize_follow_speed_, 0.12);
     private_nh_.param("finish_min_height_ratio", finish_min_height_ratio_, 0.18);
     private_nh_.param("finish_min_bottom_y_ratio", finish_min_bottom_y_ratio_, 0.70);
     private_nh_.param("finish_roi_y_start_ratio", finish_roi_y_start_ratio_, 0.52);
@@ -192,10 +192,12 @@ private:
     private_nh_.param("finish_release_frames", finish_release_frames_, 2);
     private_nh_.param("finish_stop_on_box_count", finish_stop_on_box_count_, 2);
     private_nh_.param("finish_box_cooldown_sec", finish_box_cooldown_sec_, 2.0);
-    private_nh_.param("finish_approach_speed", finish_approach_speed_, 0.06);
-    private_nh_.param("finish_candidate_follow_speed", finish_candidate_follow_speed_, 0.10);
+    private_nh_.param("finish_approach_speed", finish_approach_speed_, 0.08);
+    private_nh_.param("finish_candidate_follow_speed", finish_candidate_follow_speed_, 0.11);
     private_nh_.param("finish_centering_enabled", finish_centering_enabled_, true);
     private_nh_.param("finish_center_target_bottom_ratio", finish_center_target_bottom_ratio_, 0.90);
+    private_nh_.param("finish_lost_stop_min_bottom_ratio", finish_lost_stop_min_bottom_ratio_, 0.84);
+    private_nh_.param("finish_lost_stop_frames", finish_lost_stop_frames_, 2);
     private_nh_.param("finish_center_max_duration", finish_center_max_duration_, 1.20);
     private_nh_.param("finish_center_angular_kp", finish_center_angular_kp_, 0.0020);
     private_nh_.param("finish_center_max_angular", finish_center_max_angular_, 0.16);
@@ -320,6 +322,8 @@ private:
         {
           state_ = State::FinishApproach;
           setStatus("finish_centering");
+          resetFinishApproachProgress();
+          updateFinishApproachProgress(finish);
           publishFinishCenteringCommand(finish, now);
         }
         else
@@ -352,9 +356,12 @@ private:
     else if (state_ == State::FinishApproach)
     {
       setStatus("finish_centering");
+      updateFinishApproachProgress(finish);
       const bool target_reached =
           finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
-      if (target_reached)
+      const bool visually_passed_box =
+          finish_approach_had_close_box_ && finish_approach_lost_frames_ >= finish_lost_stop_frames_;
+      if (target_reached || visually_passed_box)
       {
         state_ = State::FinishStop;
         state_start_time_ = now;
@@ -914,6 +921,31 @@ private:
     return false;
   }
 
+  void resetFinishApproachProgress()
+  {
+    finish_approach_normal_frames_ = 0;
+    finish_approach_lost_frames_ = 0;
+    finish_approach_best_bottom_ratio_ = 0.0;
+    finish_approach_had_close_box_ = false;
+  }
+
+  void updateFinishApproachProgress(const FinishResult& finish)
+  {
+    const bool normal_box = finish.detected && !finish.oversize;
+    if (normal_box)
+    {
+      ++finish_approach_normal_frames_;
+      finish_approach_lost_frames_ = 0;
+      finish_approach_best_bottom_ratio_ = std::max(finish_approach_best_bottom_ratio_, finish.bottom_ratio);
+      if (finish_approach_best_bottom_ratio_ >= finish_lost_stop_min_bottom_ratio_)
+        finish_approach_had_close_box_ = true;
+    }
+    else if (finish_approach_normal_frames_ > 0)
+    {
+      ++finish_approach_lost_frames_;
+    }
+  }
+
   void publishFinishCenteringCommand(const FinishResult& finish, const ros::Time& now)
   {
     (void)now;
@@ -1132,6 +1164,9 @@ private:
        << " finish_candidate_follow_speed=" << finish_candidate_follow_speed_
        << " finish_center_err=" << last_finish_center_error_px_
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
+       << " finish_best_bottom=" << finish_approach_best_bottom_ratio_
+       << " finish_close_seen=" << boolText(finish_approach_had_close_box_)
+       << " finish_approach_lost=" << finish_approach_lost_frames_
        << " box_w=" << finish.width_ratio
        << " box_h=" << finish.height_ratio
        << " box_bottom=" << finish.bottom_ratio
@@ -1230,8 +1265,8 @@ private:
   double kp_ = 0.0042;
   double kd_ = 0.0014;
 
-  double base_speed_ = 0.16;
-  double min_speed_ = 0.07;
+  double base_speed_ = 0.18;
+  double min_speed_ = 0.075;
   double curve_speed_error_scale_ = 0.18;
   double max_angular_speed_ = 0.55;
   double angular_alpha_ = 0.65;
@@ -1248,7 +1283,7 @@ private:
   double finish_oversize_min_height_ratio_ = 0.16;
   double finish_oversize_min_bottom_y_ratio_ = 0.78;
   double finish_oversize_min_fill_ratio_ = 0.18;
-  double finish_oversize_follow_speed_ = 0.09;
+  double finish_oversize_follow_speed_ = 0.12;
   double finish_min_height_ratio_ = 0.18;
   double finish_min_bottom_y_ratio_ = 0.70;
   double finish_roi_y_start_ratio_ = 0.52;
@@ -1258,10 +1293,12 @@ private:
   int finish_release_frames_ = 2;
   int finish_stop_on_box_count_ = 2;
   double finish_box_cooldown_sec_ = 2.0;
-  double finish_approach_speed_ = 0.06;
-  double finish_candidate_follow_speed_ = 0.10;
+  double finish_approach_speed_ = 0.08;
+  double finish_candidate_follow_speed_ = 0.11;
   bool finish_centering_enabled_ = true;
   double finish_center_target_bottom_ratio_ = 0.90;
+  double finish_lost_stop_min_bottom_ratio_ = 0.84;
+  int finish_lost_stop_frames_ = 2;
   double finish_center_max_duration_ = 1.20;
   double finish_center_angular_kp_ = 0.0020;
   double finish_center_max_angular_ = 0.16;
@@ -1282,6 +1319,10 @@ private:
   int finish_box_count_ = 0;
   bool finish_box_armed_ = true;
   ros::Time finish_box_cooldown_until_;
+  int finish_approach_normal_frames_ = 0;
+  int finish_approach_lost_frames_ = 0;
+  double finish_approach_best_bottom_ratio_ = 0.0;
+  bool finish_approach_had_close_box_ = false;
   double last_finish_center_error_px_ = 0.0;
   double filtered_angular_ = 0.0;
   double filtered_error_px_ = 0.0;
