@@ -313,6 +313,7 @@ private:
     else if (state_ == State::Follow)
     {
       const bool finish_event = updateFinishEncounter(finish, now);
+      updateFirstFinishRelease(finish);
       if (finish_event)
       {
         ROS_INFO("finish box encounter %d/%d", finish_box_count_, finish_stop_on_box_count_);
@@ -915,7 +916,7 @@ private:
 
   bool updateFinishEncounter(const FinishResult& finish, const ros::Time& now)
   {
-    if (now < finish_box_cooldown_until_)
+    if (now < finish_box_cooldown_until_ && !first_finish_released_)
       return false;
 
     const bool finish_box_detected = finish.detected && !finish.oversize;
@@ -954,9 +955,34 @@ private:
            finish_box_count_ < finish_stop_on_box_count_;
   }
 
+  void updateFirstFinishRelease(const FinishResult& finish)
+  {
+    if (!hasPassedFirstFinishBox())
+    {
+      first_finish_release_frames_ = 0;
+      first_finish_released_ = false;
+      return;
+    }
+
+    if (first_finish_released_)
+      return;
+
+    if (!finish.detected)
+    {
+      ++first_finish_release_frames_;
+      if (first_finish_release_frames_ >= finish_release_frames_)
+        first_finish_released_ = true;
+    }
+    else
+    {
+      first_finish_release_frames_ = 0;
+    }
+  }
+
   bool isFinishCounterReadyForSecondCandidate(const ros::Time& now) const
   {
-    return hasPassedFirstFinishBox() && finish_box_armed_ && now >= finish_box_cooldown_until_;
+    (void)now;
+    return hasPassedFirstFinishBox() && first_finish_released_;
   }
 
   bool isOversizeSecondFinishCandidate(const FinishResult& finish, const ros::Time& now) const
@@ -1209,6 +1235,8 @@ private:
        << " finish_box_count=" << finish_box_count_
        << " finish_box_armed=" << boolText(finish_box_armed_)
        << " finish_second_ready=" << boolText(isFinishCounterReadyForSecondCandidate(now))
+       << " first_finish_released=" << boolText(first_finish_released_)
+       << " first_release_frames=" << first_finish_release_frames_
        << " finish_oversize=" << boolText(finish.oversize)
        << " finish_oversize_follow_speed=" << finish_oversize_follow_speed_
        << " finish_candidate_follow_speed=" << finish_candidate_follow_speed_
@@ -1373,6 +1401,8 @@ private:
   int finish_box_count_ = 0;
   bool finish_box_armed_ = true;
   ros::Time finish_box_cooldown_until_;
+  bool first_finish_released_ = false;
+  int first_finish_release_frames_ = 0;
   int finish_approach_normal_frames_ = 0;
   int finish_approach_cue_frames_ = 0;
   int finish_approach_lost_frames_ = 0;
