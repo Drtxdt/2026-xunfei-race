@@ -193,6 +193,7 @@ private:
     private_nh_.param("finish_stop_on_box_count", finish_stop_on_box_count_, 2);
     private_nh_.param("finish_box_cooldown_sec", finish_box_cooldown_sec_, 2.0);
     private_nh_.param("finish_approach_speed", finish_approach_speed_, 0.06);
+    private_nh_.param("finish_candidate_follow_speed", finish_candidate_follow_speed_, 0.10);
     private_nh_.param("finish_centering_enabled", finish_centering_enabled_, true);
     private_nh_.param("finish_center_target_bottom_ratio", finish_center_target_bottom_ratio_, 0.90);
     private_nh_.param("finish_center_max_duration", finish_center_max_duration_, 1.20);
@@ -330,28 +331,50 @@ private:
       }
       else
       {
-        if (finish.oversize && finish_box_count_ >= finish_accept_oversize_after_count_)
+        if (!follow.found && finish_box_count_ >= finish_accept_oversize_after_count_)
+        {
+          geometry_msgs::Twist search_cmd;
+          search_cmd.linear.x = finish_candidate_follow_speed_;
+          search_cmd.angular.z = 0.0;
+          setStatus("finish_line_search");
+          publishCmd(search_cmd);
+        }
+        else if (finish.oversize && finish_box_count_ >= finish_accept_oversize_after_count_)
+        {
           publishFollowCommand(follow, now, finish_oversize_follow_speed_, "finish_oversize_slow_follow");
+        }
         else
+        {
           publishFollowCommand(follow, now);
+        }
       }
     }
     else if (state_ == State::FinishApproach)
     {
       setStatus("finish_centering");
-      const double elapsed_centering = (now - state_start_time_).toSec();
       const bool target_reached =
           finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
-      const bool timed_out = elapsed_centering >= finish_center_max_duration_;
-      if (target_reached || timed_out)
+      if (target_reached)
       {
         state_ = State::FinishStop;
         state_start_time_ = now;
         hardStop();
       }
-      else
+      else if (finish.detected && !finish.oversize)
       {
         publishFinishCenteringCommand(finish, now);
+      }
+      else if (follow.found)
+      {
+        publishFollowCommand(follow, now, finish_candidate_follow_speed_, "finish_candidate_slow_follow");
+      }
+      else
+      {
+        geometry_msgs::Twist search_cmd;
+        search_cmd.linear.x = finish_candidate_follow_speed_;
+        search_cmd.angular.z = 0.0;
+        setStatus("finish_candidate_search");
+        publishCmd(search_cmd);
       }
     }
     else if (state_ == State::FinishForward)
@@ -1106,6 +1129,7 @@ private:
        << " finish_box_armed=" << boolText(finish_box_armed_)
        << " finish_oversize=" << boolText(finish.oversize)
        << " finish_oversize_follow_speed=" << finish_oversize_follow_speed_
+       << " finish_candidate_follow_speed=" << finish_candidate_follow_speed_
        << " finish_center_err=" << last_finish_center_error_px_
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " box_w=" << finish.width_ratio
@@ -1235,6 +1259,7 @@ private:
   int finish_stop_on_box_count_ = 2;
   double finish_box_cooldown_sec_ = 2.0;
   double finish_approach_speed_ = 0.06;
+  double finish_candidate_follow_speed_ = 0.10;
   bool finish_centering_enabled_ = true;
   double finish_center_target_bottom_ratio_ = 0.90;
   double finish_center_max_duration_ = 1.20;
