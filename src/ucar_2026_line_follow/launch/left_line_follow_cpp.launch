@@ -1,0 +1,34 @@
+<launch>
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  <!-- start_viewer requires MobaXterm/X11 forwarding. It displays the raw
+       debug image locally on the car, while the relay below still publishes
+       compressed topics for remote ROS subscribers. -->
+  <arg name="start_viewer" default="true" />
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/left_line_follow_cpp.yaml" />
+
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <node pkg="ucar_2026_line_follow" type="left_line_follow_cpp_node" name="left_line_follow_cpp_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
+
+  <node pkg="ucar_2026_line_follow" type="right_debug_relay_node.py" name="left_line_follow_cpp_debug_relay" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="debug_image_topic" value="/left_line_follow_cpp/debug_image" />
+    <param name="raw_image_topic" value="/usb_cam/image_raw" />
+  </node>
+
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view" name="left_line_follow_cpp_viewer" output="screen">
+      <remap from="image" to="/left_line_follow_cpp/debug_image" />
+      <param name="image_transport" value="raw" />
+    </node>
+  </group>
+</launch>
