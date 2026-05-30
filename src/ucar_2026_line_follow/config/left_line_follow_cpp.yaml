@@ -80,7 +80,7 @@ finish_oversize_min_width_ratio: 0.94
 finish_oversize_min_height_ratio: 0.16
 finish_oversize_min_bottom_y_ratio: 0.78
 finish_oversize_min_fill_ratio: 0.18
-finish_oversize_center_max_duration: 2.80
+finish_oversize_stop_bottom_ratio: 0.96
 finish_min_height_ratio: 0.18
 finish_min_bottom_y_ratio: 0.70
 finish_roi_y_start_ratio: 0.52

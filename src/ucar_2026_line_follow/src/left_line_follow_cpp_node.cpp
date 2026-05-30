@@ -182,7 +182,7 @@ private:
     private_nh_.param("finish_oversize_min_height_ratio", finish_oversize_min_height_ratio_, 0.16);
     private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.78);
     private_nh_.param("finish_oversize_min_fill_ratio", finish_oversize_min_fill_ratio_, 0.18);
-    private_nh_.param("finish_oversize_center_max_duration", finish_oversize_center_max_duration_, 2.80);
+    private_nh_.param("finish_oversize_stop_bottom_ratio", finish_oversize_stop_bottom_ratio_, 0.96);
     private_nh_.param("finish_min_height_ratio", finish_min_height_ratio_, 0.18);
     private_nh_.param("finish_min_bottom_y_ratio", finish_min_bottom_y_ratio_, 0.70);
     private_nh_.param("finish_roi_y_start_ratio", finish_roi_y_start_ratio_, 0.52);
@@ -342,10 +342,10 @@ private:
         finish_center_saw_oversize_ = true;
       const bool target_reached =
           finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
-      const double max_centering_duration =
-          finish_center_saw_oversize_ ? finish_oversize_center_max_duration_ : finish_center_max_duration_;
-      const bool timed_out = elapsed_centering >= max_centering_duration;
-      if (target_reached || timed_out)
+      const bool oversize_close_enough =
+          finish.oversize && finish.bottom_ratio >= finish_oversize_stop_bottom_ratio_;
+      const bool timed_out = !finish_center_saw_oversize_ && elapsed_centering >= finish_center_max_duration_;
+      if (target_reached || oversize_close_enough || timed_out)
       {
         state_ = State::FinishStop;
         state_start_time_ = now;
@@ -1104,6 +1104,7 @@ private:
        << " finish_box_armed=" << boolText(finish_box_armed_)
        << " finish_oversize=" << boolText(finish.oversize)
        << " finish_saw_oversize=" << boolText(finish_center_saw_oversize_)
+       << " finish_oversize_stop_bottom=" << finish_oversize_stop_bottom_ratio_
        << " finish_center_err=" << last_finish_center_error_px_
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " box_w=" << finish.width_ratio
@@ -1222,7 +1223,7 @@ private:
   double finish_oversize_min_height_ratio_ = 0.16;
   double finish_oversize_min_bottom_y_ratio_ = 0.78;
   double finish_oversize_min_fill_ratio_ = 0.18;
-  double finish_oversize_center_max_duration_ = 2.80;
+  double finish_oversize_stop_bottom_ratio_ = 0.96;
   double finish_min_height_ratio_ = 0.18;
   double finish_min_bottom_y_ratio_ = 0.70;
   double finish_roi_y_start_ratio_ = 0.52;
