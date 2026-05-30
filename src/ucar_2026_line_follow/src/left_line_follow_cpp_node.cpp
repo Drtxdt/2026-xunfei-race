@@ -178,10 +178,11 @@ private:
     private_nh_.param("finish_min_width_ratio", finish_min_width_ratio_, 0.48);
     private_nh_.param("finish_max_width_ratio", finish_max_width_ratio_, 0.92);
     private_nh_.param("finish_accept_oversize_after_count", finish_accept_oversize_after_count_, 1);
-    private_nh_.param("finish_oversize_min_width_ratio", finish_oversize_min_width_ratio_, 0.90);
+    private_nh_.param("finish_oversize_min_width_ratio", finish_oversize_min_width_ratio_, 0.94);
     private_nh_.param("finish_oversize_min_height_ratio", finish_oversize_min_height_ratio_, 0.16);
-    private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.72);
+    private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.78);
     private_nh_.param("finish_oversize_min_fill_ratio", finish_oversize_min_fill_ratio_, 0.18);
+    private_nh_.param("finish_oversize_center_max_duration", finish_oversize_center_max_duration_, 2.80);
     private_nh_.param("finish_min_height_ratio", finish_min_height_ratio_, 0.18);
     private_nh_.param("finish_min_bottom_y_ratio", finish_min_bottom_y_ratio_, 0.70);
     private_nh_.param("finish_roi_y_start_ratio", finish_roi_y_start_ratio_, 0.52);
@@ -316,6 +317,7 @@ private:
         state_start_time_ = now;
         if (finish_centering_enabled_)
         {
+          finish_center_saw_oversize_ = finish.oversize;
           state_ = State::FinishApproach;
           setStatus("finish_centering");
           publishFinishCenteringCommand(finish, now);
@@ -336,9 +338,13 @@ private:
     {
       setStatus("finish_centering");
       const double elapsed_centering = (now - state_start_time_).toSec();
+      if (finish.oversize)
+        finish_center_saw_oversize_ = true;
       const bool target_reached =
           finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
-      const bool timed_out = elapsed_centering >= finish_center_max_duration_;
+      const double max_centering_duration =
+          finish_center_saw_oversize_ ? finish_oversize_center_max_duration_ : finish_center_max_duration_;
+      const bool timed_out = elapsed_centering >= max_centering_duration;
       if (target_reached || timed_out)
       {
         state_ = State::FinishStop;
@@ -1097,6 +1103,7 @@ private:
        << " finish_box_count=" << finish_box_count_
        << " finish_box_armed=" << boolText(finish_box_armed_)
        << " finish_oversize=" << boolText(finish.oversize)
+       << " finish_saw_oversize=" << boolText(finish_center_saw_oversize_)
        << " finish_center_err=" << last_finish_center_error_px_
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " box_w=" << finish.width_ratio
@@ -1211,10 +1218,11 @@ private:
   double finish_min_width_ratio_ = 0.48;
   double finish_max_width_ratio_ = 0.92;
   int finish_accept_oversize_after_count_ = 1;
-  double finish_oversize_min_width_ratio_ = 0.90;
+  double finish_oversize_min_width_ratio_ = 0.94;
   double finish_oversize_min_height_ratio_ = 0.16;
-  double finish_oversize_min_bottom_y_ratio_ = 0.72;
+  double finish_oversize_min_bottom_y_ratio_ = 0.78;
   double finish_oversize_min_fill_ratio_ = 0.18;
+  double finish_oversize_center_max_duration_ = 2.80;
   double finish_min_height_ratio_ = 0.18;
   double finish_min_bottom_y_ratio_ = 0.70;
   double finish_roi_y_start_ratio_ = 0.52;
@@ -1246,6 +1254,7 @@ private:
   int finish_lost_frames_ = 0;
   int finish_box_count_ = 0;
   bool finish_box_armed_ = true;
+  bool finish_center_saw_oversize_ = false;
   ros::Time finish_box_cooldown_until_;
   double last_finish_center_error_px_ = 0.0;
   double filtered_angular_ = 0.0;
