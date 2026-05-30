@@ -75,6 +75,11 @@ stop_on_lost: true
 finish_enable_delay: 18.0
 finish_min_width_ratio: 0.48
 finish_max_width_ratio: 0.92
+finish_accept_oversize_after_count: 1
+finish_oversize_min_width_ratio: 0.90
+finish_oversize_min_height_ratio: 0.16
+finish_oversize_min_bottom_y_ratio: 0.72
+finish_oversize_min_fill_ratio: 0.18
 finish_min_height_ratio: 0.18
 finish_min_bottom_y_ratio: 0.70
 finish_roi_y_start_ratio: 0.52

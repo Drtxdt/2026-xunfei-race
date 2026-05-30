@@ -101,10 +101,12 @@ private:
   struct FinishResult
   {
     bool detected = false;
+    bool oversize = false;
     cv::Rect box;
     double width_ratio = 0.0;
     double height_ratio = 0.0;
     double bottom_ratio = 0.0;
+    double fill_ratio = 0.0;
     double horizontal_presence = 0.0;
     double vertical_presence = 0.0;
   };
@@ -175,6 +177,11 @@ private:
     private_nh_.param("finish_enable_delay", finish_enable_delay_, 18.0);
     private_nh_.param("finish_min_width_ratio", finish_min_width_ratio_, 0.48);
     private_nh_.param("finish_max_width_ratio", finish_max_width_ratio_, 0.92);
+    private_nh_.param("finish_accept_oversize_after_count", finish_accept_oversize_after_count_, 1);
+    private_nh_.param("finish_oversize_min_width_ratio", finish_oversize_min_width_ratio_, 0.90);
+    private_nh_.param("finish_oversize_min_height_ratio", finish_oversize_min_height_ratio_, 0.16);
+    private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.72);
+    private_nh_.param("finish_oversize_min_fill_ratio", finish_oversize_min_fill_ratio_, 0.18);
     private_nh_.param("finish_min_height_ratio", finish_min_height_ratio_, 0.18);
     private_nh_.param("finish_min_bottom_y_ratio", finish_min_bottom_y_ratio_, 0.70);
     private_nh_.param("finish_roi_y_start_ratio", finish_roi_y_start_ratio_, 0.52);
@@ -329,7 +336,8 @@ private:
     {
       setStatus("finish_centering");
       const double elapsed_centering = (now - state_start_time_).toSec();
-      const bool target_reached = finish.detected && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
+      const bool target_reached =
+          finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
       const bool timed_out = elapsed_centering >= finish_center_max_duration_;
       if (target_reached || timed_out)
       {
@@ -800,7 +808,14 @@ private:
       double width_ratio = box.width / static_cast<double>(mask.cols);
       double height_ratio = box.height / static_cast<double>(mask.rows);
       double bottom_ratio = (full_box.y + full_box.height) / static_cast<double>(mask.rows);
-      if (width_ratio < finish_min_width_ratio_ || width_ratio > finish_max_width_ratio_)
+      double fill_ratio = cv::countNonZero(closed(box)) / static_cast<double>(std::max(1, box.area()));
+      const bool oversize_candidate =
+          finish_box_count_ >= finish_accept_oversize_after_count_ &&
+          width_ratio >= finish_oversize_min_width_ratio_ &&
+          height_ratio >= finish_oversize_min_height_ratio_ &&
+          bottom_ratio >= finish_oversize_min_bottom_y_ratio_ &&
+          fill_ratio >= finish_oversize_min_fill_ratio_;
+      if (width_ratio < finish_min_width_ratio_ || (width_ratio > finish_max_width_ratio_ && !oversize_candidate))
         continue;
       if (height_ratio < finish_min_height_ratio_ || bottom_ratio < finish_min_bottom_y_ratio_)
         continue;
@@ -814,18 +829,22 @@ private:
       double right = verticalPresence(roi(cv::Rect(std::max(0, roi.cols - band_x), 0, std::min(band_x, roi.cols), roi.rows)));
       double horizontal = std::max(top, bottom);
       double vertical = std::max(left, right);
-      if (horizontal < finish_min_horizontal_presence_ || vertical < finish_min_vertical_presence_)
+      if (!oversize_candidate && (horizontal < finish_min_horizontal_presence_ || vertical < finish_min_vertical_presence_))
         continue;
 
-      double score = width_ratio + height_ratio + bottom_ratio + horizontal + vertical;
+      double score = width_ratio + height_ratio + bottom_ratio + horizontal + vertical + fill_ratio;
+      if (oversize_candidate)
+        score += 1.5;
       if (score > best_score)
       {
         best_score = score;
         result.detected = true;
+        result.oversize = oversize_candidate;
         result.box = full_box;
         result.width_ratio = width_ratio;
         result.height_ratio = height_ratio;
         result.bottom_ratio = bottom_ratio;
+        result.fill_ratio = fill_ratio;
         result.horizontal_presence = horizontal;
         result.vertical_presence = vertical;
       }
@@ -1026,7 +1045,9 @@ private:
                  cv::Scalar(0, 0, 255), -1);
     if (finish.box.area() > 0)
     {
-      cv::rectangle(debug, finish.box, finish.detected ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 160, 255), 2);
+      cv::Scalar finish_color = finish.oversize ? cv::Scalar(0, 255, 255)
+                                                : (finish.detected ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 160, 255));
+      cv::rectangle(debug, finish.box, finish_color, 2);
       cv::Point box_center(finish.box.x + finish.box.width / 2, finish.box.y + finish.box.height / 2);
       cv::circle(debug, box_center, 5, cv::Scalar(255, 255, 0), -1);
       cv::line(debug, cv::Point(kImageCols / 2, box_center.y), box_center, cv::Scalar(255, 255, 0), 1);
@@ -1040,7 +1061,7 @@ private:
     std::ostringstream line2;
     line2 << "target=(" << std::fixed << std::setprecision(1) << follow.target_x << "," << follow.target_y
           << ") err=" << follow.error << " c_err=" << last_finish_center_error_px_
-          << " bottom=" << finish.bottom_ratio;
+          << " bottom=" << finish.bottom_ratio << " over=" << boolText(finish.oversize);
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
     try
@@ -1075,11 +1096,13 @@ private:
        << " finish_frames=" << finish_frames_
        << " finish_box_count=" << finish_box_count_
        << " finish_box_armed=" << boolText(finish_box_armed_)
+       << " finish_oversize=" << boolText(finish.oversize)
        << " finish_center_err=" << last_finish_center_error_px_
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " box_w=" << finish.width_ratio
        << " box_h=" << finish.height_ratio
        << " box_bottom=" << finish.bottom_ratio
+       << " box_fill=" << finish.fill_ratio
        << " box_hp=" << finish.horizontal_presence
        << " box_vp=" << finish.vertical_presence;
     std_msgs::String msg;
@@ -1187,6 +1210,11 @@ private:
   double finish_enable_delay_ = 18.0;
   double finish_min_width_ratio_ = 0.48;
   double finish_max_width_ratio_ = 0.92;
+  int finish_accept_oversize_after_count_ = 1;
+  double finish_oversize_min_width_ratio_ = 0.90;
+  double finish_oversize_min_height_ratio_ = 0.16;
+  double finish_oversize_min_bottom_y_ratio_ = 0.72;
+  double finish_oversize_min_fill_ratio_ = 0.18;
   double finish_min_height_ratio_ = 0.18;
   double finish_min_bottom_y_ratio_ = 0.70;
   double finish_roi_y_start_ratio_ = 0.52;
