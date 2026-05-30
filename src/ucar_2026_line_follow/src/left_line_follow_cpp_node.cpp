@@ -338,7 +338,7 @@ private:
       }
       else
       {
-        if (finish.oversize && finish_box_count_ >= finish_accept_oversize_after_count_)
+        if (isOversizeSecondFinishCandidate(finish, now))
         {
           state_start_time_ = now;
           state_ = State::FinishApproach;
@@ -355,7 +355,7 @@ private:
             publishCmd(search_cmd);
           }
         }
-        else if (!follow.found && finish_box_count_ >= finish_accept_oversize_after_count_)
+        else if (!follow.found && isFinishCounterReadyForSecondCandidate(now))
         {
           geometry_msgs::Twist search_cmd;
           search_cmd.linear.x = finish_candidate_follow_speed_;
@@ -948,6 +948,22 @@ private:
     return false;
   }
 
+  bool hasPassedFirstFinishBox() const
+  {
+    return finish_box_count_ >= finish_accept_oversize_after_count_ &&
+           finish_box_count_ < finish_stop_on_box_count_;
+  }
+
+  bool isFinishCounterReadyForSecondCandidate(const ros::Time& now) const
+  {
+    return hasPassedFirstFinishBox() && finish_box_armed_ && now >= finish_box_cooldown_until_;
+  }
+
+  bool isOversizeSecondFinishCandidate(const FinishResult& finish, const ros::Time& now) const
+  {
+    return finish.oversize && isFinishCounterReadyForSecondCandidate(now);
+  }
+
   void resetFinishApproachProgress()
   {
     finish_approach_normal_frames_ = 0;
@@ -1192,6 +1208,7 @@ private:
        << " finish_frames=" << finish_frames_
        << " finish_box_count=" << finish_box_count_
        << " finish_box_armed=" << boolText(finish_box_armed_)
+       << " finish_second_ready=" << boolText(isFinishCounterReadyForSecondCandidate(now))
        << " finish_oversize=" << boolText(finish.oversize)
        << " finish_oversize_follow_speed=" << finish_oversize_follow_speed_
        << " finish_candidate_follow_speed=" << finish_candidate_follow_speed_
