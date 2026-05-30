@@ -81,6 +81,7 @@ finish_oversize_min_height_ratio: 0.16
 finish_oversize_min_bottom_y_ratio: 0.78
 finish_oversize_min_fill_ratio: 0.18
 finish_oversize_follow_speed: 0.12
+finish_oversize_close_bottom_ratio: 0.78
 finish_min_height_ratio: 0.18
 finish_min_bottom_y_ratio: 0.70
 finish_roi_y_start_ratio: 0.52
@@ -96,6 +97,8 @@ finish_centering_enabled: true
 finish_center_target_bottom_ratio: 0.90
 finish_lost_stop_min_bottom_ratio: 0.84
 finish_lost_stop_frames: 2
+finish_visual_stop_bottom_ratio: 0.94
+finish_candidate_reset_frames: 8
 finish_center_max_duration: 1.20
 finish_center_angular_kp: 0.0020
 finish_center_max_angular: 0.16

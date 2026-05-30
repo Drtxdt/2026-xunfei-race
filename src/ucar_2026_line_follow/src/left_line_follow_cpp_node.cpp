@@ -183,6 +183,7 @@ private:
     private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.78);
     private_nh_.param("finish_oversize_min_fill_ratio", finish_oversize_min_fill_ratio_, 0.18);
     private_nh_.param("finish_oversize_follow_speed", finish_oversize_follow_speed_, 0.12);
+    private_nh_.param("finish_oversize_close_bottom_ratio", finish_oversize_close_bottom_ratio_, 0.78);
     private_nh_.param("finish_min_height_ratio", finish_min_height_ratio_, 0.18);
     private_nh_.param("finish_min_bottom_y_ratio", finish_min_bottom_y_ratio_, 0.70);
     private_nh_.param("finish_roi_y_start_ratio", finish_roi_y_start_ratio_, 0.52);
@@ -198,6 +199,8 @@ private:
     private_nh_.param("finish_center_target_bottom_ratio", finish_center_target_bottom_ratio_, 0.90);
     private_nh_.param("finish_lost_stop_min_bottom_ratio", finish_lost_stop_min_bottom_ratio_, 0.84);
     private_nh_.param("finish_lost_stop_frames", finish_lost_stop_frames_, 2);
+    private_nh_.param("finish_visual_stop_bottom_ratio", finish_visual_stop_bottom_ratio_, 0.94);
+    private_nh_.param("finish_candidate_reset_frames", finish_candidate_reset_frames_, 8);
     private_nh_.param("finish_center_max_duration", finish_center_max_duration_, 1.20);
     private_nh_.param("finish_center_angular_kp", finish_center_angular_kp_, 0.0020);
     private_nh_.param("finish_center_max_angular", finish_center_max_angular_, 0.16);
@@ -335,17 +338,30 @@ private:
       }
       else
       {
-        if (!follow.found && finish_box_count_ >= finish_accept_oversize_after_count_)
+        if (finish.oversize && finish_box_count_ >= finish_accept_oversize_after_count_)
+        {
+          state_start_time_ = now;
+          state_ = State::FinishApproach;
+          resetFinishApproachProgress();
+          updateFinishApproachProgress(finish);
+          if (follow.found)
+            publishFollowCommand(follow, now, finish_oversize_follow_speed_, "finish_oversize_enter");
+          else
+          {
+            geometry_msgs::Twist search_cmd;
+            search_cmd.linear.x = finish_candidate_follow_speed_;
+            search_cmd.angular.z = 0.0;
+            setStatus("finish_oversize_enter_search");
+            publishCmd(search_cmd);
+          }
+        }
+        else if (!follow.found && finish_box_count_ >= finish_accept_oversize_after_count_)
         {
           geometry_msgs::Twist search_cmd;
           search_cmd.linear.x = finish_candidate_follow_speed_;
           search_cmd.angular.z = 0.0;
           setStatus("finish_line_search");
           publishCmd(search_cmd);
-        }
-        else if (finish.oversize && finish_box_count_ >= finish_accept_oversize_after_count_)
-        {
-          publishFollowCommand(follow, now, finish_oversize_follow_speed_, "finish_oversize_slow_follow");
         }
         else
         {
@@ -359,13 +375,24 @@ private:
       updateFinishApproachProgress(finish);
       const bool target_reached =
           finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
+      const bool visual_stop_reached =
+          finish.detected && finish_approach_had_close_box_ && finish.bottom_ratio >= finish_visual_stop_bottom_ratio_;
       const bool visually_passed_box =
           finish_approach_had_close_box_ && finish_approach_lost_frames_ >= finish_lost_stop_frames_;
-      if (target_reached || visually_passed_box)
+      const bool candidate_expired =
+          !finish_approach_had_close_box_ && finish_approach_lost_frames_ >= finish_candidate_reset_frames_;
+      if (target_reached || visual_stop_reached || visually_passed_box)
       {
         state_ = State::FinishStop;
         state_start_time_ = now;
         hardStop();
+      }
+      else if (candidate_expired)
+      {
+        state_ = State::Follow;
+        state_start_time_ = now;
+        setStatus("finish_candidate_reset");
+        publishFollowCommand(follow, now);
       }
       else if (finish.detected && !finish.oversize)
       {
@@ -927,20 +954,26 @@ private:
     finish_approach_lost_frames_ = 0;
     finish_approach_best_bottom_ratio_ = 0.0;
     finish_approach_had_close_box_ = false;
+    finish_approach_cue_frames_ = 0;
   }
 
   void updateFinishApproachProgress(const FinishResult& finish)
   {
     const bool normal_box = finish.detected && !finish.oversize;
-    if (normal_box)
+    const bool finish_cue = finish.detected;
+    if (finish_cue)
     {
-      ++finish_approach_normal_frames_;
+      ++finish_approach_cue_frames_;
+      if (normal_box)
+        ++finish_approach_normal_frames_;
       finish_approach_lost_frames_ = 0;
       finish_approach_best_bottom_ratio_ = std::max(finish_approach_best_bottom_ratio_, finish.bottom_ratio);
-      if (finish_approach_best_bottom_ratio_ >= finish_lost_stop_min_bottom_ratio_)
+      const double close_threshold = finish.oversize ? finish_oversize_close_bottom_ratio_
+                                                     : finish_lost_stop_min_bottom_ratio_;
+      if (finish.bottom_ratio >= close_threshold)
         finish_approach_had_close_box_ = true;
     }
-    else if (finish_approach_normal_frames_ > 0)
+    else if (finish_approach_cue_frames_ > 0)
     {
       ++finish_approach_lost_frames_;
     }
@@ -1166,6 +1199,7 @@ private:
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " finish_best_bottom=" << finish_approach_best_bottom_ratio_
        << " finish_close_seen=" << boolText(finish_approach_had_close_box_)
+       << " finish_cues=" << finish_approach_cue_frames_
        << " finish_approach_lost=" << finish_approach_lost_frames_
        << " box_w=" << finish.width_ratio
        << " box_h=" << finish.height_ratio
@@ -1284,6 +1318,7 @@ private:
   double finish_oversize_min_bottom_y_ratio_ = 0.78;
   double finish_oversize_min_fill_ratio_ = 0.18;
   double finish_oversize_follow_speed_ = 0.12;
+  double finish_oversize_close_bottom_ratio_ = 0.78;
   double finish_min_height_ratio_ = 0.18;
   double finish_min_bottom_y_ratio_ = 0.70;
   double finish_roi_y_start_ratio_ = 0.52;
@@ -1299,6 +1334,8 @@ private:
   double finish_center_target_bottom_ratio_ = 0.90;
   double finish_lost_stop_min_bottom_ratio_ = 0.84;
   int finish_lost_stop_frames_ = 2;
+  double finish_visual_stop_bottom_ratio_ = 0.94;
+  int finish_candidate_reset_frames_ = 8;
   double finish_center_max_duration_ = 1.20;
   double finish_center_angular_kp_ = 0.0020;
   double finish_center_max_angular_ = 0.16;
@@ -1320,6 +1357,7 @@ private:
   bool finish_box_armed_ = true;
   ros::Time finish_box_cooldown_until_;
   int finish_approach_normal_frames_ = 0;
+  int finish_approach_cue_frames_ = 0;
   int finish_approach_lost_frames_ = 0;
   double finish_approach_best_bottom_ratio_ = 0.0;
   bool finish_approach_had_close_box_ = false;
