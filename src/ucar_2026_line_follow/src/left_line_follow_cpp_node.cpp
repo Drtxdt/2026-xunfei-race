@@ -182,7 +182,7 @@ private:
     private_nh_.param("finish_oversize_min_height_ratio", finish_oversize_min_height_ratio_, 0.16);
     private_nh_.param("finish_oversize_min_bottom_y_ratio", finish_oversize_min_bottom_y_ratio_, 0.78);
     private_nh_.param("finish_oversize_min_fill_ratio", finish_oversize_min_fill_ratio_, 0.18);
-    private_nh_.param("finish_oversize_stop_bottom_ratio", finish_oversize_stop_bottom_ratio_, 0.96);
+    private_nh_.param("finish_oversize_follow_speed", finish_oversize_follow_speed_, 0.09);
     private_nh_.param("finish_min_height_ratio", finish_min_height_ratio_, 0.18);
     private_nh_.param("finish_min_bottom_y_ratio", finish_min_bottom_y_ratio_, 0.70);
     private_nh_.param("finish_roi_y_start_ratio", finish_roi_y_start_ratio_, 0.52);
@@ -317,7 +317,6 @@ private:
         state_start_time_ = now;
         if (finish_centering_enabled_)
         {
-          finish_center_saw_oversize_ = finish.oversize;
           state_ = State::FinishApproach;
           setStatus("finish_centering");
           publishFinishCenteringCommand(finish, now);
@@ -331,21 +330,20 @@ private:
       }
       else
       {
-        publishFollowCommand(follow, now);
+        if (finish.oversize && finish_box_count_ >= finish_accept_oversize_after_count_)
+          publishFollowCommand(follow, now, finish_oversize_follow_speed_, "finish_oversize_slow_follow");
+        else
+          publishFollowCommand(follow, now);
       }
     }
     else if (state_ == State::FinishApproach)
     {
       setStatus("finish_centering");
       const double elapsed_centering = (now - state_start_time_).toSec();
-      if (finish.oversize)
-        finish_center_saw_oversize_ = true;
       const bool target_reached =
           finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
-      const bool oversize_close_enough =
-          finish.oversize && finish.bottom_ratio >= finish_oversize_stop_bottom_ratio_;
-      const bool timed_out = !finish_center_saw_oversize_ && elapsed_centering >= finish_center_max_duration_;
-      if (target_reached || oversize_close_enough || timed_out)
+      const bool timed_out = elapsed_centering >= finish_center_max_duration_;
+      if (target_reached || timed_out)
       {
         state_ = State::FinishStop;
         state_start_time_ = now;
@@ -863,7 +861,8 @@ private:
     if (now < finish_box_cooldown_until_)
       return false;
 
-    if (finish.detected)
+    const bool finish_box_detected = finish.detected && !finish.oversize;
+    if (finish_box_detected)
     {
       ++finish_frames_;
       finish_lost_frames_ = 0;
@@ -897,7 +896,7 @@ private:
     (void)now;
     geometry_msgs::Twist cmd;
     cmd.linear.x = finish_approach_speed_;
-    if (finish.detected && finish.box.area() > 0)
+    if (finish.detected && !finish.oversize && finish.box.area() > 0)
     {
       const double box_center_x = finish.box.x + finish.box.width * 0.5;
       const double center_error = box_center_x - kImageCols * 0.5;
@@ -959,7 +958,8 @@ private:
     return (bottom - top + 1) / static_cast<double>(image.rows);
   }
 
-  void publishFollowCommand(const FollowResult& follow, const ros::Time& now)
+  void publishFollowCommand(const FollowResult& follow, const ros::Time& now,
+                            double speed_limit = -1.0, const char* status = "tracking_leftmost")
   {
     if (!follow.found)
     {
@@ -992,12 +992,14 @@ private:
 
     double linear = base_speed_ - std::min(std::abs(filtered_error_px_) / 180.0, 1.0) * (base_speed_ - min_speed_);
     linear = clampDouble(linear, min_speed_, base_speed_);
+    if (speed_limit > 0.0)
+      linear = std::min(linear, speed_limit);
     filtered_angular_ = angular_alpha_ * filtered_angular_ + (1.0 - angular_alpha_) * angular;
 
     geometry_msgs::Twist cmd;
     cmd.linear.x = linear;
     cmd.angular.z = filtered_angular_;
-    setStatus("tracking_leftmost");
+    setStatus(status);
     publishCmd(cmd);
   }
 
@@ -1103,8 +1105,7 @@ private:
        << " finish_box_count=" << finish_box_count_
        << " finish_box_armed=" << boolText(finish_box_armed_)
        << " finish_oversize=" << boolText(finish.oversize)
-       << " finish_saw_oversize=" << boolText(finish_center_saw_oversize_)
-       << " finish_oversize_stop_bottom=" << finish_oversize_stop_bottom_ratio_
+       << " finish_oversize_follow_speed=" << finish_oversize_follow_speed_
        << " finish_center_err=" << last_finish_center_error_px_
        << " finish_center_target_bottom=" << finish_center_target_bottom_ratio_
        << " box_w=" << finish.width_ratio
@@ -1223,7 +1224,7 @@ private:
   double finish_oversize_min_height_ratio_ = 0.16;
   double finish_oversize_min_bottom_y_ratio_ = 0.78;
   double finish_oversize_min_fill_ratio_ = 0.18;
-  double finish_oversize_stop_bottom_ratio_ = 0.96;
+  double finish_oversize_follow_speed_ = 0.09;
   double finish_min_height_ratio_ = 0.18;
   double finish_min_bottom_y_ratio_ = 0.70;
   double finish_roi_y_start_ratio_ = 0.52;
@@ -1255,7 +1256,6 @@ private:
   int finish_lost_frames_ = 0;
   int finish_box_count_ = 0;
   bool finish_box_armed_ = true;
-  bool finish_center_saw_oversize_ = false;
   ros::Time finish_box_cooldown_until_;
   double last_finish_center_error_px_ = 0.0;
   double filtered_angular_ = 0.0;

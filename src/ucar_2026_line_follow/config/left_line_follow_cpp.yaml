@@ -61,10 +61,10 @@ kp: 0.0042
 kd: 0.0014
 
 # Motion control. Conservative defaults are intentional for first field tests.
-base_speed: 0.12
-min_speed: 0.05
+base_speed: 0.15
+min_speed: 0.06
 curve_speed_error_scale: 0.18
-max_angular_speed: 0.42
+max_angular_speed: 0.48
 angular_alpha: 0.65
 lost_timeout: 0.35
 lost_speed: 0.00
@@ -80,7 +80,7 @@ finish_oversize_min_width_ratio: 0.94
 finish_oversize_min_height_ratio: 0.16
 finish_oversize_min_bottom_y_ratio: 0.78
 finish_oversize_min_fill_ratio: 0.18
-finish_oversize_stop_bottom_ratio: 0.96
+finish_oversize_follow_speed: 0.09
 finish_min_height_ratio: 0.18
 finish_min_bottom_y_ratio: 0.70
 finish_roi_y_start_ratio: 0.52
