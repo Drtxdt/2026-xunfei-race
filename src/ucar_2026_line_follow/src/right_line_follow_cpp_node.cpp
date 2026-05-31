@@ -164,6 +164,11 @@ private:
 
     private_nh_.param("base_speed", base_speed_, 0.16);
     private_nh_.param("min_speed", min_speed_, 0.07);
+    private_nh_.param("right_fast_base_speed", right_fast_base_speed_, 0.22);
+    private_nh_.param("right_fast_error_px", right_fast_error_px_, 45.0);
+    private_nh_.param("right_medium_error_px", right_medium_error_px_, 130.0);
+    private_nh_.param("right_hard_error_px", right_hard_error_px_, 210.0);
+    private_nh_.param("right_medium_speed", right_medium_speed_, 0.12);
     private_nh_.param("curve_speed_error_scale", curve_speed_error_scale_, 0.18);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.55);
     private_nh_.param("angular_alpha", angular_alpha_, 0.65);
@@ -965,8 +970,27 @@ private:
     double angular = -(kp_ * filtered_error_px_ + kd_ * derivative);
     angular = clampDouble(angular, -max_angular_speed_, max_angular_speed_);
 
-    double linear = base_speed_ - std::min(std::abs(filtered_error_px_) / 180.0, 1.0) * (base_speed_ - min_speed_);
-    linear = clampDouble(linear, min_speed_, base_speed_);
+    const double effective_base_speed = std::max(base_speed_, right_fast_base_speed_);
+    const double error_abs = std::abs(filtered_error_px_);
+    double linear = min_speed_;
+    if (error_abs <= right_fast_error_px_)
+    {
+      linear = effective_base_speed;
+    }
+    else if (error_abs <= right_medium_error_px_)
+    {
+      const double t = (error_abs - right_fast_error_px_) /
+                       std::max(1e-6, right_medium_error_px_ - right_fast_error_px_);
+      linear = effective_base_speed + t * (right_medium_speed_ - effective_base_speed);
+    }
+    else
+    {
+      const double t = std::min((error_abs - right_medium_error_px_) /
+                                    std::max(1e-6, right_hard_error_px_ - right_medium_error_px_),
+                                1.0);
+      linear = right_medium_speed_ + t * (min_speed_ - right_medium_speed_);
+    }
+    linear = clampDouble(linear, min_speed_, effective_base_speed);
     filtered_angular_ = angular_alpha_ * filtered_angular_ + (1.0 - angular_alpha_) * angular;
 
     geometry_msgs::Twist cmd;
@@ -1176,6 +1200,11 @@ private:
 
   double base_speed_ = 0.16;
   double min_speed_ = 0.07;
+  double right_fast_base_speed_ = 0.22;
+  double right_fast_error_px_ = 45.0;
+  double right_medium_error_px_ = 130.0;
+  double right_hard_error_px_ = 210.0;
+  double right_medium_speed_ = 0.12;
   double curve_speed_error_scale_ = 0.18;
   double max_angular_speed_ = 0.55;
   double angular_alpha_ = 0.65;
