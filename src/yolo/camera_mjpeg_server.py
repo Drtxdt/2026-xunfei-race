@@ -13,10 +13,15 @@ bridge = CvBridge()
 lock = threading.Lock()
 
 
+flip_image = False
+
+
 def image_cb(msg):
     global latest_frame
     try:
         img = bridge.imgmsg_to_cv2(msg, 'bgr8')
+        if flip_image:
+            img = cv2.flip(img, 1)
         _, jpeg = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 60])
         with lock:
             latest_frame = jpeg.tobytes()
@@ -49,9 +54,11 @@ class MJPEGHandler(BaseHTTPRequestHandler):
 
 
 def main():
+    global flip_image
     rospy.init_node('camera_mjpeg_server')
     topic = rospy.get_param('~topic', '/usb_cam/image_raw')
     port = rospy.get_param('~port', 8080)
+    flip_image = rospy.get_param('~flip', False)
     rospy.Subscriber(topic, Image, image_cb, queue_size=1)
 
     server = HTTPServer(('0.0.0.0', port), MJPEGHandler)
