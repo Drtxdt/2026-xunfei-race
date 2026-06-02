@@ -47,6 +47,7 @@ class QRCollectAndDecode:
         self.save_count = 0
         self.last_publish_text = ""
         self.last_publish_time = 0.0
+        self.url_cache = {}
 
         self.pub = rospy.Publisher(args.pub_topic, String, queue_size=10)
         self.sub = rospy.Subscriber(args.topic, Image, self.image_cb, queue_size=1)
@@ -75,7 +76,7 @@ class QRCollectAndDecode:
                         "error": None
                     }
                     if self.args.fetch and self.is_url(text):
-                        item["api"] = self.fetch_url(text)
+                        item["api"] = self.fetch_cached_url(text)
                         if item["api"] and item["api"].get("code") == 200:
                             item["ok"] = True
                             item["result"] = item["api"].get("result")
@@ -148,6 +149,16 @@ class QRCollectAndDecode:
                 return {"code": -1, "result": None, "raw_body": body}
         except Exception as e:
             return {"code": -1, "result": None, "error": str(e)}
+
+    def fetch_cached_url(self, url):
+        if url in self.url_cache:
+            return self.url_cache[url]
+
+        result = self.fetch_url(url)
+        if result and result.get("code") == 200:
+            self.url_cache[url] = result
+            rospy.loginfo("QR URL cached: %s -> %s", url, result.get("result"))
+        return result
 
     def save_image(self, img, prefix):
         now = time.time()

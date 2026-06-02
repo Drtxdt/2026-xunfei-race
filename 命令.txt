@@ -1,3 +1,22 @@
-roslaunch ucar_2026_line_follow line_follow_test.launch
+# 致所有人：登录小车后，先
+cd 2026-xunfei-race
 
+# 可选：构建
+catkin_make
+# 指定某一个包构建
+catkin_make --pkg ucar_2026_line_follow
+
+# 必做：source环境
+source devel/setup.bash
+
+# 左侧巡线
+roslaunch ucar_2026_line_follow line_follow_test.launch
+# 右侧巡线
 roslaunch ucar_2026_line_follow right_line_follow.launch
+# 中间巡线
+roslaunch ucar 2026_line_follow straight_right.launch
+
+# c++左侧巡线
+roslaunch ucar_2026_line_follow left_line_follow_cpp.launch
+# c++右侧巡线
+roslaunch ucar_2026_line_follow right_line_follow_cpp.launch

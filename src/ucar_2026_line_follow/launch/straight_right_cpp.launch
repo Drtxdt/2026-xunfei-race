@@ -1,0 +1,13 @@
+<launch>
+
+    <rosparam
+        command="load"
+        file="$(find ucar_2026_line_follow)/config/stable_right_follow_cpp.yaml"/>
+
+    <node
+        pkg="ucar_2026_line_follow"
+        type="stable_right_follow_cpp"
+        name="stable_right_follow_cpp"
+        output="screen"/>
+
+</launch>
