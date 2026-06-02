@@ -1,0 +1,15 @@
+target_right_x: 155
+
+base_speed: 0.32
+curve_speed: 0.28
+search_speed: 0.10
+
+kp: 0.0052
+kd: 0.0018
+
+cross_area_threshold: 48000
+
+startup_time: 2.8
+forward_time: 0.9
+
+show_debug: true
