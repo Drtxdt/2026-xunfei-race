@@ -15,7 +15,10 @@
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>cv_bridge</depend>
+  <depend>roscpp</depend>
 
+  <build_depend>libopencv-dev</build_depend>
+  <exec_depend>libopencv-dev</exec_depend>
   <exec_depend>usb_cam</exec_depend>
   <exec_depend>ucar_controller</exec_depend>
 

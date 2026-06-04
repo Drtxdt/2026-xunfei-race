@@ -242,22 +242,47 @@ class KeyboardDatasetCollector:
             self.stop_robot()
 
 
+def _resolve_arg(name, cli_val):
+    """Return cli_val if explicitly set, otherwise fall back to ROS param ~name."""
+    if cli_val is not None:
+        return cli_val
+    return rospy.get_param('~' + name, None)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Keyboard teleop + auto image collector for YOLO dataset')
-    parser.add_argument('--cls', required=True, help='类别/采集会话名，例如 red_light、straight、left、right、food_sign')
-    parser.add_argument('--output', default=os.path.expanduser('~/yolo_dataset/raw_images'), help='图片保存根目录')
-    parser.add_argument('--topic', default='/usb_cam/image_raw', help='相机图像话题')
-    parser.add_argument('--cmd-topic', default='/cmd_vel', help='速度控制话题')
-    parser.add_argument('--interval', type=float, default=0.5, help='自动保存间隔，单位秒')
-    parser.add_argument('--max-images', type=int, default=0, help='最多保存张数，0表示不限制')
-    parser.add_argument('--linear', type=float, default=0.04, help='基础线速度，建议0.03~0.06')
-    parser.add_argument('--angular', type=float, default=0.18, help='基础角速度，建议0.15~0.25')
-    parser.add_argument('--rate', type=float, default=20.0, help='控制循环频率')
-    parser.add_argument('--flip', action='store_true', help='是否水平翻转图片，若正式检测节点翻转则建议加上')
-    parser.add_argument('--start-paused', action='store_true', help='启动后先暂停保存，需要按P开始')
-    args = parser.parse_args()
+    parser.add_argument('--cls', default=None, help='类别/采集会话名，例如 red_light')
+    parser.add_argument('--output', default=None, help='图片保存根目录')
+    parser.add_argument('--topic', default=None, help='相机图像话题')
+    parser.add_argument('--cmd-topic', default=None, help='速度控制话题')
+    parser.add_argument('--interval', type=float, default=None, help='自动保存间隔，单位秒')
+    parser.add_argument('--max-images', type=int, default=None, help='最多保存张数，0表示不限制')
+    parser.add_argument('--linear', type=float, default=None, help='基础线速度，建议0.03~0.06')
+    parser.add_argument('--angular', type=float, default=None, help='基础角速度，建议0.15~0.25')
+    parser.add_argument('--rate', type=float, default=None, help='控制循环频率')
+    parser.add_argument('--flip', action='store_true', default=None, help='是否水平翻转图片')
+    parser.add_argument('--start-paused', action='store_true', default=None, help='启动后先暂停保存，按P开始')
+    cli, _ = parser.parse_known_args()
 
     rospy.init_node('keyboard_collect_yolo_images')
+
+    # Resolve each arg: CLI takes priority, else ROS param, else default below
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    args = argparse.Namespace(
+        cls=_resolve_arg('cls', cli.cls) or 'red_light',
+        output=_resolve_arg('output', cli.output)
+            or os.path.join(script_dir, 'yolo_dataset', 'raw_images'),
+        topic=_resolve_arg('topic', cli.topic) or '/usb_cam/image_raw',
+        cmd_topic=_resolve_arg('cmd_topic', cli.cmd_topic) or '/cmd_vel',
+        interval=float(_resolve_arg('interval', cli.interval) or 0.5),
+        max_images=int(_resolve_arg('max_images', cli.max_images) or 0),
+        linear=float(_resolve_arg('linear', cli.linear) or 0.04),
+        angular=float(_resolve_arg('angular', cli.angular) or 0.18),
+        rate=float(_resolve_arg('rate', cli.rate) or 20.0),
+        flip=bool(_resolve_arg('flip', cli.flip) or False),
+        start_paused=bool(_resolve_arg('start_paused', cli.start_paused) or False),
+    )
+
     node = KeyboardDatasetCollector(args)
     node.loop()
 
