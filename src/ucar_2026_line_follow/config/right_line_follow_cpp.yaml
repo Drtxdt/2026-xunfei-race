@@ -1,0 +1,104 @@
+# Topics
+image_topic: /usb_cam/image_raw
+cmd_vel_topic: /cmd_vel
+status_topic: /right_line_follow_cpp/status
+debug_image_topic: /right_line_follow_cpp/debug_image
+debug_info_topic: /right_line_follow_cpp/debug_info
+
+# Startup from the car's point of view: leave the red area, turn right, then
+# enter the rightmost lane before visual tracking takes over.
+auto_start: true
+startup_forward_duration: 2.2
+startup_forward_speed: 0.16
+startup_turn_duration: 3.85
+startup_turn_angular_speed: -0.34
+startup_enter_duration: 1.8
+startup_enter_speed: 0.10
+
+# White-line extraction. Raise V/gray thresholds if the floor reflection is
+# being detected as white line; lower them only if real white lines disappear.
+white_s_max: 85
+white_v_min: 155
+gray_white_threshold: 175
+morph_kernel_size: 5
+min_component_area: 80
+max_component_area_ratio: 0.70
+min_white_mask_ratio: 0.002
+max_white_mask_ratio: 0.32
+adaptive_threshold_delta: 28
+
+# Senior-style right-hand line tracing.
+begin_x: 25.0
+begin_y: 400.0
+seed_search_rows: 6
+seed_row_step_px: 25
+edge_probe_px: 6
+edge_threshold: 90
+trace_max_points: 300
+trace_step_guard: 4
+line_blur_kernel: 7
+sample_dist_m: 0.01
+aim_dist_m: 0.12
+forward_bias_m: 0.20
+pixel_per_meter: 500.0
+lane_width_m: 0.42
+right_center_bias_m: 0.035
+
+# Fallback row scan for frames where wall tracing misses the right line.
+fallback_roi_y_start_ratio: 0.48
+# Main C++ controller intentionally uses only the rightmost visible line.
+right_scan_rows: [0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58]
+right_offset_px: 180
+right_scan_bottom_weight: 1.8
+min_line_width_px: 5
+max_line_segment_width_px: 90
+min_segment_gap_px: 10
+max_target_jump_px: 160
+
+# PID follows the same sign convention as the Python dynamic PID:
+# error = target_x - image_center; angular = -(kp * error + kd * d_error).
+kp: 0.0042
+kd: 0.0014
+
+# Motion control. Conservative defaults are intentional for first field tests.
+base_speed: 0.12
+min_speed: 0.05
+curve_speed_error_scale: 0.18
+max_angular_speed: 0.42
+angular_alpha: 0.65
+lost_timeout: 0.35
+lost_speed: 0.00
+lost_angular_speed: 0.00
+stop_on_lost: true
+
+# Finish box. The stop box is 50 cm * 50 cm, white-line rectangle.
+finish_enable_delay: 18.0
+finish_min_width_ratio: 0.48
+finish_max_width_ratio: 0.92
+finish_min_height_ratio: 0.18
+finish_min_bottom_y_ratio: 0.70
+finish_roi_y_start_ratio: 0.52
+finish_min_horizontal_presence: 0.55
+finish_min_vertical_presence: 0.42
+finish_confirm_frames: 4
+finish_release_frames: 2
+finish_stop_on_box_count: 2
+finish_box_cooldown_sec: 2.0
+finish_approach_speed: 0.06
+finish_centering_enabled: true
+finish_center_target_bottom_ratio: 0.90
+finish_center_max_duration: 1.20
+finish_center_angular_kp: 0.0020
+finish_center_max_angular: 0.16
+finish_forward_duration: 1.65
+finish_forward_speed: 0.08
+finish_stop_hold: 2.0
+
+# Debug relay parameters consumed by right_debug_relay_node.py.
+compressed_debug_topic: /right_line_follow_cpp/debug_image/compressed
+compressed_raw_topic: /right_line_follow_cpp/raw_image/compressed
+debug_relay_status_topic: /right_line_follow_cpp/debug_relay/status
+jpeg_quality: 75
+debug_resize_width: 0
+debug_max_publish_fps: 12.0
+publish_raw_compressed: true
