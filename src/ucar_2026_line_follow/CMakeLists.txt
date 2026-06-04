@@ -1,19 +1,22 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(ucar_2026_line_follow)
 
+add_compile_options(-std=c++14)
+
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   geometry_msgs
   nav_msgs
+  roscpp
   rospy
   sensor_msgs
   std_msgs
 )
 
+find_package(OpenCV REQUIRED)
+
 catkin_package()
 
-<<<<<<< Updated upstream
-=======
 include_directories(
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
@@ -52,7 +55,6 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/stable_right_follow.cpp)
 endif()
 
 # Python 脚本安装（保持不变）
->>>>>>> Stashed changes
 catkin_install_python(PROGRAMS
   scripts/camera_window_debug_node.py
   scripts/line_follow_node.py
@@ -65,8 +67,6 @@ catkin_install_python(PROGRAMS
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-<<<<<<< Updated upstream
-=======
 # 安装所有存在的 C++ 可执行文件
 set(INSTALL_TARGETS "")
 if(TARGET right_line_follow_cpp_node)
@@ -86,7 +86,6 @@ if(INSTALL_TARGETS)
 endif()
 
 # 安装 config 和 launch 目录
->>>>>>> Stashed changes
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
