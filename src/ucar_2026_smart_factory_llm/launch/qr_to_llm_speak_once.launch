@@ -1,0 +1,17 @@
+<launch>
+  <arg name="voice_instruction" />
+  <arg name="qr_topic" default="/qr_code_data" />
+  <arg name="service_name" default="/smart_factory_llm/reason_pickup_order" />
+  <arg name="speak_topic" default="/speak" />
+  <arg name="expected_count" default="3" />
+  <arg name="timeout_sec" default="30.0" />
+
+  <node pkg="ucar_2026_smart_factory_llm" type="qr_to_llm_speak_once.py" name="qr_to_llm_speak_once" output="screen">
+    <param name="voice_instruction" value="$(arg voice_instruction)" />
+    <param name="qr_topic" value="$(arg qr_topic)" />
+    <param name="service_name" value="$(arg service_name)" />
+    <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="expected_count" value="$(arg expected_count)" />
+    <param name="timeout_sec" value="$(arg timeout_sec)" />
+  </node>
+</launch>
