@@ -1,13 +1,26 @@
 <launch>
+  <!-- 是否启动底盘驱动和摄像头 -->
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  
+  <!-- 配置文件路径（您的参数） -->
+  <arg name="config_file" default="$(find ucar_2026_line_follow)/config/stable_right_follow_cpp.yaml" />
 
-    <rosparam
-        command="load"
-        file="$(find ucar_2026_line_follow)/config/stable_right_follow_cpp.yaml"/>
+  <!-- 底盘驱动 -->
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
 
-    <node
-        pkg="ucar_2026_line_follow"
-        type="stable_right_follow_cpp"
-        name="stable_right_follow_cpp"
-        output="screen"/>
+  <!-- 摄像头驱动 -->
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
 
+  <!-- 您的稳定右巡线节点（C++） -->
+  <node pkg="ucar_2026_line_follow"
+        type="stable_right_follow"
+        name="stable_right_follow_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+  </node>
 </launch>
