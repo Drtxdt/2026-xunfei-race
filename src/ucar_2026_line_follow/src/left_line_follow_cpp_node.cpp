@@ -107,6 +107,8 @@ private:
     double height_ratio = 0.0;
     double bottom_ratio = 0.0;
     double fill_ratio = 0.0;
+    double center_offset_ratio = 0.0;
+    double aspect_ratio = 0.0;
     double horizontal_presence = 0.0;
     double vertical_presence = 0.0;
   };
@@ -166,6 +168,11 @@ private:
 
     private_nh_.param("base_speed", base_speed_, 0.18);
     private_nh_.param("min_speed", min_speed_, 0.075);
+    private_nh_.param("fast_base_speed", fast_base_speed_, 0.22);
+    private_nh_.param("fast_error_px", fast_error_px_, 45.0);
+    private_nh_.param("medium_error_px", medium_error_px_, 130.0);
+    private_nh_.param("hard_error_px", hard_error_px_, 210.0);
+    private_nh_.param("medium_speed", medium_speed_, 0.12);
     private_nh_.param("curve_speed_error_scale", curve_speed_error_scale_, 0.18);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.55);
     private_nh_.param("angular_alpha", angular_alpha_, 0.65);
@@ -207,6 +214,13 @@ private:
     private_nh_.param("finish_forward_duration", finish_forward_duration_, 1.65);
     private_nh_.param("finish_forward_speed", finish_forward_speed_, 0.08);
     private_nh_.param("finish_stop_hold", finish_stop_hold_, 2.0);
+    private_nh_.param("finish_final_min_lock_frames", finish_final_min_lock_frames_, 3);
+    private_nh_.param("finish_final_stop_bottom_ratio", finish_final_stop_bottom_ratio_, 0.955);
+    private_nh_.param("finish_final_near_bottom_ratio", finish_final_near_bottom_ratio_, 0.88);
+    private_nh_.param("finish_final_passed_stop_frames", finish_final_passed_stop_frames_, 3);
+    private_nh_.param("finish_final_max_center_offset_ratio", finish_final_max_center_offset_ratio_, 0.35);
+    private_nh_.param("finish_final_min_aspect_ratio", finish_final_min_aspect_ratio_, 1.30);
+    private_nh_.param("finish_final_max_aspect_ratio", finish_final_max_aspect_ratio_, 4.80);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -374,16 +388,21 @@ private:
     {
       setStatus("finish_centering");
       updateFinishApproachProgress(finish);
+      updateFinishFinalLock(finish);
+      const double elapsed_centering = (now - state_start_time_).toSec();
       const bool target_reached =
-          finish.detected && !finish.oversize && finish.bottom_ratio >= finish_center_target_bottom_ratio_;
-      const bool visual_stop_reached =
-          finish.detected && finish_approach_had_close_box_ && finish.bottom_ratio >= finish_visual_stop_bottom_ratio_;
+          finish_final_locked_ && finish_final_lock_frames_ >= finish_final_min_lock_frames_ &&
+          finish.bottom_ratio >= finish_final_stop_bottom_ratio_;
       const bool visually_passed_box =
-          finish_approach_had_close_box_ && finish_approach_lost_frames_ >= finish_lost_stop_frames_;
+          finish_final_best_bottom_ratio_ >= finish_final_near_bottom_ratio_ &&
+          finish_final_lost_frames_ >= finish_final_passed_stop_frames_;
       const bool candidate_expired =
-          !finish_approach_had_close_box_ && finish_approach_lost_frames_ >= finish_candidate_reset_frames_;
-      if (target_reached || visual_stop_reached || visually_passed_box)
+          finish_final_best_bottom_ratio_ < finish_final_near_bottom_ratio_ &&
+          (finish_approach_lost_frames_ >= finish_candidate_reset_frames_ ||
+           elapsed_centering >= finish_center_max_duration_);
+      if (target_reached || visually_passed_box)
       {
+        finish_stop_reason_ = target_reached ? "locked_bottom" : "passed_lost";
         state_ = State::FinishStop;
         state_start_time_ = now;
         hardStop();
@@ -871,6 +890,9 @@ private:
       double height_ratio = box.height / static_cast<double>(mask.rows);
       double bottom_ratio = (full_box.y + full_box.height) / static_cast<double>(mask.rows);
       double fill_ratio = cv::countNonZero(closed(box)) / static_cast<double>(std::max(1, box.area()));
+      double center_offset_ratio =
+          (full_box.x + full_box.width * 0.5 - mask.cols * 0.5) / static_cast<double>(mask.cols);
+      double aspect_ratio = box.width / static_cast<double>(std::max(1, box.height));
       const bool oversize_candidate =
           finish_box_count_ >= finish_accept_oversize_after_count_ &&
           width_ratio >= finish_oversize_min_width_ratio_ &&
@@ -907,6 +929,8 @@ private:
         result.height_ratio = height_ratio;
         result.bottom_ratio = bottom_ratio;
         result.fill_ratio = fill_ratio;
+        result.center_offset_ratio = center_offset_ratio;
+        result.aspect_ratio = aspect_ratio;
         result.horizontal_presence = horizontal;
         result.vertical_presence = vertical;
       }
@@ -997,6 +1021,11 @@ private:
     finish_approach_best_bottom_ratio_ = 0.0;
     finish_approach_had_close_box_ = false;
     finish_approach_cue_frames_ = 0;
+    finish_final_locked_ = false;
+    finish_final_lock_frames_ = 0;
+    finish_final_lost_frames_ = 0;
+    finish_final_best_bottom_ratio_ = 0.0;
+    finish_stop_reason_ = "none";
   }
 
   void updateFinishApproachProgress(const FinishResult& finish)
@@ -1019,6 +1048,42 @@ private:
     {
       ++finish_approach_lost_frames_;
     }
+  }
+
+  bool isFinalStopBox(const FinishResult& finish) const
+  {
+    if (!finish.detected || finish.oversize || finish.box.area() <= 0)
+      return false;
+    if (std::abs(finish.center_offset_ratio) > finish_final_max_center_offset_ratio_)
+      return false;
+    if (finish.aspect_ratio < finish_final_min_aspect_ratio_ ||
+        finish.aspect_ratio > finish_final_max_aspect_ratio_)
+      return false;
+    return true;
+  }
+
+  void updateFinishFinalLock(const FinishResult& finish)
+  {
+    if (isFinalStopBox(finish))
+    {
+      finish_final_locked_ = true;
+      ++finish_final_lock_frames_;
+      finish_final_lost_frames_ = 0;
+      finish_final_best_bottom_ratio_ = std::max(finish_final_best_bottom_ratio_, finish.bottom_ratio);
+      return;
+    }
+
+    if (finish.detected && finish.oversize && finish.bottom_ratio >= finish_final_near_bottom_ratio_)
+    {
+      finish_final_best_bottom_ratio_ = std::max(finish_final_best_bottom_ratio_, finish.bottom_ratio);
+      finish_final_lost_frames_ = 0;
+      finish_final_lock_frames_ = 0;
+      return;
+    }
+
+    if (finish_final_locked_ || finish_final_best_bottom_ratio_ > 0.0)
+      ++finish_final_lost_frames_;
+    finish_final_lock_frames_ = 0;
   }
 
   void publishFinishCenteringCommand(const FinishResult& finish, const ros::Time& now)
@@ -1120,8 +1185,26 @@ private:
     double angular = -(kp_ * filtered_error_px_ + kd_ * derivative);
     angular = clampDouble(angular, -max_angular_speed_, max_angular_speed_);
 
-    double linear = base_speed_ - std::min(std::abs(filtered_error_px_) / 180.0, 1.0) * (base_speed_ - min_speed_);
-    linear = clampDouble(linear, min_speed_, base_speed_);
+    const double effective_base_speed = std::max(base_speed_, fast_base_speed_);
+    const double error_abs = std::abs(filtered_error_px_);
+    double linear = min_speed_;
+    if (error_abs <= fast_error_px_)
+    {
+      linear = effective_base_speed;
+    }
+    else if (error_abs <= medium_error_px_)
+    {
+      const double t = (error_abs - fast_error_px_) / std::max(1e-6, medium_error_px_ - fast_error_px_);
+      linear = effective_base_speed + t * (medium_speed_ - effective_base_speed);
+    }
+    else
+    {
+      const double t = std::min((error_abs - medium_error_px_) /
+                                    std::max(1e-6, hard_error_px_ - medium_error_px_),
+                                1.0);
+      linear = medium_speed_ + t * (min_speed_ - medium_speed_);
+    }
+    linear = clampDouble(linear, min_speed_, effective_base_speed);
     if (speed_limit > 0.0)
       linear = std::min(linear, speed_limit);
     filtered_angular_ = angular_alpha_ * filtered_angular_ + (1.0 - angular_alpha_) * angular;
@@ -1246,10 +1329,17 @@ private:
        << " finish_close_seen=" << boolText(finish_approach_had_close_box_)
        << " finish_cues=" << finish_approach_cue_frames_
        << " finish_approach_lost=" << finish_approach_lost_frames_
+       << " finish_final_locked=" << boolText(finish_final_locked_)
+       << " finish_final_lock_frames=" << finish_final_lock_frames_
+       << " finish_final_lost_frames=" << finish_final_lost_frames_
+       << " finish_final_best_bottom=" << finish_final_best_bottom_ratio_
+       << " finish_stop_reason=" << finish_stop_reason_
        << " box_w=" << finish.width_ratio
        << " box_h=" << finish.height_ratio
        << " box_bottom=" << finish.bottom_ratio
        << " box_fill=" << finish.fill_ratio
+       << " box_center_offset=" << finish.center_offset_ratio
+       << " box_aspect=" << finish.aspect_ratio
        << " box_hp=" << finish.horizontal_presence
        << " box_vp=" << finish.vertical_presence;
     std_msgs::String msg;
@@ -1346,6 +1436,11 @@ private:
 
   double base_speed_ = 0.18;
   double min_speed_ = 0.075;
+  double fast_base_speed_ = 0.22;
+  double fast_error_px_ = 45.0;
+  double medium_error_px_ = 130.0;
+  double hard_error_px_ = 210.0;
+  double medium_speed_ = 0.12;
   double curve_speed_error_scale_ = 0.18;
   double max_angular_speed_ = 0.55;
   double angular_alpha_ = 0.65;
@@ -1387,6 +1482,13 @@ private:
   double finish_forward_duration_ = 1.65;
   double finish_forward_speed_ = 0.08;
   double finish_stop_hold_ = 2.0;
+  int finish_final_min_lock_frames_ = 3;
+  double finish_final_stop_bottom_ratio_ = 0.955;
+  double finish_final_near_bottom_ratio_ = 0.88;
+  int finish_final_passed_stop_frames_ = 3;
+  double finish_final_max_center_offset_ratio_ = 0.35;
+  double finish_final_min_aspect_ratio_ = 1.30;
+  double finish_final_max_aspect_ratio_ = 4.80;
 
   State state_ = State::Idle;
   ros::Time start_time_;
@@ -1408,6 +1510,11 @@ private:
   int finish_approach_lost_frames_ = 0;
   double finish_approach_best_bottom_ratio_ = 0.0;
   bool finish_approach_had_close_box_ = false;
+  bool finish_final_locked_ = false;
+  int finish_final_lock_frames_ = 0;
+  int finish_final_lost_frames_ = 0;
+  double finish_final_best_bottom_ratio_ = 0.0;
+  std::string finish_stop_reason_ = "none";
   double last_finish_center_error_px_ = 0.0;
   double filtered_angular_ = 0.0;
   double filtered_error_px_ = 0.0;
