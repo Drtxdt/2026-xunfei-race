@@ -1,0 +1,10 @@
+# Generated training dataset (large)
+yolo_dataset/images/
+yolo_dataset/labels/
+
+# Trained model binary
+models/best.pt
+models/*.pt
+
+# Python cache
+__pycache__/

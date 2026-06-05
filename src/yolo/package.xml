@@ -2,7 +2,7 @@
 <package format="2">
   <name>yolo</name>
   <version>0.1.0</version>
-  <description>YOLO dataset collection tools with keyboard teleop and MJPEG camera streaming.</description>
+  <description>YOLOv5 traffic light inference and dataset collection for U-CAR competition.</description>
 
   <maintainer email="ucar@todo.todo">ucar</maintainer>
   <license>MIT</license>
