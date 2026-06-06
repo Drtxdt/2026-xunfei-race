@@ -1,0 +1,57 @@
+<launch>
+  <arg name="start_camera" default="true" />
+  <arg name="start_viewer" default="true" />
+  <arg name="start_qr" default="true" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="qr_topic" default="/qr_code_data" />
+  <arg name="speak_topic" default="/speak" />
+  <arg name="status_topic" default="/qr_speak_test/status" />
+  <arg name="flip" default="false" />
+  <arg name="fetch" default="true" />
+  <arg name="speak_prefix" default="" />
+  <arg name="speak_suffix" default="" />
+  <arg name="repeat_same" default="false" />
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view" name="qr_camera_x11_viewer" output="screen">
+      <remap from="image" to="$(arg camera_topic)" />
+      <param name="image_transport" value="raw" />
+    </node>
+  </group>
+
+  <group if="$(arg start_qr)">
+    <group if="$(arg fetch)">
+      <group if="$(arg flip)">
+        <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode" output="screen"
+              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --fetch --flip" />
+      </group>
+      <group unless="$(arg flip)">
+        <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode" output="screen"
+              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --fetch" />
+      </group>
+    </group>
+    <group unless="$(arg fetch)">
+      <group if="$(arg flip)">
+        <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode" output="screen"
+              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --flip" />
+      </group>
+      <group unless="$(arg flip)">
+        <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode" output="screen"
+              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic)" />
+      </group>
+    </group>
+  </group>
+
+  <node pkg="ucar_2026_qr_speak_test" type="qr_speak_test_node.py" name="qr_speak_test_node" output="screen">
+    <param name="qr_topic" value="$(arg qr_topic)" />
+    <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="status_topic" value="$(arg status_topic)" />
+    <param name="speak_prefix" value="$(arg speak_prefix)" />
+    <param name="speak_suffix" value="$(arg speak_suffix)" />
+    <param name="repeat_same" value="$(arg repeat_same)" />
+  </node>
+</launch>
