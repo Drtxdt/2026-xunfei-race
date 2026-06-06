@@ -7,6 +7,8 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs
 )
 
+catkin_python_setup()
+
 add_service_files(
   FILES
   Announce.srv
@@ -28,7 +30,6 @@ endif()
 catkin_install_python(PROGRAMS
   scripts/competition_announcer.py
   scripts/announce_once.py
-  scripts/speech_templates.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

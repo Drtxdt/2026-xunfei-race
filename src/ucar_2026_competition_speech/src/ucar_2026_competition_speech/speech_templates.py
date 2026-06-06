@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Pure helpers for generating the exact competition announcement texts."""
 

@@ -4,9 +4,12 @@ import os
 import sys
 import unittest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from speech_templates import build_announcement, estimate_duration
+from ucar_2026_competition_speech.speech_templates import (
+    build_announcement,
+    estimate_duration,
+)
 
 
 class SpeechTemplateTest(unittest.TestCase):
