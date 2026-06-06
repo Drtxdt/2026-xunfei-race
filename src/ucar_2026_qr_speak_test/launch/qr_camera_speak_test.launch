@@ -12,6 +12,11 @@
   <arg name="speak_prefix" default="" />
   <arg name="speak_suffix" default="" />
   <arg name="repeat_same" default="false" />
+  <arg name="output_mode" default="task_result" />
+  <arg name="expected_count" default="3" />
+  <arg name="pickup_target_major" default="食品大类" />
+  <arg name="sim_target_major" default="日用品大类" />
+  <arg name="slow_speech" default="true" />
 
   <group if="$(arg start_camera)">
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
@@ -54,5 +59,10 @@
     <param name="speak_prefix" value="$(arg speak_prefix)" />
     <param name="speak_suffix" value="$(arg speak_suffix)" />
     <param name="repeat_same" value="$(arg repeat_same)" />
+    <param name="output_mode" value="$(arg output_mode)" />
+    <param name="expected_count" value="$(arg expected_count)" />
+    <param name="pickup_target_major" value="$(arg pickup_target_major)" />
+    <param name="sim_target_major" value="$(arg sim_target_major)" />
+    <param name="slow_speech" value="$(arg slow_speech)" />
   </node>
 </launch>

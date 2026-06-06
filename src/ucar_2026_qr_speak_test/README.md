@@ -7,7 +7,8 @@ ROS Noetic test package for QR camera viewing and direct speech playback.
 - Starts the USB camera topic `/usb_cam/image_raw`.
 - Opens an X11 `image_view` window so MobaXterm can show the live camera image.
 - Runs `yolo/qr_collect_and_decode.py --fetch` and listens to `/qr_code_data`.
-- Cleans QR JSON and publishes only the speakable result text to `/speak`.
+- Cleans QR JSON, classifies the three item results, and publishes the task
+  completion sentence to `/speak`.
 
 The node does not speak status codes, URLs, `ok`, `stamp`, or other debug fields.
 For a QR payload like:
@@ -22,11 +23,20 @@ or the existing `/qr_code_data` payload:
 {"items": [{"raw": "http://example/daily", "api": {"code": 200, "result": "纸巾"}, "ok": true, "result": "纸巾"}]}
 ```
 
-it publishes:
+in item mode it publishes:
 
 ```text
 纸巾
 ```
+
+By default it waits for three QR results, then publishes the race-format task
+sentence:
+
+```text
+取得苹果属于食品大类应放置在食品加工车间，仿真环境中取得毛巾属于日用品大类应放置在日用品加工车间
+```
+
+The spoken text uses extra punctuation by default so the TTS pauses more slowly.
 
 ## Run On The Car
 
@@ -60,6 +70,32 @@ QR decoder, and QR speech bridge with short delays:
 
 ```bash
 roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch
+```
+
+Default target categories are:
+
+```text
+pickup_target_major:=食品大类
+sim_target_major:=日用品大类
+```
+
+Change them from launch args when the voice/task target changes:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch \
+  pickup_target_major:=电子产品大类 sim_target_major:=食品大类
+```
+
+If you need the old behavior that speaks each QR item directly:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch output_mode:=item
+```
+
+If the speech is too slow after this change:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch slow_speech:=false
 ```
 
 The default `offline_mode:=fallback` keeps the official URL path first. If the
