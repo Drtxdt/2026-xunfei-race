@@ -26,6 +26,9 @@
   <arg name="pickup_target_major" default="食品大类" />
   <arg name="sim_target_major" default="日用品大类" />
   <arg name="slow_speech" default="true" />
+  <arg name="speak_each_item" default="true" />
+  <arg name="allow_fallback_task_result" default="true" />
+  <arg name="initial_publish_delay_sec" default="0.8" />
 
   <group if="$(arg start_camera)">
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
@@ -84,5 +87,8 @@
     <param name="pickup_target_major" value="$(arg pickup_target_major)" />
     <param name="sim_target_major" value="$(arg sim_target_major)" />
     <param name="slow_speech" value="$(arg slow_speech)" />
+    <param name="speak_each_item" value="$(arg speak_each_item)" />
+    <param name="allow_fallback_task_result" value="$(arg allow_fallback_task_result)" />
+    <param name="initial_publish_delay_sec" value="$(arg initial_publish_delay_sec)" />
   </node>
 </launch>

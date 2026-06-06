@@ -37,6 +37,9 @@ sentence:
 ```
 
 The spoken text uses extra punctuation by default so the TTS pauses more slowly.
+During field testing, each accepted QR item is also confirmed with a short
+`已识别xx` speech by default. Disable it with `speak_each_item:=false` if only
+the final task sentence should be spoken.
 
 ## Run On The Car
 
@@ -96,6 +99,12 @@ If the speech is too slow after this change:
 
 ```bash
 roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch slow_speech:=false
+```
+
+If you only want the final race-format sentence:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch speak_each_item:=false
 ```
 
 The default `offline_mode:=fallback` keeps the official URL path first. If the

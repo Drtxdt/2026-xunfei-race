@@ -59,6 +59,7 @@ class QRSpeakTestNode:
         self.min_interval_sec = float(rospy.get_param("~min_interval_sec", 1.5))
         self.publish_retries = int(rospy.get_param("~publish_retries", 2))
         self.retry_interval_sec = float(rospy.get_param("~retry_interval_sec", 0.25))
+        self.initial_publish_delay_sec = float(rospy.get_param("~initial_publish_delay_sec", 0.8))
         self.expected_count = int(rospy.get_param("~expected_count", 3))
         self.output_mode = rospy.get_param("~output_mode", "task_result")
         self.pickup_target_major = self.normalize_major(
@@ -68,8 +69,11 @@ class QRSpeakTestNode:
             rospy.get_param("~sim_target_major", "日用品大类")
         )
         self.slow_speech = bool(rospy.get_param("~slow_speech", True))
+        self.speak_each_item = bool(rospy.get_param("~speak_each_item", True))
+        self.allow_fallback_task_result = bool(rospy.get_param("~allow_fallback_task_result", True))
 
         self.spoken_keys = set()
+        self.confirmed_keys = set()
         self.items_by_key: "OrderedDict[str, Tuple[str, Optional[str]]]" = OrderedDict()
         self.task_result_spoken = False
         self.last_spoken_at = 0.0
@@ -109,6 +113,9 @@ class QRSpeakTestNode:
                     continue
                 self.spoken_keys.add(key)
                 self.publish_speech("%s%s%s" % (self.speak_prefix, text, self.speak_suffix))
+            elif self.speak_each_item and key not in self.confirmed_keys:
+                self.confirmed_keys.add(key)
+                self.publish_speech("已识别%s" % text, force=True)
 
         if self.output_mode == "task_result":
             self.try_publish_task_result()
@@ -123,6 +130,26 @@ class QRSpeakTestNode:
         pickup_item = self.find_item_by_major(self.pickup_target_major)
         sim_item = self.find_item_by_major(self.sim_target_major)
         if not pickup_item or not sim_item:
+            if self.allow_fallback_task_result:
+                fallback_items = list(self.items_by_key.values())
+                if not pickup_item and fallback_items:
+                    pickup_item = fallback_items[0][0]
+                if not sim_item and len(fallback_items) > 1:
+                    sim_item = fallback_items[1][0]
+                elif not sim_item and fallback_items:
+                    sim_item = fallback_items[0][0]
+                if pickup_item and sim_item:
+                    rospy.logwarn("Using fallback task result items: pickup=%s sim=%s", pickup_item, sim_item)
+                    text = self.build_task_result_text(
+                        pickup_item,
+                        self.pickup_target_major,
+                        sim_item,
+                        self.sim_target_major,
+                    )
+                    self.task_result_spoken = True
+                    self.publish_speech(text, force=True)
+                    return
+
             rospy.logwarn(
                 "Cannot build task result yet. pickup=%s item=%s sim=%s item=%s items=%s",
                 self.pickup_target_major,
@@ -136,7 +163,7 @@ class QRSpeakTestNode:
 
         text = self.build_task_result_text(pickup_item, self.pickup_target_major, sim_item, self.sim_target_major)
         self.task_result_spoken = True
-        self.publish_speech(text)
+        self.publish_speech(text, force=True)
 
     def find_item_by_major(self, major: str) -> Optional[str]:
         for item, item_major in self.items_by_key.values():
@@ -263,14 +290,16 @@ class QRSpeakTestNode:
     def is_url(self, text: str) -> bool:
         return text.startswith("http://") or text.startswith("https://")
 
-    def publish_speech(self, speech_text: str) -> None:
+    def publish_speech(self, speech_text: str, force: bool = False) -> None:
         now = time.time()
-        if now - self.last_spoken_at < self.min_interval_sec:
+        if not force and now - self.last_spoken_at < self.min_interval_sec:
             return
         self.last_spoken_at = now
         speech_text = self.slow_text(speech_text)
         rospy.loginfo("qr_speak_test publish to %s: %s", self.speak_topic, speech_text)
         self.publish_status("speaking:%s" % speech_text)
+        if self.initial_publish_delay_sec > 0.0:
+            rospy.sleep(self.initial_publish_delay_sec)
         for idx in range(max(1, self.publish_retries)):
             self.speak_pub.publish(String(data=speech_text))
             if idx + 1 < self.publish_retries:
