@@ -6,6 +6,13 @@ devel/
 **/__pycache__/
 *.pyc
 .catkin_workspace
+__pycache__/
+*.py[cod]
+src/ucar_2026_line_follow/scripts/__pycache__/
+src/ucar_2026_smart_factory_llm/scripts/__pycache__/
 .remote_snapshot
 picture/*.jpg
 src/yolo/yolo_dataset/
+src/yolo/__pycache__/
+install/
+logs/

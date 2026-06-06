@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucar_2026_qr_speak_test</name>
+  <version>0.1.0</version>
+  <description>QR camera view and speech test package for U-CAR 2026.</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>image_view</exec_depend>
+  <exec_depend>yolo</exec_depend>
+
+  <export>
+  </export>
+</package>
