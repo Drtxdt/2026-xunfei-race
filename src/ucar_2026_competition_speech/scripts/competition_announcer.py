@@ -13,7 +13,10 @@ import rospy
 from std_msgs.msg import String
 from ucar_2026_competition_speech.srv import Announce, AnnounceResponse
 
-from speech_templates import build_announcement, estimate_duration
+from ucar_2026_competition_speech.speech_templates import (
+    build_announcement,
+    estimate_duration,
+)
 
 
 class CompetitionAnnouncer:
