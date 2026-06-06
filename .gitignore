@@ -10,3 +10,5 @@ src/ucar_2026_smart_factory_llm/scripts/__pycache__/
 picture/*.jpg
 src/yolo/yolo_dataset/
 src/yolo/__pycache__/
+install/
+logs/
