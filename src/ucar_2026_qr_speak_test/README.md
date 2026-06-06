@@ -55,16 +55,23 @@ Launch the QR test:
 roslaunch ucar_2026_qr_speak_test qr_camera_speak_test.launch
 ```
 
+Or use the sequence launch for field testing. It starts camera, TTS, X11 viewer,
+QR decoder, and QR speech bridge with short delays:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch
+```
+
 If the camera image is mirrored:
 
 ```bash
-roslaunch ucar_2026_qr_speak_test qr_camera_speak_test.launch flip:=true
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch flip:=true
 ```
 
 If the camera is already running:
 
 ```bash
-roslaunch ucar_2026_qr_speak_test qr_camera_speak_test.launch start_camera:=false
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch start_camera:=false
 ```
 
 ## Topics
