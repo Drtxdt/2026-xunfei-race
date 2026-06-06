@@ -1,0 +1,20 @@
+<launch>
+  <arg name="event" />
+  <arg name="item" default="" />
+  <arg name="workshop" default="" />
+  <arg name="decision" default="" />
+  <arg name="text" default="" />
+  <arg name="wait" default="true" />
+
+  <node pkg="ucar_2026_competition_speech"
+        type="announce_once.py"
+        name="competition_announce_once"
+        output="screen">
+    <param name="event" value="$(arg event)" />
+    <param name="item" value="$(arg item)" />
+    <param name="workshop" value="$(arg workshop)" />
+    <param name="decision" value="$(arg decision)" />
+    <param name="text" value="$(arg text)" />
+    <param name="wait" value="$(arg wait)" />
+  </node>
+</launch>
