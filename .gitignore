@@ -16,3 +16,4 @@ src/yolo/yolo_dataset/
 src/yolo/__pycache__/
 install/
 logs/
+msc
