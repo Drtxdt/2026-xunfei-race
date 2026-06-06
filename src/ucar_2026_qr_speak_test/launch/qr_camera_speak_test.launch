@@ -8,6 +8,7 @@
   <arg name="status_topic" default="/qr_speak_test/status" />
   <arg name="flip" default="false" />
   <arg name="fetch" default="true" />
+  <arg name="offline_mode" default="fallback" />
   <arg name="speak_prefix" default="" />
   <arg name="speak_suffix" default="" />
   <arg name="repeat_same" default="false" />
@@ -27,11 +28,11 @@
     <group if="$(arg fetch)">
       <group if="$(arg flip)">
         <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode" output="screen"
-              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --fetch --flip" />
+              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --fetch --offline-mode $(arg offline_mode) --flip" />
       </group>
       <group unless="$(arg flip)">
         <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode" output="screen"
-              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --fetch" />
+              args="--topic $(arg camera_topic) --pub-topic $(arg qr_topic) --fetch --offline-mode $(arg offline_mode)" />
       </group>
     </group>
     <group unless="$(arg fetch)">

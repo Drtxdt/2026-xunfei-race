@@ -62,6 +62,22 @@ QR decoder, and QR speech bridge with short delays:
 roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch
 ```
 
+The default `offline_mode:=fallback` keeps the official URL path first. If the
+QR website is down, it uses the QR URL category (`food`, `daily`, `electronic`)
+to generate a local test result and still publishes the standard JSON shape.
+
+Fully offline rehearsal:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch offline_mode:=force
+```
+
+Official server-only behavior:
+
+```bash
+roslaunch ucar_2026_qr_speak_test qr_speak_sequence_test.launch offline_mode:=off
+```
+
 If the camera image is mirrored:
 
 ```bash
