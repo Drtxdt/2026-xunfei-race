@@ -1,0 +1,16 @@
+# Competition event: task1, task2, task3, task4, task5, or custom.
+string event
+# Used by task2 and task3.
+string item
+string workshop
+# Used by task4. Accepted aliases include left/right/straight/stop and Chinese names.
+string decision
+# Required by task1 and custom. Ignored by the fixed task2-task5 templates.
+string text
+# Wait until the conservative estimated playback duration has elapsed.
+bool wait
+---
+bool success
+string speech_text
+float32 estimated_duration
+string message

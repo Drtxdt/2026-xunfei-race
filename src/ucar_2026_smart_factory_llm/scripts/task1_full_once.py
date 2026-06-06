@@ -13,6 +13,7 @@ import rospy
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from std_msgs.msg import String
+from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 
 
@@ -33,6 +34,12 @@ class Task1FullOnce:
             "~service_name", "/smart_factory_llm/reason_pickup_order"
         )
         self.speak_topic = rospy.get_param("~speak_topic", "/speak")
+        self.announce_service = rospy.get_param(
+            "~announce_service", "/competition_speech/announce"
+        )
+        self.announce_service_timeout_sec = float(
+            rospy.get_param("~announce_service_timeout_sec", 2.0)
+        )
         self.voice_instruction = rospy.get_param("~voice_instruction", "").strip()
         self.expected_count = int(rospy.get_param("~expected_count", 3))
         self.timeout_sec = float(rospy.get_param("~timeout_sec", 45.0))
@@ -187,13 +194,32 @@ class Task1FullOnce:
             rospy.signal_shutdown("empty speech text")
             return
 
-        rospy.sleep(1.0)
-        rospy.loginfo("Publishing TTS text to %s: %s", self.speak_topic, speech_text)
-        self.speak_pub.publish(String(data=speech_text))
-
-        wait_sec = max(self.min_wait_sec, len(speech_text) * self.wait_per_char_sec)
-        rospy.sleep(wait_sec)
+        if not self.announce_task1(speech_text):
+            rospy.sleep(1.0)
+            rospy.logwarn(
+                "Competition speech service unavailable; publishing directly to %s",
+                self.speak_topic,
+            )
+            self.speak_pub.publish(String(data=speech_text))
+            wait_sec = max(self.min_wait_sec, len(speech_text) * self.wait_per_char_sec)
+            rospy.sleep(wait_sec)
         rospy.signal_shutdown("task1 completed")
+
+    def announce_task1(self, speech_text: str) -> bool:
+        try:
+            rospy.wait_for_service(
+                self.announce_service, timeout=self.announce_service_timeout_sec
+            )
+            announce = rospy.ServiceProxy(self.announce_service, Announce)
+            response = announce("task1", "", "", "", speech_text, True)
+            if not response.success:
+                rospy.logerr("Competition announcement failed: %s", response.message)
+                return False
+            rospy.loginfo("Competition announcement completed: %s", response.speech_text)
+            return True
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logwarn("Competition announcement service error: %s", exc)
+            return False
 
 
 def main() -> None:

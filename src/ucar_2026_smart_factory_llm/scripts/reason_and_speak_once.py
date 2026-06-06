@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import rospy
 from std_msgs.msg import String
+from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 
 
@@ -14,6 +15,8 @@ def main() -> None:
 
     service_name = rospy.get_param("~service_name", "/smart_factory_llm/reason_pickup_order")
     speak_topic = rospy.get_param("~speak_topic", "/speak")
+    announce_service = rospy.get_param("~announce_service", "/competition_speech/announce")
+    announce_service_timeout_sec = float(rospy.get_param("~announce_service_timeout_sec", 2.0))
     item_a = rospy.get_param("~item_a", "").strip()
     item_b = rospy.get_param("~item_b", "").strip()
     item_c = rospy.get_param("~item_c", "").strip()
@@ -50,13 +53,23 @@ def main() -> None:
         rospy.logerr("LLM result has empty announcement_full")
         return
 
+    try:
+        rospy.wait_for_service(announce_service, timeout=announce_service_timeout_sec)
+        response = rospy.ServiceProxy(announce_service, Announce)(
+            "task1", "", "", "", speech_text, True
+        )
+        if response.success:
+            rospy.loginfo("Competition announcement completed: %s", response.speech_text)
+            return
+        rospy.logerr("Competition announcement failed: %s", response.message)
+    except (rospy.ROSException, rospy.ServiceException) as exc:
+        rospy.logwarn("Competition announcement service error: %s", exc)
+
     pub = rospy.Publisher(speak_topic, String, queue_size=1)
     rospy.sleep(1.0)
-    rospy.loginfo("Publishing TTS text to %s: %s", speak_topic, speech_text)
+    rospy.logwarn("Publishing directly to fallback TTS topic %s", speak_topic)
     pub.publish(String(data=speech_text))
-
-    wait_sec = max(min_wait_sec, len(speech_text) * wait_per_char_sec)
-    rospy.sleep(wait_sec)
+    rospy.sleep(max(min_wait_sec, len(speech_text) * wait_per_char_sec))
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
   move_base_msgs
   rospy
   std_msgs
+  ucar_2026_competition_speech
 )
 
 add_service_files(
@@ -22,7 +23,7 @@ generate_messages(
 )
 
 catkin_package(
-  CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs message_runtime move_base_msgs rospy std_msgs
+  CATKIN_DEPENDS actionlib actionlib_msgs geometry_msgs message_runtime move_base_msgs rospy std_msgs ucar_2026_competition_speech
 )
 
 catkin_install_python(PROGRAMS

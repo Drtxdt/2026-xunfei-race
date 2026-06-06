@@ -1,0 +1,17 @@
+<launch>
+  <arg name="speak_topic" default="/speak" />
+  <arg name="chars_per_second" default="3.0" />
+  <arg name="finish_status_topic" default="" />
+  <arg name="finish_status_value" default="finish" />
+
+  <node pkg="ucar_2026_competition_speech"
+        type="competition_announcer.py"
+        name="competition_announcer"
+        output="screen"
+        required="true">
+    <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="chars_per_second" value="$(arg chars_per_second)" />
+    <param name="finish_status_topic" value="$(arg finish_status_topic)" />
+    <param name="finish_status_value" value="$(arg finish_status_value)" />
+  </node>
+</launch>

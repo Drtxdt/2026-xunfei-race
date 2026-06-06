@@ -34,6 +34,14 @@ source devel/setup.bash
 roslaunch ucar_2026_smart_factory_llm reason_pickup.launch
 ```
 
+Start the shared competition announcement gateway before running the task-1
+controllers. They will use its blocking service and only fall back to direct
+`/speak` publishing when the gateway is unavailable:
+
+```bash
+roslaunch ucar_2026_competition_speech competition_speech.launch
+```
+
 ## 调用示例
 
 ```bash

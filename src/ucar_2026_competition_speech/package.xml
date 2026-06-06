@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucar_2026_competition_speech</name>
+  <version>0.1.0</version>
+  <description>Reliable competition announcement gateway for the U-CAR smart factory tasks.</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>message_generation</build_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>std_msgs</build_depend>
+
+  <exec_depend>message_runtime</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export />
+</package>

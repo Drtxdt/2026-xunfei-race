@@ -5,6 +5,7 @@
   <arg name="voice_instruction" />
   <arg name="service_name" default="/smart_factory_llm/reason_pickup_order" />
   <arg name="speak_topic" default="/speak" />
+  <arg name="announce_service" default="/competition_speech/announce" />
 
   <node pkg="ucar_2026_smart_factory_llm" type="reason_and_speak_once.py" name="reason_and_speak_once" output="screen">
     <param name="item_a" value="$(arg item_a)" />
@@ -13,5 +14,6 @@
     <param name="voice_instruction" value="$(arg voice_instruction)" />
     <param name="service_name" value="$(arg service_name)" />
     <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="announce_service" value="$(arg announce_service)" />
   </node>
 </launch>
