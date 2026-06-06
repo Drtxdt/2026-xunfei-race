@@ -12,6 +12,7 @@ import os
 import time
 import json
 import argparse
+import sys
 import urllib.request
 
 import cv2
@@ -184,7 +185,7 @@ def main():
     parser.add_argument('--repeat-period', type=float, default=2.0, help='republish same QR result after seconds')
     parser.add_argument('--timeout', type=float, default=3.0, help='HTTP timeout seconds')
     parser.add_argument('--flip', action='store_true', help='horizontal flip image before decode')
-    args = parser.parse_args()
+    args = parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
 
     rospy.init_node('qr_collect_and_decode')
     QRCollectAndDecode(args)
