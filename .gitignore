@@ -1,5 +1,8 @@
 build/
 devel/
+__pycache__/
+**/__pycache__/
+*.py[cod]
 .vscode
 .codex
 .claude
@@ -9,3 +12,6 @@ src/ucar_2026_smart_factory_llm/scripts/__pycache__/
 .remote_snapshot
 picture/*.jpg
 src/yolo/yolo_dataset/
+src/yolo/__pycache__/
+install/
+logs/
