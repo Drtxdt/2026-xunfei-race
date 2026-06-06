@@ -8,6 +8,7 @@
     5. QR JSON cleaner -> /speak
   -->
   <arg name="start_camera" default="true" />
+  <arg name="start_audio_setup" default="true" />
   <arg name="start_tts" default="true" />
   <arg name="start_viewer" default="true" />
   <arg name="start_qr" default="true" />
@@ -29,9 +30,26 @@
   <arg name="speak_each_item" default="true" />
   <arg name="allow_fallback_task_result" default="true" />
   <arg name="initial_publish_delay_sec" default="0.8" />
+  <arg name="publish_retries" default="1" />
+  <arg name="split_final_speech" default="true" />
+  <arg name="split_pause_sec" default="1.2" />
+  <arg name="master_volume" default="90%" />
+  <arg name="pcm_volume" default="90%" />
+  <arg name="extra_audio_control" default="" />
+  <arg name="extra_audio_volume" default="" />
 
   <group if="$(arg start_camera)">
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_audio_setup)">
+    <node pkg="ucar_2026_qr_speak_test" type="audio_setup_node.py" name="audio_setup_node" output="screen">
+      <param name="enabled" value="true" />
+      <param name="master_volume" value="$(arg master_volume)" />
+      <param name="pcm_volume" value="$(arg pcm_volume)" />
+      <param name="extra_control" value="$(arg extra_audio_control)" />
+      <param name="extra_volume" value="$(arg extra_audio_volume)" />
+    </node>
   </group>
 
   <group if="$(arg start_tts)">
@@ -90,5 +108,8 @@
     <param name="speak_each_item" value="$(arg speak_each_item)" />
     <param name="allow_fallback_task_result" value="$(arg allow_fallback_task_result)" />
     <param name="initial_publish_delay_sec" value="$(arg initial_publish_delay_sec)" />
+    <param name="publish_retries" value="$(arg publish_retries)" />
+    <param name="split_final_speech" value="$(arg split_final_speech)" />
+    <param name="split_pause_sec" value="$(arg split_pause_sec)" />
   </node>
 </launch>

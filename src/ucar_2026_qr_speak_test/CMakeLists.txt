@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package()
 
 catkin_install_python(PROGRAMS
+  scripts/audio_setup_node.py
   scripts/qr_speak_test_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

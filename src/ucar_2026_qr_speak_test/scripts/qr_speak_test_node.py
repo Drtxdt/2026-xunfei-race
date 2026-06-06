@@ -57,7 +57,7 @@ class QRSpeakTestNode:
         self.speak_suffix = rospy.get_param("~speak_suffix", "")
         self.repeat_same = bool(rospy.get_param("~repeat_same", False))
         self.min_interval_sec = float(rospy.get_param("~min_interval_sec", 1.5))
-        self.publish_retries = int(rospy.get_param("~publish_retries", 2))
+        self.publish_retries = int(rospy.get_param("~publish_retries", 1))
         self.retry_interval_sec = float(rospy.get_param("~retry_interval_sec", 0.25))
         self.initial_publish_delay_sec = float(rospy.get_param("~initial_publish_delay_sec", 0.8))
         self.expected_count = int(rospy.get_param("~expected_count", 3))
@@ -71,6 +71,8 @@ class QRSpeakTestNode:
         self.slow_speech = bool(rospy.get_param("~slow_speech", True))
         self.speak_each_item = bool(rospy.get_param("~speak_each_item", True))
         self.allow_fallback_task_result = bool(rospy.get_param("~allow_fallback_task_result", True))
+        self.split_final_speech = bool(rospy.get_param("~split_final_speech", True))
+        self.split_pause_sec = float(rospy.get_param("~split_pause_sec", 1.2))
 
         self.spoken_keys = set()
         self.confirmed_keys = set()
@@ -115,7 +117,7 @@ class QRSpeakTestNode:
                 self.publish_speech("%s%s%s" % (self.speak_prefix, text, self.speak_suffix))
             elif self.speak_each_item and key not in self.confirmed_keys:
                 self.confirmed_keys.add(key)
-                self.publish_speech("已识别%s" % text, force=True)
+                self.publish_speech(self.build_single_item_text(text, major), force=True)
 
         if self.output_mode == "task_result":
             self.try_publish_task_result()
@@ -123,13 +125,22 @@ class QRSpeakTestNode:
     def try_publish_task_result(self) -> None:
         if self.task_result_spoken and not self.repeat_same:
             return
-        if len(self.items_by_key) < self.expected_count:
-            self.publish_status("waiting_for_qr:%d/%d" % (len(self.items_by_key), self.expected_count))
-            return
 
         pickup_item = self.find_item_by_major(self.pickup_target_major)
         sim_item = self.find_item_by_major(self.sim_target_major)
         if not pickup_item or not sim_item:
+            if len(self.items_by_key) < self.expected_count:
+                self.publish_status(
+                    "waiting_for_target:%d/%d pickup=%s sim=%s"
+                    % (
+                        len(self.items_by_key),
+                        self.expected_count,
+                        "yes" if pickup_item else "no",
+                        "yes" if sim_item else "no",
+                    )
+                )
+                return
+
             if self.allow_fallback_task_result:
                 fallback_items = list(self.items_by_key.values())
                 if not pickup_item and fallback_items:
@@ -147,7 +158,7 @@ class QRSpeakTestNode:
                         self.sim_target_major,
                     )
                     self.task_result_spoken = True
-                    self.publish_speech(text, force=True)
+                    self.publish_task_result(text)
                     return
 
             rospy.logwarn(
@@ -163,7 +174,7 @@ class QRSpeakTestNode:
 
         text = self.build_task_result_text(pickup_item, self.pickup_target_major, sim_item, self.sim_target_major)
         self.task_result_spoken = True
-        self.publish_speech(text, force=True)
+        self.publish_task_result(text)
 
     def find_item_by_major(self, major: str) -> Optional[str]:
         for item, item_major in self.items_by_key.values():
@@ -181,13 +192,34 @@ class QRSpeakTestNode:
             MAJOR_TO_WORKSHOP[sim_major],
         )
 
+    def build_single_item_text(self, item: str, major: Optional[str]) -> str:
+        item_major = major or self.major_for_item(item) or "未知大类"
+        workshop = MAJOR_TO_WORKSHOP.get(item_major, "未知车间")
+        return "取得%s属于%s应放置在%s" % (item, item_major, workshop)
+
+    def publish_task_result(self, text: str) -> None:
+        if not self.split_final_speech:
+            self.publish_speech(text, force=True)
+            return
+
+        marker = "，仿真环境中"
+        if marker not in text:
+            self.publish_speech(text, force=True)
+            return
+
+        first, second = text.split(marker, 1)
+        self.publish_speech(first, force=True)
+        rospy.sleep(self.split_pause_sec)
+        self.publish_speech("仿真环境中" + second, force=True)
+
     def slow_text(self, text: str) -> str:
         if not self.slow_speech:
             return text
-        text = text.replace("属于", "，属于")
-        text = text.replace("应放置在", "，应放置在")
-        text = text.replace("，仿真环境中", "。仿真环境中")
-        if not text.endswith("。"):
+        if "，" not in text and "。" not in text:
+            text = text.replace("属于", "，属于，")
+            text = text.replace("应放置在", "，应放置在，")
+            text = text.replace("仿真环境中", "仿真环境中，")
+        if not text.endswith(("。", "！", "？")):
             text += "。"
         return text
 
