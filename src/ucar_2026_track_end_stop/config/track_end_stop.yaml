@@ -27,7 +27,7 @@ adaptive_threshold_delta: 28
 
 # Leftmost line following
 left_scan_rows: [0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58]
-left_offset_px: 150
+left_offset_px: 140
 left_scan_bottom_weight: 1.8
 min_line_width_px: 5
 max_line_segment_width_px: 90
@@ -35,9 +35,9 @@ min_segment_gap_px: 10
 max_target_jump_px: 160
 
 # PID control
-kp: 0.0042
-kd: 0.0014
-error_alpha: 0.65
+kp: 0.0055
+kd: 0.0018
+error_alpha: 0.58
 
 # Motion control
 base_speed: 0.22
@@ -48,7 +48,7 @@ medium_error_px: 130.0
 hard_error_px: 210.0
 medium_speed: 0.17
 max_angular_speed: 0.65
-angular_alpha: 0.55
+angular_alpha: 0.45
 lost_timeout: 0.80
 lost_speed: 0.06
 lost_angular_speed: 0.00
