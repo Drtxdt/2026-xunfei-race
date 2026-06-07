@@ -136,13 +136,13 @@ private:
     private_nh_.param("kp", kp_, 0.0042);
     private_nh_.param("kd", kd_, 0.0014);
 
-    private_nh_.param("base_speed", base_speed_, 0.16);
-    private_nh_.param("min_speed", min_speed_, 0.07);
-    private_nh_.param("fast_base_speed", fast_base_speed_, 0.18);
+    private_nh_.param("base_speed", base_speed_, 0.18);
+    private_nh_.param("min_speed", min_speed_, 0.08);
+    private_nh_.param("fast_base_speed", fast_base_speed_, 0.20);
     private_nh_.param("fast_error_px", fast_error_px_, 45.0);
     private_nh_.param("medium_error_px", medium_error_px_, 130.0);
     private_nh_.param("hard_error_px", hard_error_px_, 210.0);
-    private_nh_.param("medium_speed", medium_speed_, 0.12);
+    private_nh_.param("medium_speed", medium_speed_, 0.14);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.65);
     private_nh_.param("angular_alpha", angular_alpha_, 0.65);
     private_nh_.param("lost_timeout", lost_timeout_, 0.8);
@@ -155,9 +155,9 @@ private:
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
-    private_nh_.param("end_forward_speed", end_forward_speed_, 0.15);
-    private_nh_.param("end_turn_right_angle_deg", end_turn_right_angle_deg_, 10.0);
-    private_nh_.param("end_turn_right_angular_speed", end_turn_right_angular_speed_, 0.50);
+    private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
+    private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
+    private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -284,19 +284,19 @@ private:
         {
           state_ = State::TurnRight;
           state_start_time_ = now;
-          ROS_INFO("turning right %.1f deg at %.2f rad/s",
-                   end_turn_right_angle_deg_, end_turn_right_angular_speed_);
+          ROS_INFO("turning left %.1f deg at %.2f rad/s",
+                   end_turn_left_angle_deg_, end_turn_left_angular_speed_);
         }
         break;
 
       case State::TurnRight:
       {
-        const double turn_duration = (end_turn_right_angle_deg_ * M_PI / 180.0) /
-                                     std::max(end_turn_right_angular_speed_, 1e-6);
+        const double turn_duration = (end_turn_left_angle_deg_ * M_PI / 180.0) /
+                                     std::max(end_turn_left_angular_speed_, 1e-6);
         if ((now - state_start_time_).toSec() < turn_duration)
         {
-          setStatus("right_turn_align");
-          cmd.angular.z = -end_turn_right_angular_speed_;
+          setStatus("right_turn_left_align");
+          cmd.angular.z = end_turn_left_angular_speed_;
           publishCmd(cmd);
         }
         else
@@ -814,13 +814,13 @@ private:
   double kp_ = 0.0042;
   double kd_ = 0.0014;
 
-  double base_speed_ = 0.16;
-  double min_speed_ = 0.07;
-  double fast_base_speed_ = 0.18;
+  double base_speed_ = 0.18;
+  double min_speed_ = 0.08;
+  double fast_base_speed_ = 0.20;
   double fast_error_px_ = 45.0;
   double medium_error_px_ = 130.0;
   double hard_error_px_ = 210.0;
-  double medium_speed_ = 0.12;
+  double medium_speed_ = 0.14;
   double max_angular_speed_ = 0.65;
   double angular_alpha_ = 0.65;
   double lost_timeout_ = 0.8;
@@ -833,9 +833,9 @@ private:
   double end_min_width_ratio_ = 0.45;
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.65;
-  double end_forward_speed_ = 0.15;
-  double end_turn_right_angle_deg_ = 10.0;
-  double end_turn_right_angular_speed_ = 0.50;
+  double end_forward_speed_ = 0.17;
+  double end_turn_left_angle_deg_ = 10.0;
+  double end_turn_left_angular_speed_ = 0.50;
 
   State state_ = State::Idle;
   ros::Time start_time_;

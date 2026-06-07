@@ -39,13 +39,13 @@ kp: 0.0042
 kd: 0.0014
 
 # Motion control
-base_speed: 0.16
-min_speed: 0.07
-fast_base_speed: 0.18
+base_speed: 0.18
+min_speed: 0.08
+fast_base_speed: 0.20
 fast_error_px: 45.0
 medium_error_px: 130.0
 hard_error_px: 210.0
-medium_speed: 0.12
+medium_speed: 0.14
 max_angular_speed: 0.65
 angular_alpha: 0.65
 lost_timeout: 0.80
@@ -63,9 +63,9 @@ end_roi_y_start_ratio: 0.87       # start scanning from 87% height (match Python
 end_min_width_ratio: 0.45         # segment width / image width threshold
 end_stop_hold: 1.0
 end_forward_distance_m: 0.65        # drive forward 65cm after alignment
-end_forward_speed: 0.15             # fast forward speed (m/s)
-end_turn_right_angle_deg: 10.0      # turn right ~10° to be perpendicular to stop line
-end_turn_right_angular_speed: 0.50  # angular speed for the right turn (rad/s)
+end_forward_speed: 0.17             # fast forward speed (m/s)
+end_turn_left_angle_deg: 10.0       # turn left ~10° to be perpendicular to stop line
+end_turn_left_angular_speed: 0.50   # angular speed for the left turn (rad/s)
 
 # Debug relay (compressed JPEG for MobaXterm)
 compressed_debug_topic: /right_track_end_stop/debug_image/compressed
