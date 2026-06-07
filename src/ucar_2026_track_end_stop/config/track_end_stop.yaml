@@ -55,8 +55,10 @@ stop_on_lost: true
 
 # End-of-track detection.
 # The end of the track is a white boundary wall/line that spans most of the
-# image width. This is NOT a turn — turns only have white on one side.
-# Detection scans from bottom-up in the end_roi region.
+# image width AND has a nearly horizontal top edge (perpendicular to track sides).
+# This distinguishes it from turns where white lines are diagonal.
+# Detection scans from bottom-up in the end_roi region, then checks that the
+# top edge of the white mass has low y-variance (std <= end_max_top_std).
 end_enable_delay: 3.0
 end_roi_y_start_ratio: 0.55
 end_row_coverage_ratio: 0.70
@@ -67,6 +69,7 @@ end_max_gap_rows: 2
 end_stop_hold: 1.0
 end_forward_distance_m: 0.50
 end_forward_speed: 0.08
+end_max_top_std: 40.0
 
 # Debug relay (compressed JPEG for MobaXterm)
 compressed_debug_topic: /track_end_stop/debug_image/compressed

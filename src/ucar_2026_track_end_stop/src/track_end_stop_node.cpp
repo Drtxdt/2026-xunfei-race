@@ -99,6 +99,9 @@ private:
     double coverage_ratio = 0.0;
     int covered_rows = 0;
     int top_covered_y = 0;
+    double top_edge_std = 0.0;
+    int top_edge_count = 0;
+    double top_edge_mean_y = 0.0;
   };
 
   void loadParams()
@@ -161,6 +164,7 @@ private:
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.50);
     private_nh_.param("end_forward_speed", end_forward_speed_, 0.08);
+    private_nh_.param("end_max_top_std", end_max_top_std_, 40.0);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -452,6 +456,46 @@ private:
       return result;
     }
 
+    // Horizontality check: the top edge of the white mass must be nearly
+    // horizontal (perpendicular to track sides). A turn produces a diagonal
+    // edge with high y variance; a true stop line is flat.
+    std::vector<double> top_ys;
+    top_ys.reserve(mask.cols);
+    for (int x = 0; x < mask.cols; ++x)
+    {
+      for (int y = roi_y0; y < mask.rows; ++y)
+      {
+        if (mask.at<uchar>(y, x) > 0)
+        {
+          top_ys.push_back(static_cast<double>(y));
+          break;
+        }
+      }
+    }
+
+    if (top_ys.empty())
+    {
+      end_frames_ = 0;
+      return result;
+    }
+
+    double sum = 0.0;
+    for (double v : top_ys)
+      sum += v;
+    result.top_edge_mean_y = sum / static_cast<double>(top_ys.size());
+    result.top_edge_count = static_cast<int>(top_ys.size());
+
+    double sq_sum = 0.0;
+    for (double v : top_ys)
+      sq_sum += (v - result.top_edge_mean_y) * (v - result.top_edge_mean_y);
+    result.top_edge_std = std::sqrt(sq_sum / static_cast<double>(top_ys.size()));
+
+    if (result.top_edge_std > end_max_top_std_)
+    {
+      end_frames_ = 0;
+      return result;
+    }
+
     ++end_frames_;
     end_lost_frames_ = 0;
 
@@ -704,6 +748,18 @@ private:
     cv::Scalar end_roi_color = end_result.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 200, 0);
     cv::rectangle(debug, end_roi, end_roi_color, 1);
 
+    // Draw top-edge mean line and +/- 1 std band to visualize horizontality
+    if (end_result.top_edge_count > 0)
+    {
+      int mean_y = static_cast<int>(std::round(end_result.top_edge_mean_y));
+      int std_px = static_cast<int>(std::round(end_result.top_edge_std));
+      cv::line(debug, cv::Point(0, mean_y), cv::Point(kImageCols - 1, mean_y), cv::Scalar(0, 255, 0), 1);
+      cv::line(debug, cv::Point(0, mean_y - std_px), cv::Point(kImageCols - 1, mean_y - std_px),
+               cv::Scalar(0, 255, 255), 1);
+      cv::line(debug, cv::Point(0, mean_y + std_px), cv::Point(kImageCols - 1, mean_y + std_px),
+               cv::Scalar(0, 255, 255), 1);
+    }
+
     if (end_result.detected)
     {
       cv::putText(debug, "END DETECTED", cv::Point(kImageCols / 2 - 90, end_roi_y0 - 10),
@@ -719,7 +775,7 @@ private:
     line2 << "target=(" << std::fixed << std::setprecision(1) << follow.target_x << "," << follow.target_y
           << ") err=" << follow.error
           << " end_frames=" << end_frames_ << " end_rows=" << end_result.covered_rows
-          << " end_cov=" << std::fixed << std::setprecision(2) << end_result.coverage_ratio;
+          << " top_std=" << std::fixed << std::setprecision(1) << end_result.top_edge_std;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
     try
@@ -752,7 +808,10 @@ private:
        << " end_frames=" << end_frames_
        << " end_covered_rows=" << end_result.covered_rows
        << " end_coverage_ratio=" << end_result.coverage_ratio
-       << " end_top_y=" << end_result.top_covered_y;
+       << " end_top_y=" << end_result.top_covered_y
+       << " end_top_std=" << end_result.top_edge_std
+       << " end_top_count=" << end_result.top_edge_count
+       << " end_top_mean_y=" << end_result.top_edge_mean_y;
     std_msgs::String msg;
     msg.data = ss.str();
     debug_info_pub_.publish(msg);
@@ -843,6 +902,7 @@ private:
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.50;
   double end_forward_speed_ = 0.08;
+  double end_max_top_std_ = 40.0;
 
   State state_ = State::Idle;
   ros::Time start_time_;
