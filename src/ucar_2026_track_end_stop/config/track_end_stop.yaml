@@ -27,7 +27,7 @@ adaptive_threshold_delta: 28
 
 # Leftmost line following
 left_scan_rows: [0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58]
-left_offset_px: 180
+left_offset_px: 150
 left_scan_bottom_weight: 1.8
 min_line_width_px: 5
 max_line_segment_width_px: 90
@@ -53,25 +53,18 @@ lost_speed: 0.00
 lost_angular_speed: 0.00
 stop_on_lost: true
 
-# End-of-track detection.
-# The stop line is a thin white horizontal line at the track end.
-# Detection uses a PRE-MORPHOLOGY mask (before OPEN/CLOSE/medianBlur)
-# because morphological opening with a square kernel would erase the
-# thin horizontal line. A wide, short dilation kernel (31x1) connects
-# horizontal gaps without the erosive effect of square morphology.
-# The stop line must have a nearly horizontal top edge (perpendicular
-# to track sides) — this distinguishes it from diagonal turn lines.
+# End-of-track detection (segment-based — same strategy as Python reference).
+# Scans the bottom portion of the mask for a single continuous white segment
+# whose width covers most of the image width. Unlike pixel-counting, this
+# naturally distinguishes a real stop line from scattered turn noise.
+# Detection works on the SAME post-morphology mask as line-following.
 end_enable_delay: 3.0
-end_roi_y_start_ratio: 0.55
-end_row_coverage_ratio: 0.70
-end_min_covered_rows: 2
-end_confirm_frames: 5
-end_release_frames: 3
-end_max_gap_rows: 2
+end_roi_y_start_ratio: 0.80       # start scanning from 80% height (bottom 20%)
+end_min_width_ratio: 0.45         # segment width / image width threshold
+end_confirm_frames: 3             # consecutive frames to confirm
 end_stop_hold: 1.0
 end_forward_distance_m: 0.50
 end_forward_speed: 0.08
-end_max_top_std: 40.0
 
 # Debug relay (compressed JPEG for MobaXterm)
 compressed_debug_topic: /track_end_stop/debug_image/compressed

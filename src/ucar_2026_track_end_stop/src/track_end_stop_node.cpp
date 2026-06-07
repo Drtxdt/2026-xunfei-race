@@ -96,12 +96,8 @@ private:
   struct EndOfTrackResult
   {
     bool detected = false;
-    double coverage_ratio = 0.0;
-    int covered_rows = 0;
-    int top_covered_y = 0;
-    double top_edge_std = 0.0;
-    int top_edge_count = 0;
-    double top_edge_mean_y = 0.0;
+    double best_width_ratio = 0.0;
+    double best_y_ratio = 0.0;
   };
 
   void loadParams()
@@ -131,7 +127,7 @@ private:
     private_nh_.param("adaptive_threshold_delta", adaptive_threshold_delta_, 28);
 
     loadDoubleList("left_scan_rows", left_scan_rows_, {0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58});
-    private_nh_.param("left_offset_px", left_offset_px_, 180.0);
+    private_nh_.param("left_offset_px", left_offset_px_, 150.0);
     private_nh_.param("left_scan_bottom_weight", left_scan_bottom_weight_, 1.8);
     private_nh_.param("min_line_width_px", min_line_width_px_, 5);
     private_nh_.param("max_line_segment_width_px", max_line_segment_width_px_, 90);
@@ -155,16 +151,12 @@ private:
     private_nh_.param("stop_on_lost", stop_on_lost_, true);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
-    private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.55);
-    private_nh_.param("end_row_coverage_ratio", end_row_coverage_ratio_, 0.70);
-    private_nh_.param("end_min_covered_rows", end_min_covered_rows_, 2);
-    private_nh_.param("end_confirm_frames", end_confirm_frames_, 5);
-    private_nh_.param("end_release_frames", end_release_frames_, 3);
-    private_nh_.param("end_max_gap_rows", end_max_gap_rows_, 2);
+    private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.80);
+    private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
+    private_nh_.param("end_confirm_frames", end_confirm_frames_, 3);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.50);
     private_nh_.param("end_forward_speed", end_forward_speed_, 0.08);
-    private_nh_.param("end_max_top_std", end_max_top_std_, 40.0);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -212,7 +204,7 @@ private:
     last_image_time_ = now;
 
     cv::Mat mask = extractWhiteMask(frame);
-    EndOfTrackResult end_result = detectEndOfTrack(now);
+    EndOfTrackResult end_result = detectEndOfTrack(mask, now);
     FollowResult follow = computeFollow(mask, now);
     geometry_msgs::Twist cmd;
 
@@ -272,8 +264,8 @@ private:
       case State::Follow:
         if (end_result.detected)
         {
-          ROS_INFO("track end detected! coverage=%.2f rows=%d",
-                   end_result.coverage_ratio, end_result.covered_rows);
+          ROS_INFO("track end detected! width_ratio=%.2f y_ratio=%.2f",
+                   end_result.best_width_ratio, end_result.best_y_ratio);
           state_ = State::EndDetected;
           state_start_time_ = now;
           hardStop();
@@ -366,7 +358,6 @@ private:
     }
 
     mask = filterComponents(mask);
-    pre_morph_mask_ = mask.clone();
 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(morph_kernel_size_, morph_kernel_size_));
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
@@ -406,102 +397,47 @@ private:
     return filtered;
   }
 
-  EndOfTrackResult detectEndOfTrack(const ros::Time& now)
+  EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now)
   {
     EndOfTrackResult result;
     const double elapsed = (now - start_time_).toSec();
     if (elapsed < end_enable_delay_)
       return result;
 
-    // Use pre-morphology mask: the stop line is a thin horizontal white line
-    // that MORPH_OPEN would erase with a square kernel.
-    // Apply wide horizontal dilation to connect gaps without thickening vertically.
-    cv::Mat work;
-    cv::Mat h_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(31, 1));
-    cv::dilate(pre_morph_mask_, work, h_kernel);
+    // Segment-based horizontal line detection (same strategy as Python
+    // detect_horizontal_line). Scan the bottom region for a single
+    // continuous white segment whose width covers most of the image.
+    const int bottom_y0 = clampInt(static_cast<int>(mask.rows * end_roi_y_start_ratio_), 0, mask.rows - 1);
+    const int min_segment_width = static_cast<int>(mask.cols * end_min_width_ratio_);
 
-    const int roi_y0 = clampInt(static_cast<int>(work.rows * end_roi_y_start_ratio_), 0, work.rows - 2);
+    double best_width = 0.0;
+    double best_y_ratio = 0.0;
 
-    // Count rows whose white coverage exceeds threshold, scanning bottom-up
-    int covered_rows = 0;
-    int top_covered_y = work.rows;
-    int gap_count = 0;
-
-    for (int y = work.rows - 1; y >= roi_y0; --y)
+    for (int y = mask.rows - 1; y >= bottom_y0; --y)
     {
-      const uchar* row = work.ptr<uchar>(y);
-      int white_count = 0;
-      for (int x = 0; x < work.cols; ++x)
+      std::vector<Segment> segments = findSegments(mask.row(y));
+      for (const auto& seg : segments)
       {
-        if (row[x] > 0)
-          ++white_count;
-      }
-
-      const double coverage = static_cast<double>(white_count) / static_cast<double>(work.cols);
-      if (coverage >= end_row_coverage_ratio_)
-      {
-        covered_rows++;
-        top_covered_y = y;
-        gap_count = 0;
-      }
-      else
-      {
-        ++gap_count;
-        if (gap_count > end_max_gap_rows_)
-          break;
-      }
-    }
-
-    if (covered_rows < end_min_covered_rows_)
-    {
-      end_frames_ = 0;
-      return result;
-    }
-
-    // Horizontality check: scan every column for the top-most white pixel.
-    // A true stop line is horizontal → low y-variance.
-    // A turn's white area is diagonal → high y-variance.
-    std::vector<double> top_ys;
-    top_ys.reserve(work.cols);
-    for (int x = 0; x < work.cols; ++x)
-    {
-      for (int y = roi_y0; y < work.rows; ++y)
-      {
-        if (work.at<uchar>(y, x) > 0)
+        if (seg.width >= min_segment_width)
         {
-          top_ys.push_back(static_cast<double>(y));
-          break;
+          double width_ratio = static_cast<double>(seg.width) / static_cast<double>(mask.cols);
+          if (width_ratio > best_width)
+          {
+            best_width = width_ratio;
+            best_y_ratio = static_cast<double>(y) / static_cast<double>(mask.rows);
+          }
         }
       }
     }
 
-    if (top_ys.empty())
+    result.best_width_ratio = best_width;
+    result.best_y_ratio = best_y_ratio;
+
+    if (best_width <= 0.0)
     {
       end_frames_ = 0;
       return result;
     }
-
-    double sum = 0.0;
-    for (double v : top_ys)
-      sum += v;
-    result.top_edge_mean_y = sum / static_cast<double>(top_ys.size());
-    result.top_edge_count = static_cast<int>(top_ys.size());
-
-    double sq_sum = 0.0;
-    for (double v : top_ys)
-      sq_sum += (v - result.top_edge_mean_y) * (v - result.top_edge_mean_y);
-    result.top_edge_std = std::sqrt(sq_sum / static_cast<double>(top_ys.size()));
-
-    if (result.top_edge_std > end_max_top_std_)
-    {
-      end_frames_ = 0;
-      return result;
-    }
-
-    result.coverage_ratio = static_cast<double>(covered_rows) /
-        static_cast<double>(std::max(1, work.rows - roi_y0));
-    result.covered_rows = covered_rows;
-    result.top_covered_y = top_covered_y;
 
     ++end_frames_;
     end_lost_frames_ = 0;
@@ -753,15 +689,10 @@ private:
     cv::Scalar end_roi_color = end_result.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 200, 0);
     cv::rectangle(debug, end_roi, end_roi_color, 1);
 
-    // Draw top-edge mean line and +/- 1 std band to visualize horizontality
-    if (end_result.top_edge_count > 0)
+    if (end_result.best_width_ratio > 0.0)
     {
-      int mean_y = static_cast<int>(std::round(end_result.top_edge_mean_y));
-      int std_px = static_cast<int>(std::round(end_result.top_edge_std));
-      cv::line(debug, cv::Point(0, mean_y), cv::Point(kImageCols - 1, mean_y), cv::Scalar(0, 255, 0), 1);
-      cv::line(debug, cv::Point(0, mean_y - std_px), cv::Point(kImageCols - 1, mean_y - std_px),
-               cv::Scalar(0, 255, 255), 1);
-      cv::line(debug, cv::Point(0, mean_y + std_px), cv::Point(kImageCols - 1, mean_y + std_px),
+      int detect_y = static_cast<int>(end_result.best_y_ratio * kImageRows);
+      cv::line(debug, cv::Point(0, detect_y), cv::Point(kImageCols - 1, detect_y),
                cv::Scalar(0, 255, 255), 1);
     }
 
@@ -779,8 +710,8 @@ private:
     std::ostringstream line2;
     line2 << "target=(" << std::fixed << std::setprecision(1) << follow.target_x << "," << follow.target_y
           << ") err=" << follow.error
-          << " end_frames=" << end_frames_ << " end_rows=" << end_result.covered_rows
-          << " top_std=" << std::fixed << std::setprecision(1) << end_result.top_edge_std;
+          << " end_fr=" << end_frames_ << " end_w=" << std::fixed << std::setprecision(2) << end_result.best_width_ratio
+          << " end_y=" << end_result.best_y_ratio;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
     try
@@ -811,12 +742,8 @@ private:
        << " raw_points=" << follow.raw_line.size()
        << " end_detected=" << boolText(end_result.detected)
        << " end_frames=" << end_frames_
-       << " end_covered_rows=" << end_result.covered_rows
-       << " end_coverage_ratio=" << end_result.coverage_ratio
-       << " end_top_y=" << end_result.top_covered_y
-       << " end_top_std=" << end_result.top_edge_std
-       << " end_top_count=" << end_result.top_edge_count
-       << " end_top_mean_y=" << end_result.top_edge_mean_y;
+       << " end_width_ratio=" << end_result.best_width_ratio
+       << " end_y_ratio=" << end_result.best_y_ratio;
     std_msgs::String msg;
     msg.data = ss.str();
     debug_info_pub_.publish(msg);
@@ -874,7 +801,7 @@ private:
   int adaptive_threshold_delta_ = 28;
 
   std::vector<double> left_scan_rows_;
-  double left_offset_px_ = 180.0;
+  double left_offset_px_ = 150.0;
   double left_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;
   int max_line_segment_width_px_ = 90;
@@ -898,16 +825,12 @@ private:
   bool stop_on_lost_ = true;
 
   double end_enable_delay_ = 3.0;
-  double end_roi_y_start_ratio_ = 0.55;
-  double end_row_coverage_ratio_ = 0.70;
-  int end_min_covered_rows_ = 2;
-  int end_confirm_frames_ = 5;
-  int end_release_frames_ = 3;
-  int end_max_gap_rows_ = 2;
+  double end_roi_y_start_ratio_ = 0.80;
+  double end_min_width_ratio_ = 0.45;
+  int end_confirm_frames_ = 3;
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.50;
   double end_forward_speed_ = 0.08;
-  double end_max_top_std_ = 40.0;
 
   State state_ = State::Idle;
   ros::Time start_time_;
@@ -928,7 +851,6 @@ private:
   bool has_last_target_ = false;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
-  cv::Mat pre_morph_mask_;
   double last_mask_ratio_ = 0.0;
   std::string last_mask_mode_ = "normal";
 };
