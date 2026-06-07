@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucar_2026_traffic_light_speak_test</name>
+  <version>0.1.0</version>
+  <description>Traffic-light YOLO inference and speech playback test package for U-CAR 2026.</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+
+  <exec_depend>image_view</exec_depend>
+  <exec_depend>speech_command</exec_depend>
+  <exec_depend>ucar_2026_qr_speak_test</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>yolo</exec_depend>
+
+  <export>
+  </export>
+</package>
