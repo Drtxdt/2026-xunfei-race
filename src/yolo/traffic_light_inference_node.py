@@ -58,6 +58,38 @@ def _resolve_model_path(param_path):
     sys.exit(1)
 
 
+def _expand_path(path):
+    if not path:
+        return ""
+    return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
+
+
+def _find_local_yolov5_repo(param_path):
+    candidates = []
+    expanded = _expand_path(param_path)
+    if expanded:
+        candidates.append(expanded)
+
+    try:
+        share_dir = rospkg.RosPack().get_path("yolo")
+        candidates.append(os.path.join(share_dir, "yolov5"))
+    except Exception:
+        pass
+
+    candidates.extend([
+        "~/yolov5",
+        "~/2026-xunfei-race/src/yolov5",
+        "/home/ucar/yolov5",
+        "/home/ucar/2026-xunfei-race/src/yolov5",
+    ])
+
+    for candidate in candidates:
+        path = _expand_path(candidate)
+        if os.path.isfile(os.path.join(path, "hubconf.py")):
+            return path
+    return ""
+
+
 class TrafficLightInference:
     def __init__(self):
         self._init_params()
@@ -125,6 +157,9 @@ class TrafficLightInference:
         )
 
         self._model_path_param = rospy.get_param("~model_path", "")
+        self._yolov5_repo_path_param = rospy.get_param("~yolov5_repo_path", "")
+        self._torch_hub_repo = rospy.get_param("~torch_hub_repo", "ultralytics/yolov5")
+        self._prefer_local_yolov5 = rospy.get_param("~prefer_local_yolov5", True)
         self._conf_thresh = rospy.get_param("~confidence_threshold", 0.5)
         self._nms_iou = rospy.get_param("~nms_iou_threshold", 0.45)
         self._input_size = int(rospy.get_param("~input_size", 640))
@@ -163,21 +198,49 @@ class TrafficLightInference:
 
     def _load_model(self):
         rospy.loginfo("Loading YOLOv5 model: %s", self._model_path)
+        local_repo = ""
+        if self._prefer_local_yolov5:
+            local_repo = _find_local_yolov5_repo(self._yolov5_repo_path_param)
+            if local_repo:
+                rospy.loginfo("Using local YOLOv5 repo: %s", local_repo)
+            else:
+                rospy.logwarn(
+                    "No local YOLOv5 repo found. Set ~yolov5_repo_path or place hubconf.py under ~/yolov5. "
+                    "Falling back to torch hub repo %s; this requires cached hub files or internet.",
+                    self._torch_hub_repo,
+                )
+
         try:
-            model = torch.hub.load(
-                "ultralytics/yolov5",
-                "custom",
-                path=self._model_path,
-                force_reload=False,
-                device=self._device,
-            )
+            if local_repo:
+                model = self._torch_hub_load(local_repo, source="local")
+            else:
+                model = self._torch_hub_load(self._torch_hub_repo, source="github")
             model.conf = self._conf_thresh
             model.iou = self._nms_iou
             rospy.loginfo("Model loaded successfully")
             return model
         except Exception as exc:
-            rospy.logerr("Failed to load YOLO model: %s", exc)
+            rospy.logfatal("Failed to load YOLO model: %s", exc)
+            rospy.logfatal("Model path: %s exists=%s", self._model_path, os.path.isfile(self._model_path))
+            rospy.logfatal("Local YOLOv5 repo: %s", local_repo or "not found")
+            rospy.logfatal("Torch hub repo: %s", self._torch_hub_repo)
+            rospy.logfatal(
+                "If the car is offline, copy YOLOv5 source to ~/yolov5 or set _yolov5_repo_path:=/path/to/yolov5. "
+                "The directory must contain hubconf.py."
+            )
             raise
+
+    def _torch_hub_load(self, repo_or_dir, source):
+        kwargs = {
+            "path": self._model_path,
+            "force_reload": False,
+            "device": self._device,
+            "source": source,
+        }
+        try:
+            return torch.hub.load(repo_or_dir, "custom", trust_repo=True, **kwargs)
+        except TypeError:
+            return torch.hub.load(repo_or_dir, "custom", **kwargs)
 
     def _reload_model(self):
         rospy.logerr(

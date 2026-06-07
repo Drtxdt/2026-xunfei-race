@@ -1,0 +1,75 @@
+<launch>
+  <arg name="start_camera" default="true" />
+  <arg name="start_inference" default="true" />
+  <arg name="inference_required" default="false" />
+  <arg name="start_audio_setup" default="true" />
+  <arg name="start_tts" default="true" />
+  <arg name="start_viewer" default="true" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="detections_topic" default="/traffic_light/detections" />
+  <arg name="debug_image_topic" default="/traffic_light/debug_image" />
+  <arg name="status_topic" default="/traffic_light_speak_test/status" />
+  <arg name="speak_topic" default="/speak" />
+  <arg name="config_file" default="$(find yolo)/config/traffic_light.yaml" />
+  <arg name="yolov5_repo_path" default="" />
+  <arg name="flip" default="true" />
+  <arg name="repeat_same" default="false" />
+  <arg name="min_interval_sec" default="1.5" />
+  <arg name="initial_publish_delay_sec" default="0.3" />
+  <arg name="publish_retries" default="1" />
+  <arg name="master_volume" default="90%" />
+  <arg name="pcm_volume" default="90%" />
+  <arg name="extra_audio_control" default="" />
+  <arg name="extra_audio_volume" default="" />
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_audio_setup)">
+    <node pkg="ucar_2026_qr_speak_test" type="audio_setup_node.py" name="traffic_light_audio_setup_node" output="screen">
+      <param name="enabled" value="true" />
+      <param name="master_volume" value="$(arg master_volume)" />
+      <param name="pcm_volume" value="$(arg pcm_volume)" />
+      <param name="extra_control" value="$(arg extra_audio_control)" />
+      <param name="extra_volume" value="$(arg extra_audio_volume)" />
+    </node>
+  </group>
+
+  <group if="$(arg start_tts)">
+    <node pkg="speech_command" type="voice_speak_node" name="voice_speak_node" output="screen"
+          launch-prefix="bash -c 'sleep 1; exec &quot;$@&quot;' dummy" />
+  </group>
+
+  <group if="$(arg start_inference)">
+    <node pkg="yolo" type="traffic_light_inference_node.py" name="traffic_light_inference" output="screen" required="$(arg inference_required)"
+          launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
+      <rosparam command="load" file="$(arg config_file)" />
+      <param name="image_topic" value="$(arg camera_topic)" />
+      <param name="detections_topic" value="$(arg detections_topic)" />
+      <param name="debug_image_topic" value="$(arg debug_image_topic)" />
+      <param name="yolov5_repo_path" value="$(arg yolov5_repo_path)" />
+      <param name="flip" value="$(arg flip)" />
+    </node>
+  </group>
+
+  <node pkg="ucar_2026_traffic_light_speak_test" type="traffic_light_speak_test_node.py"
+        name="traffic_light_speak_test_node" output="screen"
+        launch-prefix="bash -c 'sleep 3; exec &quot;$@&quot;' dummy">
+    <param name="detections_topic" value="$(arg detections_topic)" />
+    <param name="speak_topic" value="$(arg speak_topic)" />
+    <param name="status_topic" value="$(arg status_topic)" />
+    <param name="repeat_same" value="$(arg repeat_same)" />
+    <param name="min_interval_sec" value="$(arg min_interval_sec)" />
+    <param name="initial_publish_delay_sec" value="$(arg initial_publish_delay_sec)" />
+    <param name="publish_retries" value="$(arg publish_retries)" />
+  </node>
+
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view" name="traffic_light_debug_viewer" output="screen"
+          launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+      <remap from="image" to="$(arg debug_image_topic)" />
+      <param name="image_transport" value="raw" />
+    </node>
+  </group>
+</launch>
