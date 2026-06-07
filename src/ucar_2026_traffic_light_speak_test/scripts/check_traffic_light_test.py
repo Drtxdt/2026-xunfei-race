@@ -12,16 +12,16 @@ from typing import List
 
 def run(cmd: List[str], timeout: float = 4.0) -> str:
     try:
-      completed = subprocess.run(
-          cmd,
-          stdout=subprocess.PIPE,
-          stderr=subprocess.STDOUT,
-          timeout=timeout,
-          check=False,
-          universal_newlines=True,
-      )
+        completed = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+            universal_newlines=True,
+        )
     except Exception as exc:
-      return "ERROR: %s" % exc
+        return "ERROR: %s" % exc
     return completed.stdout.strip()
 
 
