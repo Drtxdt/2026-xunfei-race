@@ -40,6 +40,17 @@ def main() -> int:
     else:
         print("[FAIL] model missing: %s" % model_path)
 
+    local_candidates = [
+        os.path.join(yolo_path, "yolov5"),
+        os.path.expanduser("~/yolov5"),
+        os.path.expanduser("~/2026-xunfei-race/src/yolov5"),
+    ]
+    local_repo = next((p for p in local_candidates if os.path.isfile(os.path.join(p, "hubconf.py"))), "")
+    if local_repo:
+        print("[ OK ] local yolov5 repo: %s" % local_repo)
+    else:
+        print("[WARN] local yolov5 repo not found; torch hub must use cached files or internet")
+
     nodes = run(["rosnode", "list"])
     print("[INFO] traffic_light node present: %s" % ("yes" if "traffic_light_inference" in nodes else "no"))
     print("[INFO] voice_speak_node present: %s" % ("yes" if "voice_speak_node" in nodes else "no"))

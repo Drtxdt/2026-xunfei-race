@@ -10,6 +10,9 @@ status_topic: /traffic_light/status
 # Model Configuration
 # ================================
 model_path: ""                    # empty = auto-resolve $(find yolo)/models/best.pt
+yolov5_repo_path: ""              # optional local YOLOv5 repo containing hubconf.py
+prefer_local_yolov5: true         # use local repo first; fallback to torch hub
+torch_hub_repo: ultralytics/yolov5 # fallback hub repo; needs internet or cached files
 confidence_threshold: 0.5
 nms_iou_threshold: 0.45
 input_size: 640

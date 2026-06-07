@@ -11,6 +11,7 @@
   <arg name="status_topic" default="/traffic_light_speak_test/status" />
   <arg name="speak_topic" default="/speak" />
   <arg name="config_file" default="$(find yolo)/config/traffic_light.yaml" />
+  <arg name="yolov5_repo_path" default="" />
   <arg name="flip" default="true" />
   <arg name="repeat_same" default="false" />
   <arg name="min_interval_sec" default="1.5" />
@@ -47,6 +48,7 @@
       <param name="image_topic" value="$(arg camera_topic)" />
       <param name="detections_topic" value="$(arg detections_topic)" />
       <param name="debug_image_topic" value="$(arg debug_image_topic)" />
+      <param name="yolov5_repo_path" value="$(arg yolov5_repo_path)" />
       <param name="flip" value="$(arg flip)" />
     </node>
   </group>
