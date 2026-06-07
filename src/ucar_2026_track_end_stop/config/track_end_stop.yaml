@@ -54,15 +54,17 @@ lost_angular_speed: 0.00
 stop_on_lost: true
 
 # End-of-track detection.
-# The end of the track is a white boundary wall/line that spans most of the
-# image width AND has a nearly horizontal top edge (perpendicular to track sides).
-# This distinguishes it from turns where white lines are diagonal.
-# Detection scans from bottom-up in the end_roi region, then checks that the
-# top edge of the white mass has low y-variance (std <= end_max_top_std).
+# The stop line is a thin white horizontal line at the track end.
+# Detection uses a PRE-MORPHOLOGY mask (before OPEN/CLOSE/medianBlur)
+# because morphological opening with a square kernel would erase the
+# thin horizontal line. A wide, short dilation kernel (31x1) connects
+# horizontal gaps without the erosive effect of square morphology.
+# The stop line must have a nearly horizontal top edge (perpendicular
+# to track sides) — this distinguishes it from diagonal turn lines.
 end_enable_delay: 3.0
 end_roi_y_start_ratio: 0.55
 end_row_coverage_ratio: 0.70
-end_min_covered_rows: 4
+end_min_covered_rows: 2
 end_confirm_frames: 5
 end_release_frames: 3
 end_max_gap_rows: 2

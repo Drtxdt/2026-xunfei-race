@@ -157,7 +157,7 @@ private:
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.55);
     private_nh_.param("end_row_coverage_ratio", end_row_coverage_ratio_, 0.70);
-    private_nh_.param("end_min_covered_rows", end_min_covered_rows_, 4);
+    private_nh_.param("end_min_covered_rows", end_min_covered_rows_, 2);
     private_nh_.param("end_confirm_frames", end_confirm_frames_, 5);
     private_nh_.param("end_release_frames", end_release_frames_, 3);
     private_nh_.param("end_max_gap_rows", end_max_gap_rows_, 2);
@@ -212,7 +212,7 @@ private:
     last_image_time_ = now;
 
     cv::Mat mask = extractWhiteMask(frame);
-    EndOfTrackResult end_result = detectEndOfTrack(mask, now);
+    EndOfTrackResult end_result = detectEndOfTrack(now);
     FollowResult follow = computeFollow(mask, now);
     geometry_msgs::Twist cmd;
 
@@ -366,6 +366,7 @@ private:
     }
 
     mask = filterComponents(mask);
+    pre_morph_mask_ = mask.clone();
 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(morph_kernel_size_, morph_kernel_size_));
     cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
@@ -405,31 +406,38 @@ private:
     return filtered;
   }
 
-  EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now)
+  EndOfTrackResult detectEndOfTrack(const ros::Time& now)
   {
     EndOfTrackResult result;
     const double elapsed = (now - start_time_).toSec();
     if (elapsed < end_enable_delay_)
       return result;
 
-    const int roi_y0 = clampInt(static_cast<int>(mask.rows * end_roi_y_start_ratio_), 0, mask.rows - 2);
-    const int roi_h = mask.rows - roi_y0;
+    // Use pre-morphology mask: the stop line is a thin horizontal white line
+    // that MORPH_OPEN would erase with a square kernel.
+    // Apply wide horizontal dilation to connect gaps without thickening vertically.
+    cv::Mat work;
+    cv::Mat h_kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(31, 1));
+    cv::dilate(pre_morph_mask_, work, h_kernel);
 
+    const int roi_y0 = clampInt(static_cast<int>(work.rows * end_roi_y_start_ratio_), 0, work.rows - 2);
+
+    // Count rows whose white coverage exceeds threshold, scanning bottom-up
     int covered_rows = 0;
-    int top_covered_y = mask.rows;
+    int top_covered_y = work.rows;
     int gap_count = 0;
 
-    for (int y = mask.rows - 1; y >= roi_y0; --y)
+    for (int y = work.rows - 1; y >= roi_y0; --y)
     {
-      const uchar* row = mask.ptr<uchar>(y);
+      const uchar* row = work.ptr<uchar>(y);
       int white_count = 0;
-      for (int x = 0; x < mask.cols; ++x)
+      for (int x = 0; x < work.cols; ++x)
       {
         if (row[x] > 0)
           ++white_count;
       }
 
-      const double coverage = static_cast<double>(white_count) / static_cast<double>(mask.cols);
+      const double coverage = static_cast<double>(white_count) / static_cast<double>(work.cols);
       if (coverage >= end_row_coverage_ratio_)
       {
         covered_rows++;
@@ -444,28 +452,22 @@ private:
       }
     }
 
-    result.coverage_ratio = covered_rows > 0
-        ? static_cast<double>(covered_rows) / static_cast<double>(std::max(1, roi_h))
-        : 0.0;
-    result.covered_rows = covered_rows;
-    result.top_covered_y = top_covered_y;
-
     if (covered_rows < end_min_covered_rows_)
     {
       end_frames_ = 0;
       return result;
     }
 
-    // Horizontality check: the top edge of the white mass must be nearly
-    // horizontal (perpendicular to track sides). A turn produces a diagonal
-    // edge with high y variance; a true stop line is flat.
+    // Horizontality check: scan every column for the top-most white pixel.
+    // A true stop line is horizontal → low y-variance.
+    // A turn's white area is diagonal → high y-variance.
     std::vector<double> top_ys;
-    top_ys.reserve(mask.cols);
-    for (int x = 0; x < mask.cols; ++x)
+    top_ys.reserve(work.cols);
+    for (int x = 0; x < work.cols; ++x)
     {
-      for (int y = roi_y0; y < mask.rows; ++y)
+      for (int y = roi_y0; y < work.rows; ++y)
       {
-        if (mask.at<uchar>(y, x) > 0)
+        if (work.at<uchar>(y, x) > 0)
         {
           top_ys.push_back(static_cast<double>(y));
           break;
@@ -496,13 +498,16 @@ private:
       return result;
     }
 
+    result.coverage_ratio = static_cast<double>(covered_rows) /
+        static_cast<double>(std::max(1, work.rows - roi_y0));
+    result.covered_rows = covered_rows;
+    result.top_covered_y = top_covered_y;
+
     ++end_frames_;
     end_lost_frames_ = 0;
 
     if (end_frames_ >= end_confirm_frames_)
-    {
       result.detected = true;
-    }
     return result;
   }
 
@@ -895,7 +900,7 @@ private:
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.55;
   double end_row_coverage_ratio_ = 0.70;
-  int end_min_covered_rows_ = 4;
+  int end_min_covered_rows_ = 2;
   int end_confirm_frames_ = 5;
   int end_release_frames_ = 3;
   int end_max_gap_rows_ = 2;
@@ -923,6 +928,7 @@ private:
   bool has_last_target_ = false;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
+  cv::Mat pre_morph_mask_;
   double last_mask_ratio_ = 0.0;
   std::string last_mask_mode_ = "normal";
 };
