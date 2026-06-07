@@ -28,7 +28,15 @@ target_link_libraries(track_end_stop_node
   ${OpenCV_LIBRARIES}
 )
 
-install(TARGETS track_end_stop_node
+add_executable(right_track_end_stop_node
+  src/right_track_end_stop_node.cpp
+)
+target_link_libraries(right_track_end_stop_node
+  ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
+)
+
+install(TARGETS track_end_stop_node right_track_end_stop_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
