@@ -9,6 +9,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package()
 
 catkin_install_python(PROGRAMS
+  scripts/check_traffic_light_test.py
   scripts/traffic_light_speak_test_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
