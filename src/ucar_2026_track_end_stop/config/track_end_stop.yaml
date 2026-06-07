@@ -1,0 +1,78 @@
+# Topics
+image_topic: /usb_cam/image_raw
+cmd_vel_topic: /cmd_vel
+status_topic: /track_end_stop/status
+debug_image_topic: /track_end_stop/debug_image
+debug_info_topic: /track_end_stop/debug_info
+
+# Startup sequence
+auto_start: true
+startup_forward_duration: 2.2
+startup_forward_speed: 0.16
+startup_turn_duration: 3.85
+startup_turn_angular_speed: 0.34
+startup_enter_duration: 1.8
+startup_enter_speed: 0.10
+
+# White-line extraction
+white_s_max: 85
+white_v_min: 155
+gray_white_threshold: 175
+morph_kernel_size: 5
+min_component_area: 80
+max_component_area_ratio: 0.70
+min_white_mask_ratio: 0.002
+max_white_mask_ratio: 0.32
+adaptive_threshold_delta: 28
+
+# Leftmost line following
+left_scan_rows: [0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58]
+left_offset_px: 140
+left_scan_bottom_weight: 1.8
+min_line_width_px: 5
+max_line_segment_width_px: 90
+min_segment_gap_px: 10
+max_target_jump_px: 160
+
+# PID control
+kp: 0.0055
+kd: 0.0018
+error_alpha: 0.58
+
+# Motion control
+base_speed: 0.22
+min_speed: 0.10
+fast_base_speed: 0.25
+fast_error_px: 60.0
+medium_error_px: 130.0
+hard_error_px: 210.0
+medium_speed: 0.17
+max_angular_speed: 0.65
+angular_alpha: 0.45
+lost_timeout: 0.80
+lost_speed: 0.06
+lost_angular_speed: 0.00
+stop_on_lost: true
+
+# End-of-track detection (segment-based — same strategy as Python reference).
+# Scans the bottom portion of the mask for a single continuous white segment
+# whose width covers most of the image width. Unlike pixel-counting, this
+# naturally distinguishes a real stop line from scattered turn noise.
+# Detection works on the SAME post-morphology mask as line-following.
+end_enable_delay: 3.0
+end_roi_y_start_ratio: 0.87       # start scanning from 87% height (match Python effective region)
+end_min_width_ratio: 0.45         # segment width / image width threshold
+end_stop_hold: 1.0
+end_forward_distance_m: 0.65        # drive forward 65cm after alignment
+end_forward_speed: 0.15             # fast forward speed (m/s)
+end_turn_right_angle_deg: 10.0      # turn right ~10° to be perpendicular to stop line
+end_turn_right_angular_speed: 0.50  # angular speed for the right turn (rad/s)
+
+# Debug relay (compressed JPEG for MobaXterm)
+compressed_debug_topic: /track_end_stop/debug_image/compressed
+compressed_raw_topic: /track_end_stop/raw_image/compressed
+debug_relay_status_topic: /track_end_stop/debug_relay/status
+jpeg_quality: 75
+debug_resize_width: 0
+debug_max_publish_fps: 12.0
+publish_raw_compressed: true
