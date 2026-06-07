@@ -67,7 +67,7 @@ private:
     StartupEnter,
     Follow,
     EndDetected,
-    StopBeforeForward,
+    TurnRight,
     Forward50cm,
     FinalStop,
     Finish
@@ -153,10 +153,11 @@ private:
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.80);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
-    private_nh_.param("end_confirm_frames", end_confirm_frames_, 3);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
-    private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.50);
-    private_nh_.param("end_forward_speed", end_forward_speed_, 0.08);
+    private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
+    private_nh_.param("end_forward_speed", end_forward_speed_, 0.15);
+    private_nh_.param("end_turn_right_angle_deg", end_turn_right_angle_deg_, 10.0);
+    private_nh_.param("end_turn_right_angular_speed", end_turn_right_angular_speed_, 0.50);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -281,19 +282,40 @@ private:
         hardStop();
         if ((now - state_start_time_).toSec() >= end_stop_hold_)
         {
+          state_ = State::TurnRight;
+          state_start_time_ = now;
+          ROS_INFO("turning right %.1f deg at %.2f rad/s",
+                   end_turn_right_angle_deg_, end_turn_right_angular_speed_);
+        }
+        break;
+
+      case State::TurnRight:
+      {
+        const double turn_duration = (end_turn_right_angle_deg_ * M_PI / 180.0) /
+                                     std::max(end_turn_right_angular_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < turn_duration)
+        {
+          setStatus("turn_right_align");
+          cmd.angular.z = -end_turn_right_angular_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
           state_ = State::Forward50cm;
           state_start_time_ = now;
+          hardStop();
           ROS_INFO("driving forward %.2f m at %.2f m/s",
                    end_forward_distance_m_, end_forward_speed_);
         }
         break;
+      }
 
       case State::Forward50cm:
       {
         const double forward_duration = end_forward_distance_m_ / std::max(end_forward_speed_, 1e-6);
         if ((now - state_start_time_).toSec() < forward_duration)
         {
-          setStatus("forward_50cm");
+          setStatus("fast_forward");
           cmd.linear.x = end_forward_speed_;
           publishCmd(cmd);
         }
@@ -404,46 +426,34 @@ private:
     if (elapsed < end_enable_delay_)
       return result;
 
-    // Segment-based horizontal line detection (same strategy as Python
-    // detect_horizontal_line). Scan the bottom region for a single
-    // continuous white segment whose width covers most of the image.
+    // Segment-based horizontal line detection — matches Python
+    // detect_horizontal_line in line_follow_straight_right.py.
+    // Scan the bottom region; return on the FIRST row whose single
+    // continuous white segment covers >= end_min_width_ratio_ of the
+    // image width AND sits low enough (r > bottom_height * 0.45).
     const int bottom_y0 = clampInt(static_cast<int>(mask.rows * end_roi_y_start_ratio_), 0, mask.rows - 1);
+    const int bottom_height = mask.rows - bottom_y0;
     const int min_segment_width = static_cast<int>(mask.cols * end_min_width_ratio_);
-
-    double best_width = 0.0;
-    double best_y_ratio = 0.0;
+    const int min_r = static_cast<int>(bottom_height * 0.45);
 
     for (int y = mask.rows - 1; y >= bottom_y0; --y)
     {
+      int r = y - bottom_y0;
+      if (r <= min_r)
+        continue;
+
       std::vector<Segment> segments = findSegments(mask.row(y));
       for (const auto& seg : segments)
       {
         if (seg.width >= min_segment_width)
         {
-          double width_ratio = static_cast<double>(seg.width) / static_cast<double>(mask.cols);
-          if (width_ratio > best_width)
-          {
-            best_width = width_ratio;
-            best_y_ratio = static_cast<double>(y) / static_cast<double>(mask.rows);
-          }
+          result.detected = true;
+          result.best_width_ratio = static_cast<double>(seg.width) / static_cast<double>(mask.cols);
+          result.best_y_ratio = static_cast<double>(y) / static_cast<double>(mask.rows);
+          return result;
         }
       }
     }
-
-    result.best_width_ratio = best_width;
-    result.best_y_ratio = best_y_ratio;
-
-    if (best_width <= 0.0)
-    {
-      end_frames_ = 0;
-      return result;
-    }
-
-    ++end_frames_;
-    end_lost_frames_ = 0;
-
-    if (end_frames_ >= end_confirm_frames_)
-      result.detected = true;
     return result;
   }
 
@@ -576,15 +586,15 @@ private:
     if (!follow.found)
     {
       const bool timed_out = (now - last_detection_time_).toSec() > lost_timeout_;
-      if (stop_on_lost_ || timed_out)
+      if (stop_on_lost_ && timed_out)
       {
-        setStatus(timed_out ? "lost_stop" : "line_wait");
+        setStatus("lost_stop");
         resetPid();
         hardStop();
         return;
       }
 
-      setStatus("line_wait_slow");
+      setStatus("line_wait");
       geometry_msgs::Twist cmd;
       cmd.linear.x = lost_speed_;
       cmd.angular.z = lost_angular_speed_;
@@ -710,7 +720,7 @@ private:
     std::ostringstream line2;
     line2 << "target=(" << std::fixed << std::setprecision(1) << follow.target_x << "," << follow.target_y
           << ") err=" << follow.error
-          << " end_fr=" << end_frames_ << " end_w=" << std::fixed << std::setprecision(2) << end_result.best_width_ratio
+          << " end_w=" << std::fixed << std::setprecision(2) << end_result.best_width_ratio
           << " end_y=" << end_result.best_y_ratio;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
@@ -741,7 +751,6 @@ private:
        << " cmd_angular=" << last_angular_
        << " raw_points=" << follow.raw_line.size()
        << " end_detected=" << boolText(end_result.detected)
-       << " end_frames=" << end_frames_
        << " end_width_ratio=" << end_result.best_width_ratio
        << " end_y_ratio=" << end_result.best_y_ratio;
     std_msgs::String msg;
@@ -810,14 +819,14 @@ private:
   double kp_ = 0.0042;
   double kd_ = 0.0014;
 
-  double base_speed_ = 0.18;
+  double base_speed_ = 0.16;
   double min_speed_ = 0.075;
-  double fast_base_speed_ = 0.22;
+  double fast_base_speed_ = 0.18;
   double fast_error_px_ = 45.0;
   double medium_error_px_ = 130.0;
   double hard_error_px_ = 210.0;
   double medium_speed_ = 0.12;
-  double max_angular_speed_ = 0.55;
+  double max_angular_speed_ = 0.65;
   double angular_alpha_ = 0.65;
   double lost_timeout_ = 0.8;
   double lost_speed_ = 0.06;
@@ -825,12 +834,13 @@ private:
   bool stop_on_lost_ = true;
 
   double end_enable_delay_ = 3.0;
-  double end_roi_y_start_ratio_ = 0.80;
+  double end_roi_y_start_ratio_ = 0.87;
   double end_min_width_ratio_ = 0.45;
-  int end_confirm_frames_ = 3;
   double end_stop_hold_ = 1.0;
-  double end_forward_distance_m_ = 0.50;
-  double end_forward_speed_ = 0.08;
+  double end_forward_distance_m_ = 0.65;
+  double end_forward_speed_ = 0.15;
+  double end_turn_right_angle_deg_ = 10.0;
+  double end_turn_right_angular_speed_ = 0.50;
 
   State state_ = State::Idle;
   ros::Time start_time_;
@@ -838,9 +848,6 @@ private:
   ros::Time last_detection_time_;
   ros::Time last_image_time_;
   std::string status_ = "idle";
-
-  int end_frames_ = 0;
-  int end_lost_frames_ = 0;
 
   double filtered_angular_ = 0.0;
   double filtered_error_px_ = 0.0;

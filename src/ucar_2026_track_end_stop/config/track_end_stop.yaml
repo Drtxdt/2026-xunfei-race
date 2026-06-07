@@ -39,17 +39,17 @@ kp: 0.0042
 kd: 0.0014
 
 # Motion control
-base_speed: 0.18
+base_speed: 0.16
 min_speed: 0.075
-fast_base_speed: 0.22
+fast_base_speed: 0.18
 fast_error_px: 45.0
 medium_error_px: 130.0
 hard_error_px: 210.0
 medium_speed: 0.12
-max_angular_speed: 0.55
+max_angular_speed: 0.65
 angular_alpha: 0.65
-lost_timeout: 0.35
-lost_speed: 0.00
+lost_timeout: 0.80
+lost_speed: 0.06
 lost_angular_speed: 0.00
 stop_on_lost: true
 
@@ -59,12 +59,13 @@ stop_on_lost: true
 # naturally distinguishes a real stop line from scattered turn noise.
 # Detection works on the SAME post-morphology mask as line-following.
 end_enable_delay: 3.0
-end_roi_y_start_ratio: 0.80       # start scanning from 80% height (bottom 20%)
+end_roi_y_start_ratio: 0.87       # start scanning from 87% height (match Python effective region)
 end_min_width_ratio: 0.45         # segment width / image width threshold
-end_confirm_frames: 3             # consecutive frames to confirm
 end_stop_hold: 1.0
-end_forward_distance_m: 0.50
-end_forward_speed: 0.08
+end_forward_distance_m: 0.65        # drive forward 65cm after alignment
+end_forward_speed: 0.15             # fast forward speed (m/s)
+end_turn_right_angle_deg: 10.0      # turn right ~10° to be perpendicular to stop line
+end_turn_right_angular_speed: 0.50  # angular speed for the right turn (rad/s)
 
 # Debug relay (compressed JPEG for MobaXterm)
 compressed_debug_topic: /track_end_stop/debug_image/compressed
