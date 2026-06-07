@@ -127,24 +127,25 @@ private:
     private_nh_.param("adaptive_threshold_delta", adaptive_threshold_delta_, 28);
 
     loadDoubleList("left_scan_rows", left_scan_rows_, {0.95, 0.92, 0.88, 0.84, 0.80, 0.75, 0.70, 0.64, 0.58});
-    private_nh_.param("left_offset_px", left_offset_px_, 150.0);
+    private_nh_.param("left_offset_px", left_offset_px_, 170.0);
     private_nh_.param("left_scan_bottom_weight", left_scan_bottom_weight_, 1.8);
     private_nh_.param("min_line_width_px", min_line_width_px_, 5);
     private_nh_.param("max_line_segment_width_px", max_line_segment_width_px_, 90);
     private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
-    private_nh_.param("max_target_jump_px", max_target_jump_px_, 120.0);
+    private_nh_.param("max_target_jump_px", max_target_jump_px_, 200.0);
     private_nh_.param("kp", kp_, 0.0042);
     private_nh_.param("kd", kd_, 0.0014);
 
-    private_nh_.param("base_speed", base_speed_, 0.18);
-    private_nh_.param("min_speed", min_speed_, 0.075);
+    private_nh_.param("base_speed", base_speed_, 0.20);
+    private_nh_.param("min_speed", min_speed_, 0.09);
     private_nh_.param("fast_base_speed", fast_base_speed_, 0.22);
-    private_nh_.param("fast_error_px", fast_error_px_, 45.0);
+    private_nh_.param("fast_error_px", fast_error_px_, 60.0);
     private_nh_.param("medium_error_px", medium_error_px_, 130.0);
     private_nh_.param("hard_error_px", hard_error_px_, 210.0);
-    private_nh_.param("medium_speed", medium_speed_, 0.12);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.55);
-    private_nh_.param("angular_alpha", angular_alpha_, 0.65);
+    private_nh_.param("medium_speed", medium_speed_, 0.15);
+    private_nh_.param("max_angular_speed", max_angular_speed_, 0.65);
+    private_nh_.param("angular_alpha", angular_alpha_, 0.55);
+    private_nh_.param("error_alpha", error_alpha_, 0.65);
     private_nh_.param("lost_timeout", lost_timeout_, 0.8);
     private_nh_.param("lost_speed", lost_speed_, 0.06);
     private_nh_.param("lost_angular_speed", lost_angular_speed_, 0.0);
@@ -605,7 +606,7 @@ private:
     const double now_sec = now.toSec();
     const double dt = last_pid_time_ > 0.0 ? std::max(1e-3, now_sec - last_pid_time_) : 0.0;
     last_pid_time_ = now_sec;
-    filtered_error_px_ = 0.78 * filtered_error_px_ + 0.22 * follow.error;
+    filtered_error_px_ = error_alpha_ * filtered_error_px_ + (1.0 - error_alpha_) * follow.error;
     const double derivative = dt > 0.0 ? (filtered_error_px_ - last_error_px_) / dt : 0.0;
     last_error_px_ = filtered_error_px_;
 
@@ -810,24 +811,25 @@ private:
   int adaptive_threshold_delta_ = 28;
 
   std::vector<double> left_scan_rows_;
-  double left_offset_px_ = 150.0;
+  double left_offset_px_ = 170.0;
   double left_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;
   int max_line_segment_width_px_ = 90;
   int min_segment_gap_px_ = 10;
-  double max_target_jump_px_ = 120.0;
+  double max_target_jump_px_ = 200.0;
   double kp_ = 0.0042;
   double kd_ = 0.0014;
 
-  double base_speed_ = 0.16;
-  double min_speed_ = 0.075;
-  double fast_base_speed_ = 0.18;
-  double fast_error_px_ = 45.0;
+  double base_speed_ = 0.20;
+  double min_speed_ = 0.09;
+  double fast_base_speed_ = 0.22;
+  double fast_error_px_ = 60.0;
   double medium_error_px_ = 130.0;
   double hard_error_px_ = 210.0;
-  double medium_speed_ = 0.12;
+  double medium_speed_ = 0.15;
   double max_angular_speed_ = 0.65;
-  double angular_alpha_ = 0.65;
+  double angular_alpha_ = 0.55;
+  double error_alpha_ = 0.65;
   double lost_timeout_ = 0.8;
   double lost_speed_ = 0.06;
   double lost_angular_speed_ = 0.0;
