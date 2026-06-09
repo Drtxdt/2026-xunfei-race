@@ -31,3 +31,8 @@ roslaunch ucar_2026_track_end_stop track_end_stop.launch
 roslaunch ucar_2026_track_end_stop right_track_end_stop.launch
 # c++中间巡线
 roslaunch ucar_2026_track_end_stop stable_right_track_end_stop.launch
+
+#================
+# 红绿灯测试
+ roslaunch ucar_2026_traffic_light_rknn_test traffic_light_rknn_x11_speak_test.launch
+
