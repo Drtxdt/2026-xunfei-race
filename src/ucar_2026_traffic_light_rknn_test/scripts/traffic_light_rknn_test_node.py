@@ -86,6 +86,14 @@ def repair_logging_levels() -> None:
         pass
 
 
+def infer_yolov5_input_size_from_count(count: int) -> Optional[int]:
+    for size in (320, 416, 512, 640):
+        grids = (size // 8) ** 2 + (size // 16) ** 2 + (size // 32) ** 2
+        if count == grids * 3:
+            return size
+    return None
+
+
 def expand_path(path: str) -> str:
     return os.path.abspath(os.path.expanduser(os.path.expandvars(path)))
 
@@ -306,12 +314,69 @@ class TrafficLightRknnTestNode:
         if not self.output_shapes_logged:
             rospy.loginfo("RKNN output shapes: %s", [getattr(o, "shape", None) for o in outputs])
             self.output_shapes_logged = True
-        processed = [self.normalize_output(o) for o in outputs[:3]]
-        boxes, classes, scores = self.yolov5_post_process(processed)
+
+        single = self.try_single_output_post_process(outputs[0])
+        if single is not None:
+            boxes, classes, scores, model_size = single
+            if model_size and model_size != self.input_size:
+                scale = float(self.input_size) / float(model_size)
+                boxes *= scale
+        else:
+            processed = [self.normalize_output(o) for o in outputs[:3]]
+            boxes, classes, scores = self.yolov5_post_process(processed)
         if boxes is None:
             return None, None, None
         boxes = self.scale_boxes_to_frame(boxes, ratio, pad, frame.shape)
         return boxes, classes, scores
+
+    def try_single_output_post_process(self, output: np.ndarray):
+        arr = np.asarray(output)
+        arr = np.squeeze(arr)
+        if arr.ndim != 2:
+            return None
+        if arr.shape[-1] != 5 + len(CLASS_NAMES):
+            return None
+
+        model_size = infer_yolov5_input_size_from_count(arr.shape[0])
+        boxes = arr[:, :4].astype(np.float32)
+        obj = arr[:, 4].astype(np.float32)
+        class_probs = arr[:, 5:].astype(np.float32)
+        if obj.size and (obj.max() > 1.0 or obj.min() < 0.0):
+            obj = sigmoid(obj)
+        if class_probs.size and (class_probs.max() > 1.0 or class_probs.min() < 0.0):
+            class_probs = sigmoid(class_probs)
+
+        class_ids = np.argmax(class_probs, axis=1)
+        class_scores = class_probs[np.arange(class_probs.shape[0]), class_ids]
+        scores = obj * class_scores
+        keep = np.where(scores >= self.conf_thresh)[0]
+        if keep.size == 0:
+            return None, None, None, model_size
+
+        boxes = boxes[keep]
+        class_ids = class_ids[keep]
+        scores = scores[keep]
+
+        # YOLOv5 ONNX Detect output uses center x/y + width/height in model-input pixels.
+        boxes = xywh2xyxy(boxes)
+
+        kept_boxes, kept_classes, kept_scores = [], [], []
+        for cls_id in set(class_ids.tolist()):
+            idx = np.where(class_ids == cls_id)
+            b = boxes[idx]
+            s = scores[idx]
+            keep_idx = nms_boxes(b, s, self.nms_iou)
+            kept_boxes.append(b[keep_idx])
+            kept_classes.append(np.full(len(keep_idx), cls_id, dtype=np.int64))
+            kept_scores.append(s[keep_idx])
+        if not kept_boxes:
+            return None, None, None, model_size
+        return (
+            np.concatenate(kept_boxes),
+            np.concatenate(kept_classes),
+            np.concatenate(kept_scores),
+            model_size,
+        )
 
     def normalize_output(self, output: np.ndarray) -> np.ndarray:
         arr = np.asarray(output)
