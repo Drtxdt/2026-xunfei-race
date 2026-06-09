@@ -1,0 +1,49 @@
+<launch>
+  <arg name="start_camera" default="true" />
+  <arg name="start_tts" default="true" />
+  <arg name="start_competition_speech" default="true" />
+  <arg name="start_viewer" default="true" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="debug_image_topic" default="/traffic_light_rknn_test/debug_image" />
+  <arg name="config_file" default="$(find ucar_2026_traffic_light_rknn_test)/config/traffic_light_rknn_test.yaml" />
+  <arg name="model_path" default="" />
+  <arg name="flip" default="false" />
+  <arg name="chars_per_second" default="2.0" />
+  <arg name="required" default="false" />
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_tts)">
+    <node pkg="speech_command" type="voice_speak_node" name="voice_speak_node" output="screen"
+          launch-prefix="bash -c 'sleep 1; exec &quot;$@&quot;' dummy" />
+  </group>
+
+  <group if="$(arg start_competition_speech)">
+    <include file="$(find ucar_2026_competition_speech)/launch/competition_speech.launch">
+      <arg name="chars_per_second" value="$(arg chars_per_second)" />
+    </include>
+  </group>
+
+  <node pkg="ucar_2026_traffic_light_rknn_test"
+        type="traffic_light_rknn_test_node.py"
+        name="traffic_light_rknn_test_node"
+        output="screen"
+        required="$(arg required)"
+        launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="image_topic" value="$(arg camera_topic)" />
+    <param name="debug_image_topic" value="$(arg debug_image_topic)" />
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="flip" value="$(arg flip)" />
+  </node>
+
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view" name="traffic_light_rknn_x11_viewer" output="screen"
+          launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+      <remap from="image" to="$(arg debug_image_topic)" />
+      <param name="image_transport" value="raw" />
+    </node>
+  </group>
+</launch>

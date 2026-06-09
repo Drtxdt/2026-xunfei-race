@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucar_2026_traffic_light_rknn_test</name>
+  <version>0.1.0</version>
+  <description>RKNN/NPU traffic-light camera, X11 view, and speech test package for U-CAR 2026.</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>cv_bridge</depend>
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>ucar_2026_competition_speech</depend>
+
+  <exec_depend>image_view</exec_depend>
+  <exec_depend>speech_command</exec_depend>
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>yolo</exec_depend>
+
+  <export>
+  </export>
+</package>
