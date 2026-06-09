@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
@@ -23,14 +24,6 @@ try:
     from ucar_2026_competition_speech.srv import Announce
 except Exception:
     Announce = None
-
-try:
-    from rknnlite.api import RKNNLite
-except Exception as exc:
-    RKNNLite = None
-    RKNN_IMPORT_ERROR = exc
-else:
-    RKNN_IMPORT_ERROR = None
 
 
 CLASS_NAMES = ["green_left", "green_right", "green_straight", "red_light"]
@@ -58,6 +51,20 @@ ANCHORS = np.array(
     dtype=np.float32,
 )
 MASKS = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+
+
+def repair_logging_levels() -> None:
+    """Restore standard Python logging levels before rospy reads logging.conf."""
+    for name, value in {
+        "CRITICAL": logging.CRITICAL,
+        "ERROR": logging.ERROR,
+        "WARNING": logging.WARNING,
+        "WARN": logging.WARNING,
+        "INFO": logging.INFO,
+        "DEBUG": logging.DEBUG,
+        "NOTSET": logging.NOTSET,
+    }.items():
+        logging.addLevelName(value, name)
 
 
 def expand_path(path: str) -> str:
@@ -131,6 +138,7 @@ def nms_boxes(boxes: np.ndarray, scores: np.ndarray, iou_thresh: float) -> np.nd
 
 class TrafficLightRknnTestNode:
     def __init__(self) -> None:
+        repair_logging_levels()
         rospy.init_node("traffic_light_rknn_test_node")
         self.read_params()
         self.bridge = CvBridge()
@@ -198,8 +206,10 @@ class TrafficLightRknnTestNode:
         self.speech_wait = bool(rospy.get_param("~speech_wait", False))
 
     def load_rknn(self):
-        if RKNNLite is None:
-            rospy.logfatal("Failed to import rknnlite.api: %s", RKNN_IMPORT_ERROR)
+        try:
+            from rknnlite.api import RKNNLite
+        except Exception as exc:
+            rospy.logfatal("Failed to import rknnlite.api: %s", exc)
             sys.exit(1)
         rknn = RKNNLite()
         rospy.loginfo("Loading RKNN model: %s", self.model_path)
