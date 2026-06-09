@@ -34,7 +34,7 @@ def main() -> int:
         return 1
     print("[ OK ] yolo package: %s" % yolo_path)
 
-    model_path = os.path.join(yolo_path, "models", "best.rknn")
+    model_path = os.path.join(yolo_path, "models", "best_640.rknn")
     if os.path.isfile(model_path):
         print("[ OK ] RKNN model exists: %s" % model_path)
     else:
