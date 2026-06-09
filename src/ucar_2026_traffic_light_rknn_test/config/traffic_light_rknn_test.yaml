@@ -5,8 +5,8 @@ debug_image_topic: /traffic_light_rknn_test/debug_image
 status_topic: /traffic_light_rknn_test/status
 
 # Model
-model_path: ""               # empty = $(find yolo)/models/best.rknn
-input_size: 320              # best.rknn outputs 6300 rows, matching YOLOv5 320 input
+model_path: $(find yolo)/models/best_640.rknn
+input_size: 640              # 640 FP16 model
 confidence_threshold: 0.5
 nms_iou_threshold: 0.45
 inference_rate: 10.0
