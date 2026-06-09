@@ -55,7 +55,7 @@ MASKS = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
 
 def repair_logging_levels() -> None:
     """Restore standard Python logging levels before rospy reads logging.conf."""
-    for name, value in {
+    levels = {
         "CRITICAL": logging.CRITICAL,
         "ERROR": logging.ERROR,
         "WARNING": logging.WARNING,
@@ -63,8 +63,27 @@ def repair_logging_levels() -> None:
         "INFO": logging.INFO,
         "DEBUG": logging.DEBUG,
         "NOTSET": logging.NOTSET,
-    }.items():
+    }
+    for name, value in levels.items():
         logging.addLevelName(value, name)
+
+    try:
+        import rosgraph.roslogging as roslogging
+        mapping = getattr(roslogging, "_logging_to_rospy_names", None)
+        if isinstance(mapping, dict):
+            for short_name, full_name in {
+                "D": "DEBUG",
+                "I": "INFO",
+                "W": "WARN",
+                "E": "ERROR",
+                "F": "FATAL",
+            }.items():
+                if full_name == "FATAL" and full_name not in mapping:
+                    full_name = "CRITICAL"
+                if short_name not in mapping and full_name in mapping:
+                    mapping[short_name] = mapping[full_name]
+    except Exception:
+        pass
 
 
 def expand_path(path: str) -> str:
@@ -209,16 +228,21 @@ class TrafficLightRknnTestNode:
         try:
             from rknnlite.api import RKNNLite
         except Exception as exc:
+            repair_logging_levels()
             rospy.logfatal("Failed to import rknnlite.api: %s", exc)
             sys.exit(1)
+        repair_logging_levels()
         rknn = RKNNLite()
+        repair_logging_levels()
         rospy.loginfo("Loading RKNN model: %s", self.model_path)
         ret = rknn.load_rknn(self.model_path)
+        repair_logging_levels()
         if ret != 0:
             rospy.logfatal("load_rknn failed: %s", ret)
             sys.exit(ret)
         rospy.loginfo("Initializing RKNN runtime on all NPU cores")
         ret = rknn.init_runtime(core_mask=RKNNLite.NPU_CORE_0_1_2)
+        repair_logging_levels()
         if ret != 0:
             rospy.logfatal("init_runtime failed: %s", ret)
             sys.exit(ret)
@@ -260,6 +284,7 @@ class TrafficLightRknnTestNode:
         try:
             boxes, classes, scores = self.infer_frame(frame)
         except Exception as exc:
+            repair_logging_levels()
             rospy.logerr_throttle(2.0, "RKNN inference failed: %s", exc)
             self.publish_status("error")
             return
@@ -277,6 +302,7 @@ class TrafficLightRknnTestNode:
         img, ratio, pad = letterbox(frame, self.input_size)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         outputs = self.rknn.inference(inputs=[rgb])
+        repair_logging_levels()
         if not self.output_shapes_logged:
             rospy.loginfo("RKNN output shapes: %s", [getattr(o, "shape", None) for o in outputs])
             self.output_shapes_logged = True
