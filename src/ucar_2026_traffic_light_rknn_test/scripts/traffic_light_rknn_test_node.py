@@ -508,6 +508,11 @@ class TrafficLightRknnTestNode:
                 self.consensus_held += 1
                 self.release_counter = 0
             else:
+                # Direction lock: reject green_left ⇄ green_right oscillation
+                # caused by RKNN INT8 quantization.  Once locked to one
+                # direction, only red_light / green_straight / nil can release it.
+                if self.consensus_class in (0, 1) and best_cls in (0, 1) and self.consensus_class != best_cls:
+                    return
                 self.consensus_class = best_cls
                 self.consensus_confidence = best_conf
                 self.consensus_held = 1
