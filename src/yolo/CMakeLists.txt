@@ -13,9 +13,12 @@ catkin_package()
 
 catkin_install_python(PROGRAMS
   camera_mjpeg_server.py
+  coco2yolo.py
+  collect_factory_sign.py
   keyboard_collect_yolo_images.py
   qr_collect_and_decode.py
-  traffic_light_inference_node.py
+  validate_model.py
+  scripts/check_factory_sign_rknn_test.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
