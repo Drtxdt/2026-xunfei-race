@@ -1,0 +1,43 @@
+# ============================================================
+# 厂区标识牌 YOLOv5 RKNN 推理节点配置
+# ============================================================
+
+# ROS 话题
+image_topic: /usb_cam/image_raw
+detections_topic: /factory_sign_rknn_test/detections
+debug_image_topic: /factory_sign_rknn_test/debug_image
+status_topic: /factory_sign_rknn_test/status
+
+# 模型
+model_path: ""               # 空 = 自动查找 $(find yolo)/models/factory_sign_3cls.rknn
+input_size: 640              # 模型输入尺寸（640 对应 3-head 输出）
+confidence_threshold: 0.5
+nms_iou_threshold: 0.45
+inference_rate: 10.0         # 推理频率 Hz
+flip: false
+
+# 共识滤波（消除 INT8 量化抖动）
+consensus_confirm_frames: 3   # N 帧连续检测到同一类别才确认
+consensus_release_frames: 3   # M 帧连续未检测到才释放
+consensus_timeout: 1.0        # 确认超时 (秒)
+consensus_ema_alpha: 0.3      # EMA 平滑系数 (0-1, 越小越平滑)
+
+# 调试
+publish_debug: true
+image_timeout: 5.0            # 图像超时 (秒)
+
+# 语音
+enable_speech: true
+announce_service: /competition_speech/announce
+announce_service_timeout_sec: 0.5
+speak_topic: /speak
+use_announce_service: true
+fallback_to_speak_topic: true
+repeat_same: true              # 同一类别是否重复播报
+min_speech_interval_sec: 2.0   # 最小播报间隔
+speech_wait: false
+
+# 自定义播报文本（可选，不设置则使用默认 "识别到{类别名}。"）
+# speech_text_food: "前方是食品加工车间。"
+# speech_text_electronic: "前方是电子产品生产车间。"
+# speech_text_daily: "前方是日用品加工车间。"

@@ -1,0 +1,69 @@
+<launch>
+  <!-- ============================================================
+       厂区标识牌 YOLOv5 RKNN 推理启动文件
+       启动: roslaunch yolo factory_sign_rknn_test.launch
+
+       可选参数:
+         start_camera:  启动 USB 摄像头 (default: true)
+         start_tts:     启动 TTS 语音节点 (default: true)
+         start_competition_speech: 启动竞赛语音服务 (default: true)
+         start_viewer:  启动 X11 调试图像查看器 (default: true)
+         camera_topic:  摄像头话题 (default: /usb_cam/image_raw)
+         model_path:    模型路径，空=自动查找 (default: "")
+         flip:          水平翻转图像 (default: false)
+         chars_per_second: TTS 语速 (default: 2.0)
+       ============================================================ -->
+
+  <arg name="start_camera" default="true" />
+  <arg name="start_tts" default="true" />
+  <arg name="start_competition_speech" default="true" />
+  <arg name="start_viewer" default="true" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="debug_image_topic" default="/factory_sign_rknn_test/debug_image" />
+  <arg name="config_file" default="$(find yolo)/config/factory_sign_rknn_test.yaml" />
+  <arg name="model_path" default="" />
+  <arg name="flip" default="false" />
+  <arg name="chars_per_second" default="2.0" />
+  <arg name="required" default="false" />
+
+  <!-- USB 摄像头 -->
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <!-- TTS 语音合成 -->
+  <group if="$(arg start_tts)">
+    <node pkg="speech_command" type="voice_speak_node" name="voice_speak_node" output="screen"
+          launch-prefix="bash -c 'sleep 1; exec &quot;$@&quot;' dummy" />
+  </group>
+
+  <!-- 竞赛语音播报服务 -->
+  <group if="$(arg start_competition_speech)">
+    <include file="$(find ucar_2026_competition_speech)/launch/competition_speech.launch">
+      <arg name="chars_per_second" value="$(arg chars_per_second)" />
+    </include>
+  </group>
+
+  <!-- 厂区标识牌 RKNN 推理节点 -->
+  <node pkg="yolo"
+        type="validate_model.py"
+        name="factory_sign_rknn_test_node"
+        output="screen"
+        required="$(arg required)"
+        launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="image_topic" value="$(arg camera_topic)" />
+    <param name="debug_image_topic" value="$(arg debug_image_topic)" />
+    <param name="model_path" value="$(arg model_path)" />
+    <param name="flip" value="$(arg flip)" />
+  </node>
+
+  <!-- X11 调试图像查看器 -->
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view" name="factory_sign_rknn_viewer" output="screen"
+          launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+      <remap from="image" to="$(arg debug_image_topic)" />
+      <param name="image_transport" value="raw" />
+    </node>
+  </group>
+</launch>
