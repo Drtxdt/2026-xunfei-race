@@ -5,7 +5,7 @@
     2. TTS subscriber on /speak
     3. X11 camera viewer for MobaXterm
     4. QR decoder
-    5. QR -> LLM -> /speak
+    5. QR -> Spark LLM -> /speak
   -->
   <arg name="start_camera" default="true" />
   <arg name="start_audio_setup" default="true" />
@@ -27,8 +27,10 @@
   <arg name="initial_publish_delay_sec" default="0.8" />
   <arg name="publish_retries" default="1" />
   <arg name="voice_instruction" default="请帮我取食品大类的货品" />
-  <arg name="llm_service_name" default="/smart_factory_llm/reason_pickup_order" />
-  <arg name="llm_service_timeout" default="30.0" />
+  <arg name="api_password" default="$(optenv XF_SPARK_API_PASSWORD)" />
+  <arg name="spark_base_url" default="https://spark-api-open.xf-yun.com/x2/chat/completions" />
+  <arg name="spark_model" default="spark-x" />
+  <arg name="request_timeout_sec" default="90.0" />
   <arg name="master_volume" default="90%" />
   <arg name="pcm_volume" default="90%" />
   <arg name="extra_audio_control" default="" />
@@ -101,7 +103,9 @@
     <param name="initial_publish_delay_sec" value="$(arg initial_publish_delay_sec)" />
     <param name="publish_retries" value="$(arg publish_retries)" />
     <param name="voice_instruction" value="$(arg voice_instruction)" />
-    <param name="llm_service_name" value="$(arg llm_service_name)" />
-    <param name="llm_service_timeout" value="$(arg llm_service_timeout)" />
+    <param name="api_password" value="$(arg api_password)" />
+    <param name="spark_base_url" value="$(arg spark_base_url)" />
+    <param name="spark_model" value="$(arg spark_model)" />
+    <param name="request_timeout_sec" value="$(arg request_timeout_sec)" />
   </node>
 </launch>

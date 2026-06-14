@@ -11,7 +11,6 @@
 
   <depend>rospy</depend>
   <depend>std_msgs</depend>
-  <depend>ucar_2026_smart_factory_llm</depend>
 
   <exec_depend>usb_cam</exec_depend>
   <exec_depend>image_view</exec_depend>

@@ -1,17 +1,163 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Clean QR JSON results, call Spark LLM for reasoning, and publish to /speak."""
+"""Clean QR JSON, call Spark LLM directly, and publish slow speech to /speak."""
 
 from __future__ import annotations
 
 import json
+import logging
+import os
+import re
+import ssl
 import time
+import urllib.error
+import urllib.request
 from collections import OrderedDict
-from typing import Any, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import rospy
 from std_msgs.msg import String
-from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
+
+_LOGGER = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = """你是第21届全国大学生智能汽车竞赛「讯飞智慧工厂」赛项的调度推理模块。
+你必须严格根据用户给出的三个货品名称（来自现场二维码返回的 JSON 字段 result）和用户语音指令，完成语义推理。
+
+大类与目标车间对应关系（播报时必须使用下列车间全名）：
+- 食品、食品加工类、生鲜、食材等相关大类 → 车间名：食品加工车间；对外表述可用「食品大类」。
+- 日用品、日化、纺织、清洁用品等相关大类 → 车间名：日用品加工车间；对外表述可用「日用品大类」。
+- 电子产品、数码、电器等相关大类 → 车间名：电子产品生产车间；对外表述可用「电子产品大类」。
+
+推理要求：
+1. 从语音中解析两个目标：①物品领取区要取的「目标大类」；②仿真环境中要取的「目标大类」。若语音未明确写出，依据指令里出现的「取得…」「放置在…」等语义尽力推断；仍无法确定时以 null 表示并在 err_hint 说明。
+2. 判断三个货品各自属于哪一大类（食品/日用品/电子产品）。
+3. 对①②各自在三个货品中选出唯一最匹配的一项；若多个候选，选与语音关键词最贴近的一项。
+
+只输出一个 JSON 对象，不要 Markdown，不要代码围栏。键必须齐全，格式如下：
+{
+  "pickup_item": "字符串或null",
+  "pickup_major": "食品大类|日用品大类|电子产品大类之一或null",
+  "pickup_workshop": "食品加工车间|日用品加工车间|电子产品生产车间之一或null",
+  "sim_item": "字符串或null",
+  "sim_major": "同上或null",
+  "sim_workshop": "同上或null",
+  "announcement_physical": "取得X属于Y应放置在Z",
+  "announcement_simulation": "仿真环境中取得X属于Y应放置在Z",
+  "err_hint": "无问题时为空字符串"
+}
+
+announcement 句式必须与赛题一致：
+- announcement_physical 必须以「取得」开头，包含「属于」「应放置在」，车间为上述三个全名之一。
+- announcement_simulation 必须以「仿真环境中取得」开头（中间不要逗号），同样包含「属于」「应放置在」。
+"""
+
+
+def _strip_code_fence(text: str) -> str:
+    text = text.strip()
+    m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return text
+
+
+def _parse_llm_json(content: str) -> Dict[str, Any]:
+    raw = _strip_code_fence(content)
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("model output contains no JSON object")
+    return json.loads(raw[start : end + 1])
+
+
+def _build_user_prompt(items: List[str], voice: str) -> str:
+    lines = [
+        "三个货品名称（与车载视觉依次读取二维码的结果一致，可能对应食品/日用品/电子产品母类链接）：",
+        "1) {}".format(items[0]),
+        "2) {}".format(items[1]),
+        "3) {}".format(items[2]),
+        "",
+        "用户语音指令全文：",
+        voice.strip(),
+    ]
+    return "\n".join(lines)
+
+
+def _fill_announcements(data: Dict[str, Any]) -> Tuple[str, str, str]:
+    phy = (data.get("announcement_physical") or "").strip()
+    sim = (data.get("announcement_simulation") or "").strip()
+
+    def _line(prefix: str, item: str, major: str, workshop: str) -> str:
+        if prefix == "sim":
+            return "仿真环境中取得{}属于{}应放置在{}".format(item, major, workshop)
+        return "取得{}属于{}应放置在{}".format(item, major, workshop)
+
+    if not phy and data.get("pickup_item"):
+        phy = _line("phy", str(data.get("pickup_item") or ""),
+                     str(data.get("pickup_major") or ""),
+                     str(data.get("pickup_workshop") or ""))
+    if not sim and data.get("sim_item"):
+        sim = _line("sim", str(data.get("sim_item") or ""),
+                     str(data.get("sim_major") or ""),
+                     str(data.get("sim_workshop") or ""))
+    full = ""
+    if phy and sim:
+        full = "{}，{}".format(phy, sim)
+    elif phy:
+        full = phy
+    else:
+        full = sim
+    return phy, sim, full
+
+
+class SparkX2Client:
+    """Spark X2 HTTP Chat Completions (Bearer APIPassword)."""
+
+    def __init__(self, api_password: str, base_url: str, model: str, timeout_sec: float) -> None:
+        self._api_password = api_password.strip()
+        self._url = base_url.strip()
+        self._model = model.strip()
+        self._timeout = timeout_sec
+        if not self._api_password:
+            raise ValueError("api_password is empty, set XF_SPARK_API_PASSWORD or ~api_password")
+
+    def chat(self, system: str, user: str) -> str:
+        payload = {
+            "model": self._model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": False,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            self._url,
+            data=data,
+            headers={
+                "Authorization": "Bearer {}".format(self._api_password),
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        ctx = ssl.create_default_context()
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout, context=ctx) as resp:
+                body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            raise RuntimeError("Spark HTTP {}: {}".format(e.code, detail)) from e
+        except urllib.error.URLError as e:
+            raise RuntimeError("Spark network error: {}".format(e)) from e
+
+        decoded = json.loads(body)
+        choices = decoded.get("choices") or []
+        if not choices:
+            raise RuntimeError("Spark response has no choices: {}".format(body[:800]))
+        msg = choices[0].get("message") or {}
+        content = msg.get("content")
+        if not content:
+            raise RuntimeError("Spark response has no content: {}".format(body[:800]))
+        return str(content)
 
 
 class QRSpeakTestNode:
@@ -29,10 +175,15 @@ class QRSpeakTestNode:
         self.min_item_count = int(rospy.get_param("~min_item_count", 1))
         self.slow_speech = bool(rospy.get_param("~slow_speech", True))
         self.voice_instruction = rospy.get_param("~voice_instruction", "").strip()
-        self.llm_service_name = rospy.get_param(
-            "~llm_service_name", "/smart_factory_llm/reason_pickup_order"
+
+        self.api_password = rospy.get_param(
+            "~api_password", os.environ.get("XF_SPARK_API_PASSWORD", "")
+        ).strip()
+        self.spark_base_url = rospy.get_param(
+            "~spark_base_url", "https://spark-api-open.xf-yun.com/x2/chat/completions"
         )
-        self.llm_service_timeout = float(rospy.get_param("~llm_service_timeout", 30.0))
+        self.spark_model = rospy.get_param("~spark_model", "spark-x")
+        self.request_timeout_sec = float(rospy.get_param("~request_timeout_sec", 90.0))
 
         self.items_by_key: "OrderedDict[str, str]" = OrderedDict()
         self.last_spoken_at = 0.0
@@ -41,20 +192,22 @@ class QRSpeakTestNode:
 
         if not self.voice_instruction:
             rospy.logerr("qr_speak_test: voice_instruction param is empty, LLM call will be skipped.")
+        if not self.api_password:
+            rospy.logerr(
+                "qr_speak_test: api_password is empty. "
+                "Set XF_SPARK_API_PASSWORD env var or ~api_password ROS param."
+            )
 
         self.speak_pub = rospy.Publisher(self.speak_topic, String, queue_size=1)
         self.status_pub = rospy.Publisher(self.status_topic, String, queue_size=1, latch=True)
         self.sub = rospy.Subscriber(self.qr_topic, String, self.qr_cb, queue_size=10)
 
         rospy.loginfo(
-            "qr_speak_test: qr_topic=%s speak_topic=%s llm_service=%s slow=%s "
-            "min_items=%d debounce=%.1fs",
-            self.qr_topic,
-            self.speak_topic,
-            self.llm_service_name,
-            self.slow_speech,
-            self.min_item_count,
-            self.debounce_sec,
+            "qr_speak_test: qr_topic=%s speak_topic=%s spark_model=%s "
+            "slow=%s min_items=%d debounce=%.1fs timeout=%.0fs",
+            self.qr_topic, self.speak_topic, self.spark_model,
+            self.slow_speech, self.min_item_count,
+            self.debounce_sec, self.request_timeout_sec,
         )
         self.publish_status("waiting_for_qr")
 
@@ -73,7 +226,7 @@ class QRSpeakTestNode:
                 return
             self.processed = False
 
-        if not self.voice_instruction:
+        if not self.voice_instruction or not self.api_password:
             return
 
         new_item = False
@@ -87,9 +240,7 @@ class QRSpeakTestNode:
             new_item = True
             rospy.loginfo(
                 "Accepted QR item %d: %s (need at least %d)",
-                len(self.items_by_key),
-                text,
-                self.min_item_count,
+                len(self.items_by_key), text, self.min_item_count,
             )
 
         if new_item:
@@ -112,49 +263,60 @@ class QRSpeakTestNode:
             self._debounce_timer = None
 
         items = list(self.items_by_key.values())
-        # Pad to 3 items for LLM service requirement
         padded = list(items)
         while len(padded) < 3:
             padded.append(padded[-1])
         item_a, item_b, item_c = padded[:3]
 
-        rospy.loginfo("Waiting for LLM service: %s", self.llm_service_name)
         try:
-            rospy.wait_for_service(self.llm_service_name, timeout=self.llm_service_timeout)
-        except rospy.ROSException as e:
-            rospy.logerr("LLM service not available within %.1fs: %s", self.llm_service_timeout, e)
-            self.publish_status("llm_service_unavailable")
+            client = SparkX2Client(
+                self.api_password, self.spark_base_url,
+                self.spark_model, self.request_timeout_sec,
+            )
+        except ValueError as e:
+            rospy.logerr("Spark client init failed: %s", e)
+            self.publish_status("spark_init_failed:%s" % str(e))
             self.items_by_key.clear()
             self.processed = False
             return
 
-        reason_pickup = rospy.ServiceProxy(self.llm_service_name, ReasonPickupOrder)
+        user_prompt = _build_user_prompt([item_a, item_b, item_c], self.voice_instruction)
+        rospy.loginfo("Calling Spark LLM with items: %s, %s, %s", item_a, item_b, item_c)
 
-        rospy.loginfo("Calling LLM with items: %s, %s, %s", item_a, item_b, item_c)
         try:
-            res = reason_pickup(item_a, item_b, item_c, self.voice_instruction)
-        except rospy.ServiceException as e:
-            rospy.logerr("LLM service call failed: %s", e)
-            self.publish_status("llm_call_failed:%s" % str(e))
+            content = client.chat(SYSTEM_PROMPT, user_prompt)
+        except Exception as e:
+            rospy.logerr("Spark LLM call failed: %s", e)
+            self.publish_status("spark_call_failed:%s" % str(e))
             self.items_by_key.clear()
             self.processed = False
             return
 
-        if not res.success:
-            rospy.logerr("LLM reasoning failed: %s", res.error_message)
-            self.publish_status("llm_reasoning_failed:%s" % res.error_message)
+        rospy.loginfo("Spark LLM raw reply: %s", content[:300])
+
+        try:
+            data = _parse_llm_json(content)
+        except Exception as e:
+            rospy.logerr("Failed to parse LLM JSON: %s", e)
+            self.publish_status("llm_parse_failed:%s" % str(e))
             self.items_by_key.clear()
             self.processed = False
             return
 
-        speech_text = res.announcement_full.strip()
+        hint = (data.get("err_hint") or "").strip()
+        if hint:
+            rospy.logwarn("LLM hint: %s", hint)
+
+        _, _, full = _fill_announcements(data)
+        speech_text = full.strip()
         if not speech_text:
-            rospy.logerr("LLM returned empty announcement_full")
+            rospy.logerr("LLM returned empty announcement")
             self.publish_status("empty_announcement")
             self.items_by_key.clear()
             self.processed = False
             return
 
+        rospy.loginfo("LLM announcement: %s", speech_text)
         full_text = "%s%s%s" % (self.speak_prefix, speech_text, self.speak_suffix)
         self.publish_speech(full_text, force=True)
         self.items_by_key.clear()
@@ -263,6 +425,8 @@ class QRSpeakTestNode:
 
 def main() -> None:
     rospy.init_node("qr_speak_test_node")
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
     QRSpeakTestNode()
     rospy.spin()
 
