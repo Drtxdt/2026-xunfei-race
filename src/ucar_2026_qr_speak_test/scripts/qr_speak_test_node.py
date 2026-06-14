@@ -25,7 +25,8 @@ class QRSpeakTestNode:
         self.publish_retries = int(rospy.get_param("~publish_retries", 1))
         self.retry_interval_sec = float(rospy.get_param("~retry_interval_sec", 0.25))
         self.initial_publish_delay_sec = float(rospy.get_param("~initial_publish_delay_sec", 0.8))
-        self.expected_count = int(rospy.get_param("~expected_count", 3))
+        self.debounce_sec = float(rospy.get_param("~debounce_sec", 2.0))
+        self.min_item_count = int(rospy.get_param("~min_item_count", 1))
         self.slow_speech = bool(rospy.get_param("~slow_speech", True))
         self.voice_instruction = rospy.get_param("~voice_instruction", "").strip()
         self.llm_service_name = rospy.get_param(
@@ -36,6 +37,7 @@ class QRSpeakTestNode:
         self.items_by_key: "OrderedDict[str, str]" = OrderedDict()
         self.last_spoken_at = 0.0
         self.processed = False
+        self._debounce_timer: Optional[rospy.Timer] = None
 
         if not self.voice_instruction:
             rospy.logerr("qr_speak_test: voice_instruction param is empty, LLM call will be skipped.")
@@ -45,14 +47,25 @@ class QRSpeakTestNode:
         self.sub = rospy.Subscriber(self.qr_topic, String, self.qr_cb, queue_size=10)
 
         rospy.loginfo(
-            "qr_speak_test: qr_topic=%s speak_topic=%s llm_service=%s slow=%s expected=%d",
+            "qr_speak_test: qr_topic=%s speak_topic=%s llm_service=%s slow=%s "
+            "min_items=%d debounce=%.1fs",
             self.qr_topic,
             self.speak_topic,
             self.llm_service_name,
             self.slow_speech,
-            self.expected_count,
+            self.min_item_count,
+            self.debounce_sec,
         )
         self.publish_status("waiting_for_qr")
+
+    def _reset_debounce(self) -> None:
+        if self._debounce_timer is not None:
+            self._debounce_timer.shutdown()
+        self._debounce_timer = rospy.Timer(
+            rospy.Duration(self.debounce_sec),
+            self._on_debounce,
+            oneshot=True,
+        )
 
     def qr_cb(self, msg: String) -> None:
         if self.processed:
@@ -63,6 +76,7 @@ class QRSpeakTestNode:
         if not self.voice_instruction:
             return
 
+        new_item = False
         for key, text in self.extract_speakable_items(msg.data):
             if not text:
                 continue
@@ -70,21 +84,39 @@ class QRSpeakTestNode:
                 continue
 
             self.items_by_key[key] = text
+            new_item = True
             rospy.loginfo(
-                "Accepted QR item %d/%d: %s",
+                "Accepted QR item %d: %s (need at least %d)",
                 len(self.items_by_key),
-                self.expected_count,
                 text,
+                self.min_item_count,
             )
 
-            if len(self.items_by_key) >= self.expected_count:
-                self.call_llm_and_speak()
-                return
+        if new_item:
+            self._reset_debounce()
+
+    def _on_debounce(self, _event: rospy.timer.TimerEvent) -> None:
+        if self.processed and time.time() - self.last_spoken_at < self.min_interval_sec:
+            return
+        if len(self.items_by_key) < self.min_item_count:
+            self.publish_status(
+                "debounce_insufficient:%d/%d" % (len(self.items_by_key), self.min_item_count)
+            )
+            return
+        self.call_llm_and_speak()
 
     def call_llm_and_speak(self) -> None:
         self.processed = True
+        if self._debounce_timer is not None:
+            self._debounce_timer.shutdown()
+            self._debounce_timer = None
+
         items = list(self.items_by_key.values())
-        item_a, item_b, item_c = items[:3]
+        # Pad to 3 items for LLM service requirement
+        padded = list(items)
+        while len(padded) < 3:
+            padded.append(padded[-1])
+        item_a, item_b, item_c = padded[:3]
 
         rospy.loginfo("Waiting for LLM service: %s", self.llm_service_name)
         try:

@@ -21,7 +21,8 @@
   <arg name="offline_mode" default="fallback" />
   <arg name="speak_prefix" default="" />
   <arg name="speak_suffix" default="" />
-  <arg name="expected_count" default="3" />
+  <arg name="min_item_count" default="1" />
+  <arg name="debounce_sec" default="2.0" />
   <arg name="slow_speech" default="true" />
   <arg name="initial_publish_delay_sec" default="0.8" />
   <arg name="publish_retries" default="1" />
@@ -94,7 +95,8 @@
     <param name="status_topic" value="$(arg status_topic)" />
     <param name="speak_prefix" value="$(arg speak_prefix)" />
     <param name="speak_suffix" value="$(arg speak_suffix)" />
-    <param name="expected_count" value="$(arg expected_count)" />
+    <param name="min_item_count" value="$(arg min_item_count)" />
+    <param name="debounce_sec" value="$(arg debounce_sec)" />
     <param name="slow_speech" value="$(arg slow_speech)" />
     <param name="initial_publish_delay_sec" value="$(arg initial_publish_delay_sec)" />
     <param name="publish_retries" value="$(arg publish_retries)" />
