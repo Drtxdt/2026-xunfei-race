@@ -1,6 +1,6 @@
 # RKNN Traffic Light Test
 
-This package tests `yolo/models/best.rknn` on the car NPU, shows the annotated
+This package tests `yolo/models/best_640.rknn` on the car NPU, shows the annotated
 camera stream through X11, and announces stable traffic-light decisions.
 
 ## Start

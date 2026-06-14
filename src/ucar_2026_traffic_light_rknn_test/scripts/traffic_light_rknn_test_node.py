@@ -104,12 +104,12 @@ def resolve_model_path(param_path: str) -> str:
         return path
     try:
         yolo_dir = rospkg.RosPack().get_path("yolo")
-        default = os.path.join(yolo_dir, "models", "best.rknn")
+        default = os.path.join(yolo_dir, "models", "best_640.rknn")
         if os.path.isfile(default):
             return default
     except Exception:
         pass
-    rospy.logfatal("RKNN model not found. Set ~model_path or place best.rknn under yolo/models")
+    rospy.logfatal("RKNN model not found. Set ~model_path or place best_640.rknn under yolo/models")
     sys.exit(1)
 
 
