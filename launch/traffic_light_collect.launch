@@ -1,0 +1,44 @@
+<launch>
+  <!--
+    红灯采集启动文件
+    同时启动：底盘驱动 + 摄像头 + 视频流服务器 + 可选推理
+    之后在另一个终端运行键盘采集脚本
+  -->
+  <arg name="start_driver" default="true" />
+  <arg name="start_camera" default="true" />
+  <arg name="start_mjpeg" default="true" />
+  <arg name="start_inference" default="false" />
+  <arg name="mjpeg_port" default="8080" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="flip" default="false" />
+  <arg name="config_file" default="$(find yolo)/config/traffic_light.yaml" />
+
+  <!-- 运动控制：底盘驱动，订阅 /cmd_vel -->
+  <group if="$(arg start_driver)">
+    <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  </group>
+
+  <!-- 摄像头：USB 摄像头驱动，发布 /usb_cam/image_raw -->
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <!-- 视频流服务器：浏览器实时查看 http://<car_ip>:8080/stream -->
+  <group if="$(arg start_mjpeg)">
+    <node pkg="yolo" type="camera_mjpeg_server.py" name="camera_mjpeg_server" output="screen">
+      <param name="topic" value="$(arg camera_topic)" />
+      <param name="port" value="$(arg mjpeg_port)" />
+      <param name="flip" value="$(arg flip)" />
+    </node>
+  </group>
+
+  <!-- 红绿灯推理（默认关闭，数据集采集时不需要） -->
+  <group if="$(arg start_inference)">
+    <node pkg="yolo" type="traffic_light_inference_node.py"
+          name="traffic_light_inference" output="screen">
+      <rosparam command="load" file="$(arg config_file)" />
+      <param name="image_topic" value="$(arg camera_topic)" />
+      <param name="flip" value="$(arg flip)" />
+    </node>
+  </group>
+</launch>
