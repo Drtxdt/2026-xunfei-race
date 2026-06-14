@@ -807,6 +807,14 @@ class RknnRosNode:
         if ret != 0:
             rospy.logfatal("init_runtime failed: %s", ret)
             sys.exit(ret)
+        # WARMUP: stabilize NPU driver 0.8.2 with toolkit 2.3.2 models
+        try:
+            import numpy as _warmup_np
+            _dummy = _warmup_np.random.randint(0, 255, (640, 640, 3), dtype=_warmup_np.uint8)
+            rknn.inference(inputs=[_warmup_np.expand_dims(_dummy, axis=0)])
+            rospy.loginfo("NPU warmup inference completed")
+        except Exception:
+            pass
         return rknn
 
     def _image_cb(self, msg):
@@ -817,7 +825,7 @@ class RknnRosNode:
             rospy.logwarn_throttle(2.0, "cv_bridge error: %s", exc)
             return
         if self.flip:
-            frame = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, -1)  # 180-degree rotation for upside-down camera
         stamp = msg.header.stamp.to_sec() if msg.header.stamp else time.time()
         with self.lock:
             self.latest_frame = frame
