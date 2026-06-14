@@ -210,7 +210,7 @@ def yolov5_post_process_flat(output_arr: np.ndarray, conf_thresh, nms_thresh, nu
     arr = np.asarray(output_arr)
     arr = np.squeeze(arr)
     if arr.ndim != 2 or arr.shape[-1] != 5 + num_classes:
-        return None
+        return None, None, None
 
     boxes = arr[:, :4].astype(np.float32)
     obj = arr[:, 4].astype(np.float32)
@@ -247,13 +247,20 @@ def yolov5_post_process(outputs, input_size, conf_thresh, nms_thresh, num_classe
     """自动选择 3-head 或单输出后处理路径"""
     # 尝试单输出路径
     single = yolov5_post_process_flat(outputs[0], conf_thresh, nms_thresh, num_classes)
-    if single[0] is not None:
+    if single is not None and single[0] is not None:
         boxes, classes, scores = single
         model_size = infer_input_size_from_count(np.asarray(outputs[0]).squeeze().shape[0])
         if model_size and model_size != input_size:
             scale = float(input_size) / float(model_size)
             boxes = boxes * scale
         return boxes, classes, scores
+
+    # 如果 flat 路径确认这是单输出模型（ndim=2 且列数>=5），
+    # 说明只是当前帧无检测，不要回退到 3-head 路径
+    arr = np.asarray(outputs[0]).squeeze()
+    if arr.ndim == 2 and arr.shape[-1] >= 5:
+        return None, None, None
+
     # 回退到 3-head 路径
     return yolov5_post_process_3head(outputs, input_size, conf_thresh, nms_thresh, num_classes)
 
@@ -441,7 +448,7 @@ def infer_frame(rknn, frame: np.ndarray, class_names: List[str],
     """对单帧执行推理，返回 boxes/classes/scores 和预处理参数"""
     img, ratio, pad = letterbox(frame, input_size)
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    outputs = rknn.inference(inputs=[rgb])
+    outputs = rknn.inference(inputs=[np.expand_dims(rgb, axis=0)])
 
     if not output_shapes_logged:
         shapes = [getattr(o, "shape", None) for o in outputs]
@@ -637,11 +644,16 @@ def _repair_ros_logging():
         import rosgraph.roslogging as roslogging
         mapping = getattr(roslogging, "_logging_to_rospy_names", None)
         if isinstance(mapping, dict):
-            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARN", "E": "ERROR", "F": "FATAL"}.items():
-                if full == "FATAL" and full not in mapping:
-                    full = "CRITICAL"
+            # Ensure WARN / FATAL can be looked up by the rospy log handler
+            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARNING",
+                                 "E": "ERROR", "F": "CRITICAL"}.items():
                 if short not in mapping and full in mapping:
                     mapping[short] = mapping[full]
+            # Backfill: if we renamed WARNING -> WARN, ensure mapping has it
+            if "WARNING" in mapping and "WARN" not in mapping:
+                mapping["WARN"] = mapping["WARNING"]
+            if "CRITICAL" in mapping and "FATAL" not in mapping:
+                mapping["FATAL"] = mapping["CRITICAL"]
     except Exception:
         pass
 
@@ -676,6 +688,8 @@ class RknnRosNode:
         self.shutdown = False
         self.output_shapes_logged = False
         self.inference_ms = 0.0
+        self._error_count = 0
+        self._max_reloads = 3
 
         # 读取 ROS params（可被 launch 文件覆盖）
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
@@ -813,11 +827,20 @@ class RknnRosNode:
                 self.rknn, frame, self.class_names,
                 self.conf_thresh, self.nms_thresh, self.input_size,
                 self.output_shapes_logged)
+            self._error_count = 0  # 成功则清零
         except Exception as exc:
             _repair_ros_logging()
-            rospy.logerr_throttle(2.0, "RKNN inference failed: %s", exc)
-            self._publish_status("error")
-            self._reload_model()
+            self._error_count += 1
+            rospy.logerr_throttle(2.0, "RKNN inference failed (#%d/%d): %s",
+                                  self._error_count, self._max_reloads, exc)
+            if self._error_count <= self._max_reloads:
+                self._publish_status("error")
+                self._reload_model()
+            else:
+                self._publish_status("persistent_error")
+                rospy.logerr_throttle(2.0,
+                    "Max reloads (%d) exceeded. Sleeping; check model/config.",
+                    self._max_reloads)
             return
 
         dets = build_detections(boxes, classes, scores, self.class_names)
