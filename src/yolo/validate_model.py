@@ -441,7 +441,7 @@ def infer_frame(rknn, frame: np.ndarray, class_names: List[str],
     """对单帧执行推理，返回 boxes/classes/scores 和预处理参数"""
     img, ratio, pad = letterbox(frame, input_size)
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    outputs = rknn.inference(inputs=[rgb])
+    outputs = rknn.inference(inputs=[np.expand_dims(rgb, axis=0)])
 
     if not output_shapes_logged:
         shapes = [getattr(o, "shape", None) for o in outputs]
@@ -637,11 +637,16 @@ def _repair_ros_logging():
         import rosgraph.roslogging as roslogging
         mapping = getattr(roslogging, "_logging_to_rospy_names", None)
         if isinstance(mapping, dict):
-            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARN", "E": "ERROR", "F": "FATAL"}.items():
-                if full == "FATAL" and full not in mapping:
-                    full = "CRITICAL"
+            # Ensure WARN / FATAL can be looked up by the rospy log handler
+            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARNING",
+                                 "E": "ERROR", "F": "CRITICAL"}.items():
                 if short not in mapping and full in mapping:
                     mapping[short] = mapping[full]
+            # Backfill: if we renamed WARNING -> WARN, ensure mapping has it
+            if "WARNING" in mapping and "WARN" not in mapping:
+                mapping["WARN"] = mapping["WARNING"]
+            if "CRITICAL" in mapping and "FATAL" not in mapping:
+                mapping["FATAL"] = mapping["CRITICAL"]
     except Exception:
         pass
 
