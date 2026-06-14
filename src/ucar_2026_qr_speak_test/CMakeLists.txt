@@ -4,9 +4,12 @@ project(ucar_2026_qr_speak_test)
 find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
+  ucar_2026_smart_factory_llm
 )
 
-catkin_package()
+catkin_package(
+  CATKIN_DEPENDS rospy std_msgs ucar_2026_smart_factory_llm
+)
 
 catkin_install_python(PROGRAMS
   scripts/audio_setup_node.py

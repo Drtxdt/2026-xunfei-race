@@ -11,15 +11,12 @@
   <arg name="offline_mode" default="fallback" />
   <arg name="speak_prefix" default="" />
   <arg name="speak_suffix" default="" />
-  <arg name="repeat_same" default="false" />
-  <arg name="output_mode" default="task_result" />
   <arg name="expected_count" default="3" />
-  <arg name="pickup_target_major" default="食品大类" />
-  <arg name="sim_target_major" default="日用品大类" />
   <arg name="slow_speech" default="true" />
-  <arg name="speak_each_item" default="true" />
-  <arg name="allow_fallback_task_result" default="true" />
   <arg name="initial_publish_delay_sec" default="0.8" />
+  <arg name="voice_instruction" default="请帮我取食品大类的货品" />
+  <arg name="llm_service_name" default="/smart_factory_llm/reason_pickup_order" />
+  <arg name="llm_service_timeout" default="30.0" />
 
   <group if="$(arg start_camera)">
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
@@ -61,14 +58,11 @@
     <param name="status_topic" value="$(arg status_topic)" />
     <param name="speak_prefix" value="$(arg speak_prefix)" />
     <param name="speak_suffix" value="$(arg speak_suffix)" />
-    <param name="repeat_same" value="$(arg repeat_same)" />
-    <param name="output_mode" value="$(arg output_mode)" />
     <param name="expected_count" value="$(arg expected_count)" />
-    <param name="pickup_target_major" value="$(arg pickup_target_major)" />
-    <param name="sim_target_major" value="$(arg sim_target_major)" />
     <param name="slow_speech" value="$(arg slow_speech)" />
-    <param name="speak_each_item" value="$(arg speak_each_item)" />
-    <param name="allow_fallback_task_result" value="$(arg allow_fallback_task_result)" />
     <param name="initial_publish_delay_sec" value="$(arg initial_publish_delay_sec)" />
+    <param name="voice_instruction" value="$(arg voice_instruction)" />
+    <param name="llm_service_name" value="$(arg llm_service_name)" />
+    <param name="llm_service_timeout" value="$(arg llm_service_timeout)" />
   </node>
 </launch>
