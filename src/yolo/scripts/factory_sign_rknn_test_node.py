@@ -239,6 +239,7 @@ class FactorySignRknnTestNode:
         self.inference_rate = float(rospy.get_param("~inference_rate", 10.0))
         self.flip = bool(rospy.get_param("~flip", False))
         self.publish_debug = bool(rospy.get_param("~publish_debug", True))
+        self.log_top_scores = bool(rospy.get_param("~log_top_scores", True))
         self.image_timeout = float(rospy.get_param("~image_timeout", 5.0))
         self.confirm_frames = int(rospy.get_param("~consensus_confirm_frames", 3))
         self.release_frames = int(rospy.get_param("~consensus_release_frames", 3))
@@ -394,6 +395,15 @@ class FactorySignRknnTestNode:
             return None, None, None
 
         if boxes is None:
+            if self.log_top_scores and self.last_model_top_scores:
+                rospy.loginfo_throttle(
+                    2.0,
+                    "No factory-sign detection above %.3f. model_top_scores=%s "
+                    "model_class_indices=%s",
+                    self.conf_thresh,
+                    ["%d:%.3f" % (idx, score)
+                     for idx, score in self.last_model_top_scores[:5]],
+                    self.model_class_indices)
             return None, None, None
         return self.scale_boxes_to_frame(boxes, ratio, pad, frame.shape)
 
