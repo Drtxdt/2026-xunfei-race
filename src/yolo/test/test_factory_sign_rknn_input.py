@@ -55,6 +55,26 @@ def _load_node_module():
 
 
 class FactorySignRknnInputTest(unittest.TestCase):
+    def test_repair_logging_levels_backfills_warn_mapping(self):
+        rosgraph = types.ModuleType("rosgraph")
+        roslogging = types.ModuleType("rosgraph.roslogging")
+        roslogging._logging_to_rospy_names = {
+            "DEBUG": "debug",
+            "INFO": "info",
+            "WARNING": "warn",
+            "ERROR": "error",
+            "CRITICAL": "fatal",
+        }
+        rosgraph.roslogging = roslogging
+        sys.modules["rosgraph"] = rosgraph
+        sys.modules["rosgraph.roslogging"] = roslogging
+
+        module = _load_node_module()
+        module.repair_logging_levels()
+
+        self.assertEqual("warn", roslogging._logging_to_rospy_names["WARN"])
+        self.assertEqual("warn", roslogging._logging_to_rospy_names["W"])
+
     def test_prepare_rknn_input_adds_batch_dimension(self):
         module = _load_node_module()
         image = np.zeros((640, 640, 3), dtype=np.uint8)

@@ -665,15 +665,18 @@ def _repair_ros_logging():
         mapping = getattr(roslogging, "_logging_to_rospy_names", None)
         if isinstance(mapping, dict):
             # Ensure WARN / FATAL can be looked up by the rospy log handler
-            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARNING",
-                                 "E": "ERROR", "F": "CRITICAL"}.items():
-                if short not in mapping and full in mapping:
-                    mapping[short] = mapping[full]
-            # Backfill: if we renamed WARNING -> WARN, ensure mapping has it
             if "WARNING" in mapping and "WARN" not in mapping:
                 mapping["WARN"] = mapping["WARNING"]
+            if "WARN" in mapping and "WARNING" not in mapping:
+                mapping["WARNING"] = mapping["WARN"]
             if "CRITICAL" in mapping and "FATAL" not in mapping:
                 mapping["FATAL"] = mapping["CRITICAL"]
+            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARNING",
+                                 "E": "ERROR", "F": "FATAL"}.items():
+                if full == "FATAL" and full not in mapping:
+                    full = "CRITICAL"
+                if short not in mapping and full in mapping:
+                    mapping[short] = mapping[full]
     except Exception:
         pass
 

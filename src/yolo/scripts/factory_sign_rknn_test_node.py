@@ -88,7 +88,13 @@ def repair_logging_levels() -> None:
         import rosgraph.roslogging as roslogging
         mapping = getattr(roslogging, "_logging_to_rospy_names", None)
         if isinstance(mapping, dict):
-            for sn, fn in {"D": "DEBUG", "I": "INFO", "W": "WARN",
+            if "WARNING" in mapping and "WARN" not in mapping:
+                mapping["WARN"] = mapping["WARNING"]
+            if "WARN" in mapping and "WARNING" not in mapping:
+                mapping["WARNING"] = mapping["WARN"]
+            if "CRITICAL" in mapping and "FATAL" not in mapping:
+                mapping["FATAL"] = mapping["CRITICAL"]
+            for sn, fn in {"D": "DEBUG", "I": "INFO", "W": "WARNING",
                            "E": "ERROR", "F": "FATAL"}.items():
                 if fn == "FATAL" and fn not in mapping:
                     fn = "CRITICAL"
