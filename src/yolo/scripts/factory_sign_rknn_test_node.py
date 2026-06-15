@@ -200,6 +200,7 @@ class FactorySignRknnTestNode:
         self.last_spoken_at = 0.0
         self.inference_ms = 0.0
         self.output_shapes_logged = False
+        self.model_class_count_warned = False
 
         self.rknn = self.load_rknn()
         self.speak_pub = rospy.Publisher(self.speak_topic, String, queue_size=1)
@@ -346,7 +347,14 @@ class FactorySignRknnTestNode:
         # 单输出路径 (Detect 层直接输出)
         arr = np.asarray(outputs[0])
         arr = np.squeeze(arr)
-        if arr.ndim == 2 and arr.shape[-1] == 5 + len(CLASS_NAMES):
+        if arr.ndim == 2 and arr.shape[-1] >= 5 + len(CLASS_NAMES):
+            actual_classes = arr.shape[-1] - 5
+            if actual_classes != len(CLASS_NAMES) and not self.model_class_count_warned:
+                rospy.logwarn(
+                    "RKNN model outputs %d classes, but factory_sign node is configured for %d. "
+                    "Using the first %d class scores: %s",
+                    actual_classes, len(CLASS_NAMES), len(CLASS_NAMES), CLASS_NAMES)
+                self.model_class_count_warned = True
             boxes, classes, scores, model_size = self.single_output_post(arr)
             if boxes is not None and model_size and model_size != self.input_size:
                 boxes *= float(self.input_size) / float(model_size)
@@ -366,7 +374,7 @@ class FactorySignRknnTestNode:
         model_size = infer_yolov5_input_size_from_count(arr.shape[0])
         boxes = arr[:, :4].astype(np.float32)
         obj = arr[:, 4].astype(np.float32)
-        cls_probs = arr[:, 5:].astype(np.float32)
+        cls_probs = arr[:, 5:5 + len(CLASS_NAMES)].astype(np.float32)
         if obj.size and (obj.max() > 1.0 or obj.min() < 0.0):
             obj = sigmoid(obj)
         if cls_probs.size and (cls_probs.max() > 1.0 or cls_probs.min() < 0.0):
