@@ -207,6 +207,7 @@ class FactorySignRknnTestNode:
         self.inference_ms = 0.0
         self.output_shapes_logged = False
         self.model_class_count_warned = False
+        self.last_model_top_scores: List[Tuple[int, float]] = []
 
         self.rknn = self.load_rknn()
         self.speak_pub = rospy.Publisher(self.speak_topic, String, queue_size=1)
@@ -231,6 +232,8 @@ class FactorySignRknnTestNode:
                                              "/factory_sign_rknn_test/status")
         self.model_path = resolve_model_path(rospy.get_param("~model_path", ""))
         self.input_size = int(rospy.get_param("~input_size", 640))
+        self.model_class_indices = self.parse_model_class_indices(
+            rospy.get_param("~model_class_indices", "0,1,2"))
         self.conf_thresh = float(rospy.get_param("~confidence_threshold", 0.3))
         self.nms_iou = float(rospy.get_param("~nms_iou_threshold", 0.45))
         self.inference_rate = float(rospy.get_param("~inference_rate", 10.0))
@@ -254,6 +257,24 @@ class FactorySignRknnTestNode:
         self.min_speech_interval = float(rospy.get_param("~min_speech_interval_sec", 2.0))
         self.speech_wait = bool(rospy.get_param("~speech_wait", False))
         self.save_debug = bool(rospy.get_param("~save_debug_images", True))
+
+    def parse_model_class_indices(self, value) -> List[int]:
+        if isinstance(value, str):
+            parts = [part.strip() for part in value.split(",") if part.strip()]
+        elif isinstance(value, (list, tuple)):
+            parts = list(value)
+        else:
+            parts = []
+        try:
+            indices = [int(part) for part in parts]
+        except (TypeError, ValueError):
+            rospy.logwarn("Invalid ~model_class_indices=%r; using 0,1,2", value)
+            indices = [0, 1, 2]
+        if len(indices) != len(CLASS_NAMES):
+            rospy.logwarn("~model_class_indices must contain %d values; using 0,1,2",
+                          len(CLASS_NAMES))
+            indices = [0, 1, 2]
+        return indices
 
     # ---- 模型加载 ----
     def load_rknn(self):
@@ -358,8 +379,8 @@ class FactorySignRknnTestNode:
             if actual_classes != len(CLASS_NAMES) and not self.model_class_count_warned:
                 rospy.logwarn(
                     "RKNN model outputs %d classes, but factory_sign node is configured for %d. "
-                    "Using the first %d class scores: %s",
-                    actual_classes, len(CLASS_NAMES), len(CLASS_NAMES), CLASS_NAMES)
+                    "Using model_class_indices=%s for %s",
+                    actual_classes, len(CLASS_NAMES), self.model_class_indices, CLASS_NAMES)
                 self.model_class_count_warned = True
             boxes, classes, scores, model_size = self.single_output_post(arr)
             if boxes is not None and model_size and model_size != self.input_size:
@@ -380,11 +401,21 @@ class FactorySignRknnTestNode:
         model_size = infer_yolov5_input_size_from_count(arr.shape[0])
         boxes = arr[:, :4].astype(np.float32)
         obj = arr[:, 4].astype(np.float32)
-        cls_probs = arr[:, 5:5 + len(CLASS_NAMES)].astype(np.float32)
+        raw_cls_probs = arr[:, 5:].astype(np.float32)
         if obj.size and (obj.max() > 1.0 or obj.min() < 0.0):
             obj = sigmoid(obj)
-        if cls_probs.size and (cls_probs.max() > 1.0 or cls_probs.min() < 0.0):
-            cls_probs = sigmoid(cls_probs)
+        if raw_cls_probs.size and (raw_cls_probs.max() > 1.0 or raw_cls_probs.min() < 0.0):
+            raw_cls_probs = sigmoid(raw_cls_probs)
+        model_scores = obj[:, None] * raw_cls_probs
+        self.last_model_top_scores = [
+            (int(i), float(model_scores[:, i].max()))
+            for i in range(model_scores.shape[1])
+        ]
+        self.last_model_top_scores.sort(key=lambda item: item[1], reverse=True)
+        if max(self.model_class_indices, default=-1) >= raw_cls_probs.shape[1]:
+            raise ValueError("model_class_indices=%s exceeds model class count=%d" %
+                             (self.model_class_indices, raw_cls_probs.shape[1]))
+        cls_probs = raw_cls_probs[:, self.model_class_indices]
         class_ids = np.argmax(cls_probs, axis=1)
         scores = obj * cls_probs[np.arange(len(cls_probs)), class_ids]
         keep = np.where(scores >= self.conf_thresh)[0]
@@ -560,6 +591,11 @@ class FactorySignRknnTestNode:
             "diagnostics": {
                 "fps": round(1000.0 / max(self.inference_ms, 1.0), 1),
                 "inference_ms": round(self.inference_ms, 1),
+                "model_class_indices": self.model_class_indices,
+                "model_top_scores": [
+                    {"model_class": idx, "score": round(score, 4)}
+                    for idx, score in self.last_model_top_scores[:5]
+                ],
             },
         }
         self.det_pub.publish(String(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))

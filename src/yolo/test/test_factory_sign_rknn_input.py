@@ -98,6 +98,8 @@ class FactorySignRknnInputTest(unittest.TestCase):
         node = object.__new__(module.FactorySignRknnTestNode)
         node.conf_thresh = 0.3
         node.nms_iou = 0.45
+        node.model_class_indices = [0, 1, 2]
+        node.last_model_top_scores = []
 
         arr = np.zeros((25200, 9), dtype=np.float32)
         arr[0, :4] = [320.0, 320.0, 100.0, 80.0]
@@ -110,6 +112,27 @@ class FactorySignRknnInputTest(unittest.TestCase):
         self.assertEqual([0], classes.tolist())
         self.assertEqual((1, 4), boxes.shape)
         self.assertAlmostEqual(0.72, float(scores[0]), places=5)
+        self.assertEqual(3, node.last_model_top_scores[0][0])
+
+    def test_single_output_post_can_map_fourth_model_class_to_daily(self):
+        module = _load_node_module()
+        node = object.__new__(module.FactorySignRknnTestNode)
+        node.conf_thresh = 0.3
+        node.nms_iou = 0.45
+        node.model_class_indices = [0, 1, 3]
+        node.last_model_top_scores = []
+
+        arr = np.zeros((25200, 9), dtype=np.float32)
+        arr[0, :4] = [320.0, 320.0, 100.0, 80.0]
+        arr[0, 4] = 0.9
+        arr[0, 5:9] = [0.1, 0.1, 0.05, 0.99]
+
+        boxes, classes, scores, model_size = node.single_output_post(arr)
+
+        self.assertEqual(640, model_size)
+        self.assertEqual([2], classes.tolist())
+        self.assertEqual((1, 4), boxes.shape)
+        self.assertAlmostEqual(0.891, float(scores[0]), places=5)
 
 
 if __name__ == "__main__":
