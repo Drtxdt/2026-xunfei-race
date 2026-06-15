@@ -50,6 +50,7 @@
         name="factory_sign_rknn_test_node"
         output="screen"
         required="$(arg required)"
+        args="--ros --model $(find yolo)/models/factory_sign_3cls.rknn --classes food,electronic,daily"
         launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
     <rosparam command="load" file="$(arg config_file)" />
     <param name="image_topic" value="$(arg camera_topic)" />

@@ -244,24 +244,16 @@ def yolov5_post_process_flat(output_arr: np.ndarray, conf_thresh, nms_thresh, nu
 
 
 def yolov5_post_process(outputs, input_size, conf_thresh, nms_thresh, num_classes):
-    """自动选择 3-head 或单输出后处理路径"""
-    # 尝试单输出路径
-    single = yolov5_post_process_flat(outputs[0], conf_thresh, nms_thresh, num_classes)
-    if single is not None and single[0] is not None:
-        boxes, classes, scores = single
-        model_size = infer_input_size_from_count(np.asarray(outputs[0]).squeeze().shape[0])
-        if model_size and model_size != input_size:
-            scale = float(input_size) / float(model_size)
-            boxes = boxes * scale
-        return boxes, classes, scores
-
-    # 如果 flat 路径确认这是单输出模型（ndim=2 且列数>=5），
-    # 说明只是当前帧无检测，不要回退到 3-head 路径
+    """自动选择单输出(flat)或 3-head 后处理路径"""
     arr = np.asarray(outputs[0]).squeeze()
-    if arr.ndim == 2 and arr.shape[-1] >= 5:
-        return None, None, None
-
-    # 回退到 3-head 路径
+    if arr.ndim == 2 and arr.shape[-1] == 5 + num_classes:
+        boxes, classes, scores = yolov5_post_process_flat(
+            outputs[0], conf_thresh, nms_thresh, num_classes)
+        if boxes is not None:
+            model_size = infer_input_size_from_count(arr.shape[0])
+            if model_size and model_size != input_size:
+                boxes = boxes * (float(input_size) / float(model_size))
+        return boxes, classes, scores
     return yolov5_post_process_3head(outputs, input_size, conf_thresh, nms_thresh, num_classes)
 
 
@@ -292,12 +284,14 @@ class ConsensusFilter:
 
     def __init__(self, num_classes: int, confirm_frames: int = 3,
                  release_frames: int = 3, timeout: float = 1.0,
-                 ema_alpha: float = 0.3):
+                 ema_alpha: float = 0.3,
+                 direction_pair: Optional[Tuple[int, int]] = None):
         self.num_classes = num_classes
         self.confirm_frames = confirm_frames
         self.release_frames = release_frames
         self.timeout = timeout
         self.ema_alpha = ema_alpha
+        self.direction_pair = tuple(sorted(direction_pair)) if direction_pair else None
 
         self.class_hits = {i: 0 for i in range(num_classes)}
         self.consensus_class: Optional[int] = None
@@ -342,6 +336,15 @@ class ConsensusFilter:
                 self.consensus_held += 1
                 self.release_counter = 0
             else:
+                # Direction lock: reject oscillation within locked pair
+                # (e.g. green_left ⇄ green_right from INT8 quantization)
+                if (self.direction_pair is not None and
+                        self.consensus_class in self.direction_pair and
+                        best_cls in self.direction_pair and
+                        self.consensus_class != best_cls):
+                    self.consensus_started_at = time.time()
+                    self.release_counter = 0
+                    return
                 self.consensus_class = best_cls
                 self.consensus_confidence = best_conf
                 self.consensus_held = 1
@@ -665,7 +668,6 @@ class RknnRosNode:
                  input_size: int, conf_thresh: float, nms_thresh: float):
         _repair_ros_logging()
         import rospy
-        import rospkg
         from cv_bridge import CvBridge
         from std_msgs.msg import String
         from sensor_msgs.msg import Image as RosImage
@@ -704,6 +706,7 @@ class RknnRosNode:
         self.release_frames = int(rospy.get_param("~consensus_release_frames", 3))
         self.consensus_timeout = float(rospy.get_param("~consensus_timeout", 1.0))
         self.ema_alpha = float(rospy.get_param("~consensus_ema_alpha", 0.3))
+        self.direction_pair_str = rospy.get_param("~consensus_direction_pair", "")
         self.enable_speech = bool(rospy.get_param("~enable_speech", True))
         self.announce_service = rospy.get_param("~announce_service", "/competition_speech/announce")
         self.announce_timeout = float(rospy.get_param("~announce_service_timeout_sec", 0.5))
@@ -716,9 +719,11 @@ class RknnRosNode:
         self.speech_texts = self._load_speech_texts()
 
         # 共识滤波器
+        direction_pair = self._parse_direction_pair(self.direction_pair_str)
         self.consensus_filter = ConsensusFilter(
             self.num_classes, self.confirm_frames,
-            self.release_frames, self.consensus_timeout, self.ema_alpha)
+            self.release_frames, self.consensus_timeout, self.ema_alpha,
+            direction_pair)
         self.last_spoken_class: Optional[str] = None
         self.last_spoken_at: float = 0.0
 
@@ -744,9 +749,10 @@ class RknnRosNode:
             return path
         try:
             yolo_dir = rospkg.RosPack().get_path("yolo")
-            default = os.path.join(yolo_dir, "models", "best.rknn")
-            if os.path.isfile(default):
-                return default
+            for candidate in ("factory_sign_3cls.rknn", "best.rknn"):
+                default = os.path.join(yolo_dir, "models", candidate)
+                if os.path.isfile(default):
+                    return default
         except Exception:
             pass
         import rospy
@@ -761,6 +767,23 @@ class RknnRosNode:
             default = f"识别到{name}。"
             texts[name] = rospy.get_param(param_key, default)
         return texts
+
+    def _parse_direction_pair(self, pair_str: str) -> Optional[Tuple[int, int]]:
+        if not pair_str or not pair_str.strip():
+            return None
+        parts = [s.strip() for s in pair_str.split(",")]
+        if len(parts) != 2:
+            return None
+        ids: List[int] = []
+        for name in parts:
+            if name in self.class_names:
+                ids.append(self.class_names.index(name))
+            else:
+                try:
+                    ids.append(int(name))
+                except ValueError:
+                    return None
+        return (ids[0], ids[1])
 
     def _load_rknn_ros(self):
         import rospy
@@ -784,6 +807,14 @@ class RknnRosNode:
         if ret != 0:
             rospy.logfatal("init_runtime failed: %s", ret)
             sys.exit(ret)
+        # WARMUP: stabilize NPU driver 0.8.2 with toolkit 2.3.2 models
+        try:
+            import numpy as _warmup_np
+            _dummy = _warmup_np.random.randint(0, 255, (640, 640, 3), dtype=_warmup_np.uint8)
+            rknn.inference(inputs=[_warmup_np.expand_dims(_dummy, axis=0)])
+            rospy.loginfo("NPU warmup inference completed")
+        except Exception:
+            pass
         return rknn
 
     def _image_cb(self, msg):
@@ -794,7 +825,7 @@ class RknnRosNode:
             rospy.logwarn_throttle(2.0, "cv_bridge error: %s", exc)
             return
         if self.flip:
-            frame = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, -1)  # 180-degree rotation for upside-down camera
         stamp = msg.header.stamp.to_sec() if msg.header.stamp else time.time()
         with self.lock:
             self.latest_frame = frame
@@ -990,7 +1021,7 @@ def main():
     parser.add_argument("--consensus", action="store_true",
                         help="Enable consensus filtering in CLI camera mode")
 
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
     class_names = [s.strip() for s in args.classes.split(",")]
 
     if args.ros:

@@ -208,10 +208,10 @@ def check_inference(model_path: str) -> bool:
         rknn.load_rknn(model_path)
         rknn.init_runtime(target='rk3588')
 
-    # 生成测试图像（纯黑）
-    test_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    # 生成测试图像（纯黑，匹配模型输入尺寸）
+    test_img = np.zeros((TEST_IMAGE_SIZE, TEST_IMAGE_SIZE, 3), dtype=np.uint8)
     t0 = time.time()
-    outputs = rknn.inference(inputs=[test_img])
+    outputs = rknn.inference(inputs=[np.expand_dims(test_img, axis=0)])
     elapsed = (time.time() - t0) * 1000
 
     shapes = [getattr(o, "shape", None) for o in outputs]
@@ -313,11 +313,11 @@ def check_detection_sample(model_path: str) -> bool:
         rknn.init_runtime(target='rk3588')
 
     # 生成一张有简单矩形图案的测试图
-    test_img = np.zeros((480, 640, 3), dtype=np.uint8)
+    test_img = np.zeros((TEST_IMAGE_SIZE, TEST_IMAGE_SIZE, 3), dtype=np.uint8)
     cv2.rectangle(test_img, (100, 100, 300, 300), (128, 128, 128), -1)
     test_img_rgb = cv2.cvtColor(test_img, cv2.COLOR_BGR2RGB)
 
-    outputs = rknn.inference(inputs=[test_img_rgb])
+    outputs = rknn.inference(inputs=[np.expand_dims(test_img_rgb, axis=0)])
     rknn.release()
 
     # 验证输出格式

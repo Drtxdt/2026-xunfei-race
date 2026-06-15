@@ -9,7 +9,7 @@ debug_image_topic: /factory_sign_rknn_test/debug_image
 status_topic: /factory_sign_rknn_test/status
 
 # 模型
-model_path: ""               # 空 = 自动查找 $(find yolo)/models/factory_sign_3cls.rknn
+model_path: "models/factory_sign_3cls.rknn"  # 厂区标识牌模型（3类：food/electronic/daily）
 input_size: 640              # 模型输入尺寸（640 对应 3-head 输出）
 confidence_threshold: 0.5
 nms_iou_threshold: 0.45
@@ -21,6 +21,7 @@ consensus_confirm_frames: 3   # N 帧连续检测到同一类别才确认
 consensus_release_frames: 3   # M 帧连续未检测到才释放
 consensus_timeout: 1.0        # 确认超时 (秒)
 consensus_ema_alpha: 0.3      # EMA 平滑系数 (0-1, 越小越平滑)
+consensus_direction_pair: ""  # 方向锁定对，逗号分隔两个类名/ID（如 "green_left,green_right"），空=不启用
 
 # 调试
 publish_debug: true
