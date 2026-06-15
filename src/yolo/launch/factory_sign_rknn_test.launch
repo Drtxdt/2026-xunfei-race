@@ -4,14 +4,16 @@
        启动: roslaunch yolo factory_sign_rknn_test.launch
 
        可选参数:
-         start_camera:  启动 USB 摄像头 (default: true)
-         start_tts:     启动 TTS 语音节点 (default: true)
+         start_camera:           启动 USB 摄像头 (default: true)
+         start_tts:              启动 TTS 语音节点 (default: true)
          start_competition_speech: 启动竞赛语音服务 (default: true)
-         start_viewer:  启动 X11 调试图像查看器 (default: true)
-         camera_topic:  摄像头话题 (default: /usb_cam/image_raw)
-         model_path:    模型路径，空=自动查找 (default: "")
-         flip:          水平翻转图像 (default: false)
-         chars_per_second: TTS 语速 (default: 2.0)
+         start_viewer:           启动 X11 调试图像查看器 (default: true)
+         camera_topic:           摄像头话题 (default: /usb_cam/image_raw)
+         debug_image_topic:      调试图像话题 (default: /factory_sign_rknn_test/debug_image)
+         model_path:             模型路径，空=自动查找 factory_sign_3cls_fp16.rknn (default: "")
+         flip:                   水平翻转图像 (default: false)
+         chars_per_second:       TTS 语速 (default: 2.0)
+         save_debug_images:      保存调试截图到 scripts/ (default: true)
        ============================================================ -->
 
   <arg name="start_camera" default="true" />
@@ -46,11 +48,10 @@
 
   <!-- 厂区标识牌 RKNN 推理节点 -->
   <node pkg="yolo"
-        type="validate_model.py"
+        type="factory_sign_rknn_test_node.py"
         name="factory_sign_rknn_test_node"
         output="screen"
         required="$(arg required)"
-        args="--ros --model $(find yolo)/models/factory_sign_3cls_v140.rknn --classes food,electronic,daily"
         launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
     <rosparam command="load" file="$(arg config_file)" />
     <param name="image_topic" value="$(arg camera_topic)" />
@@ -61,7 +62,7 @@
 
   <!-- X11 调试图像查看器 -->
   <group if="$(arg start_viewer)">
-    <node pkg="image_view" type="image_view" name="factory_sign_rknn_viewer" output="screen"
+    <node pkg="image_view" type="image_view" name="factory_sign_rknn_x11_viewer" output="screen"
           launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
       <remap from="image" to="$(arg debug_image_topic)" />
       <param name="image_transport" value="raw" />

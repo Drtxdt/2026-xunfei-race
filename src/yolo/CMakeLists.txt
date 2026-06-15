@@ -3,7 +3,6 @@ project(yolo)
 
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
-  geometry_msgs
   rospy
   sensor_msgs
   std_msgs
@@ -12,16 +11,12 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package()
 
 catkin_install_python(PROGRAMS
-  camera_mjpeg_server.py
-  coco2yolo.py
-  collect_factory_sign.py
-  keyboard_collect_yolo_images.py
-  qr_collect_and_decode.py
+  test_factory_sign.py
   validate_model.py
-  scripts/check_factory_sign_rknn_test.py
+  scripts/factory_sign_rknn_test_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-install(DIRECTORY launch config models
+install(DIRECTORY launch config models scripts
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
