@@ -223,6 +223,17 @@ def yolov5_post_process_flat(output_arr: np.ndarray, conf_thresh, nms_thresh, nu
     class_ids = np.argmax(class_probs, axis=1)
     class_scores = class_probs[np.arange(class_probs.shape[0]), class_ids]
     scores = obj * class_scores
+    # DEBUG: 打印 top-5 分数和 obj/class 统计，排查检测为空的原因
+    _debug_printed = getattr(yolov5_post_process_flat, '_debug_printed', False)
+    if not _debug_printed:
+        top_k = min(5, len(scores))
+        top_idx = np.argsort(scores)[-top_k:][::-1] if len(scores) >= top_k else np.arange(len(scores))
+        print(f"[DEBUG flat] conf_thresh={conf_thresh} | "
+              f"obj range=[{obj.min():.4f}, {obj.max():.4f}] | "
+              f"cls range=[{class_probs.min():.4f}, {class_probs.max():.4f}] | "
+              f"top scores: {[round(float(scores[i]), 4) for i in top_idx]} | "
+              f"top classes: {[int(class_ids[i]) for i in top_idx]}")
+        yolov5_post_process_flat._debug_printed = True
     keep = np.where(scores >= conf_thresh)[0]
     if keep.size == 0:
         return None, None, None
@@ -246,7 +257,13 @@ def yolov5_post_process_flat(output_arr: np.ndarray, conf_thresh, nms_thresh, nu
 def yolov5_post_process(outputs, input_size, conf_thresh, nms_thresh, num_classes):
     """自动选择单输出(flat)或 3-head 后处理路径"""
     arr = np.asarray(outputs[0]).squeeze()
-    if arr.ndim == 2 and arr.shape[-1] == 5 + num_classes:
+    if arr.ndim == 2:
+        # 自动检测模型实际类别数（5 bbox dims + N class dims）
+        actual_nc = arr.shape[-1] - 5
+        if actual_nc != num_classes:
+            print(f"[WARN] Model output has {arr.shape[-1]} dims = 5 bbox + {actual_nc} classes, "
+                  f"but {num_classes} class names given. Auto-correcting to {actual_nc} classes.")
+            num_classes = actual_nc
         boxes, classes, scores = yolov5_post_process_flat(
             outputs[0], conf_thresh, nms_thresh, num_classes)
         if boxes is not None:
@@ -808,11 +825,28 @@ class RknnRosNode:
             rospy.logfatal("init_runtime failed: %s", ret)
             sys.exit(ret)
         # WARMUP: stabilize NPU driver 0.8.2 with toolkit 2.3.2 models
+        # Also auto-detect actual class count from model output shape
         try:
             import numpy as _warmup_np
             _dummy = _warmup_np.random.randint(0, 255, (640, 640, 3), dtype=_warmup_np.uint8)
-            rknn.inference(inputs=[_warmup_np.expand_dims(_dummy, axis=0)])
+            outputs = rknn.inference(inputs=[_warmup_np.expand_dims(_dummy, axis=0)])
             rospy.loginfo("NPU warmup inference completed")
+            # Auto-detect class count
+            arr = np.asarray(outputs[0]).squeeze()
+            if arr.ndim == 2:
+                actual_nc = arr.shape[-1] - 5
+                if actual_nc > self.num_classes:
+                    rospy.logwarn("Model expects %d classes but %d given. Padding class_names.",
+                                  actual_nc, self.num_classes)
+                    while len(self.class_names) < actual_nc:
+                        self.class_names.append(f"class_{len(self.class_names)}")
+                    self.num_classes = len(self.class_names)
+                    # Re-create consensus filter with correct class count
+                    direction_pair = self._parse_direction_pair(self.direction_pair_str)
+                    self.consensus_filter = ConsensusFilter(
+                        self.num_classes, self.confirm_frames,
+                        self.release_frames, self.consensus_timeout, self.ema_alpha,
+                        direction_pair)
         except Exception:
             pass
         return rknn
