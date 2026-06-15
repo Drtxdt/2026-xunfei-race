@@ -16,6 +16,7 @@
   <depend>cv_bridge</depend>
 
   <exec_depend>usb_cam</exec_depend>
+  <exec_depend>image_view</exec_depend>
   <exec_depend>ucar_controller</exec_depend>
 
   <export>

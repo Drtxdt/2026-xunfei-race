@@ -114,6 +114,14 @@ def letterbox(im: np.ndarray, new_shape: int, color=(0, 0, 0)):
     return cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color), r, (dw, dh)
 
 
+def prepare_rknn_input(image: np.ndarray) -> np.ndarray:
+    if image.ndim == 3:
+        return np.expand_dims(image, axis=0)
+    if image.ndim == 4:
+        return image
+    raise ValueError("RKNN input image must be 3D or 4D, got shape=%s" % (image.shape,))
+
+
 def xywh2xyxy(x: np.ndarray) -> np.ndarray:
     y = np.copy(x)
     y[:, 0] = x[:, 0] - x[:, 2] / 2.0
@@ -266,7 +274,7 @@ class FactorySignRknnTestNode:
         # Warmup
         try:
             dummy = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
-            rknn.inference(inputs=[dummy])
+            rknn.inference(inputs=[prepare_rknn_input(dummy)])
             rospy.loginfo("NPU warmup inference completed")
         except Exception:
             pass
@@ -328,7 +336,7 @@ class FactorySignRknnTestNode:
     def infer_frame(self, frame: np.ndarray):
         img, ratio, pad = letterbox(frame, self.input_size)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        outputs = self.rknn.inference(inputs=[rgb])
+        outputs = self.rknn.inference(inputs=[prepare_rknn_input(rgb)])
         repair_logging_levels()
         if not self.output_shapes_logged:
             rospy.loginfo("RKNN output shapes: %s",

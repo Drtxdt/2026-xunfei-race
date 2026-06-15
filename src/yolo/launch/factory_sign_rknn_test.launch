@@ -5,7 +5,7 @@
 
        可选参数:
          start_camera:           启动 USB 摄像头 (default: true)
-         start_tts:              启动 TTS 语音节点 (default: true)
+         start_tts:              启动外部 speech_command TTS 节点 (default: false)
          start_competition_speech: 启动竞赛语音服务 (default: true)
          start_viewer:           启动 X11 调试图像查看器 (default: true)
          camera_topic:           摄像头话题 (default: /usb_cam/image_raw)
@@ -17,7 +17,7 @@
        ============================================================ -->
 
   <arg name="start_camera" default="true" />
-  <arg name="start_tts" default="true" />
+  <arg name="start_tts" default="false" />
   <arg name="start_competition_speech" default="true" />
   <arg name="start_viewer" default="true" />
   <arg name="camera_topic" default="/usb_cam/image_raw" />
@@ -33,7 +33,7 @@
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
   </group>
 
-  <!-- TTS 语音合成 -->
+  <!-- TTS 语音合成: 依赖外部 speech_command 包；当前工作空间没有该包时保持 false -->
   <group if="$(arg start_tts)">
     <node pkg="speech_command" type="voice_speak_node" name="voice_speak_node" output="screen"
           launch-prefix="bash -c 'sleep 1; exec &quot;$@&quot;' dummy" />
