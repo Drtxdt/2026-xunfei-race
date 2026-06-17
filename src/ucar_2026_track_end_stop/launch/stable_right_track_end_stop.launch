@@ -17,7 +17,7 @@
     <param name="status_topic" value="/stable_right_track_end_stop/status" />
     <param name="debug_image_topic" value="/stable_right_track_end_stop/debug_image" />
     <param name="debug_info_topic" value="/stable_right_track_end_stop/debug_info" />
-    <param name="target_right_x" value="155" />
+    <param name="target_right_x" value="200" />
     <param name="base_speed" value="0.32" />
     <param name="curve_speed" value="0.28" />
     <param name="search_speed" value="0.10" />

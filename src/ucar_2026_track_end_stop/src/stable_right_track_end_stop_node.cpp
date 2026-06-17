@@ -106,7 +106,7 @@ private:
     private_nh_.param("startup_time", startup_time_, 2.8);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("target_right_x", target_right_x_, 155);
+    private_nh_.param("target_right_x", target_right_x_, 200);
     private_nh_.param("base_speed", base_speed_, 0.32);
     private_nh_.param("curve_speed", curve_speed_, 0.28);
     private_nh_.param("search_speed", search_speed_, 0.10);
@@ -313,6 +313,11 @@ private:
     last_error_ = filtered_error_;
 
     double angular = kp_ * filtered_error_ + kd_ * d_error;
+
+if (filtered_error_ < -15.0)
+{
+  angular *= 1.35;
+}
     double linear = base_speed_;
     if (std::fabs(filtered_error_) > curve_error_threshold_)
     {
@@ -329,7 +334,12 @@ private:
   int findRightLine(const cv::Mat& mask) const
   {
     const int h = mask.rows;
-    std::vector<int> rows = {static_cast<int>(h * 0.50), static_cast<int>(h * 0.60), static_cast<int>(h * 0.70)};
+    std::vector<int> rows = {
+    static_cast<int>(h * 0.35),
+    static_cast<int>(h * 0.50),
+    static_cast<int>(h * 0.65),
+    static_cast<int>(h * 0.80)
+    };
     std::vector<int> points;
 
     for (int y : rows)
@@ -349,10 +359,9 @@ private:
     if (points.empty())
       return -1;
 
-    double sum = 0.0;
-    for (int point : points)
-      sum += point;
-    return static_cast<int>(sum / points.size());
+    std::sort(points.begin(), points.end());
+
+    return points[points.size() / 2];
   }
 
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
@@ -552,7 +561,7 @@ private:
   double startup_time_ = 2.8;
   double startup_speed_ = 0.45;
 
-  int target_right_x_ = 155;
+  int target_right_x_ = 200;
   double base_speed_ = 0.32;
   double curve_speed_ = 0.28;
   double search_speed_ = 0.10;
