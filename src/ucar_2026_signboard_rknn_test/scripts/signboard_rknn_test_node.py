@@ -331,10 +331,11 @@ class SignboardRknnTestNode:
         self.publish_status("tracking")
 
     def infer_frame(self, frame: np.ndarray):
-        img, ratio, pad = letterbox(frame, self.input_size)
+        # Classification model (cls_best.rknn) expects 224x224 RGB, NHWC uint8 [0,255]
+        # RKNN has mean/std baked-in: mean=[123.675,116.28,103.53], std=[58.395,57.12,57.375]
+        img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # RKNNLite expects NHWC uint8 [1, H, W, 3] (same as factory_sign_3cls_fp16.rknn)
-        nhwc = np.expand_dims(rgb, axis=0).astype(np.uint8)
+        nhwc = np.expand_dims(rgb, axis=0).astype(np.uint8)  # [1, 224, 224, 3]
         outputs = self.rknn.inference(inputs=[nhwc])
         repair_logging_levels()
         if not self.output_shapes_logged:
