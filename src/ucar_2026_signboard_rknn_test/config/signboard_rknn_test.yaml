@@ -34,3 +34,8 @@ slow_speech: true
 repeat_same: false
 min_speech_interval_sec: 2.0
 speech_wait: false
+
+# Save output to yolo/outputs
+save_output: true
+save_dir: ""                   # empty = auto-resolve to $(find yolo)/outputs
+save_interval_sec: 1.0         # minimum seconds between saved frames

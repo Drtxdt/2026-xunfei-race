@@ -181,6 +181,9 @@ class SignboardRknnTestNode:
         self.last_spoken_at = 0.0
         self.inference_ms = 0.0
         self.output_shapes_logged = False
+        self.last_saved_at = 0.0
+        self.save_seq = 0
+        self._ensure_save_dir()
 
         self.rknn = self.load_rknn()
         self.speak_pub = rospy.Publisher(self.speak_topic, String, queue_size=1)
@@ -228,6 +231,23 @@ class SignboardRknnTestNode:
         self.repeat_same = bool(rospy.get_param("~repeat_same", False))
         self.min_speech_interval = float(rospy.get_param("~min_speech_interval_sec", 2.0))
         self.speech_wait = bool(rospy.get_param("~speech_wait", False))
+        self.save_output = bool(rospy.get_param("~save_output", True))
+        self.save_dir = expand_path(rospy.get_param("~save_dir", ""))
+        self.save_interval_sec = float(rospy.get_param("~save_interval_sec", 1.0))
+
+    def _ensure_save_dir(self) -> None:
+        if not self.save_output:
+            return
+        if not self.save_dir:
+            try:
+                yolo_dir = rospkg.RosPack().get_path("yolo")
+                self.save_dir = os.path.join(yolo_dir, "outputs")
+            except Exception:
+                self.save_dir = expand_path("~/2026-xunfei-race/src/yolo/outputs")
+        os.makedirs(self.save_dir, exist_ok=True)
+        os.makedirs(os.path.join(self.save_dir, "images"), exist_ok=True)
+        os.makedirs(os.path.join(self.save_dir, "json"), exist_ok=True)
+        rospy.loginfo("Save output to: %s", self.save_dir)
 
     def load_rknn(self):
         try:
@@ -549,10 +569,9 @@ class SignboardRknnTestNode:
             },
         }
         self.det_pub.publish(String(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))
+        self._maybe_save_json(payload, stamp)
 
     def publish_debug_image(self, frame: np.ndarray, dets: List[Dict[str, Any]]) -> None:
-        if not self.publish_debug:
-            return
         annot = frame.copy()
         for det in dets:
             x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
@@ -568,12 +587,45 @@ class SignboardRknnTestNode:
             text = "SB: %s %.2f" % (CLASS_NAMES[self.consensus_class], self.consensus_confidence)
         cv2.putText(annot, text, (8, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
 
+        if self.publish_debug:
+            try:
+                msg = self.bridge.cv2_to_imgmsg(annot, "bgr8")
+                msg.header.stamp = rospy.Time.now()
+                self.debug_pub.publish(msg)
+            except Exception as exc:
+                rospy.logwarn_throttle(2.0, "debug image publish failed: %s", exc)
+
+        self._maybe_save(annot, dets)
+
+    def _maybe_save(self, annot: np.ndarray, dets: List[Dict[str, Any]]) -> None:
+        if not self.save_output:
+            return
+        now = time.time()
+        if now - self.last_saved_at < self.save_interval_sec:
+            return
+        self.last_saved_at = now
+        self.save_seq += 1
+        seq = self.save_seq
+        ts = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        prefix = "%s_%04d" % (ts, seq)
+        img_path = os.path.join(self.save_dir, "images", "%s.jpg" % prefix)
         try:
-            msg = self.bridge.cv2_to_imgmsg(annot, "bgr8")
-            msg.header.stamp = rospy.Time.now()
-            self.debug_pub.publish(msg)
+            cv2.imwrite(img_path, annot)
+            rospy.loginfo("Saved image: %s (%d dets)", img_path, len(dets))
         except Exception as exc:
-            rospy.logwarn_throttle(2.0, "debug image publish failed: %s", exc)
+            rospy.logwarn("Failed to save image: %s", exc)
+
+    def _maybe_save_json(self, payload: Dict[str, Any], stamp: float) -> None:
+        if not self.save_output:
+            return
+        ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(stamp))
+        prefix = "%s_%04d" % (ts, self.save_seq)
+        json_path = os.path.join(self.save_dir, "json", "%s.json" % prefix)
+        try:
+            with open(json_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            rospy.logwarn("Failed to save json: %s", exc)
 
     def maybe_speak(self) -> None:
         if not self.enable_speech or self.consensus_class is None:
