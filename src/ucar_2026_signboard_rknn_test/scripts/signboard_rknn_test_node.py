@@ -286,7 +286,7 @@ class SignboardRknnTestNode:
             rospy.logwarn_throttle(2.0, "cv_bridge error: %s", exc)
             return
         if self.flip:
-            frame = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, -1)
         stamp = msg.header.stamp.to_sec() if msg.header.stamp else time.time()
         with self.lock:
             self.latest_frame = frame
@@ -332,8 +332,8 @@ class SignboardRknnTestNode:
     def infer_frame(self, frame: np.ndarray):
         img, ratio, pad = letterbox(frame, self.input_size)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # RKNNLite expects NCHW uint8: [1, 3, H, W]
-        nchw = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...].astype(np.uint8)
+        # RKNNLite expects NCHW float32 normalized [0,1]: [1, 3, H, W]
+        nchw = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...].astype(np.float32) / 255.0
         outputs = self.rknn.inference(inputs=[nchw])
         repair_logging_levels()
         if not self.output_shapes_logged:
