@@ -114,6 +114,11 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
 
 
+def softmax(x: np.ndarray) -> np.ndarray:
+    exp_x = np.exp(x - np.max(x))
+    return exp_x / np.sum(exp_x)
+
+
 def letterbox(im: np.ndarray, new_shape: int, color: Tuple[int, int, int] = (0, 0, 0)):
     shape = im.shape[:2]
     r = min(float(new_shape) / shape[0], float(new_shape) / shape[1])
@@ -335,6 +340,20 @@ class SignboardRknnTestNode:
             rospy.loginfo("RKNN output shapes: %s", [getattr(o, "shape", None) for o in outputs])
             self.output_shapes_logged = True
 
+        # cls_best.rknn is a classification model -> output shape (1, 3)
+        logits = np.asarray(outputs[0]).squeeze()
+        if logits.ndim == 1 and logits.shape[0] == len(CLASS_NAMES):
+            probs = self.softmax(logits)
+            cls_id = int(np.argmax(probs))
+            conf = float(probs[cls_id])
+            h, w = frame.shape[:2]
+            # Return a full-frame pseudo-detection so debug image still draws something
+            boxes = np.array([[0, 0, w - 1, h - 1]], dtype=np.float32)
+            classes = np.array([cls_id], dtype=np.int64)
+            scores = np.array([conf], dtype=np.float32)
+            return boxes, classes, scores
+
+        # Fallback to detection post-process (if model ever changes back)
         single = self.try_single_output_post_process(outputs[0])
         if single is not None:
             boxes, classes, scores, model_size = single
