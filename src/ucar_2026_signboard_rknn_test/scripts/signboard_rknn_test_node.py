@@ -343,7 +343,7 @@ class SignboardRknnTestNode:
         # cls_best.rknn is a classification model -> output shape (1, 3)
         logits = np.asarray(outputs[0]).squeeze()
         if logits.ndim == 1 and logits.shape[0] == len(CLASS_NAMES):
-            probs = self.softmax(logits)
+            probs = softmax(logits)
             cls_id = int(np.argmax(probs))
             conf = float(probs[cls_id])
             h, w = frame.shape[:2]
