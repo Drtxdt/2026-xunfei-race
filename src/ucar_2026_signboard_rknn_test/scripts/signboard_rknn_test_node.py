@@ -201,9 +201,10 @@ class SignboardRknnTestNode:
         rospy.on_shutdown(self.on_shutdown)
         self.publish_status("tracking")
         rospy.loginfo(
-            "signboard_rknn_test ready: model=%s image=%s detections=%s debug=%s",
+            "signboard_rknn_test ready: model=%s image=%s flip=%s detections=%s debug=%s",
             self.model_path,
             self.image_topic,
+            self.flip,
             self.detections_topic,
             self.debug_image_topic,
         )
@@ -336,7 +337,7 @@ class SignboardRknnTestNode:
         img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         nhwc = np.expand_dims(rgb, axis=0).astype(np.uint8)  # [1, 224, 224, 3]
-        outputs = self.rknn.inference(inputs=[nhwc])
+        outputs = self.rknn.inference(inputs=[nhwc], data_format="nhwc")
         repair_logging_levels()
         if not self.output_shapes_logged:
             rospy.loginfo("RKNN output shapes: %s", [getattr(o, "shape", None) for o in outputs])
@@ -348,6 +349,7 @@ class SignboardRknnTestNode:
             probs = softmax(logits)
             cls_id = int(np.argmax(probs))
             conf = float(probs[cls_id])
+            rospy.loginfo_throttle(1.0, "Cls probs: %s", dict(zip(CLASS_NAMES, [round(p, 4) for p in probs])))
             h, w = frame.shape[:2]
             # Return a full-frame pseudo-detection so debug image still draws something
             boxes = np.array([[0, 0, w - 1, h - 1]], dtype=np.float32)
