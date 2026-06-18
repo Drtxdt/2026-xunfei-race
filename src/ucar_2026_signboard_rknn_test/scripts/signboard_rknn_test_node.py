@@ -232,7 +232,8 @@ class SignboardRknnTestNode:
         self.min_speech_interval = float(rospy.get_param("~min_speech_interval_sec", 2.0))
         self.speech_wait = bool(rospy.get_param("~speech_wait", False))
         self.save_output = bool(rospy.get_param("~save_output", True))
-        self.save_dir = expand_path(rospy.get_param("~save_dir", ""))
+        save_dir_param = rospy.get_param("~save_dir", "")
+        self.save_dir = expand_path(save_dir_param) if save_dir_param else ""
         self.save_interval_sec = float(rospy.get_param("~save_interval_sec", 1.0))
 
     def _ensure_save_dir(self) -> None:
