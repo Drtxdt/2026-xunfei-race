@@ -327,7 +327,9 @@ class SignboardRknnTestNode:
     def infer_frame(self, frame: np.ndarray):
         img, ratio, pad = letterbox(frame, self.input_size)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        outputs = self.rknn.inference(inputs=[rgb])
+        # RKNNLite expects NCHW uint8: [1, 3, H, W]
+        nchw = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...].astype(np.uint8)
+        outputs = self.rknn.inference(inputs=[nchw])
         repair_logging_levels()
         if not self.output_shapes_logged:
             rospy.loginfo("RKNN output shapes: %s", [getattr(o, "shape", None) for o in outputs])
