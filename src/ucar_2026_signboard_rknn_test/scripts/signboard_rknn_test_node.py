@@ -218,7 +218,7 @@ class SignboardRknnTestNode:
         self.conf_thresh = float(rospy.get_param("~confidence_threshold", 0.5))
         self.nms_iou = float(rospy.get_param("~nms_iou_threshold", 0.45))
         self.inference_rate = float(rospy.get_param("~inference_rate", 10.0))
-        self.flip = bool(rospy.get_param("~flip", False))
+        self.flip = bool(rospy.get_param("~flip", True))
         self.publish_debug = bool(rospy.get_param("~publish_debug", True))
         self.image_timeout = float(rospy.get_param("~image_timeout", 5.0))
         self.confirm_frames = int(rospy.get_param("~consensus_confirm_frames", 3))
@@ -240,6 +240,7 @@ class SignboardRknnTestNode:
         save_dir_param = rospy.get_param("~save_dir", "")
         self.save_dir = expand_path(save_dir_param) if save_dir_param else ""
         self.save_interval_sec = float(rospy.get_param("~save_interval_sec", 1.0))
+        self.input_normalize = bool(rospy.get_param("~input_normalize", True))
 
     def _ensure_save_dir(self) -> None:
         if not self.save_output:
@@ -332,8 +333,12 @@ class SignboardRknnTestNode:
     def infer_frame(self, frame: np.ndarray):
         img, ratio, pad = letterbox(frame, self.input_size)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        # RKNNLite expects NCHW float32 normalized [0,1]: [1, 3, H, W]
-        nchw = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...].astype(np.float32) / 255.0
+        # RKNNLite input: NCHW [1, 3, H, W]
+        nchw = np.transpose(rgb, (2, 0, 1))[np.newaxis, ...]
+        if self.input_normalize:
+            nchw = nchw.astype(np.float32) / 255.0
+        else:
+            nchw = nchw.astype(np.uint8)
         outputs = self.rknn.inference(inputs=[nchw])
         repair_logging_levels()
         if not self.output_shapes_logged:

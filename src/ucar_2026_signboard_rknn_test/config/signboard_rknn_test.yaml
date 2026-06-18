@@ -10,7 +10,8 @@ input_size: 640              # 640 FP16 model
 confidence_threshold: 0.5
 nms_iou_threshold: 0.45
 inference_rate: 10.0
-flip: false
+flip: true
+input_normalize: true         # true=float32/255, false=uint8
 
 # Consensus filtering
 consensus_confirm_frames: 3
