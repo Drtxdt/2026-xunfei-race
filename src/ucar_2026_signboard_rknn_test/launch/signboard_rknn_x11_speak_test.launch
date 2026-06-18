@@ -7,7 +7,7 @@
   <arg name="debug_image_topic" default="/signboard_rknn_test/debug_image" />
   <arg name="config_file" default="$(find ucar_2026_signboard_rknn_test)/config/signboard_rknn_test.yaml" />
   <arg name="model_path" default="" />
-  <arg name="flip" default="false" />
+  <arg name="flip" default="true" />
   <arg name="chars_per_second" default="2.0" />
   <arg name="required" default="false" />
 
