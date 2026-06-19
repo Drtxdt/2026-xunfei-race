@@ -6,12 +6,16 @@ status_topic: /signboard_rknn_test/status
 
 # Model
 model_path: $(find yolo)/models/cls_best.rknn
-input_size: 640              # 640 FP16 model
+input_size: 640              # kept for YOLO fallback post-process
 confidence_threshold: 0.5
 nms_iou_threshold: 0.45
 inference_rate: 10.0
 flip: true
-input_normalize: true         # true=float32/255, false=uint8
+# Optional manual ROI for classification-only testing: "x,y,w,h" in camera pixels.
+# Leave empty to use the current full-frame fallback until YOLO bbox integration is wired.
+fixed_roi: ""
+use_letterbox_roi: true
+log_raw_outputs: true
 
 # Consensus filtering
 consensus_confirm_frames: 3

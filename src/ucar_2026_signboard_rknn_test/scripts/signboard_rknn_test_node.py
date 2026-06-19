@@ -26,21 +26,22 @@ except Exception:
     Announce = None
 
 
-CLASS_NAMES = ["food_processing", "daily_necessities", "electronics"]
+# cls_best.pt checkpoint metadata confirms output order: 0=daily, 1=electronic, 2=food.
+CLASS_NAMES = ["daily_necessities", "electronics", "food_processing"]
 CLASS_COLORS = {
-    "food_processing": (0, 165, 255),      # orange
     "daily_necessities": (255, 255, 0),    # cyan
     "electronics": (255, 0, 255),          # magenta
+    "food_processing": (0, 165, 255),      # orange
 }
 SPEECH_TEXT = {
-    "food_processing": "食品加工车间。",
     "daily_necessities": "日用品加工车间。",
     "electronics": "电子产品生产车间。",
+    "food_processing": "食品加工车间。",
 }
 ANNOUNCE_DECISION = {
-    "food_processing": "food_processing",
     "daily_necessities": "daily_necessities",
     "electronics": "electronics",
+    "food_processing": "food_processing",
 }
 ANCHORS = np.array(
     [[10, 13], [16, 30], [33, 23], [30, 61], [62, 45],
@@ -117,6 +118,53 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
 def softmax(x: np.ndarray) -> np.ndarray:
     exp_x = np.exp(x - np.max(x))
     return exp_x / np.sum(exp_x)
+
+
+def classify_logits(logits: np.ndarray) -> Dict[str, Any]:
+    logits = np.asarray(logits, dtype=np.float32).reshape(-1)
+    probs = softmax(logits)
+    cls_id = int(np.argmax(probs))
+    return {
+        "class_id": cls_id,
+        "class_name": CLASS_NAMES[cls_id],
+        "confidence": float(probs[cls_id]),
+        "logits": [float(x) for x in logits],
+        "probs": {name: float(probs[i]) for i, name in enumerate(CLASS_NAMES)},
+    }
+
+
+def parse_fixed_roi(value: str) -> Optional[Tuple[int, int, int, int]]:
+    value = (value or "").strip()
+    if not value or value.lower() in {"none", "off", "false", "0"}:
+        return None
+    parts = [int(float(part.strip())) for part in value.split(",")]
+    if len(parts) != 4:
+        raise ValueError("fixed_roi must be 'x,y,w,h'")
+    x, y, w, h = parts
+    return x, y, x + w, y + h
+
+
+def crop_fixed_roi(frame: np.ndarray, roi_xyxy: Tuple[int, int, int, int]):
+    h, w = frame.shape[:2]
+    x1, y1, x2, y2 = roi_xyxy
+    x1 = max(0, min(int(x1), w - 1))
+    y1 = max(0, min(int(y1), h - 1))
+    x2 = max(x1 + 1, min(int(x2), w - 1))
+    y2 = max(y1 + 1, min(int(y2), h - 1))
+    return frame[y1:y2, x1:x2], (x1, y1, x2, y2)
+
+
+def letterbox_square(im: np.ndarray, new_shape: int = 224, color: Tuple[int, int, int] = (128, 128, 128)):
+    h, w = im.shape[:2]
+    scale = float(new_shape) / float(max(h, w))
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
+    resized = cv2.resize(im, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+    canvas = np.full((new_shape, new_shape, 3), color, dtype=np.uint8)
+    x_off = (new_shape - new_w) // 2
+    y_off = (new_shape - new_h) // 2
+    canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
+    return canvas
 
 
 def letterbox(im: np.ndarray, new_shape: int, color: Tuple[int, int, int] = (0, 0, 0)):
@@ -241,7 +289,9 @@ class SignboardRknnTestNode:
         save_dir_param = rospy.get_param("~save_dir", "")
         self.save_dir = expand_path(save_dir_param) if save_dir_param else ""
         self.save_interval_sec = float(rospy.get_param("~save_interval_sec", 1.0))
-        self.input_normalize = bool(rospy.get_param("~input_normalize", True))
+        self.fixed_roi = parse_fixed_roi(rospy.get_param("~fixed_roi", ""))
+        self.use_letterbox_roi = bool(rospy.get_param("~use_letterbox_roi", True))
+        self.log_raw_outputs = bool(rospy.get_param("~log_raw_outputs", True))
 
     def _ensure_save_dir(self) -> None:
         if not self.save_output:
@@ -332,9 +382,18 @@ class SignboardRknnTestNode:
         self.publish_status("tracking")
 
     def infer_frame(self, frame: np.ndarray):
-        # Classification model (cls_best.rknn) expects 224x224 RGB, NHWC uint8 [0,255]
-        # RKNN has mean/std baked-in: mean=[123.675,116.28,103.53], std=[58.395,57.12,57.375]
-        img = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_LINEAR)
+        # Classification model (cls_best.rknn) expects a signboard ROI, not the full frame.
+        # RKNN has ImageNet mean/std baked in, so input is RGB NHWC uint8 [0,255].
+        if self.fixed_roi is not None:
+            roi, roi_box = crop_fixed_roi(frame, self.fixed_roi)
+        else:
+            # Until YOLO bbox integration is wired here, keep full-frame fallback explicit in logs.
+            h, w = frame.shape[:2]
+            roi = frame
+            roi_box = (0, 0, w - 1, h - 1)
+            rospy.logwarn_throttle(2.0, "No fixed_roi configured; classifying full frame fallback")
+
+        img = letterbox_square(roi, 224) if self.use_letterbox_roi else cv2.resize(roi, (224, 224), interpolation=cv2.INTER_LINEAR)
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         nhwc = np.expand_dims(rgb, axis=0).astype(np.uint8)  # [1, 224, 224, 3]
         outputs = self.rknn.inference(inputs=[nhwc], data_format="nhwc")
@@ -346,15 +405,21 @@ class SignboardRknnTestNode:
         # cls_best.rknn is a classification model -> output shape (1, 3)
         logits = np.asarray(outputs[0]).squeeze()
         if logits.ndim == 1 and logits.shape[0] == len(CLASS_NAMES):
-            probs = softmax(logits)
-            cls_id = int(np.argmax(probs))
-            conf = float(probs[cls_id])
-            rospy.loginfo_throttle(1.0, "Cls probs: %s", dict(zip(CLASS_NAMES, [round(p, 4) for p in probs])))
-            h, w = frame.shape[:2]
-            # Return a full-frame pseudo-detection so debug image still draws something
-            boxes = np.array([[0, 0, w - 1, h - 1]], dtype=np.float32)
-            classes = np.array([cls_id], dtype=np.int64)
-            scores = np.array([conf], dtype=np.float32)
+            cls = classify_logits(logits)
+            if self.log_raw_outputs:
+                rospy.loginfo_throttle(
+                    1.0,
+                    "Cls raw=%s probs=%s argmax=%d name=%s conf=%.4f roi=%s",
+                    [round(x, 4) for x in cls["logits"]],
+                    {k: round(v, 4) for k, v in cls["probs"].items()},
+                    cls["class_id"],
+                    cls["class_name"],
+                    cls["confidence"],
+                    roi_box,
+                )
+            boxes = np.array([roi_box], dtype=np.float32)
+            classes = np.array([cls["class_id"]], dtype=np.int64)
+            scores = np.array([cls["confidence"]], dtype=np.float32)
             return boxes, classes, scores
 
         # Fallback to detection post-process (if model ever changes back)
