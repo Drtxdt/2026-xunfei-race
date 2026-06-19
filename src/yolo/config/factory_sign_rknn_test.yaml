@@ -9,12 +9,13 @@ debug_image_topic: /factory_sign_rknn_test/debug_image
 status_topic: /factory_sign_rknn_test/status
 
 # 模型 (3类: food/electronic/daily)
+# 注意：这里是 YOLO 检测模型，输出 bbox；不是 cls_best.rknn ROI 分类模型。
 model_path: $(find yolo)/models/factory_sign_3cls_fp16.rknn
 input_size: 640
 # 模型实际输出 4 类时，用这个映射到 food/electronic/daily。
 # 如果日用品标牌不识别，先试: [0, 1, 3]
 model_class_indices: [0, 1, 2]
-confidence_threshold: 0.3
+confidence_threshold: 0.25
 nms_iou_threshold: 0.45
 inference_rate: 10.0
 flip: false
@@ -29,6 +30,9 @@ consensus_ema_alpha: 0.3
 publish_debug: true
 image_timeout: 5.0
 save_debug_images: true        # 保存调试截图到 scripts/ 目录
+log_top_candidates: true       # 无框时打印最高候选分数，判断是阈值/画面/模型问题
+top_candidates_k: 5
+log_no_detection_interval_sec: 2.0
 
 # 语音
 enable_speech: true

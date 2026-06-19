@@ -13,6 +13,8 @@ catkin_package()
 catkin_install_python(PROGRAMS
   test_factory_sign.py
   validate_model.py
+  scripts/camera_mjpeg_server.py
+  scripts/check_factory_sign_rknn_test.py
   scripts/factory_sign_rknn_test_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

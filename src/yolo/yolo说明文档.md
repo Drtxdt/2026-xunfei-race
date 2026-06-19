@@ -4,6 +4,106 @@
 
 ---
 
+## yolo12 厂区牌 RKNN 测试包快速说明
+
+当前 `yolo12` 分支里的厂区牌测试入口是：
+
+```text
+src/yolo/launch/factory_sign_rknn_test.launch
+src/yolo/scripts/factory_sign_rknn_test_node.py
+src/yolo/models/factory_sign_3cls_fp16.rknn
+```
+
+注意：这个测试包使用的是 **YOLO 检测模型** `factory_sign_3cls_fp16.rknn`，输入 `640×640`，输出 bbox；它不是排查文档中提到的 `cls_best.rknn` ROI 三分类模型。因此小车上调试时应先看 `/factory_sign_rknn_test/detections` 里的 `raw_detections`、`diagnostics.top_candidates` 和 debug 图像，不能用“固定 ROI 分类”命令判断这个包。
+
+### 编译
+
+```bash
+cd ~/2026-xunfei-race
+catkin_make --pkg yolo
+source devel/setup.bash
+```
+
+如果刚切换分支或依赖不确定，也可以全量编译：
+
+```bash
+cd ~/2026-xunfei-race
+catkin_make
+source devel/setup.bash
+```
+
+### 推荐启动
+
+完整启动摄像头、语音、检测节点和浏览器调试画面：
+
+```bash
+source ~/ucar_ws/devel/setup.bash
+source ~/2026-xunfei-race/devel/setup.bash
+roslaunch yolo factory_sign_rknn_test.launch \
+  confidence_threshold:=0.25 \
+  consensus_confirm_frames:=3
+```
+
+默认会启动 MJPEG 网页流，显示带框的 `/factory_sign_rknn_test/debug_image`：
+
+```text
+http://192.168.1.6:8080/
+```
+
+如果使用 VSCode Remote-SSH，在 VSCode 的 Ports/端口面板转发小车 `8080` 端口，然后本机浏览器打开：
+
+```text
+http://localhost:8080/
+```
+
+如果摄像头/TTS/竞赛语音服务已启动，只启动检测节点和浏览器调试画面：
+
+```bash
+roslaunch yolo factory_sign_rknn_test.launch \
+  start_camera:=false \
+  start_tts:=false \
+  start_competition_speech:=false \
+  confidence_threshold:=0.25
+```
+
+如果只排查视觉，不想播报：
+
+```bash
+roslaunch yolo factory_sign_rknn_test.launch \
+  enable_speech:=false \
+  confidence_threshold:=0.20 \
+  consensus_confirm_frames:=2
+```
+
+### 诊断命令
+
+```bash
+rosrun yolo check_factory_sign_rknn_test.py
+rostopic echo /factory_sign_rknn_test/status -n1
+rostopic echo /factory_sign_rknn_test/detections -n1
+rostopic hz /factory_sign_rknn_test/detections -w5
+# 浏览器查看 debug 图: http://192.168.1.6:8080/ 或 VSCode 端口转发后的 http://localhost:8080/
+```
+
+`detections` 的 `diagnostics` 会包含：
+
+- `model_path`：实际加载的 RKNN 文件。
+- `confidence_threshold` / `nms_iou_threshold`：当前阈值。
+- `output_shapes`：RKNN 输出形状，用于判断后处理路径是否匹配。
+- `top_candidates`：即使没有超过阈值的框，也会显示最高候选分数和类别。
+
+### 结果判断
+
+| 现象 | 判断 | 下一步 |
+|---|---|---|
+| `raw_detections` 有框且 debug 图框住牌子 | YOLO 检测链路基本可用 | 再看类别和语音是否正确 |
+| `raw_detections` 为空，但 `top_candidates` 最高分接近阈值 | 阈值可能偏高或场景略差 | 临时试 `confidence_threshold:=0.15~0.25` |
+| `top_candidates` 分数也很低 | 模型/画面/预处理更可疑 | 检查模型路径、牌子是否入画、光照距离、flip |
+| 有框但类别错 | 类别顺序或训练数据问题 | 当前 YOLO 映射为 `food,electronic,daily`，需对照训练导出顺序 |
+| debug 图画面方向不对 | 摄像头方向/镜像问题 | 对比 `flip:=true` 和 `flip:=false` |
+
+---
+
 ## 当前训练结果
 
 | 模型 | mAP@0.5 | mAP@0.5:0.95 | 图片数 | 类别数 |

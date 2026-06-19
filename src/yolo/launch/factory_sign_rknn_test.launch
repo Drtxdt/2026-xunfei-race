@@ -3,17 +3,26 @@
        厂区标识牌 YOLOv5 RKNN 推理启动文件
        启动: roslaunch yolo factory_sign_rknn_test.launch
 
+       VSCode/浏览器调试:
+         默认启动 MJPEG 网页流，浏览器打开 http://<小车IP>:8080/
+         VSCode Remote-SSH 可转发 8080 端口后打开 http://localhost:8080/
+
        可选参数:
          start_camera:           启动 USB 摄像头 (default: true)
          start_tts:              启动外部 speech_command TTS 节点 (default: false)
          start_competition_speech: 启动竞赛语音服务 (default: true)
-         start_viewer:           启动 X11 调试图像查看器 (default: true)
+         start_mjpeg:            启动浏览器 MJPEG 调试画面 (default: true)
+         start_viewer:           启动 X11 image_view 调试窗口 (default: false)
          camera_topic:           摄像头话题 (default: /usb_cam/image_raw)
          debug_image_topic:      调试图像话题 (default: /factory_sign_rknn_test/debug_image)
+         mjpeg_topic:            浏览器显示的话题，默认显示 debug 图 (default: /factory_sign_rknn_test/debug_image)
+         mjpeg_port:             浏览器端口 (default: 8080)
          model_path:             模型路径，空=自动查找 factory_sign_3cls_fp16.rknn (default: "")
          flip:                   水平翻转图像 (default: false)
-         confidence_threshold:   检测置信度阈值 (default: 0.3)
+         confidence_threshold:   检测阈值，调试建议 0.20~0.30 (default: 0.25)
          model_class_indices:    模型类别到 food/electronic/daily 的映射 (default: 0,1,2)
+         consensus_confirm_frames: 连续确认帧数，调试建议 2~3 (default: 3)
+         enable_speech:          是否启用识别播报 (default: true)
          chars_per_second:       TTS 语速 (default: 2.0)
          save_debug_images:      保存调试截图到 scripts/ (default: true)
        ============================================================ -->
@@ -21,14 +30,23 @@
   <arg name="start_camera" default="true" />
   <arg name="start_tts" default="false" />
   <arg name="start_competition_speech" default="true" />
-  <arg name="start_viewer" default="true" />
+  <arg name="start_mjpeg" default="true" />
+  <arg name="start_viewer" default="false" />
   <arg name="camera_topic" default="/usb_cam/image_raw" />
   <arg name="debug_image_topic" default="/factory_sign_rknn_test/debug_image" />
+  <arg name="mjpeg_topic" default="/factory_sign_rknn_test/debug_image" />
+  <arg name="mjpeg_port" default="8080" />
   <arg name="config_file" default="$(find yolo)/config/factory_sign_rknn_test.yaml" />
   <arg name="model_path" default="" />
   <arg name="flip" default="false" />
-  <arg name="confidence_threshold" default="0.3" />
+  <arg name="confidence_threshold" default="0.25" />
+  <arg name="nms_iou_threshold" default="0.45" />
   <arg name="model_class_indices" default="0,1,2" />
+  <arg name="consensus_confirm_frames" default="3" />
+  <arg name="consensus_release_frames" default="3" />
+  <arg name="enable_speech" default="true" />
+  <arg name="save_debug_images" default="true" />
+  <arg name="log_top_candidates" default="true" />
   <arg name="chars_per_second" default="2.0" />
   <arg name="required" default="false" />
 
@@ -63,10 +81,28 @@
     <param name="model_path" value="$(arg model_path)" />
     <param name="flip" value="$(arg flip)" />
     <param name="confidence_threshold" value="$(arg confidence_threshold)" />
+    <param name="nms_iou_threshold" value="$(arg nms_iou_threshold)" />
     <param name="model_class_indices" value="$(arg model_class_indices)" />
+    <param name="consensus_confirm_frames" value="$(arg consensus_confirm_frames)" />
+    <param name="consensus_release_frames" value="$(arg consensus_release_frames)" />
+    <param name="enable_speech" value="$(arg enable_speech)" />
+    <param name="save_debug_images" value="$(arg save_debug_images)" />
+    <param name="log_top_candidates" value="$(arg log_top_candidates)" />
   </node>
 
-  <!-- X11 调试图像查看器 -->
+  <!-- 浏览器 MJPEG 调试画面，默认显示带框 debug 图 -->
+  <group if="$(arg start_mjpeg)">
+    <node pkg="yolo" type="camera_mjpeg_server.py" name="factory_sign_mjpeg_server" output="screen"
+          launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+      <param name="topic" value="$(arg mjpeg_topic)" />
+      <param name="port" value="$(arg mjpeg_port)" />
+      <param name="quality" value="80" />
+      <param name="max_fps" value="15.0" />
+      <param name="flip" value="false" />
+    </node>
+  </group>
+
+  <!-- X11 调试图像查看器；VSCode 场景默认不用 -->
   <group if="$(arg start_viewer)">
     <node pkg="image_view" type="image_view" name="factory_sign_rknn_x11_viewer" output="screen"
           launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">

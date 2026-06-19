@@ -108,6 +108,14 @@ def sigmoid(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
 
 
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def letterbox(im: np.ndarray, new_shape: int, color=(0, 0, 0)):
     shape = im.shape[:2]
     r = min(float(new_shape) / shape[0], float(new_shape) / shape[1])
@@ -208,6 +216,9 @@ class FactorySignRknnTestNode:
         self.output_shapes_logged = False
         self.model_class_count_warned = False
         self.last_model_top_scores: List[Tuple[int, float]] = []
+        self.output_shapes: List[Any] = []
+        self.last_top_candidates: List[Dict[str, Any]] = []
+        self.last_raw_count = 0
 
         self.rknn = self.load_rknn()
         self.speak_pub = rospy.Publisher(self.speak_topic, String, queue_size=1)
@@ -237,27 +248,31 @@ class FactorySignRknnTestNode:
         self.conf_thresh = float(rospy.get_param("~confidence_threshold", 0.3))
         self.nms_iou = float(rospy.get_param("~nms_iou_threshold", 0.45))
         self.inference_rate = float(rospy.get_param("~inference_rate", 10.0))
-        self.flip = bool(rospy.get_param("~flip", False))
-        self.publish_debug = bool(rospy.get_param("~publish_debug", True))
-        self.log_top_scores = bool(rospy.get_param("~log_top_scores", True))
+        self.flip = parse_bool(rospy.get_param("~flip", False))
+        self.publish_debug = parse_bool(rospy.get_param("~publish_debug", True))
+        self.log_top_scores = parse_bool(rospy.get_param("~log_top_scores", True))
         self.image_timeout = float(rospy.get_param("~image_timeout", 5.0))
         self.confirm_frames = int(rospy.get_param("~consensus_confirm_frames", 3))
         self.release_frames = int(rospy.get_param("~consensus_release_frames", 3))
         self.consensus_timeout = float(rospy.get_param("~consensus_timeout", 1.0))
         self.ema_alpha = float(rospy.get_param("~consensus_ema_alpha", 0.3))
-        self.enable_speech = bool(rospy.get_param("~enable_speech", True))
+        self.enable_speech = parse_bool(rospy.get_param("~enable_speech", True))
         self.announce_service = rospy.get_param("~announce_service",
                                                  "/competition_speech/announce")
         self.announce_timeout = float(rospy.get_param("~announce_service_timeout_sec", 0.5))
         self.speak_topic = rospy.get_param("~speak_topic", "/speak")
-        self.use_announce_service = bool(rospy.get_param("~use_announce_service", True))
+        self.use_announce_service = parse_bool(rospy.get_param("~use_announce_service", True))
         self.announce_event = rospy.get_param("~announce_event", "custom").strip() or "custom"
-        self.fallback_to_speak_topic = bool(rospy.get_param("~fallback_to_speak_topic", True))
-        self.slow_speech = bool(rospy.get_param("~slow_speech", True))
-        self.repeat_same = bool(rospy.get_param("~repeat_same", True))
+        self.fallback_to_speak_topic = parse_bool(rospy.get_param("~fallback_to_speak_topic", True))
+        self.slow_speech = parse_bool(rospy.get_param("~slow_speech", True))
+        self.repeat_same = parse_bool(rospy.get_param("~repeat_same", True))
         self.min_speech_interval = float(rospy.get_param("~min_speech_interval_sec", 2.0))
-        self.speech_wait = bool(rospy.get_param("~speech_wait", False))
-        self.save_debug = bool(rospy.get_param("~save_debug_images", True))
+        self.speech_wait = parse_bool(rospy.get_param("~speech_wait", False))
+        self.save_debug = parse_bool(rospy.get_param("~save_debug_images", True))
+        self.log_top_candidates = parse_bool(rospy.get_param("~log_top_candidates", True))
+        self.top_candidates_k = int(rospy.get_param("~top_candidates_k", 5))
+        self.log_no_detection_interval = float(rospy.get_param("~log_no_detection_interval_sec", 2.0))
+        self._last_no_detection_log = 0.0
 
     def parse_model_class_indices(self, value) -> List[int]:
         if isinstance(value, str):
@@ -302,7 +317,7 @@ class FactorySignRknnTestNode:
             sys.exit(ret)
         # Warmup
         try:
-            dummy = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
+            dummy = np.random.randint(0, 255, (self.input_size, self.input_size, 3), dtype=np.uint8)
             rknn.inference(inputs=[prepare_rknn_input(dummy)])
             rospy.loginfo("NPU warmup inference completed")
         except Exception:
@@ -353,6 +368,7 @@ class FactorySignRknnTestNode:
             return
 
         dets = self.build_detections(boxes, classes, scores)
+        self.maybe_log_no_detection(dets)
         previous = self.consensus_class
         self.update_consensus(dets)
         self.publish_detections(dets, stamp)
@@ -367,9 +383,12 @@ class FactorySignRknnTestNode:
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         outputs = self.rknn.inference(inputs=[prepare_rknn_input(rgb)])
         repair_logging_levels()
+        self.output_shapes = [getattr(o, "shape", None) for o in outputs]
         if not self.output_shapes_logged:
-            rospy.loginfo("RKNN output shapes: %s",
-                          [getattr(o, "shape", None) for o in outputs])
+            rospy.loginfo("RKNN output shapes: %s", self.output_shapes)
+            rospy.loginfo("Factory sign params: classes=%s input=%d conf=%.3f nms=%.3f confirm=%d release=%d",
+                          CLASS_NAMES, self.input_size, self.conf_thresh, self.nms_iou,
+                          self.confirm_frames, self.release_frames)
             self.output_shapes_logged = True
 
         # 单输出路径 (Detect 层直接输出)
@@ -428,6 +447,7 @@ class FactorySignRknnTestNode:
         cls_probs = raw_cls_probs[:, self.model_class_indices]
         class_ids = np.argmax(cls_probs, axis=1)
         scores = obj * cls_probs[np.arange(len(cls_probs)), class_ids]
+        self.record_top_candidates(scores, class_ids, boxes)
         keep = np.where(scores >= self.conf_thresh)[0]
         if keep.size == 0:
             return None, None, None, model_size
@@ -460,13 +480,25 @@ class FactorySignRknnTestNode:
 
     def three_head_post(self, processed: List[np.ndarray]):
         boxes_list, classes_list, scores_list = [], [], []
+        raw_boxes_list, raw_classes_list, raw_scores_list = [], [], []
         for output, mask in zip(processed, MASKS):
             b, bc, bp = self.process_output_head(output, mask)
+            rb, rc, rs = self.score_boxes_head(b, bc, bp)
+            if rb.size:
+                raw_boxes_list.append(rb)
+                raw_classes_list.append(rc)
+                raw_scores_list.append(rs)
             b, c, s = self.filter_boxes_head(b, bc, bp)
             if b.size:
                 boxes_list.append(b)
                 classes_list.append(c)
                 scores_list.append(s)
+        if raw_boxes_list:
+            self.record_top_candidates(np.concatenate(raw_scores_list),
+                                       np.concatenate(raw_classes_list),
+                                       np.concatenate(raw_boxes_list))
+        else:
+            self.record_top_candidates(np.empty((0,)), np.empty((0,), dtype=np.int64), np.empty((0, 4)))
         if not boxes_list:
             return None, None, None
         boxes = xywh2xyxy(np.concatenate(boxes_list))
@@ -497,18 +529,57 @@ class FactorySignRknnTestNode:
         box_wh = np.power(output[..., 2:4] * 2.0, 2.0) * anchors
         return np.concatenate((box_xy, box_wh), axis=-1), box_confidence, box_class_probs
 
-    def filter_boxes_head(self, boxes, bc, bp):
+    def score_boxes_head(self, boxes, bc, bp):
         boxes = boxes.reshape(-1, 4)
         bc = bc.reshape(-1)
         bp = bp.reshape(-1, bp.shape[-1])
-        pos = np.where(bc >= self.conf_thresh)
-        boxes, bc, bp = boxes[pos], bc[pos], bp[pos]
         if boxes.size == 0:
             return np.empty((0, 4)), np.empty((0,), dtype=np.int64), np.empty((0,))
         class_scores = np.max(bp, axis=-1)
         classes = np.argmax(bp, axis=-1)
-        pos = np.where(class_scores >= self.conf_thresh)
-        return boxes[pos], classes[pos], (class_scores * bc)[pos]
+        return boxes, classes, class_scores * bc
+
+    def filter_boxes_head(self, boxes, bc, bp):
+        boxes, classes, scores = self.score_boxes_head(boxes, bc, bp)
+        if boxes.size == 0:
+            return np.empty((0, 4)), np.empty((0,), dtype=np.int64), np.empty((0,))
+        pos = np.where(scores >= self.conf_thresh)
+        return boxes[pos], classes[pos], scores[pos]
+
+    def record_top_candidates(self, scores, class_ids, boxes) -> None:
+        scores = np.asarray(scores).reshape(-1)
+        class_ids = np.asarray(class_ids).reshape(-1)
+        boxes = np.asarray(boxes).reshape(-1, 4) if np.asarray(boxes).size else np.empty((0, 4))
+        self.last_raw_count = int(scores.size)
+        self.last_top_candidates = []
+        if scores.size == 0:
+            return
+        k = max(1, int(self.top_candidates_k))
+        order = scores.argsort()[::-1][:k]
+        for idx in order:
+            cls_id = int(class_ids[idx])
+            name = CLASS_NAMES[cls_id] if 0 <= cls_id < len(CLASS_NAMES) else "class_%d" % cls_id
+            item = {
+                "class_id": cls_id,
+                "class_name": name,
+                "score": float(scores[idx]),
+            }
+            if idx < len(boxes):
+                item["bbox_model_xywh"] = [float(x) for x in boxes[idx]]
+            self.last_top_candidates.append(item)
+
+    def maybe_log_no_detection(self, dets: List[Dict[str, Any]]) -> None:
+        if dets or not self.log_top_candidates:
+            return
+        now = time.time()
+        if now - self._last_no_detection_log < self.log_no_detection_interval:
+            return
+        self._last_no_detection_log = now
+        rospy.logwarn("No detections >= %.3f. top_candidates=%s raw_candidates=%d output_shapes=%s",
+                      self.conf_thresh,
+                      json.dumps(self.last_top_candidates, ensure_ascii=False),
+                      self.last_raw_count,
+                      self.output_shapes)
 
     def scale_boxes_to_frame(self, boxes, ratio, pad, frame_shape):
         dw, dh = pad
@@ -601,10 +672,24 @@ class FactorySignRknnTestNode:
             "diagnostics": {
                 "fps": round(1000.0 / max(self.inference_ms, 1.0), 1),
                 "inference_ms": round(self.inference_ms, 1),
+                "model_path": self.model_path,
+                "input_size": self.input_size,
+                "confidence_threshold": round(self.conf_thresh, 4),
+                "nms_iou_threshold": round(self.nms_iou, 4),
+                "output_shapes": [str(shape) for shape in self.output_shapes],
                 "model_class_indices": self.model_class_indices,
                 "model_top_scores": [
                     {"model_class": idx, "score": round(score, 4)}
                     for idx, score in self.last_model_top_scores[:5]
+                ],
+                "raw_candidate_count": self.last_raw_count,
+                "top_candidates": [
+                    {
+                        "class_name": item.get("class_name"),
+                        "class_id": item.get("class_id"),
+                        "score": round(float(item.get("score", 0.0)), 4),
+                    }
+                    for item in self.last_top_candidates
                 ],
             },
         }

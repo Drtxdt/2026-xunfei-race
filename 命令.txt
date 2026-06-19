@@ -36,3 +36,20 @@ roslaunch ucar_2026_track_end_stop stable_right_track_end_stop.launch
 # 红绿灯测试
  roslaunch ucar_2026_traffic_light_rknn_test traffic_light_rknn_x11_speak_test.launch
 
+# 厂区牌 YOLO RKNN 测试（yolo12 分支）
+# 当前 src/yolo 跑的是 factory_sign_3cls_fp16.rknn 检测模型，输出 bbox，不是 cls_best.rknn ROI 分类模型。
+cd ~/2026-xunfei-race
+catkin_make --pkg yolo
+source devel/setup.bash
+roslaunch yolo factory_sign_rknn_test.launch confidence_threshold:=0.25 consensus_confirm_frames:=3
+
+# 如果摄像头/TTS/语音服务已经启动，只启动厂区牌检测节点和浏览器调试画面
+roslaunch yolo factory_sign_rknn_test.launch start_camera:=false start_tts:=false start_competition_speech:=false confidence_threshold:=0.25
+
+# 厂区牌诊断
+# 浏览器看实时 debug 图：http://192.168.1.6:8080/
+# VSCode Remote-SSH 转发 8080 后，本机打开：http://localhost:8080/
+rosrun yolo check_factory_sign_rknn_test.py
+rostopic echo /factory_sign_rknn_test/detections -n1
+rostopic hz /factory_sign_rknn_test/detections -w5
+
