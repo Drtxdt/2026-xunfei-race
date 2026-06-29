@@ -72,6 +72,13 @@ def _safe_rospy_log(logger, level: str, message: str, *args) -> None:
         fn(message, *args)
 
 
+
+
+def _maybe_flip_frame(frame, flip_horizontal: bool):
+    """Return a horizontally corrected frame when the camera image is mirrored."""
+    if not flip_horizontal:
+        return frame
+    return frame[:, ::-1].copy()
 @dataclass
 class RecognitionResult:
     category: Optional[str] = None
@@ -417,6 +424,7 @@ class FactorySignOCRNode:
         self.bridge = CvBridge()
 
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
+        self.flip_image = bool(rospy.get_param("~flip", False))
         self.debug_image_topic = rospy.get_param("~debug_image_topic", "/factory_sign_ocr_test/debug_image")
         self.preprocess_image_topic = rospy.get_param("~debug_preprocess_topic", "/factory_sign_ocr_test/preprocess_image")
         self.publish_debug_image = bool(rospy.get_param("~publish_debug_image", True))
@@ -477,8 +485,9 @@ class FactorySignOCRNode:
         rospy.on_shutdown(self._on_shutdown)
         _repair_ros_logging()
         rospy.loginfo(
-            "factory_sign_ocr_node ready: image=%s mode=%s ocr_fallback=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
+            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s ocr_fallback=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
             self.image_topic,
+            self.flip_image,
             self.recognition_mode,
             self.enable_ocr_fallback,
             self.debug_image_topic,
@@ -489,7 +498,8 @@ class FactorySignOCRNode:
 
     def _image_cb(self, msg) -> None:
         try:
-            self.latest_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
+            self.latest_image = _maybe_flip_frame(frame, self.flip_image)
             self.latest_stamp = msg.header.stamp.to_sec() if msg.header.stamp else time.time()
         except Exception as exc:
             _repair_ros_logging()
@@ -680,6 +690,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 

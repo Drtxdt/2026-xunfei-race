@@ -10,7 +10,7 @@ SCRIPTS_DIR = os.path.join(PKG_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from factory_sign_ocr_node import FactorySignClassifier, FactorySignRecognizer, RecognitionResult, VoteWindow, _repair_ros_logging
+from factory_sign_ocr_node import FactorySignClassifier, FactorySignRecognizer, RecognitionResult, VoteWindow, _maybe_flip_frame, _repair_ros_logging
 
 
 def test_classifier_matches_requested_keywords():
@@ -109,3 +109,16 @@ def test_repair_ros_logging_accepts_rknn_short_level_names(monkeypatch):
     assert logging.getLevelName(logging.WARNING) == "WARNING"
     assert roslogging._logging_to_rospy_names["I"] == roslogging._logging_to_rospy_names["INFO"]
     assert roslogging._logging_to_rospy_names["W"] == roslogging._logging_to_rospy_names["WARNING"]
+
+
+def test_maybe_flip_frame_flips_horizontally():
+    import numpy as np
+
+    frame = np.array([[[1], [2], [3]], [[4], [5], [6]]], dtype=np.uint8)
+
+    flipped = _maybe_flip_frame(frame, True)
+    unchanged = _maybe_flip_frame(frame, False)
+
+    assert flipped[:, :, 0].tolist() == [[3, 2, 1], [6, 5, 4]]
+    assert unchanged[:, :, 0].tolist() == [[1, 2, 3], [4, 5, 6]]
+    assert unchanged is frame

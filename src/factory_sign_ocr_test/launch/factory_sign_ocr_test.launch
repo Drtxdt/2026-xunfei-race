@@ -4,6 +4,7 @@
   <arg name="start_competition_speech" default="true" />
   <arg name="start_viewer" default="true" />
   <arg name="image_topic" default="/usb_cam/image_raw" />
+  <arg name="flip" default="false" />
   <arg name="debug_image_topic" default="/factory_sign_ocr_test/debug_image" />
   <arg name="debug_preprocess_topic" default="/factory_sign_ocr_test/preprocess_image" />
   <arg name="debug_view" default="debug" />
@@ -42,6 +43,7 @@
         launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
     <rosparam command="load" file="$(arg config_file)" />
     <param name="image_topic" value="$(arg image_topic)" />
+    <param name="flip" value="$(arg flip)" />
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
     <param name="recognition_mode" value="$(arg recognition_mode)" />
@@ -75,6 +77,8 @@
     </group>
   </group>
 </launch>
+
+
 
 
 

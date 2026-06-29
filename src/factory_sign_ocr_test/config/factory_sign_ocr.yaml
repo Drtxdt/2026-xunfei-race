@@ -1,5 +1,6 @@
 # Camera/input
 image_topic: /usb_cam/image_raw
+flip: false                         # set true if the X11/debug image is horizontally mirrored
 inference_rate: 5.0
 
 # Recognition stability
@@ -35,5 +36,7 @@ speech_service_timeout_sec: 0.5
 speech_topic: /speak
 fallback_to_speech_topic: true
 speech_wait: false
+
+
 
 
