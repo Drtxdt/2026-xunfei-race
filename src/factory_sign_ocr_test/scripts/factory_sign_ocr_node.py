@@ -188,6 +188,7 @@ class RknnFactorySignClassifierBackend:
         self.rknn = None
         self.available = False
         self.output_shape_logged = False
+        self.input_shape_logged = False
         self._load()
 
     def recognize(self, frame) -> RecognitionResult:
@@ -195,6 +196,9 @@ class RknnFactorySignClassifierBackend:
             return RecognitionResult(source="rknn", error="rknn backend unavailable")
         try:
             image = self._preprocess_for_rknn(frame)
+            if not self.input_shape_logged:
+                self._log("info", "Factory sign RKNN classifier input shape: %s dtype=%s", getattr(image, "shape", None), getattr(image, "dtype", None))
+                self.input_shape_logged = True
             outputs = self.rknn.inference(inputs=[image])
             _repair_ros_logging()
             if not outputs:
@@ -290,6 +294,7 @@ class RknnFactorySignClassifierBackend:
 
     def _preprocess_for_rknn(self, frame):
         import cv2
+        import numpy as np
 
         h, w = frame.shape[:2]
         side = min(h, w)
@@ -297,7 +302,9 @@ class RknnFactorySignClassifierBackend:
         x0 = max(0, (w - side) // 2)
         crop = frame[y0 : y0 + side, x0 : x0 + side]
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-        return cv2.resize(rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+        resized = cv2.resize(rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+        nchw = np.transpose(resized, (2, 0, 1))
+        return np.expand_dims(nchw, axis=0).astype(np.uint8)
 
     @staticmethod
     def _flatten_output(output):
