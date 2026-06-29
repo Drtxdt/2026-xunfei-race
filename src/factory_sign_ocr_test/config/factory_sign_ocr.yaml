@@ -1,0 +1,28 @@
+# Camera/input
+image_topic: /usb_cam/image_raw
+inference_rate: 3.0
+
+# Recognition stability
+cooldown_sec: 5.0
+vote_window_size: 5
+vote_min_count: 2
+
+# Image preprocessing
+roi_scale: 0.8
+resize_scale: 1.8
+use_adaptive_threshold: true
+use_sharpen: true
+debug_show_image: false
+
+# OCR
+use_rknn: true
+rknn_model_path: ""
+cpu_ocr_engine: auto       # auto | paddleocr | easyocr | tesseract
+
+# Speech
+speech_mode: service       # service | topic | auto
+speech_service: /competition_speech/announce
+speech_service_timeout_sec: 0.5
+speech_topic: /speak
+fallback_to_speech_topic: true
+speech_wait: false

@@ -1,0 +1,53 @@
+<launch>
+  <arg name="start_camera" default="true" />
+  <arg name="start_tts" default="true" />
+  <arg name="start_competition_speech" default="true" />
+  <arg name="start_viewer" default="false" />
+  <arg name="image_topic" default="/usb_cam/image_raw" />
+  <arg name="config_file" default="$(find factory_sign_ocr_test)/config/factory_sign_ocr.yaml" />
+  <arg name="debug" default="false" />
+  <arg name="use_rknn" default="true" />
+  <arg name="rknn_model_path" default="" />
+  <arg name="speech_mode" default="service" />
+  <arg name="required" default="false" />
+  <arg name="chars_per_second" default="3.0" />
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_tts)">
+    <node pkg="speech_command"
+          type="voice_speak_node"
+          name="voice_speak_node"
+          output="screen"
+          launch-prefix="bash -c 'sleep 1; exec &quot;$@&quot;' dummy" />
+  </group>
+
+  <group if="$(arg start_competition_speech)">
+    <include file="$(find ucar_2026_competition_speech)/launch/competition_speech.launch">
+      <arg name="chars_per_second" value="$(arg chars_per_second)" />
+    </include>
+  </group>
+
+  <node pkg="factory_sign_ocr_test"
+        type="factory_sign_ocr_node.py"
+        name="factory_sign_ocr_node"
+        output="screen"
+        required="$(arg required)"
+        launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="debug_show_image" value="$(arg debug)" />
+    <param name="use_rknn" value="$(arg use_rknn)" />
+    <param name="rknn_model_path" value="$(arg rknn_model_path)" />
+    <param name="speech_mode" value="$(arg speech_mode)" />
+  </node>
+
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view" name="factory_sign_ocr_camera_view" output="screen">
+      <remap from="image" to="$(arg image_topic)" />
+      <param name="image_transport" value="raw" />
+    </node>
+  </group>
+</launch>
