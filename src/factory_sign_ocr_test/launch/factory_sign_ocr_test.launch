@@ -2,12 +2,15 @@
   <arg name="start_camera" default="true" />
   <arg name="start_tts" default="true" />
   <arg name="start_competition_speech" default="true" />
-  <arg name="start_viewer" default="false" />
+  <arg name="start_viewer" default="true" />
   <arg name="image_topic" default="/usb_cam/image_raw" />
+  <arg name="debug_image_topic" default="/factory_sign_ocr_test/debug_image" />
+  <arg name="debug_preprocess_topic" default="/factory_sign_ocr_test/preprocess_image" />
+  <arg name="debug_view" default="debug" />
   <arg name="config_file" default="$(find factory_sign_ocr_test)/config/factory_sign_ocr.yaml" />
-  <arg name="debug" default="false" />
-  <arg name="use_rknn" default="true" />
-  <arg name="rknn_model_path" default="" />
+  <arg name="recognition_mode" default="auto" />
+  <arg name="classifier_model_path" default="" />
+  <arg name="cpu_ocr_engine" default="auto" />
   <arg name="speech_mode" default="service" />
   <arg name="required" default="false" />
   <arg name="chars_per_second" default="3.0" />
@@ -38,16 +41,35 @@
         launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
     <rosparam command="load" file="$(arg config_file)" />
     <param name="image_topic" value="$(arg image_topic)" />
-    <param name="debug_show_image" value="$(arg debug)" />
-    <param name="use_rknn" value="$(arg use_rknn)" />
-    <param name="rknn_model_path" value="$(arg rknn_model_path)" />
+    <param name="debug_image_topic" value="$(arg debug_image_topic)" />
+    <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
+    <param name="recognition_mode" value="$(arg recognition_mode)" />
+    <param name="classifier_model_path" value="$(arg classifier_model_path)" />
+    <param name="cpu_ocr_engine" value="$(arg cpu_ocr_engine)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
   </node>
 
   <group if="$(arg start_viewer)">
-    <node pkg="image_view" type="image_view" name="factory_sign_ocr_camera_view" output="screen">
-      <remap from="image" to="$(arg image_topic)" />
-      <param name="image_transport" value="raw" />
-    </node>
+    <group if="$(eval arg('debug_view') == 'preprocess')">
+      <node pkg="image_view" type="image_view" name="factory_sign_ocr_x11_preprocess_viewer" output="screen"
+            launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+        <remap from="image" to="$(arg debug_preprocess_topic)" />
+        <param name="image_transport" value="raw" />
+      </node>
+    </group>
+    <group if="$(eval arg('debug_view') == 'camera')">
+      <node pkg="image_view" type="image_view" name="factory_sign_ocr_x11_camera_viewer" output="screen"
+            launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+        <remap from="image" to="$(arg image_topic)" />
+        <param name="image_transport" value="raw" />
+      </node>
+    </group>
+    <group unless="$(eval arg('debug_view') == 'preprocess' or arg('debug_view') == 'camera')">
+      <node pkg="image_view" type="image_view" name="factory_sign_ocr_x11_debug_viewer" output="screen"
+            launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+        <remap from="image" to="$(arg debug_image_topic)" />
+        <param name="image_transport" value="raw" />
+      </node>
+    </group>
   </group>
 </launch>

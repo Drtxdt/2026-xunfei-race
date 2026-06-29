@@ -1,10 +1,21 @@
 # factory_sign_ocr_test
 
-独立 ROS1 测试包，用于“小车摄像头识别厂牌文字并语音播报”。它不接入导航、避障或任务主流程，只订阅摄像头图像，识别到以下任一厂牌后播报一次：
+独立 ROS1 测试包，用于“小车摄像头识别厂牌并语音播报”。它不接入导航、避障或任务主流程，只订阅摄像头图像，识别到以下任一厂牌后播报一次：
 
 - 食品加工车间
 - 日用品加工车间
 - 电子产品生产车间
+
+## 当前推荐方案
+
+小车 Python 是 3.7.3，Tesseract 对现场纸牌、字体变化、光照和倾斜比较敏感，所以本包现在默认使用：
+
+1. RKNN 厂牌三分类优先：自动查找 `yolo/models/factory_sign_3cls.rknn`，直接识别 `food/electronic/daily`。
+2. OCR 兜底：RKNN 未识别到时再尝试 OCR 文本。
+3. RapidOCR 优先于 Tesseract：更适合 Python 3.7.3 的轻量 CPU OCR。
+4. Tesseract 仅最后兜底：会用多种预处理图和 `psm 6/7/11` 合并结果。
+
+这比“纯 Tesseract OCR”稳定，因为任务只有 3 类固定厂牌，不需要逐字完整识别。
 
 ## 已复用的语音接口
 
@@ -35,39 +46,122 @@ source devel/setup.bash
 
 ## 一键启动
 
-默认会启动 USB 摄像头、旧 TTS、统一播报服务和 OCR 测试节点：
+默认会启动 USB 摄像头、旧 TTS、统一播报服务、识别节点和 X11 调试窗口：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
 ```
 
-常用参数：
-
-```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch image_topic:=/usb_cam/image_raw debug:=true
-```
-
 如果摄像头或语音节点已经单独启动：
 
 ```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch start_camera:=false start_tts:=false start_competition_speech:=false
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
+  start_camera:=false start_tts:=false start_competition_speech:=false
 ```
 
-## 单独启动摄像头
+强制只用 RKNN 三分类：
 
 ```bash
-roslaunch usb_cam usb_cam-test.launch
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=rknn_classifier
 ```
 
-确认图像：
+强制只用 RapidOCR/Tesseract：
 
 ```bash
-rostopic hz /usb_cam/image_raw
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=rapidocr
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=tesseract cpu_ocr_engine:=tesseract
 ```
 
-## 测试方法
+## MobaXterm X11 实时调试
 
-把纸牌放在小车摄像头正前方。节点默认裁剪画面中心 80% 区域，连续识别 5 帧；只要某类别出现次数不少于 2 次，就认为识别成功。
+参考工程里的红绿灯和巡线包，本包会发布 ROS 调试图像，再用 `image_view` 通过 X11 显示。
+
+1. MobaXterm 新建 SSH Session 时勾选 X11 forwarding。
+2. SSH 登录小车后检查：
+
+```bash
+echo $DISPLAY
+```
+
+能看到类似 `localhost:10.0` 才说明 X11 转发可用。
+
+3. 启动一键 launch：
+
+```bash
+source ~/ucar_ws/devel/setup.bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
+```
+
+默认窗口显示：
+
+```text
+/factory_sign_ocr_test/debug_image
+```
+
+图像上会画出中心 ROI、RKNN 检测框、识别来源、类别、置信度、投票窗口、是否播报。
+
+切换查看预处理图：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch debug_view:=preprocess
+```
+
+切换查看原始摄像头：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch debug_view:=camera
+```
+
+如果 launch 没弹出窗口，可以手动打开：
+
+```bash
+rosrun image_view image_view image:=/factory_sign_ocr_test/debug_image
+rosrun image_view image_view image:=/factory_sign_ocr_test/preprocess_image
+```
+
+确认话题频率：
+
+```bash
+rostopic hz /factory_sign_ocr_test/debug_image
+rostopic hz /factory_sign_ocr_test/preprocess_image
+```
+
+## OCR 依赖
+
+优先推荐 RKNN 分类模型，不依赖 CPU OCR。若要用 OCR fallback，在 Python 3.7.3 上优先安装 RapidOCR：
+
+```bash
+python3 -m pip install rapidocr_onnxruntime==1.3.24
+```
+
+如果 RapidOCR 装不上，再尝试 EasyOCR：
+
+```bash
+python3 -m pip install easyocr
+```
+
+Tesseract 兜底：
+
+```bash
+sudo apt install tesseract-ocr tesseract-ocr-chi-sim
+python3 -m pip install pytesseract
+```
+
+不建议在 Python 3.7.3 上直接装最新版 PaddleOCR；新版 PaddleOCR 已经偏向 Python 3.8+ 环境。
+
+## 配置说明
+
+主要参数在 `config/factory_sign_ocr.yaml`：
+
+```yaml
+recognition_mode: auto
+classifier_model_path: ""
+classifier_confidence_threshold: 0.5
+cpu_ocr_engine: auto
+publish_debug_image: true
+debug_image_topic: /factory_sign_ocr_test/debug_image
+debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
+```
 
 关键词归类规则：
 
@@ -75,60 +169,12 @@ rostopic hz /usb_cam/image_raw
 - 日用品加工车间：命中 `日用品`、`日用`、`daily`
 - 电子产品生产车间：命中 `电子`、`电`、`electronic`
 
-识别成功后：
+稳定性规则：
 
-- 食品：播报 `识别到食品加工车间`
-- 日用品：播报 `识别到日用品加工车间`
-- 电子产品：播报 `识别到电子产品生产车间`
-
-同一类别默认冷却 5 秒；类别变化会立即播报。
-
-## OCR 依赖
-
-节点会优先尝试 `rknn_model_path` 指定的 OCR RKNN 模型。当前工程中发现的 `src/yolo/models/factory_sign_3cls.rknn` 是厂牌三分类/检测模型，不是 OCR 文字识别模型，所以默认会进入 CPU OCR fallback。
-
-CPU OCR 会按顺序尝试：
-
-```bash
-python3 -m pip install paddleocr paddlepaddle
-```
-
-或：
-
-```bash
-python3 -m pip install easyocr
-```
-
-或：
-
-```bash
-sudo apt install tesseract-ocr tesseract-ocr-chi-sim
-python3 -m pip install pytesseract
-```
-
-如果这些库都不存在，节点不会崩溃，会在 ROS 日志中打印清晰安装提示。
-
-## 切换 RKNN / CPU OCR
-
-配置文件：
-
-```yaml
-use_rknn: true
-rknn_model_path: ""
-cpu_ocr_engine: auto
-```
-
-启动时强制 CPU：
-
-```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch use_rknn:=false
-```
-
-指定 OCR RKNN 模型：
-
-```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch rknn_model_path:=/path/to/ocr_model.rknn
-```
+- 连续 5 帧投票。
+- 某类别出现次数不少于 2 次即确认。
+- 同类默认冷却 5 秒。
+- 类别变化立即播报。
 
 ## 确认语音是否调用成功
 
@@ -151,9 +197,11 @@ rostopic info /speak
 rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 ```
 
-运行 OCR 节点时，终端会打印：
+运行识别节点时，终端会打印：
 
+- 识别来源：`rknn` 或 `ocr`
 - OCR 原始文本
 - 归类结果
+- RKNN 置信度
 - 投票窗口
 - 是否播报

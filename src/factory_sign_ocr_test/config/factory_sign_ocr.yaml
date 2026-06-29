@@ -1,26 +1,34 @@
 # Camera/input
 image_topic: /usb_cam/image_raw
-inference_rate: 3.0
+inference_rate: 5.0
 
 # Recognition stability
 cooldown_sec: 5.0
 vote_window_size: 5
 vote_min_count: 2
 
-# Image preprocessing
+# Recognition backend
+recognition_mode: auto              # auto | rknn_classifier | rapidocr | tesseract | ocr
+classifier_model_path: ""           # empty = auto find yolo/models/factory_sign_3cls.rknn
+classifier_input_size: 640
+classifier_confidence_threshold: 0.5
+classifier_nms_iou_threshold: 0.45
+cpu_ocr_engine: auto                # auto | rapidocr | easyocr | tesseract
+
+# Image preprocessing for OCR fallback
 roi_scale: 0.8
 resize_scale: 1.8
 use_adaptive_threshold: true
 use_sharpen: true
-debug_show_image: false
 
-# OCR
-use_rknn: true
-rknn_model_path: ""
-cpu_ocr_engine: auto       # auto | paddleocr | easyocr | tesseract
+# Debug/X11
+publish_debug_image: true
+debug_image_topic: /factory_sign_ocr_test/debug_image
+debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
+debug_show_image: false             # direct cv2.imshow; prefer image_view through launch on MobaXterm
 
 # Speech
-speech_mode: service       # service | topic | auto
+speech_mode: service                # service | topic | auto
 speech_service: /competition_speech/announce
 speech_service_timeout_sec: 0.5
 speech_topic: /speak

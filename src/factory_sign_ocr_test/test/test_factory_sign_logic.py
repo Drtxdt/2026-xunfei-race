@@ -10,7 +10,7 @@ SCRIPTS_DIR = os.path.join(PKG_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from factory_sign_ocr_node import FactorySignClassifier, VoteWindow
+from factory_sign_ocr_node import FactorySignClassifier, FactorySignRecognizer, RecognitionResult, VoteWindow
 
 
 def test_classifier_matches_requested_keywords():
@@ -36,3 +36,49 @@ def test_vote_window_confirms_two_hits_in_five_frames():
     assert vote.push("food") == "food"
 
     assert vote.snapshot() == [None, "food", "daily", "food"]
+
+
+class FakeRknnBackend:
+    def __init__(self, result):
+        self.result = result
+
+    def recognize(self, _frame):
+        return self.result
+
+
+class FakeOcrBackend:
+    def __init__(self, text):
+        self.text = text
+
+    def recognize(self, _frame):
+        return self.text
+
+
+def test_recognizer_prefers_rknn_classifier_result():
+    recognizer = FactorySignRecognizer(
+        classifier=FactorySignClassifier(),
+        rknn_backend=FakeRknnBackend(RecognitionResult(category="electronic", confidence=0.88, source="rknn")),
+        ocr_backend=FakeOcrBackend("食品加工车间"),
+        mode="auto",
+    )
+
+    result = recognizer.recognize(object())
+
+    assert result.category == "electronic"
+    assert result.source == "rknn"
+    assert result.raw_text == ""
+
+
+def test_recognizer_falls_back_to_ocr_text_when_rknn_has_no_category():
+    recognizer = FactorySignRecognizer(
+        classifier=FactorySignClassifier(),
+        rknn_backend=FakeRknnBackend(RecognitionResult(category=None, confidence=0.0, source="rknn")),
+        ocr_backend=FakeOcrBackend("daily goods"),
+        mode="auto",
+    )
+
+    result = recognizer.recognize(object())
+
+    assert result.category == "daily"
+    assert result.raw_text == "daily goods"
+    assert result.source == "ocr"
