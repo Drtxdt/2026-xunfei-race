@@ -8,9 +8,10 @@
   <arg name="debug_preprocess_topic" default="/factory_sign_ocr_test/preprocess_image" />
   <arg name="debug_view" default="debug" />
   <arg name="config_file" default="$(find factory_sign_ocr_test)/config/factory_sign_ocr.yaml" />
-  <arg name="recognition_mode" default="auto" />
+  <arg name="recognition_mode" default="rknn_classifier" />
   <arg name="classifier_model_path" default="" />
   <arg name="cpu_ocr_engine" default="auto" />
+  <arg name="enable_ocr_fallback" default="false" />
   <arg name="speech_mode" default="service" />
   <arg name="required" default="false" />
   <arg name="chars_per_second" default="3.0" />
@@ -46,6 +47,7 @@
     <param name="recognition_mode" value="$(arg recognition_mode)" />
     <param name="classifier_model_path" value="$(arg classifier_model_path)" />
     <param name="cpu_ocr_engine" value="$(arg cpu_ocr_engine)" />
+    <param name="enable_ocr_fallback" value="$(arg enable_ocr_fallback)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
   </node>
 
@@ -73,4 +75,6 @@
     </group>
   </group>
 </launch>
+
+
 

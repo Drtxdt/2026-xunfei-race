@@ -427,10 +427,11 @@ class FactorySignOCRNode:
         self.use_adaptive_threshold = bool(rospy.get_param("~use_adaptive_threshold", True))
         self.use_sharpen = bool(rospy.get_param("~use_sharpen", True))
         self.debug_show_image = bool(rospy.get_param("~debug_show_image", False))
-        self.recognition_mode = rospy.get_param("~recognition_mode", "auto").strip().lower()
+        self.recognition_mode = rospy.get_param("~recognition_mode", "rknn_classifier").strip().lower()
         self.cpu_ocr_engine = rospy.get_param("~cpu_ocr_engine", "auto")
+        self.enable_ocr_fallback = bool(rospy.get_param("~enable_ocr_fallback", False))
         self.classifier_model_path = rospy.get_param("~classifier_model_path", "")
-        self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.5))
+        self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.25))
         self.classifier_nms = float(rospy.get_param("~classifier_nms_iou_threshold", 0.45))
         self.classifier_input_size = int(rospy.get_param("~classifier_input_size", 640))
         self.speech_mode = rospy.get_param("~speech_mode", "service").strip().lower()
@@ -455,7 +456,9 @@ class FactorySignOCRNode:
                 logger=rospy,
             )
         ocr_backend = None
-        if self.recognition_mode in ("auto", "rapidocr", "tesseract", "ocr"):
+        if self.recognition_mode in ("rapidocr", "tesseract", "ocr") or (
+            self.recognition_mode == "auto" and self.enable_ocr_fallback
+        ):
             ocr_backend = FactorySignOCR(cpu_engine=self.cpu_ocr_engine, logger=rospy)
         self.recognizer = FactorySignRecognizer(self.classifier, rknn_backend, ocr_backend, self.recognition_mode)
 
@@ -474,9 +477,10 @@ class FactorySignOCRNode:
         rospy.on_shutdown(self._on_shutdown)
         _repair_ros_logging()
         rospy.loginfo(
-            "factory_sign_ocr_node ready: image=%s mode=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
+            "factory_sign_ocr_node ready: image=%s mode=%s ocr_fallback=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
             self.image_topic,
             self.recognition_mode,
+            self.enable_ocr_fallback,
             self.debug_image_topic,
             self.preprocess_image_topic,
             self.speech_service,
@@ -502,7 +506,11 @@ class FactorySignOCRNode:
         processed = self._preprocess(frame)
         source_frame = frame if self.recognition_mode in ("auto", "rknn_classifier") else processed
         result = self.recognizer.recognize(source_frame)
-        if not result.category and self.recognition_mode in ("auto", "rknn_classifier"):
+        if (
+            self.enable_ocr_fallback
+            and not result.category
+            and self.recognition_mode in ("auto", "rknn_classifier")
+        ):
             # If RKNN did not lock, run OCR on the preprocessed ROI when available.
             ocr_backend = getattr(self.recognizer, "ocr_backend", None)
             if ocr_backend is not None:
@@ -672,6 +680,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
 
 
 

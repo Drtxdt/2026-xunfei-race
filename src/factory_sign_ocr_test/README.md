@@ -46,7 +46,7 @@ source devel/setup.bash
 
 ## 一键启动
 
-默认会启动 USB 摄像头、统一播报服务、识别节点和 X11 调试窗口。当前小车 ROS path 中如果没有 `speech_command` 包，旧 TTS 节点不会默认启动：
+默认会启动 USB 摄像头、统一播报服务、RKNN 识别节点和 X11 调试窗口。当前小车 ROS path 中如果没有 `speech_command` 包，旧 TTS 节点不会默认启动。OCR fallback 默认关闭：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
@@ -59,13 +59,13 @@ roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
   start_camera:=false start_tts:=false start_competition_speech:=false
 ```
 
-强制只用 RKNN 三分类：
+强制只用 RKNN 三分类（默认就是这个模式，启动最快，调试窗口不会被 OCR 阻塞）：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=rknn_classifier
 ```
 
-强制只用 RapidOCR/Tesseract：
+需要 OCR fallback 时再显式打开，先推荐 RapidOCR，不建议用 Tesseract 做默认链路：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=rapidocr
@@ -154,10 +154,11 @@ python3 -m pip install pytesseract
 主要参数在 `config/factory_sign_ocr.yaml`：
 
 ```yaml
-recognition_mode: auto
+recognition_mode: rknn_classifier
 classifier_model_path: ""
 classifier_confidence_threshold: 0.5
 cpu_ocr_engine: auto
+enable_ocr_fallback: false
 publish_debug_image: true
 debug_image_topic: /factory_sign_ocr_test/debug_image
 debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
@@ -207,4 +208,6 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 - 是否播报
 
 如果你的车上确实安装了 speech_command，可以显式启动旧 TTS：oslaunch factory_sign_ocr_test factory_sign_ocr_test.launch start_tts:=true。
+
+
 
