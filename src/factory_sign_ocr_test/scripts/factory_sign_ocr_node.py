@@ -4,11 +4,9 @@
 
 from __future__ import annotations
 
-import importlib.util
 import logging
 import os
 import re
-import sys
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
@@ -27,7 +25,7 @@ SPEECH_TEXTS = {
     "electronic": "识别到电子产品生产车间",
 }
 
-RKNN_CLASS_NAMES = ["food", "electronic", "daily"]
+RKNN_CLASS_NAMES = ["daily", "electronic", "food"]
 
 def _repair_ros_logging() -> None:
     """Repair rospy logging after RKNN libraries rename level names to I/W/E/F."""
@@ -154,7 +152,7 @@ def _pick_best_detection(detections: List[Dict[str, object]], source: str) -> Re
         detections=detections,
     )
 class FactorySignRecognizer:
-    """Prefer RKNN factory-sign classification and fall back to OCR text."""
+    """Run the RKNN factory-sign classifier backend."""
 
     def __init__(self, classifier, rknn_backend=None, ocr_backend=None, mode: str = "auto") -> None:
         self.classifier = classifier
@@ -169,16 +167,7 @@ class FactorySignRecognizer:
                 return result
             if self.mode == "rknn_classifier":
                 return result
-
-        if self.mode in ("auto", "rapidocr", "tesseract", "ocr") and self.ocr_backend is not None:
-            text = self.ocr_backend.recognize(frame)
-            return RecognitionResult(
-                category=self.classifier.classify(text),
-                confidence=0.0,
-                source="ocr",
-                raw_text=text or "",
-            )
-        return RecognitionResult(source="none", error="no recognition backend available")
+        return RecognitionResult(source="none", error="no RKNN classifier backend available")
 
 
     def release(self) -> None:
@@ -189,71 +178,50 @@ class FactorySignRecognizer:
 
 
 class RknnFactorySignClassifierBackend:
-    """Wrapper around the existing YOLOv5 RKNN factory-sign model."""
+    """RK3588 RKNNLite backend for the ShuffleNetV2 factory-sign classifier."""
 
     def __init__(self, model_path: str, confidence: float, nms: float, input_size: int, diagnostic_confidence: float, logger=None) -> None:
         self.logger = logger
         self.model_path = self._resolve_model_path(model_path)
         self.confidence = float(confidence)
-        self.diagnostic_confidence = max(0.001, float(diagnostic_confidence))
-        self.nms = float(nms)
-        self.input_size = int(input_size)
+        self.input_size = int(input_size or 224)
         self.rknn = None
-        self.vm = None
-        self.output_shapes_logged = False
         self.available = False
-        self.last_detections: List[Dict[str, object]] = []
+        self.output_shape_logged = False
         self._load()
 
     def recognize(self, frame) -> RecognitionResult:
         if not self.available:
             return RecognitionResult(source="rknn", error="rknn backend unavailable")
         try:
-            boxes, classes, scores, self.output_shapes_logged = self.vm.infer_frame(
-                self.rknn,
-                frame,
-                RKNN_CLASS_NAMES,
-                self.confidence,
-                self.nms,
-                self.input_size,
-                self.output_shapes_logged,
-            )
+            image = self._preprocess_for_rknn(frame)
+            outputs = self.rknn.inference(inputs=[image])
             _repair_ros_logging()
-            dets = self.vm.build_detections(boxes, classes, scores, RKNN_CLASS_NAMES)
-            self.last_detections = dets
-            if dets:
-                return _pick_best_detection(dets, "rknn")
-
-            low_dets = self._diagnostic_detections(frame)
-            self.last_detections = low_dets
-            if low_dets:
-                result = _pick_best_detection(low_dets, "rknn_low")
-                result.error = "below speech threshold; lower classifier_confidence_threshold if stable"
-                return result
-            return RecognitionResult(source="rknn", detections=[])
+            if not outputs:
+                return RecognitionResult(source="rknn", error="empty RKNN output")
+            logits = self._flatten_output(outputs[0])
+            if not self.output_shape_logged:
+                self._log("info", "Factory sign RKNN classifier output shape: %s", getattr(outputs[0], "shape", None))
+                self.output_shape_logged = True
+            probs = self._softmax(logits)
+            cls_id = int(probs.argmax())
+            confidence = float(probs[cls_id])
+            category = RKNN_CLASS_NAMES[cls_id] if 0 <= cls_id < len(RKNN_CLASS_NAMES) else None
+            raw_text = "logits={} probs={}".format(
+                ["{:.3f}".format(float(v)) for v in logits.tolist()],
+                ["{}:{:.3f}".format(name, float(probs[i])) for i, name in enumerate(RKNN_CLASS_NAMES)],
+            )
+            if category and confidence >= self.confidence:
+                return RecognitionResult(category=category, confidence=confidence, source="rknn_cls", raw_text=raw_text)
+            return RecognitionResult(
+                source="rknn_cls",
+                confidence=confidence,
+                raw_text=raw_text,
+                error="below classifier_confidence_threshold {:.3f}".format(self.confidence),
+            )
         except Exception as exc:
             self._log("warn", "RKNN factory sign inference failed: %s", exc)
-            return RecognitionResult(source="rknn", error=str(exc))
-
-    def _diagnostic_detections(self, frame) -> List[Dict[str, object]]:
-        if self.diagnostic_confidence >= self.confidence:
-            return []
-        try:
-            boxes, classes, scores, self.output_shapes_logged = self.vm.infer_frame(
-                self.rknn,
-                frame,
-                RKNN_CLASS_NAMES,
-                self.diagnostic_confidence,
-                self.nms,
-                self.input_size,
-                True,
-            )
-            _repair_ros_logging()
-            dets = self.vm.build_detections(boxes, classes, scores, RKNN_CLASS_NAMES)
-            return dets[:5]
-        except Exception as exc:
-            self._log("warn", "RKNN low-threshold diagnostic failed: %s", exc)
-            return []
+            return RecognitionResult(source="rknn_cls", error=str(exc))
 
     def release(self) -> None:
         if self.rknn is not None:
@@ -267,11 +235,22 @@ class RknnFactorySignClassifierBackend:
             self._log("warn", "Factory sign RKNN model not found: %s", self.model_path)
             return
         try:
-            self.vm = self._load_validate_model_module()
-            loaded = self.vm.load_rknn_model(self.model_path)
-            self.rknn = loaded[0] if isinstance(loaded, tuple) else loaded
+            self.rknn = self._create_rknn_lite()
+            ret = self.rknn.load_rknn(self.model_path)
+            if ret != 0:
+                raise RuntimeError("load_rknn failed: {}".format(ret))
+            ret = self._init_runtime()
+            if ret != 0:
+                raise RuntimeError("init_runtime failed: {}".format(ret))
             self.available = True
-            self._log("info", "Factory sign RKNN classifier loaded: %s", self.model_path)
+            self._log(
+                "info",
+                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f",
+                self.model_path,
+                self.input_size,
+                RKNN_CLASS_NAMES,
+                self.confidence,
+            )
         except Exception as exc:
             self._log("warn", "Factory sign RKNN classifier unavailable: %s", exc)
 
@@ -282,33 +261,61 @@ class RknnFactorySignClassifierBackend:
         try:
             import rospkg
 
-            yolo_dir = rospkg.RosPack().get_path("yolo")
-            default = os.path.join(yolo_dir, "models", "factory_sign_3cls.rknn")
+            pkg_dir = rospkg.RosPack().get_path("factory_sign_ocr_test")
+            default = os.path.join(pkg_dir, "models", "factory_sign_cls_rk3588.rknn")
             if os.path.isfile(default):
                 return default
         except Exception:
             pass
         here = os.path.abspath(os.path.dirname(__file__))
-        workspace = os.path.abspath(os.path.join(here, "..", ".."))
-        default = os.path.join(workspace, "yolo", "models", "factory_sign_3cls.rknn")
-        return default
+        return os.path.abspath(os.path.join(here, "..", "models", "factory_sign_cls_rk3588.rknn"))
 
-    def _load_validate_model_module(self):
+    @staticmethod
+    def _create_rknn_lite():
         try:
-            import rospkg
+            from rknnlite.api import RKNNLite
 
-            yolo_dir = rospkg.RosPack().get_path("yolo")
-        except Exception:
-            yolo_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "yolo"))
-        module_path = os.path.join(yolo_dir, "validate_model.py")
-        if not os.path.isfile(module_path):
-            raise RuntimeError("missing yolo/validate_model.py at {}".format(module_path))
-        if yolo_dir not in sys.path:
-            sys.path.insert(0, yolo_dir)
-        spec = importlib.util.spec_from_file_location("factory_sign_validate_model", module_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)  # type: ignore[union-attr]
-        return module
+            return RKNNLite()
+        except Exception as exc:
+            raise RuntimeError("rknnlite.api.RKNNLite unavailable: {}".format(exc))
+
+    def _init_runtime(self) -> int:
+        core_mask = getattr(type(self.rknn), "NPU_CORE_0_1_2", None)
+        if core_mask is not None:
+            try:
+                return self.rknn.init_runtime(core_mask=core_mask)
+            except TypeError:
+                pass
+        return self.rknn.init_runtime()
+
+    def _preprocess_for_rknn(self, frame):
+        import cv2
+
+        h, w = frame.shape[:2]
+        side = min(h, w)
+        y0 = max(0, (h - side) // 2)
+        x0 = max(0, (w - side) // 2)
+        crop = frame[y0 : y0 + side, x0 : x0 + side]
+        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        return cv2.resize(rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+
+    @staticmethod
+    def _flatten_output(output):
+        import numpy as np
+
+        arr = np.asarray(output, dtype=np.float32).reshape(-1)
+        if arr.size < len(RKNN_CLASS_NAMES):
+            raise RuntimeError("unexpected RKNN output size: {}".format(arr.shape))
+        return arr[: len(RKNN_CLASS_NAMES)]
+
+    @staticmethod
+    def _softmax(logits):
+        import numpy as np
+
+        x = np.asarray(logits, dtype=np.float32)
+        x = x - np.max(x)
+        e = np.exp(x)
+        return e / np.sum(e)
 
     def _log(self, level: str, message: str, *args) -> None:
         _safe_rospy_log(self.logger, level, message, *args)
@@ -468,8 +475,9 @@ class FactorySignOCRNode:
         self.use_sharpen = bool(rospy.get_param("~use_sharpen", True))
         self.debug_show_image = bool(rospy.get_param("~debug_show_image", False))
         self.recognition_mode = rospy.get_param("~recognition_mode", "rknn_classifier").strip().lower()
-        self.cpu_ocr_engine = rospy.get_param("~cpu_ocr_engine", "auto")
-        self.enable_ocr_fallback = bool(rospy.get_param("~enable_ocr_fallback", False))
+        if self.recognition_mode != "rknn_classifier":
+            rospy.logwarn("Ignoring recognition_mode=%s; this node now loads only the RKNN classifier.", self.recognition_mode)
+            self.recognition_mode = "rknn_classifier"
         self.classifier_model_path = rospy.get_param("~classifier_model_path", "")
         self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.05))
         self.classifier_diagnostic_confidence = float(rospy.get_param("~classifier_diagnostic_confidence_threshold", 0.01))
@@ -497,12 +505,7 @@ class FactorySignOCRNode:
                 self.classifier_diagnostic_confidence,
                 logger=rospy,
             )
-        ocr_backend = None
-        if self.recognition_mode in ("rapidocr", "tesseract", "ocr") or (
-            self.recognition_mode == "auto" and self.enable_ocr_fallback
-        ):
-            ocr_backend = FactorySignOCR(cpu_engine=self.cpu_ocr_engine, logger=rospy)
-        self.recognizer = FactorySignRecognizer(self.classifier, rknn_backend, ocr_backend, self.recognition_mode)
+        self.recognizer = FactorySignRecognizer(self.classifier, rknn_backend, None, self.recognition_mode)
 
         self.latest_image = None
         self.latest_stamp = 0.0
@@ -519,11 +522,11 @@ class FactorySignOCRNode:
         rospy.on_shutdown(self._on_shutdown)
         _repair_ros_logging()
         rospy.loginfo(
-            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s ocr_fallback=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
+            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
             self.image_topic,
             self.flip_image,
             self.recognition_mode,
-            self.enable_ocr_fallback,
+            self.classifier_model_path or "auto",
             self.debug_image_topic,
             self.preprocess_image_topic,
             self.speech_service,
@@ -548,22 +551,8 @@ class FactorySignOCRNode:
 
     def _process_once(self, frame) -> None:
         processed = self._preprocess(frame)
-        source_frame = frame if self.recognition_mode in ("auto", "rknn_classifier") else processed
-        result = self.recognizer.recognize(source_frame)
-        if (
-            self.enable_ocr_fallback
-            and not result.category
-            and self.recognition_mode in ("auto", "rknn_classifier")
-        ):
-            # If RKNN did not lock, run OCR on the preprocessed ROI when available.
-            ocr_backend = getattr(self.recognizer, "ocr_backend", None)
-            if ocr_backend is not None:
-                text = ocr_backend.recognize(processed)
-                result.raw_text = text or result.raw_text
-                result.category = self.classifier.classify(text)
-                if result.category:
-                    result.source = "ocr"
-        vote_category = None if result.source == "rknn_low" else result.category
+        result = self.recognizer.recognize(frame)
+        vote_category = result.category
         confirmed = self.vote.push(vote_category)
         self.last_result = result
         self.last_confirmed = confirmed

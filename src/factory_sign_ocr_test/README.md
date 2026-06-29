@@ -8,14 +8,19 @@
 
 ## 当前推荐方案
 
-小车 Python 是 3.7.3，Tesseract 对现场纸牌、字体变化、光照和倾斜比较敏感，所以本包现在默认使用：
+本包现在默认只加载一个 RK3588 RKNNLite 三分类模型：
 
-1. RKNN 厂牌三分类优先：自动查找 `yolo/models/factory_sign_3cls.rknn`，直接识别 `food/electronic/daily`。
-2. OCR 兜底：RKNN 未识别到时再尝试 OCR 文本。
-3. RapidOCR 优先于 Tesseract：更适合 Python 3.7.3 的轻量 CPU OCR。
-4. Tesseract 仅最后兜底：会用多种预处理图和 `psm 6/7/11` 合并结果。
+```text
+factory_sign_ocr_test/models/factory_sign_cls_rk3588.rknn
+```
 
-这比“纯 Tesseract OCR”稳定，因为任务只有 3 类固定厂牌，不需要逐字完整识别。
+模型输入为中心区域裁剪后的 RGB 图像，resize 到 `224x224`，输出三类 logits，再用 softmax 得到置信度：
+
+- `daily`：日用品加工车间
+- `electronic`：电子产品生产车间
+- `food`：食品加工车间
+
+当前默认不加载 OCR，不加载旧 YOLO 检测模型，也不依赖 `yolo/validate_model.py`。
 
 ## 已复用的语音接口
 
@@ -26,7 +31,6 @@
 - 调用方式：`event="custom"`，`text="识别到食品加工车间"`，`wait=false`
 - 兜底 topic：`/speak`
 - topic 类型：`std_msgs/String`
-- 旧 TTS 节点：`speech_command/voice_speak_node`
 - 统一播报节点：`ucar_2026_competition_speech/scripts/competition_announcer.py`
 
 ## 编译
@@ -46,7 +50,7 @@ source devel/setup.bash
 
 ## 一键启动
 
-默认会启动 USB 摄像头、统一播报服务、RKNN 识别节点和 X11 调试窗口。当前小车 ROS path 中如果没有 `speech_command` 包，旧 TTS 节点不会默认启动。OCR fallback 默认关闭：
+默认会启动 USB 摄像头、统一播报服务、RKNNLite 分类识别节点和 X11 调试窗口。OCR fallback 默认关闭，节点不会加载 OCR：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
@@ -56,20 +60,20 @@ roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
-  start_camera:=false start_tts:=false start_competition_speech:=false
+  start_camera:=false start_competition_speech:=false
 ```
 
-强制只用 RKNN 三分类（默认就是这个模式，启动最快，调试窗口不会被 OCR 阻塞）：
+强制只用包内 RKNN 三分类（默认就是这个模式）：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=rknn_classifier
 ```
 
-需要 OCR fallback 时再显式打开，先推荐 RapidOCR，不建议用 Tesseract 做默认链路：
+指定模型路径：
 
 ```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=rapidocr
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch recognition_mode:=tesseract cpu_ocr_engine:=tesseract
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
+  classifier_model_path:=$(rospack find factory_sign_ocr_test)/models/factory_sign_cls_rk3588.rknn
 ```
 
 ## MobaXterm X11 实时调试
@@ -98,7 +102,7 @@ roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
 /factory_sign_ocr_test/debug_image
 ```
 
-图像上会画出中心 ROI、RKNN 检测框、识别来源、类别、置信度、投票窗口、是否播报。
+图像上会画出中心 ROI、识别来源、类别、softmax 置信度、投票窗口、是否播报。
 
 切换查看预处理图：
 
@@ -126,28 +130,15 @@ rostopic hz /factory_sign_ocr_test/debug_image
 rostopic hz /factory_sign_ocr_test/preprocess_image
 ```
 
-## OCR 依赖
+## NPU 依赖
 
-优先推荐 RKNN 分类模型，不依赖 CPU OCR。若要用 OCR fallback，在 Python 3.7.3 上优先安装 RapidOCR：
-
-```bash
-python3 -m pip install rapidocr_onnxruntime==1.3.24
-```
-
-如果 RapidOCR 装不上，再尝试 EasyOCR：
+小车端需要能导入 `rknnlite.api.RKNNLite`。确认方式：
 
 ```bash
-python3 -m pip install easyocr
+python3 -c "from rknnlite.api import RKNNLite; print('rknnlite ok')"
 ```
 
-Tesseract 兜底：
-
-```bash
-sudo apt install tesseract-ocr tesseract-ocr-chi-sim
-python3 -m pip install pytesseract
-```
-
-不建议在 Python 3.7.3 上直接装最新版 PaddleOCR；新版 PaddleOCR 已经偏向 Python 3.8+ 环境。
+本包不需要安装 PaddleOCR、EasyOCR、RapidOCR 或 Tesseract。
 
 ## 配置说明
 
@@ -156,19 +147,12 @@ python3 -m pip install pytesseract
 ```yaml
 recognition_mode: rknn_classifier
 classifier_model_path: ""
-classifier_confidence_threshold: 0.5
-cpu_ocr_engine: auto
-enable_ocr_fallback: false
+classifier_input_size: 224
+classifier_confidence_threshold: 0.50
 publish_debug_image: true
 debug_image_topic: /factory_sign_ocr_test/debug_image
 debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
 ```
-
-关键词归类规则：
-
-- 食品加工车间：命中 `食品`、`食`、`food`
-- 日用品加工车间：命中 `日用品`、`日用`、`daily`
-- 电子产品生产车间：命中 `电子`、`电`、`electronic`
 
 稳定性规则：
 
@@ -191,7 +175,7 @@ text: '识别到食品加工车间'
 wait: false"
 ```
 
-检查旧 TTS topic：
+检查兜底播报 topic：
 
 ```bash
 rostopic info /speak
@@ -200,14 +184,14 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 
 运行识别节点时，终端会打印：
 
-- 识别来源：`rknn` 或 `ocr`
-- OCR 原始文本
+- 识别来源：`rknn_cls`
+- RKNN logits/probs
 - 归类结果
-- RKNN 置信度
+- softmax 置信度
 - 投票窗口
 - 是否播报
 
-如果你的车上确实安装了 speech_command，可以显式启动旧 TTS：oslaunch factory_sign_ocr_test factory_sign_ocr_test.launch start_tts:=true。
+
 
 
 

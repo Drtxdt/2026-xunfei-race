@@ -69,7 +69,7 @@ def test_recognizer_prefers_rknn_classifier_result():
     assert result.raw_text == ""
 
 
-def test_recognizer_falls_back_to_ocr_text_when_rknn_has_no_category():
+def test_recognizer_does_not_load_or_use_ocr_fallback():
     recognizer = FactorySignRecognizer(
         classifier=FactorySignClassifier(),
         rknn_backend=FakeRknnBackend(RecognitionResult(category=None, confidence=0.0, source="rknn")),
@@ -79,9 +79,10 @@ def test_recognizer_falls_back_to_ocr_text_when_rknn_has_no_category():
 
     result = recognizer.recognize(object())
 
-    assert result.category == "daily"
-    assert result.raw_text == "daily goods"
-    assert result.source == "ocr"
+    assert result.category is None
+    assert result.raw_text == ""
+    assert result.source == "none"
+    assert "RKNN" in result.error
 
 
 def test_repair_ros_logging_accepts_rknn_short_level_names(monkeypatch):

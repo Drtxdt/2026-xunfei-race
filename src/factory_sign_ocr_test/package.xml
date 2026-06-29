@@ -16,9 +16,7 @@
 
   <exec_depend>usb_cam</exec_depend>
   <exec_depend>image_view</exec_depend>
-  <exec_depend>speech_command</exec_depend>
   <exec_depend>ucar_2026_competition_speech</exec_depend>
-  <exec_depend>yolo</exec_depend>
 
   <export>
   </export>
