@@ -12,6 +12,7 @@ vote_min_count: 2
 recognition_mode: rknn_classifier   # fixed default: RKNNLite classifier only
 classifier_model_path: ""           # empty = auto find factory_sign_ocr_test/models/factory_sign_cls_rk3588.rknn
 classifier_input_size: 224
+classifier_input_layout: nhwc       # nhwc is RKNNLite-friendly; set nchw only for A/B debug
 classifier_confidence_threshold: 0.50
 
 # Debug ROI/preprocess image only; not used for OCR

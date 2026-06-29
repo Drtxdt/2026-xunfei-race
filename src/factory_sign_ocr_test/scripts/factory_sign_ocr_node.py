@@ -180,11 +180,14 @@ class FactorySignRecognizer:
 class RknnFactorySignClassifierBackend:
     """RK3588 RKNNLite backend for the ShuffleNetV2 factory-sign classifier."""
 
-    def __init__(self, model_path: str, confidence: float, nms: float, input_size: int, diagnostic_confidence: float, logger=None) -> None:
+    def __init__(self, model_path: str, confidence: float, nms: float, input_size: int, diagnostic_confidence: float, logger=None, input_layout: str = "nhwc") -> None:
         self.logger = logger
         self.model_path = self._resolve_model_path(model_path)
         self.confidence = float(confidence)
         self.input_size = int(input_size or 224)
+        self.input_layout = (input_layout or "nhwc").strip().lower()
+        if self.input_layout not in ("nhwc", "nchw"):
+            self.input_layout = "nhwc"
         self.rknn = None
         self.available = False
         self.output_shape_logged = False
@@ -197,9 +200,15 @@ class RknnFactorySignClassifierBackend:
         try:
             image = self._preprocess_for_rknn(frame)
             if not self.input_shape_logged:
-                self._log("info", "Factory sign RKNN classifier input shape: %s dtype=%s", getattr(image, "shape", None), getattr(image, "dtype", None))
+                self._log(
+                    "info",
+                    "Factory sign RKNN classifier input shape: %s dtype=%s layout=%s",
+                    getattr(image, "shape", None),
+                    getattr(image, "dtype", None),
+                    self.input_layout,
+                )
                 self.input_shape_logged = True
-            outputs = self.rknn.inference(inputs=[image])
+            outputs = self._run_inference(image)
             _repair_ros_logging()
             if not outputs:
                 return RecognitionResult(source="rknn", error="empty RKNN output")
@@ -292,6 +301,12 @@ class RknnFactorySignClassifierBackend:
                 pass
         return self.rknn.init_runtime()
 
+    def _run_inference(self, image):
+        try:
+            return self.rknn.inference(inputs=[image], data_format=[self.input_layout])
+        except TypeError:
+            return self.rknn.inference(inputs=[image])
+
     def _preprocess_for_rknn(self, frame):
         import cv2
         import numpy as np
@@ -303,8 +318,9 @@ class RknnFactorySignClassifierBackend:
         crop = frame[y0 : y0 + side, x0 : x0 + side]
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         resized = cv2.resize(rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
-        nchw = np.transpose(resized, (2, 0, 1))
-        return np.expand_dims(nchw, axis=0).astype(np.uint8)
+        if self.input_layout == "nchw":
+            resized = np.transpose(resized, (2, 0, 1))
+        return np.expand_dims(resized, axis=0).astype(np.uint8)
 
     @staticmethod
     def _flatten_output(output):
@@ -490,6 +506,7 @@ class FactorySignOCRNode:
         self.classifier_diagnostic_confidence = float(rospy.get_param("~classifier_diagnostic_confidence_threshold", 0.01))
         self.classifier_nms = float(rospy.get_param("~classifier_nms_iou_threshold", 0.45))
         self.classifier_input_size = int(rospy.get_param("~classifier_input_size", 640))
+        self.classifier_input_layout = rospy.get_param("~classifier_input_layout", "nhwc").strip().lower()
         self.speech_mode = rospy.get_param("~speech_mode", "service").strip().lower()
         self.speech_service = rospy.get_param("~speech_service", "/competition_speech/announce")
         self.speech_timeout = float(rospy.get_param("~speech_service_timeout_sec", 0.5))
@@ -511,6 +528,7 @@ class FactorySignOCRNode:
                 self.classifier_input_size,
                 self.classifier_diagnostic_confidence,
                 logger=rospy,
+                input_layout=self.classifier_input_layout,
             )
         self.recognizer = FactorySignRecognizer(self.classifier, rknn_backend, None, self.recognition_mode)
 

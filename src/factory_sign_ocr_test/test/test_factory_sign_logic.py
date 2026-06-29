@@ -125,16 +125,32 @@ def test_maybe_flip_frame_flips_horizontally():
     assert unchanged is frame
 
 
-def test_rknn_classifier_preprocess_returns_batched_nchw_uint8():
+def test_rknn_classifier_preprocess_returns_batched_nhwc_uint8_by_default():
     import numpy as np
     from factory_sign_ocr_node import RknnFactorySignClassifierBackend
 
     backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
     backend.input_size = 224
+    backend.input_layout = "nhwc"
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     frame[:, :, 0] = 10
     frame[:, :, 1] = 20
     frame[:, :, 2] = 30
+
+    tensor = backend._preprocess_for_rknn(frame)
+
+    assert tensor.shape == (1, 224, 224, 3)
+    assert tensor.dtype == np.uint8
+
+
+def test_rknn_classifier_preprocess_can_return_batched_nchw_uint8():
+    import numpy as np
+    from factory_sign_ocr_node import RknnFactorySignClassifierBackend
+
+    backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
+    backend.input_size = 224
+    backend.input_layout = "nchw"
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
     tensor = backend._preprocess_for_rknn(frame)
 

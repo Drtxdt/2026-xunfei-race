@@ -148,6 +148,7 @@ python3 -c "from rknnlite.api import RKNNLite; print('rknnlite ok')"
 recognition_mode: rknn_classifier
 classifier_model_path: ""
 classifier_input_size: 224
+classifier_input_layout: nhwc
 classifier_confidence_threshold: 0.50
 publish_debug_image: true
 debug_image_topic: /factory_sign_ocr_test/debug_image
@@ -190,6 +191,14 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 - softmax 置信度
 - 投票窗口
 - 是否播报
+
+如果所有画面都稳定识别成同一类，先切换输入布局做 A/B：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_layout:=nchw
+```
+
+默认 `nhwc` 更符合 RKNNLite 常见输入方式；`nchw` 仅用于现场排查。
 
 
 
