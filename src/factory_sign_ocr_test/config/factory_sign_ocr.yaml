@@ -12,7 +12,8 @@ vote_min_count: 2
 recognition_mode: rknn_classifier   # rknn_classifier | auto | rapidocr | tesseract | ocr
 classifier_model_path: ""           # empty = auto find yolo/models/factory_sign_3cls.rknn
 classifier_input_size: 640
-classifier_confidence_threshold: 0.25
+classifier_confidence_threshold: 0.05
+classifier_diagnostic_confidence_threshold: 0.01
 classifier_nms_iou_threshold: 0.45
 cpu_ocr_engine: auto                # auto | rapidocr | easyocr | tesseract
 enable_ocr_fallback: false          # keep false for fast X11/RKNN debug; set true only when OCR is needed
@@ -36,6 +37,7 @@ speech_service_timeout_sec: 0.5
 speech_topic: /speak
 fallback_to_speech_topic: true
 speech_wait: false
+
 
 
 

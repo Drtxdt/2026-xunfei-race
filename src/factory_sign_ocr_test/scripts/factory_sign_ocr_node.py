@@ -138,6 +138,21 @@ class VoteWindow:
         return list(self._items)
 
 
+
+
+def _pick_best_detection(detections: List[Dict[str, object]], source: str) -> RecognitionResult:
+    if not detections:
+        return RecognitionResult(source=source, detections=[])
+    best = max(detections, key=lambda item: float(item.get("confidence", 0.0)))
+    category = str(best.get("class_name", ""))
+    if category not in CATEGORY_NAMES:
+        return RecognitionResult(source=source, detections=detections)
+    return RecognitionResult(
+        category=category,
+        confidence=float(best.get("confidence", 0.0)),
+        source=source,
+        detections=detections,
+    )
 class FactorySignRecognizer:
     """Prefer RKNN factory-sign classification and fall back to OCR text."""
 
@@ -165,6 +180,7 @@ class FactorySignRecognizer:
             )
         return RecognitionResult(source="none", error="no recognition backend available")
 
+
     def release(self) -> None:
         for backend in (self.rknn_backend, self.ocr_backend):
             release = getattr(backend, "release", None)
@@ -175,10 +191,11 @@ class FactorySignRecognizer:
 class RknnFactorySignClassifierBackend:
     """Wrapper around the existing YOLOv5 RKNN factory-sign model."""
 
-    def __init__(self, model_path: str, confidence: float, nms: float, input_size: int, logger=None) -> None:
+    def __init__(self, model_path: str, confidence: float, nms: float, input_size: int, diagnostic_confidence: float, logger=None) -> None:
         self.logger = logger
         self.model_path = self._resolve_model_path(model_path)
         self.confidence = float(confidence)
+        self.diagnostic_confidence = max(0.001, float(diagnostic_confidence))
         self.nms = float(nms)
         self.input_size = int(input_size)
         self.rknn = None
@@ -204,19 +221,39 @@ class RknnFactorySignClassifierBackend:
             _repair_ros_logging()
             dets = self.vm.build_detections(boxes, classes, scores, RKNN_CLASS_NAMES)
             self.last_detections = dets
-            if not dets:
-                return RecognitionResult(source="rknn", detections=[])
-            best = dets[0]
-            category = str(best["class_name"])
-            return RecognitionResult(
-                category=category,
-                confidence=float(best["confidence"]),
-                source="rknn",
-                detections=dets,
-            )
+            if dets:
+                return _pick_best_detection(dets, "rknn")
+
+            low_dets = self._diagnostic_detections(frame)
+            self.last_detections = low_dets
+            if low_dets:
+                result = _pick_best_detection(low_dets, "rknn_low")
+                result.error = "below speech threshold; lower classifier_confidence_threshold if stable"
+                return result
+            return RecognitionResult(source="rknn", detections=[])
         except Exception as exc:
             self._log("warn", "RKNN factory sign inference failed: %s", exc)
             return RecognitionResult(source="rknn", error=str(exc))
+
+    def _diagnostic_detections(self, frame) -> List[Dict[str, object]]:
+        if self.diagnostic_confidence >= self.confidence:
+            return []
+        try:
+            boxes, classes, scores, self.output_shapes_logged = self.vm.infer_frame(
+                self.rknn,
+                frame,
+                RKNN_CLASS_NAMES,
+                self.diagnostic_confidence,
+                self.nms,
+                self.input_size,
+                True,
+            )
+            _repair_ros_logging()
+            dets = self.vm.build_detections(boxes, classes, scores, RKNN_CLASS_NAMES)
+            return dets[:5]
+        except Exception as exc:
+            self._log("warn", "RKNN low-threshold diagnostic failed: %s", exc)
+            return []
 
     def release(self) -> None:
         if self.rknn is not None:
@@ -274,12 +311,7 @@ class RknnFactorySignClassifierBackend:
         return module
 
     def _log(self, level: str, message: str, *args) -> None:
-        if self.logger is None:
-            return
-        fn = getattr(self.logger, "log" + level, None) or getattr(self.logger, level, None)
-        if fn is not None:
-            fn(message, *args)
-
+        _safe_rospy_log(self.logger, level, message, *args)
 
 class FactorySignOCR:
     """CPU OCR backend. RapidOCR is preferred; Tesseract is the final fallback."""
@@ -439,7 +471,8 @@ class FactorySignOCRNode:
         self.cpu_ocr_engine = rospy.get_param("~cpu_ocr_engine", "auto")
         self.enable_ocr_fallback = bool(rospy.get_param("~enable_ocr_fallback", False))
         self.classifier_model_path = rospy.get_param("~classifier_model_path", "")
-        self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.25))
+        self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.05))
+        self.classifier_diagnostic_confidence = float(rospy.get_param("~classifier_diagnostic_confidence_threshold", 0.01))
         self.classifier_nms = float(rospy.get_param("~classifier_nms_iou_threshold", 0.45))
         self.classifier_input_size = int(rospy.get_param("~classifier_input_size", 640))
         self.speech_mode = rospy.get_param("~speech_mode", "service").strip().lower()
@@ -461,6 +494,7 @@ class FactorySignOCRNode:
                 self.classifier_confidence,
                 self.classifier_nms,
                 self.classifier_input_size,
+                self.classifier_diagnostic_confidence,
                 logger=rospy,
             )
         ocr_backend = None
@@ -529,7 +563,8 @@ class FactorySignOCRNode:
                 result.category = self.classifier.classify(text)
                 if result.category:
                     result.source = "ocr"
-        confirmed = self.vote.push(result.category)
+        vote_category = None if result.source == "rknn_low" else result.category
+        confirmed = self.vote.push(vote_category)
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed else False
@@ -690,6 +725,9 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

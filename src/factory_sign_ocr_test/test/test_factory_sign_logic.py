@@ -122,3 +122,16 @@ def test_maybe_flip_frame_flips_horizontally():
     assert flipped[:, :, 0].tolist() == [[3, 2, 1], [6, 5, 4]]
     assert unchanged[:, :, 0].tolist() == [[1, 2, 3], [4, 5, 6]]
     assert unchanged is frame
+
+
+def test_pick_best_detection_returns_top_category():
+    from factory_sign_ocr_node import _pick_best_detection
+
+    result = _pick_best_detection([
+        {"class_name": "food", "confidence": 0.12},
+        {"class_name": "daily", "confidence": 0.22},
+    ], source="rknn_low")
+
+    assert result.category == "daily"
+    assert result.confidence == 0.22
+    assert result.source == "rknn_low"

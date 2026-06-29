@@ -11,6 +11,7 @@
   <arg name="config_file" default="$(find factory_sign_ocr_test)/config/factory_sign_ocr.yaml" />
   <arg name="recognition_mode" default="rknn_classifier" />
   <arg name="classifier_model_path" default="" />
+  <arg name="classifier_confidence_threshold" default="0.05" />
   <arg name="cpu_ocr_engine" default="auto" />
   <arg name="enable_ocr_fallback" default="false" />
   <arg name="speech_mode" default="service" />
@@ -48,6 +49,7 @@
     <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
     <param name="recognition_mode" value="$(arg recognition_mode)" />
     <param name="classifier_model_path" value="$(arg classifier_model_path)" />
+    <param name="classifier_confidence_threshold" value="$(arg classifier_confidence_threshold)" />
     <param name="cpu_ocr_engine" value="$(arg cpu_ocr_engine)" />
     <param name="enable_ocr_fallback" value="$(arg enable_ocr_fallback)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
@@ -77,6 +79,7 @@
     </group>
   </group>
 </launch>
+
 
 
 
