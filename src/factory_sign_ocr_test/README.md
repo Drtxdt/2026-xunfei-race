@@ -46,13 +46,13 @@ source devel/setup.bash
 
 ## 一键启动
 
-默认会启动 USB 摄像头、旧 TTS、统一播报服务、识别节点和 X11 调试窗口：
+默认会启动 USB 摄像头、统一播报服务、识别节点和 X11 调试窗口。当前小车 ROS path 中如果没有 `speech_command` 包，旧 TTS 节点不会默认启动：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
 ```
 
-如果摄像头或语音节点已经单独启动：
+如果摄像头或语音节点已经单独启动，或只想调识别：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
@@ -205,3 +205,6 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 - RKNN 置信度
 - 投票窗口
 - 是否播报
+
+如果你的车上确实安装了 speech_command，可以显式启动旧 TTS：oslaunch factory_sign_ocr_test factory_sign_ocr_test.launch start_tts:=true。
+

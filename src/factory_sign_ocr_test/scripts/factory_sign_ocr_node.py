@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import re
 import sys
@@ -27,6 +28,48 @@ SPEECH_TEXTS = {
 }
 
 RKNN_CLASS_NAMES = ["food", "electronic", "daily"]
+
+def _repair_ros_logging() -> None:
+    """Repair rospy logging after RKNN libraries rename level names to I/W/E/F."""
+    levels = {
+        "CRITICAL": logging.CRITICAL,
+        "ERROR": logging.ERROR,
+        "WARN": logging.WARNING,
+        "WARNING": logging.WARNING,
+        "INFO": logging.INFO,
+        "DEBUG": logging.DEBUG,
+        "NOTSET": logging.NOTSET,
+    }
+    for name, value in levels.items():
+        logging.addLevelName(value, name)
+    try:
+        import rosgraph.roslogging as roslogging
+
+        mapping = getattr(roslogging, "_logging_to_rospy_names", None)
+        if isinstance(mapping, dict):
+            for short, full in {"D": "DEBUG", "I": "INFO", "W": "WARNING", "E": "ERROR", "F": "CRITICAL"}.items():
+                if short not in mapping and full in mapping:
+                    mapping[short] = mapping[full]
+            if "WARNING" in mapping and "WARN" not in mapping:
+                mapping["WARN"] = mapping["WARNING"]
+            if "CRITICAL" in mapping and "FATAL" not in mapping:
+                mapping["FATAL"] = mapping["CRITICAL"]
+    except Exception:
+        pass
+
+
+def _safe_rospy_log(logger, level: str, message: str, *args) -> None:
+    if logger is None:
+        return
+    _repair_ros_logging()
+    fn = getattr(logger, "log" + level, None) or getattr(logger, level, None)
+    if fn is None:
+        return
+    try:
+        fn(message, *args)
+    except KeyError:
+        _repair_ros_logging()
+        fn(message, *args)
 
 
 @dataclass
@@ -151,6 +194,7 @@ class RknnFactorySignClassifierBackend:
                 self.input_size,
                 self.output_shapes_logged,
             )
+            _repair_ros_logging()
             dets = self.vm.build_detections(boxes, classes, scores, RKNN_CLASS_NAMES)
             self.last_detections = dets
             if not dets:
@@ -428,6 +472,7 @@ class FactorySignOCRNode:
         self.preprocess_pub = rospy.Publisher(self.preprocess_image_topic, Image, queue_size=1)
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self._image_cb, queue_size=1, buff_size=2 ** 24)
         rospy.on_shutdown(self._on_shutdown)
+        _repair_ros_logging()
         rospy.loginfo(
             "factory_sign_ocr_node ready: image=%s mode=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
             self.image_topic,
@@ -443,6 +488,7 @@ class FactorySignOCRNode:
             self.latest_image = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             self.latest_stamp = msg.header.stamp.to_sec() if msg.header.stamp else time.time()
         except Exception as exc:
+            _repair_ros_logging()
             self.rospy.logwarn_throttle(2.0, "cv_bridge conversion failed: %s", exc)
 
     def run(self) -> None:
@@ -470,6 +516,7 @@ class FactorySignOCRNode:
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed else False
 
+        _repair_ros_logging()
         self.rospy.loginfo(
             "factory_sign: source=%s text=%r category=%s conf=%.3f vote=%s confirmed=%s spoken=%s error=%s",
             result.source,
@@ -520,6 +567,7 @@ class FactorySignOCRNode:
             prep_msg.header.stamp = msg.header.stamp
             self.preprocess_pub.publish(prep_msg)
         except Exception as exc:
+            _repair_ros_logging()
             self.rospy.logwarn_throttle(2.0, "debug image publish failed: %s", exc)
 
     def _draw_debug(self, frame, spoken: bool):
@@ -564,6 +612,7 @@ class FactorySignOCRNode:
         if self.speech_mode in ("service", "auto") and self._try_speech_service(category, text):
             return True
         if self.speech_mode == "topic" or self.fallback_to_topic:
+            _repair_ros_logging()
             self.rospy.logwarn("Publishing speech fallback to %s: %s", self.speech_topic, text)
             self.speak_pub.publish(self.String(data=text))
             return True
@@ -573,6 +622,7 @@ class FactorySignOCRNode:
         try:
             from ucar_2026_competition_speech.srv import Announce
         except Exception as exc:
+            _repair_ros_logging()
             self.rospy.logwarn_throttle(2.0, "Announce service type unavailable: %s", exc)
             return False
         try:
@@ -580,10 +630,13 @@ class FactorySignOCRNode:
             announce = self.rospy.ServiceProxy(self.speech_service, Announce)
             res = announce("custom", "", "", category, text, self.speech_wait)
             if bool(res.success):
+                _repair_ros_logging()
                 self.rospy.loginfo("Speech announced via %s: %s", self.speech_service, res.speech_text)
                 return True
+            _repair_ros_logging()
             self.rospy.logwarn("Speech service returned failure: %s", res.message)
         except Exception as exc:
+            _repair_ros_logging()
             self.rospy.logwarn_throttle(2.0, "Speech service unavailable: %s", exc)
         return False
 
@@ -594,6 +647,7 @@ class FactorySignOCRNode:
             cv2.imshow("factory_sign_ocr_preprocessed", image)
             cv2.waitKey(1)
         except Exception as exc:
+            _repair_ros_logging()
             self.rospy.logwarn_throttle(2.0, "debug_show_image failed: %s", exc)
 
     def _on_shutdown(self) -> None:
@@ -609,12 +663,17 @@ class FactorySignOCRNode:
 def main() -> None:
     import rospy
 
+    _repair_ros_logging()
     rospy.init_node("factory_sign_ocr_node")
+    _repair_ros_logging()
     node = FactorySignOCRNode()
     node.run()
 
 
 if __name__ == "__main__":
     main()
+
+
+
 
 

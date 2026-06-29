@@ -1,6 +1,6 @@
 <launch>
   <arg name="start_camera" default="true" />
-  <arg name="start_tts" default="true" />
+  <arg name="start_tts" default="false" />
   <arg name="start_competition_speech" default="true" />
   <arg name="start_viewer" default="true" />
   <arg name="image_topic" default="/usb_cam/image_raw" />
@@ -73,3 +73,4 @@
     </group>
   </group>
 </launch>
+
