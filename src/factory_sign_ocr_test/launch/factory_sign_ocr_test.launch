@@ -12,6 +12,9 @@
   <arg name="classifier_model_path" default="$(find factory_sign_ocr_test)/models/factory_sign_cls_rk3588.rknn" />
   <arg name="classifier_confidence_threshold" default="0.50" />
   <arg name="classifier_input_layout" default="nhwc" />
+  <arg name="classifier_input_color" default="rgb" />
+  <arg name="classifier_crop_mode" default="square" />
+  <arg name="classifier_preprocess_mode" default="rknn" />
   <arg name="speech_mode" default="service" />
   <arg name="required" default="false" />
   <arg name="chars_per_second" default="3.0" />
@@ -42,6 +45,9 @@
     <param name="classifier_confidence_threshold" value="$(arg classifier_confidence_threshold)" />
     <param name="classifier_input_size" value="224" />
     <param name="classifier_input_layout" value="$(arg classifier_input_layout)" />
+    <param name="classifier_input_color" value="$(arg classifier_input_color)" />
+    <param name="classifier_crop_mode" value="$(arg classifier_crop_mode)" />
+    <param name="classifier_preprocess_mode" value="$(arg classifier_preprocess_mode)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
   </node>
 

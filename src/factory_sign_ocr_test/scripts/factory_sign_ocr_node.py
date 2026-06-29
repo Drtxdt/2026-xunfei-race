@@ -180,7 +180,19 @@ class FactorySignRecognizer:
 class RknnFactorySignClassifierBackend:
     """RK3588 RKNNLite backend for the ShuffleNetV2 factory-sign classifier."""
 
-    def __init__(self, model_path: str, confidence: float, nms: float, input_size: int, diagnostic_confidence: float, logger=None, input_layout: str = "nhwc") -> None:
+    def __init__(
+        self,
+        model_path: str,
+        confidence: float,
+        nms: float,
+        input_size: int,
+        diagnostic_confidence: float,
+        logger=None,
+        input_layout: str = "nhwc",
+        input_color: str = "rgb",
+        crop_mode: str = "square",
+        preprocess_mode: str = "rknn",
+    ) -> None:
         self.logger = logger
         self.model_path = self._resolve_model_path(model_path)
         self.confidence = float(confidence)
@@ -188,6 +200,15 @@ class RknnFactorySignClassifierBackend:
         self.input_layout = (input_layout or "nhwc").strip().lower()
         if self.input_layout not in ("nhwc", "nchw"):
             self.input_layout = "nhwc"
+        self.input_color = (input_color or "rgb").strip().lower()
+        if self.input_color not in ("rgb", "bgr"):
+            self.input_color = "rgb"
+        self.crop_mode = (crop_mode or "square").strip().lower()
+        if self.crop_mode not in ("square", "full", "roi"):
+            self.crop_mode = "square"
+        self.preprocess_mode = (preprocess_mode or "rknn").strip().lower()
+        if self.preprocess_mode not in ("rknn", "torch"):
+            self.preprocess_mode = "rknn"
         self.rknn = None
         self.available = False
         self.output_shape_logged = False
@@ -202,10 +223,13 @@ class RknnFactorySignClassifierBackend:
             if not self.input_shape_logged:
                 self._log(
                     "info",
-                    "Factory sign RKNN classifier input shape: %s dtype=%s layout=%s",
+                    "Factory sign RKNN classifier input shape: %s dtype=%s layout=%s color=%s crop=%s preprocess=%s",
                     getattr(image, "shape", None),
                     getattr(image, "dtype", None),
                     self.input_layout,
+                    self.input_color,
+                    self.crop_mode,
+                    self.preprocess_mode,
                 )
                 self.input_shape_logged = True
             outputs = self._run_inference(image)
@@ -258,11 +282,15 @@ class RknnFactorySignClassifierBackend:
             self.available = True
             self._log(
                 "info",
-                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f",
+                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f layout=%s color=%s crop=%s preprocess=%s",
                 self.model_path,
                 self.input_size,
                 RKNN_CLASS_NAMES,
                 self.confidence,
+                self.input_layout,
+                self.input_color,
+                self.crop_mode,
+                self.preprocess_mode,
             )
         except Exception as exc:
             self._log("warn", "Factory sign RKNN classifier unavailable: %s", exc)
@@ -302,25 +330,64 @@ class RknnFactorySignClassifierBackend:
         return self.rknn.init_runtime()
 
     def _run_inference(self, image):
+        if self.preprocess_mode == "torch":
+            return self._run_inference_torch_preprocessed(image)
         try:
             return self.rknn.inference(inputs=[image], data_format=[self.input_layout])
         except TypeError:
             return self.rknn.inference(inputs=[image])
 
+    def _run_inference_torch_preprocessed(self, image):
+        kwargs = {
+            "inputs": [image],
+            "data_format": [self.input_layout],
+            "data_type": ["float32"],
+            "inputs_pass_through": [1],
+        }
+        try:
+            return self.rknn.inference(**kwargs)
+        except TypeError:
+            kwargs.pop("inputs_pass_through", None)
+            try:
+                return self.rknn.inference(**kwargs)
+            except TypeError:
+                return self.rknn.inference(inputs=[image])
+
     def _preprocess_for_rknn(self, frame):
         import cv2
         import numpy as np
 
+        crop = self._select_crop(frame)
+        if self.input_color == "rgb":
+            image = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        else:
+            image = crop
+        resized = cv2.resize(image, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+        if self.preprocess_mode == "torch":
+            resized = resized.astype(np.float32) / 255.0
+            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+            resized = (resized - mean) / std
+        if self.input_layout == "nchw":
+            resized = np.transpose(resized, (2, 0, 1))
+        dtype = np.float32 if self.preprocess_mode == "torch" else np.uint8
+        return np.expand_dims(resized, axis=0).astype(dtype)
+
+    def _select_crop(self, frame):
         h, w = frame.shape[:2]
+        if self.crop_mode == "full":
+            return frame
+        if self.crop_mode == "roi":
+            scale = min(max(float(getattr(self, "roi_scale", 0.8)), 0.1), 1.0)
+            roi_w = int(w * scale)
+            roi_h = int(h * scale)
+            x0 = max(0, (w - roi_w) // 2)
+            y0 = max(0, (h - roi_h) // 2)
+            return frame[y0 : y0 + roi_h, x0 : x0 + roi_w]
         side = min(h, w)
         y0 = max(0, (h - side) // 2)
         x0 = max(0, (w - side) // 2)
-        crop = frame[y0 : y0 + side, x0 : x0 + side]
-        rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(rgb, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
-        if self.input_layout == "nchw":
-            resized = np.transpose(resized, (2, 0, 1))
-        return np.expand_dims(resized, axis=0).astype(np.uint8)
+        return frame[y0 : y0 + side, x0 : x0 + side]
 
     @staticmethod
     def _flatten_output(output):
@@ -507,6 +574,9 @@ class FactorySignOCRNode:
         self.classifier_nms = float(rospy.get_param("~classifier_nms_iou_threshold", 0.45))
         self.classifier_input_size = int(rospy.get_param("~classifier_input_size", 640))
         self.classifier_input_layout = rospy.get_param("~classifier_input_layout", "nhwc").strip().lower()
+        self.classifier_input_color = rospy.get_param("~classifier_input_color", "rgb").strip().lower()
+        self.classifier_crop_mode = rospy.get_param("~classifier_crop_mode", "square").strip().lower()
+        self.classifier_preprocess_mode = rospy.get_param("~classifier_preprocess_mode", "rknn").strip().lower()
         self.speech_mode = rospy.get_param("~speech_mode", "service").strip().lower()
         self.speech_service = rospy.get_param("~speech_service", "/competition_speech/announce")
         self.speech_timeout = float(rospy.get_param("~speech_service_timeout_sec", 0.5))
@@ -529,7 +599,11 @@ class FactorySignOCRNode:
                 self.classifier_diagnostic_confidence,
                 logger=rospy,
                 input_layout=self.classifier_input_layout,
+                input_color=self.classifier_input_color,
+                crop_mode=self.classifier_crop_mode,
+                preprocess_mode=self.classifier_preprocess_mode,
             )
+            rknn_backend.roi_scale = self.roi_scale
         self.recognizer = FactorySignRecognizer(self.classifier, rknn_backend, None, self.recognition_mode)
 
         self.latest_image = None

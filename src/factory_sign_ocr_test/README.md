@@ -149,6 +149,9 @@ recognition_mode: rknn_classifier
 classifier_model_path: ""
 classifier_input_size: 224
 classifier_input_layout: nhwc
+classifier_input_color: rgb
+classifier_crop_mode: square
+classifier_preprocess_mode: rknn
 classifier_confidence_threshold: 0.50
 publish_debug_image: true
 debug_image_topic: /factory_sign_ocr_test/debug_image
@@ -192,13 +195,32 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 - 投票窗口
 - 是否播报
 
-如果所有画面都稳定识别成同一类，先切换输入布局做 A/B：
+如果所有画面都稳定识别成同一类，按顺序做 A/B，不要同时改多个参数：
+
+1. 先试手动 PyTorch 归一化，排除 RKNN 内置 mean/std 语义差异：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
+  classifier_preprocess_mode:=torch classifier_input_layout:=nchw
+```
+
+2. 再试 BGR，排除颜色通道差异：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_color:=bgr
+```
+
+3. 再试全图，排除中心方形裁剪切掉纸牌文字：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_crop_mode:=full
+```
+
+4. 最后才试 `nchw` 布局：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_layout:=nchw
 ```
-
-默认 `nhwc` 更符合 RKNNLite 常见输入方式；`nchw` 仅用于现场排查。
 
 
 
