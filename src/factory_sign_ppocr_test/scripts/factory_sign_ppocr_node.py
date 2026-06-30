@@ -301,7 +301,7 @@ class FactorySignPPOCRNode:
         if not worker_path:
             worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppocr_worker.py")
         self.ocr_client = LocalPPOCRClient(
-            paddle_python=rospy.get_param("~paddle_python", "/home/ucar/ppocrv5_env/bin/python3"),
+            paddle_python=rospy.get_param("~paddle_python", "/home/ucar/ppocrv6_env/bin/python3"),
             worker_path=worker_path,
             lang=rospy.get_param("~ocr_lang", "ch"),
             model_name=rospy.get_param("~ocr_model_name", "PP-OCRv5"),

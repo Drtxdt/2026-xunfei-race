@@ -50,7 +50,7 @@ raise SystemExit(2)
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--python", default="/home/ucar/ppocrv5_env/bin/python3", help="local PaddleOCR Python interpreter")
+    parser.add_argument("--python", default="/home/ucar/ppocrv6_env/bin/python3", help="local PaddleOCR Python interpreter")
     args = parser.parse_args()
 
     python = os.path.expanduser(os.path.expandvars(args.python))
