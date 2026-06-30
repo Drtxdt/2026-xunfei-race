@@ -6,7 +6,7 @@
   <arg name="flip" default="false" />
   <arg name="paddle_python" default="/home/ucar/ppocrv6_env/bin/python3" />
   <arg name="inference_rate" default="0.2" />
-  <arg name="ocr_timeout_sec" default="60.0" />
+  <arg name="ocr_timeout_sec" default="120.0" />
   <arg name="worker_startup_timeout_sec" default="60.0" />
   <arg name="roi_scale" default="0.75" />
   <arg name="resize_scale" default="1.0" />

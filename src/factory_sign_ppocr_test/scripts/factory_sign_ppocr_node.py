@@ -112,32 +112,52 @@ class LocalPPOCRClient:
         self.responses = queue.Queue()
         self.stderr_lines = queue.Queue()
         self.request_id = 0
+        self.pending_id = None
+        self.pending_started_at = 0.0
+        self.last_timeout_warn_at = 0.0
         self.last_start_attempt = 0.0
         self.last_error = ""
 
-    def recognize(self, image_b64: str) -> Dict[str, object]:
+    def submit(self, image_b64: str) -> Tuple[bool, str]:
         if not self._ensure_worker():
-            return {"ok": False, "texts": [], "raw_text": "", "error": self.last_error or "PaddleOCR worker unavailable"}
+            return False, self.last_error or "PaddleOCR worker unavailable"
+        if self.pending_id is not None:
+            return False, "PaddleOCR worker busy with request {}".format(self.pending_id)
         self.request_id += 1
         req_id = self.request_id
         payload = {"id": req_id, "image": image_b64}
         try:
             self.proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
             self.proc.stdin.flush()
+            self.pending_id = req_id
+            self.pending_started_at = time.time()
+            self.last_timeout_warn_at = 0.0
+            return True, ""
         except Exception as exc:
             self._kill_worker()
-            return {"ok": False, "texts": [], "raw_text": "", "error": "worker write failed: {}".format(exc)}
+            return False, "worker write failed: {}".format(exc)
 
-        deadline = time.time() + self.timeout_sec
-        while time.time() < deadline:
+    def poll(self) -> Optional[Dict[str, object]]:
+        while True:
             try:
-                response = self.responses.get(timeout=max(0.01, deadline - time.time()))
+                response = self.responses.get_nowait()
             except queue.Empty:
                 break
-            if response.get("id") == req_id:
+            if self.pending_id is not None and response.get("id") == self.pending_id:
+                self.pending_id = None
+                self.pending_started_at = 0.0
+                self.last_timeout_warn_at = 0.0
                 return response
-        self._kill_worker()
-        return {"ok": False, "texts": [], "raw_text": "", "error": "PaddleOCR worker timeout after {:.1f}s; worker restarted".format(self.timeout_sec)}
+        if self.pending_id is not None:
+            elapsed = time.time() - self.pending_started_at
+            if elapsed > self.timeout_sec and time.time() - self.last_timeout_warn_at > 5.0:
+                self.last_timeout_warn_at = time.time()
+                self.last_error = "PaddleOCR request {} still running for {:.1f}s".format(self.pending_id, elapsed)
+                self._log_warn("%s; waiting instead of restarting worker", self.last_error)
+        return None
+
+    def is_busy(self) -> bool:
+        return self.pending_id is not None
 
     def shutdown(self) -> None:
         if self.proc is None:
@@ -252,6 +272,9 @@ class LocalPPOCRClient:
     def _kill_worker(self) -> None:
         proc = self.proc
         self.proc = None
+        self.pending_id = None
+        self.pending_started_at = 0.0
+        self.last_timeout_warn_at = 0.0
         if proc is None:
             return
         try:
@@ -332,7 +355,7 @@ class FactorySignPPOCRNode:
             lang=rospy.get_param("~ocr_lang", "ch"),
             model_name=rospy.get_param("~ocr_model_name", "PP-OCRv5"),
             min_score=float(rospy.get_param("~ocr_min_score", 0.45)),
-            timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 60.0)),
+            timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 120.0)),
             startup_timeout_sec=float(rospy.get_param("~worker_startup_timeout_sec", 60.0)),
             restart_sec=float(rospy.get_param("~worker_restart_sec", 3.0)),
             logger=rospy,
@@ -354,6 +377,7 @@ class FactorySignPPOCRNode:
         self.last_roi_box = (0, 0, 0, 0)
         self.last_ocr_image = None
         self.last_debug_publish_at = 0.0
+        self.last_ocr_submit_error = ""
 
         self.speak_pub = rospy.Publisher(self.speech_topic, String, queue_size=1)
         self.debug_pub = rospy.Publisher(self.debug_image_topic, Image, queue_size=1)
@@ -390,33 +414,43 @@ class FactorySignPPOCRNode:
         ocr_image, debug_preprocess = self._make_ocr_image(frame)
         self.last_ocr_image = debug_preprocess
         self._publish_debug_images(frame, debug_preprocess, False)
-        result = self._recognize(ocr_image)
-        confirmed = self.vote.push(result.category)
-        self.last_result = result
-        self.last_confirmed = confirmed
-        spoken = self._maybe_speak(confirmed) if confirmed else False
+        response = self.ocr_client.poll()
+        spoken = False
+        if response is not None:
+            result = self._result_from_response(response)
+            confirmed = self.vote.push(result.category)
+            self.last_result = result
+            self.last_confirmed = confirmed
+            spoken = self._maybe_speak(confirmed) if confirmed else False
+        submitted = False
+        if not self.ocr_client.is_busy():
+            submitted, self.last_ocr_submit_error = self._submit_ocr(ocr_image)
         self.rospy.loginfo(
-            "factory_sign_ppocr: text=%r category=%s vote=%s confirmed=%s spoken=%s elapsed_ms=%d error=%s",
-            result.raw_text,
-            result.category,
+            "factory_sign_ppocr: text=%r category=%s vote=%s confirmed=%s spoken=%s elapsed_ms=%d submitted=%s busy=%s error=%s",
+            self.last_result.raw_text,
+            self.last_result.category,
             self.vote.snapshot(),
-            confirmed,
+            self.last_confirmed,
             spoken,
-            result.elapsed_ms,
-            result.error,
+            self.last_result.elapsed_ms,
+            submitted,
+            self.ocr_client.is_busy(),
+            self.last_result.error or self.last_ocr_submit_error or self.ocr_client.last_error,
         )
         self._publish_debug_images(frame, debug_preprocess, spoken)
         if self.debug_show_image:
             self._show_debug(debug_preprocess)
 
-    def _recognize(self, image) -> RecognitionResult:
+    def _submit_ocr(self, image) -> Tuple[bool, str]:
         import cv2
 
         ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality])
         if not ok:
-            return RecognitionResult(error="cv2.imencode failed")
+            return False, "cv2.imencode failed"
         image_b64 = base64.b64encode(encoded.tobytes()).decode("ascii")
-        response = self.ocr_client.recognize(image_b64)
+        return self.ocr_client.submit(image_b64)
+
+    def _result_from_response(self, response) -> RecognitionResult:
         raw_text = str(response.get("raw_text") or "")
         texts = response.get("texts") or []
         category = self.classifier.classify(raw_text)
@@ -498,12 +532,14 @@ class FactorySignPPOCRNode:
             "source=local_PP-OCRv5",
             "category={} confirmed={} conf={:.2f}".format(self.last_result.category, self.last_confirmed, self.last_result.confidence),
             "vote={}".format(self.vote.snapshot()),
+            "ocr_busy={} pending={}".format(self.ocr_client.is_busy(), self.ocr_client.pending_id),
             "elapsed={}ms spoken={}".format(self.last_result.elapsed_ms, spoken),
         ]
         if self.last_result.raw_text:
             lines.append("text={}".format(self._ascii_preview(self.last_result.raw_text)))
-        if self.last_result.error:
-            lines.append("err={}".format(self._ascii_preview(self.last_result.error)))
+        error = self.last_result.error or self.last_ocr_submit_error or self.ocr_client.last_error
+        if error:
+            lines.append("err={}".format(self._ascii_preview(error)))
         y = 24
         for line in lines:
             cv2.putText(out, line, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 255), 2)

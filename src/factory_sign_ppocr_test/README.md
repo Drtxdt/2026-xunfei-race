@@ -114,7 +114,7 @@ paddle_python: /home/ucar/ppocrv6_env/bin/python3
 ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
-ocr_timeout_sec: 60.0
+ocr_timeout_sec: 120.0
 worker_startup_timeout_sec: 60.0
 inference_rate: 0.2
 roi_scale: 0.75
@@ -168,7 +168,7 @@ wait: false"
 roslaunch factory_sign_ppocr_test factory_sign_ppocr_test.launch \
   paddle_python:=/home/ucar/miniforge3/envs/ppocrv6/bin/python \
   worker_startup_timeout_sec:=120 \
-  ocr_timeout_sec:=60
+  ocr_timeout_sec:=120
 ```
 
 ## PP-OCRv5 性能说明
@@ -180,3 +180,5 @@ roslaunch factory_sign_ppocr_test factory_sign_ppocr_test.launch \
 ```bash
 rostopic hz /factory_sign_ppocr_test/debug_image
 ```
+
+注意：`ocr_timeout_sec` 现在是慢请求告警阈值，不再到点杀 worker。首帧 warmup 很慢时应等待 `PPOCR request done`，不要反复重启。
