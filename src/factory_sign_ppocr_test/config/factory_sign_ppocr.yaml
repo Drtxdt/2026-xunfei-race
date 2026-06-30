@@ -4,8 +4,8 @@ flip: false
 inference_rate: 2.0
 
 # Local PaddleOCR worker. This must be a local Python environment on the car.
-paddle_python: /home/ucar/ppocrv6_env/bin/python3
-ocr_model_name: PP-OCRv6
+paddle_python: /home/ucar/ppocrv5_env/bin/python3
+ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
 ocr_timeout_sec: 2.0

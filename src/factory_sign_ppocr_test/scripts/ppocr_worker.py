@@ -190,7 +190,7 @@ def emit(payload) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lang", default="ch")
-    parser.add_argument("--model-name", default="PP-OCRv6")
+    parser.add_argument("--model-name", default="PP-OCRv5")
     parser.add_argument("--min-score", type=float, default=0.45)
     args = parser.parse_args()
 

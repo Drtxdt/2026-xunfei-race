@@ -1,6 +1,6 @@
 # factory_sign_ppocr_test
 
-独立 ROS1 测试包，用本地 PaddleOCR PP-OCRv6 做厂牌文字识别，并复用项目已有语音接口播报结果。
+独立 ROS1 测试包，用本地 PaddleOCR PP-OCRv5 做厂牌文字识别，并复用项目已有语音接口播报结果。
 
 本包不接入导航、避障或任务主流程；不调用除比赛允许的讯飞能力之外的任何云 API。PaddleOCR 在小车本地 Python 环境中离线运行。
 
@@ -25,7 +25,7 @@ PaddleOCR 放到独立本地 Python 环境中，通过 `ppocr_worker.py` 子进�
 默认 worker Python：
 
 ```bash
-/home/ucar/ppocrv6_env/bin/python3
+/home/ucar/ppocrv5_env/bin/python3
 ```
 
 可通过 launch 覆盖：
@@ -47,7 +47,7 @@ source devel/setup.bash
 
 ```bash
 rosrun factory_sign_ppocr_test check_ppocr_env.py \
-  --python /home/ucar/ppocrv6_env/bin/python3
+  --python /home/ucar/ppocrv5_env/bin/python3
 ```
 
 如果失败，先在小车本地准备 PaddleOCR 环境。不要把 PaddleOCR 3.x 强行装进 ROS Python3.7.3。
@@ -55,8 +55,8 @@ rosrun factory_sign_ppocr_test check_ppocr_env.py \
 示例方向：
 
 ```bash
-python3.8 -m venv /home/ucar/ppocrv6_env
-/home/ucar/ppocrv6_env/bin/python3 -m pip install paddlepaddle paddleocr
+python3.8 -m venv /home/ucar/ppocrv5_env
+/home/ucar/ppocrv5_env/bin/python3 -m pip install paddlepaddle paddleocr
 ```
 
 具体版本以小车系统、架构和 Paddle 官方 wheel 支持为准。
@@ -110,8 +110,8 @@ rosrun image_view image_view image:=/factory_sign_ppocr_test/preprocess_image
 
 ```yaml
 image_topic: /usb_cam/image_raw
-paddle_python: /home/ucar/ppocrv6_env/bin/python3
-ocr_model_name: PP-OCRv6
+paddle_python: /home/ucar/ppocrv5_env/bin/python3
+ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
 ocr_timeout_sec: 2.0

@@ -28,8 +28,8 @@ except Exception as exc:
     print("paddleocr import failed:", exc)
     raise
 attempts = [
-    dict(lang="ch", ocr_version="PP-OCRv6", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
-    dict(lang="ch", ocr_version="PP-OCRv6", use_angle_cls=False, show_log=False),
+    dict(lang="ch", ocr_version="PP-OCRv5", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
+    dict(lang="ch", ocr_version="PP-OCRv5", use_angle_cls=False, show_log=False),
     dict(lang="ch", use_angle_cls=False, show_log=False),
     dict(lang="ch"),
 ]
@@ -50,7 +50,7 @@ raise SystemExit(2)
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--python", default="/home/ucar/ppocrv6_env/bin/python3", help="local PaddleOCR Python interpreter")
+    parser.add_argument("--python", default="/home/ucar/ppocrv5_env/bin/python3", help="local PaddleOCR Python interpreter")
     args = parser.parse_args()
 
     python = os.path.expanduser(os.path.expandvars(args.python))

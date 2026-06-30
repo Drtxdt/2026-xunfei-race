@@ -4,7 +4,7 @@
   <arg name="start_viewer" default="true" />
   <arg name="image_topic" default="/usb_cam/image_raw" />
   <arg name="flip" default="false" />
-  <arg name="paddle_python" default="/home/ucar/ppocrv6_env/bin/python3" />
+  <arg name="paddle_python" default="/home/ucar/ppocrv5_env/bin/python3" />
   <arg name="debug_image_topic" default="/factory_sign_ppocr_test/debug_image" />
   <arg name="debug_preprocess_topic" default="/factory_sign_ppocr_test/preprocess_image" />
   <arg name="debug_view" default="debug" />

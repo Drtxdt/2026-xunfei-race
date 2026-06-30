@@ -2,7 +2,7 @@
 <package format="2">
   <name>factory_sign_ppocr_test</name>
   <version>0.1.0</version>
-  <description>Standalone local PP-OCRv6 factory sign OCR and speech test package.</description>
+  <description>Standalone local PP-OCRv5 factory sign OCR and speech test package.</description>
 
   <maintainer email="ucar@todo.todo">ucar</maintainer>
   <license>MIT</license>

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ROS1 node for local PP-OCRv6 factory sign OCR and speech."""
+"""ROS1 node for local PP-OCRv5 factory sign OCR and speech."""
 
 from __future__ import annotations
 
@@ -301,10 +301,10 @@ class FactorySignPPOCRNode:
         if not worker_path:
             worker_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppocr_worker.py")
         self.ocr_client = LocalPPOCRClient(
-            paddle_python=rospy.get_param("~paddle_python", "/home/ucar/ppocrv6_env/bin/python3"),
+            paddle_python=rospy.get_param("~paddle_python", "/home/ucar/ppocrv5_env/bin/python3"),
             worker_path=worker_path,
             lang=rospy.get_param("~ocr_lang", "ch"),
-            model_name=rospy.get_param("~ocr_model_name", "PP-OCRv6"),
+            model_name=rospy.get_param("~ocr_model_name", "PP-OCRv5"),
             min_score=float(rospy.get_param("~ocr_min_score", 0.45)),
             timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 2.0)),
             restart_sec=float(rospy.get_param("~worker_restart_sec", 3.0)),
@@ -450,7 +450,7 @@ class FactorySignPPOCRNode:
         x1, y1, x2, y2 = self.last_roi_box
         cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 255), 2)
         lines = [
-            "source=local_PP-OCRv6",
+            "source=local_PP-OCRv5",
             "category={} confirmed={} conf={:.2f}".format(self.last_result.category, self.last_confirmed, self.last_result.confidence),
             "vote={}".format(self.vote.snapshot()),
             "elapsed={}ms spoken={}".format(self.last_result.elapsed_ms, spoken),
