@@ -12,8 +12,12 @@ import argparse
 import base64
 import contextlib
 import json
+import os
 import sys
+import tempfile
 import time
+
+JSON_PREFIX = "__PPOCR_JSON__"
 
 
 class LocalPaddleOCR:
@@ -73,15 +77,13 @@ class LocalPaddleOCR:
     def _recognize_image(self, image):
         if hasattr(self.engine, "predict"):
             try:
-                with contextlib.redirect_stdout(sys.stderr):
-                    result = self.engine.predict(input=image)
+                result = self._predict_with_temp_image(image)
                 parsed = self._parse_predict_result(result)
                 if parsed:
                     return parsed
             except TypeError:
                 try:
-                    with contextlib.redirect_stdout(sys.stderr):
-                        result = self.engine.predict(image)
+                    result = self._predict_with_temp_image(image, keyword=False)
                     parsed = self._parse_predict_result(result)
                     if parsed:
                         return parsed
@@ -92,6 +94,24 @@ class LocalPaddleOCR:
         with contextlib.redirect_stdout(sys.stderr):
             result = self.engine.ocr(image, cls=False)
         return self._parse_legacy_result(result)
+
+    def _predict_with_temp_image(self, image, keyword: bool = True):
+        import cv2
+
+        fd, path = tempfile.mkstemp(prefix="factory_sign_ppocr_", suffix=".jpg")
+        os.close(fd)
+        try:
+            if not cv2.imwrite(path, image):
+                raise RuntimeError("cv2.imwrite failed for temporary OCR image")
+            with contextlib.redirect_stdout(sys.stderr):
+                if keyword:
+                    return self.engine.predict(input=path)
+                return self.engine.predict(path)
+        finally:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
 
     def _parse_predict_result(self, result):
         texts = []
@@ -191,7 +211,7 @@ class LocalPaddleOCR:
 
 
 def emit(payload) -> None:
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    sys.stdout.write(JSON_PREFIX + json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
@@ -219,8 +239,12 @@ def main() -> int:
             if req.get("cmd") == "shutdown":
                 emit({"id": req.get("id"), "ok": True, "type": "shutdown"})
                 return 0
+            sys.stderr.write("PPOCR request start id={}\n".format(req.get("id")))
+            sys.stderr.flush()
             texts = ocr.recognize(req["image"])
             raw_text = " ".join(item.get("text", "") for item in texts if item.get("text"))
+            sys.stderr.write("PPOCR request done id={} elapsed_ms={}\n".format(req.get("id"), int((time.time() - started) * 1000)))
+            sys.stderr.flush()
             emit({
                 "id": req.get("id"),
                 "ok": True,

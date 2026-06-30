@@ -17,6 +17,8 @@ from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional, Tuple
 
+JSON_PREFIX = "__PPOCR_JSON__"
+
 
 CATEGORY_NAMES = {
     "food": "食品加工车间",
@@ -222,10 +224,13 @@ class LocalPPOCRClient:
                 line = line.strip()
                 if not line:
                     continue
+                if not line.startswith(JSON_PREFIX):
+                    continue
+                line = line[len(JSON_PREFIX):]
                 try:
                     self.responses.put(json.loads(line))
                 except Exception:
-                    self._log_warn("Ignoring non-json worker stdout: %s", line[:160])
+                    self._log_warn("Ignoring malformed worker JSON: %s", line[:160])
         except Exception:
             pass
 
@@ -294,7 +299,7 @@ class FactorySignPPOCRNode:
 
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
         self.flip_image = ros_bool(rospy.get_param("~flip", False), False)
-        self.inference_rate = float(rospy.get_param("~inference_rate", 0.5))
+        self.inference_rate = float(rospy.get_param("~inference_rate", 0.2))
         self.roi_scale = float(rospy.get_param("~roi_scale", 0.8))
         self.resize_scale = float(rospy.get_param("~resize_scale", 1.6))
         self.use_sharpen = ros_bool(rospy.get_param("~use_sharpen", True), True)
@@ -320,7 +325,7 @@ class FactorySignPPOCRNode:
             lang=rospy.get_param("~ocr_lang", "ch"),
             model_name=rospy.get_param("~ocr_model_name", "PP-OCRv5"),
             min_score=float(rospy.get_param("~ocr_min_score", 0.45)),
-            timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 15.0)),
+            timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 60.0)),
             startup_timeout_sec=float(rospy.get_param("~worker_startup_timeout_sec", 60.0)),
             restart_sec=float(rospy.get_param("~worker_restart_sec", 3.0)),
             logger=rospy,
@@ -375,6 +380,7 @@ class FactorySignPPOCRNode:
     def _process_once(self, frame) -> None:
         ocr_image, debug_preprocess = self._make_ocr_image(frame)
         self.last_ocr_image = debug_preprocess
+        self._publish_debug_images(frame, debug_preprocess, False)
         result = self._recognize(ocr_image)
         confirmed = self.vote.push(result.category)
         self.last_result = result

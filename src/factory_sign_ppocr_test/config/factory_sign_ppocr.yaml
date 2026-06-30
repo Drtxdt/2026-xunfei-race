@@ -1,14 +1,14 @@
 # Camera/input
 image_topic: /usb_cam/image_raw
 flip: false
-inference_rate: 0.5
+inference_rate: 0.2
 
 # Local PaddleOCR worker. This must be a local Python environment on the car.
 paddle_python: /home/ucar/ppocrv6_env/bin/python3
 ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
-ocr_timeout_sec: 15.0
+ocr_timeout_sec: 60.0
 worker_startup_timeout_sec: 60.0
 worker_restart_sec: 3.0
 jpeg_quality: 90
