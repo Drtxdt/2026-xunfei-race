@@ -36,3 +36,7 @@ roslaunch ucar_2026_track_end_stop stable_right_track_end_stop.launch
 # 红绿灯测试
  roslaunch ucar_2026_traffic_light_rknn_test traffic_light_rknn_x11_speak_test.launch
 
+#================
+# 厂牌测试
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
+
