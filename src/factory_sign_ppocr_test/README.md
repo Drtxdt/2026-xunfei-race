@@ -115,6 +115,7 @@ ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
 ocr_timeout_sec: 2.0
+worker_startup_timeout_sec: 60.0
 inference_rate: 2.0
 roi_scale: 0.8
 resize_scale: 1.6
@@ -160,3 +161,11 @@ wait: false"
 - PaddleOCR worker 错误
 
 如果 PaddleOCR 环境不存在或导入失败，ROS 节点不会崩溃，会持续提示本地环境错误并等待修复。
+
+如果 `check_ppocr_env.py` 可以初始化成功，但 launch 里看到 `worker startup timeout`，说明 PaddleOCR worker 初始化时间超过等待时间。首次启动或 CPU 负载高时可以加大：
+
+```bash
+roslaunch factory_sign_ppocr_test factory_sign_ppocr_test.launch \
+  paddle_python:=/home/ucar/miniforge3/envs/ppocrv6/bin/python \
+  worker_startup_timeout_sec:=120
+```

@@ -93,6 +93,7 @@ class LocalPPOCRClient:
         model_name: str,
         min_score: float,
         timeout_sec: float,
+        startup_timeout_sec: float,
         restart_sec: float,
         logger,
     ) -> None:
@@ -102,6 +103,7 @@ class LocalPPOCRClient:
         self.model_name = model_name
         self.min_score = float(min_score)
         self.timeout_sec = float(timeout_sec)
+        self.startup_timeout_sec = max(1.0, float(startup_timeout_sec))
         self.restart_sec = float(restart_sec)
         self.logger = logger
         self.proc = None
@@ -180,7 +182,7 @@ class LocalPPOCRClient:
             )
             threading.Thread(target=self._read_stdout, daemon=True).start()
             threading.Thread(target=self._read_stderr, daemon=True).start()
-            ready = self.responses.get(timeout=max(1.0, self.timeout_sec))
+            ready = self.responses.get(timeout=self.startup_timeout_sec)
             if ready.get("type") == "ready" and ready.get("ok"):
                 self.last_error = ""
                 self._log_info("Local PaddleOCR worker ready: python=%s model=%s lang=%s", self.paddle_python, self.model_name, self.lang)
@@ -189,8 +191,19 @@ class LocalPPOCRClient:
             self._log_warn("Local PaddleOCR worker failed: %s", self.last_error)
             self._kill_worker()
             return False
+        except queue.Empty:
+            returncode = self.proc.poll() if self.proc is not None else None
+            if returncode is None:
+                self.last_error = "worker startup timeout after {:.1f}s; PaddleOCR model initialization is still not ready".format(
+                    self.startup_timeout_sec
+                )
+            else:
+                self.last_error = "worker exited before ready: returncode={}".format(returncode)
+            self._log_warn("Local PaddleOCR worker failed: %s", self.last_error)
+            self._kill_worker()
+            return False
         except Exception as exc:
-            self.last_error = "failed to start worker: {}".format(exc)
+            self.last_error = "failed to start worker: {}: {}".format(type(exc).__name__, exc)
             self._log_warn(self.last_error)
             self._kill_worker()
             return False
@@ -307,6 +320,7 @@ class FactorySignPPOCRNode:
             model_name=rospy.get_param("~ocr_model_name", "PP-OCRv5"),
             min_score=float(rospy.get_param("~ocr_min_score", 0.45)),
             timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 2.0)),
+            startup_timeout_sec=float(rospy.get_param("~worker_startup_timeout_sec", 60.0)),
             restart_sec=float(rospy.get_param("~worker_restart_sec", 3.0)),
             logger=rospy,
         )
