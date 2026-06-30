@@ -132,9 +132,8 @@ def test_rknn_classifier_preprocess_returns_batched_nhwc_uint8_by_default():
     backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
     backend.input_size = 224
     backend.input_layout = "nhwc"
-    backend.input_color = "rgb"
+    backend.input_color = "bgr"
     backend.crop_mode = "square"
-    backend.preprocess_mode = "rknn"
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     frame[:, :, 0] = 10
     frame[:, :, 1] = 20
@@ -144,6 +143,7 @@ def test_rknn_classifier_preprocess_returns_batched_nhwc_uint8_by_default():
 
     assert tensor.shape == (1, 224, 224, 3)
     assert tensor.dtype == np.uint8
+    assert int(tensor[0, 0, 0, 0]) == 10
 
 
 def test_rknn_classifier_preprocess_can_return_batched_nchw_uint8():
@@ -153,9 +153,8 @@ def test_rknn_classifier_preprocess_can_return_batched_nchw_uint8():
     backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
     backend.input_size = 224
     backend.input_layout = "nchw"
-    backend.input_color = "rgb"
+    backend.input_color = "bgr"
     backend.crop_mode = "square"
-    backend.preprocess_mode = "rknn"
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
     tensor = backend._preprocess_for_rknn(frame)
@@ -164,24 +163,39 @@ def test_rknn_classifier_preprocess_can_return_batched_nchw_uint8():
     assert tensor.dtype == np.uint8
 
 
-def test_rknn_classifier_preprocess_torch_mode_returns_float32():
+def test_rknn_classifier_can_still_rgb_swap_for_ab_debug():
     import numpy as np
     from factory_sign_ocr_node import RknnFactorySignClassifierBackend
 
     backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
     backend.input_size = 224
-    backend.input_layout = "nchw"
+    backend.input_layout = "nhwc"
     backend.input_color = "rgb"
     backend.crop_mode = "full"
-    backend.preprocess_mode = "torch"
-    frame = np.full((480, 640, 3), 127, dtype=np.uint8)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:, :, 0] = 10
+    frame[:, :, 1] = 20
+    frame[:, :, 2] = 30
 
     tensor = backend._preprocess_for_rknn(frame)
 
-    assert tensor.shape == (1, 3, 224, 224)
-    assert tensor.dtype == np.float32
-    assert float(tensor.min()) < 1.0
-    assert float(tensor.max()) > -1.0
+    assert tensor.shape == (1, 224, 224, 3)
+    assert tensor.dtype == np.uint8
+    assert int(tensor[0, 0, 0, 0]) == 30
+
+
+def test_rknn_classifier_electronic_bias_reduces_electronic_logit():
+    import numpy as np
+    from factory_sign_ocr_node import RknnFactorySignClassifierBackend
+
+    backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
+    backend.electronic_logit_bias = -0.6
+
+    logits = backend._apply_logit_bias(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+
+    assert abs(float(logits[1]) - 0.4) < 1e-6
+    assert float(logits[0]) == 0.0
+    assert float(logits[2]) == 0.0
 
 
 def test_pick_best_detection_returns_top_category():

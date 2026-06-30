@@ -13,10 +13,11 @@ recognition_mode: rknn_classifier   # fixed default: RKNNLite classifier only
 classifier_model_path: ""           # empty = auto find factory_sign_ocr_test/models/factory_sign_cls_rk3588.rknn
 classifier_input_size: 224
 classifier_input_layout: nhwc       # nhwc is RKNNLite-friendly; set nchw only for A/B debug
-classifier_input_color: rgb         # rgb | bgr
+classifier_input_color: bgr         # bgr is the verified RKNN path on the car; rgb is only for A/B debug
 classifier_crop_mode: square        # square | full | roi
-classifier_preprocess_mode: rknn    # rknn = RKNN mean/std; torch = Python ImageNet normalize + pass-through
 classifier_confidence_threshold: 0.50
+classifier_min_margin: 0.15         # reject weak top1-top2 decisions
+classifier_electronic_logit_bias: -0.60  # suppress observed electronic over-prediction; tune -1.0..0.0
 
 # Debug ROI/preprocess image only; not used for OCR
 roi_scale: 0.8

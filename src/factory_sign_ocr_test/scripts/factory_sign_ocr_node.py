@@ -189,9 +189,10 @@ class RknnFactorySignClassifierBackend:
         diagnostic_confidence: float,
         logger=None,
         input_layout: str = "nhwc",
-        input_color: str = "rgb",
+        input_color: str = "bgr",
         crop_mode: str = "square",
-        preprocess_mode: str = "rknn",
+        electronic_logit_bias: float = -0.6,
+        min_margin: float = 0.15,
     ) -> None:
         self.logger = logger
         self.model_path = self._resolve_model_path(model_path)
@@ -200,15 +201,14 @@ class RknnFactorySignClassifierBackend:
         self.input_layout = (input_layout or "nhwc").strip().lower()
         if self.input_layout not in ("nhwc", "nchw"):
             self.input_layout = "nhwc"
-        self.input_color = (input_color or "rgb").strip().lower()
+        self.input_color = (input_color or "bgr").strip().lower()
         if self.input_color not in ("rgb", "bgr"):
-            self.input_color = "rgb"
+            self.input_color = "bgr"
         self.crop_mode = (crop_mode or "square").strip().lower()
         if self.crop_mode not in ("square", "full", "roi"):
             self.crop_mode = "square"
-        self.preprocess_mode = (preprocess_mode or "rknn").strip().lower()
-        if self.preprocess_mode not in ("rknn", "torch"):
-            self.preprocess_mode = "rknn"
+        self.electronic_logit_bias = float(electronic_logit_bias)
+        self.min_margin = max(0.0, float(min_margin))
         self.rknn = None
         self.available = False
         self.output_shape_logged = False
@@ -223,13 +223,12 @@ class RknnFactorySignClassifierBackend:
             if not self.input_shape_logged:
                 self._log(
                     "info",
-                    "Factory sign RKNN classifier input shape: %s dtype=%s layout=%s color=%s crop=%s preprocess=%s",
+                    "Factory sign RKNN classifier input shape: %s dtype=%s layout=%s color=%s crop=%s",
                     getattr(image, "shape", None),
                     getattr(image, "dtype", None),
                     self.input_layout,
                     self.input_color,
                     self.crop_mode,
-                    self.preprocess_mode,
                 )
                 self.input_shape_logged = True
             outputs = self._run_inference(image)
@@ -240,21 +239,32 @@ class RknnFactorySignClassifierBackend:
             if not self.output_shape_logged:
                 self._log("info", "Factory sign RKNN classifier output shape: %s", getattr(outputs[0], "shape", None))
                 self.output_shape_logged = True
-            probs = self._softmax(logits)
-            cls_id = int(probs.argmax())
+            calibrated_logits = self._apply_logit_bias(logits)
+            probs = self._softmax(calibrated_logits)
+            order = probs.argsort()[::-1]
+            cls_id = int(order[0])
+            second_id = int(order[1]) if len(order) > 1 else cls_id
             confidence = float(probs[cls_id])
+            margin = float(probs[cls_id] - probs[second_id]) if second_id != cls_id else confidence
             category = RKNN_CLASS_NAMES[cls_id] if 0 <= cls_id < len(RKNN_CLASS_NAMES) else None
-            raw_text = "logits={} probs={}".format(
+            raw_text = "raw_logits={} logits={} probs={} margin={:.3f}".format(
                 ["{:.3f}".format(float(v)) for v in logits.tolist()],
+                ["{:.3f}".format(float(v)) for v in calibrated_logits.tolist()],
                 ["{}:{:.3f}".format(name, float(probs[i])) for i, name in enumerate(RKNN_CLASS_NAMES)],
+                margin,
             )
-            if category and confidence >= self.confidence:
+            if category and confidence >= self.confidence and margin >= self.min_margin:
                 return RecognitionResult(category=category, confidence=confidence, source="rknn_cls", raw_text=raw_text)
+            reasons = []
+            if confidence < self.confidence:
+                reasons.append("confidence {:.3f} < {:.3f}".format(confidence, self.confidence))
+            if margin < self.min_margin:
+                reasons.append("margin {:.3f} < {:.3f}".format(margin, self.min_margin))
             return RecognitionResult(
                 source="rknn_cls",
                 confidence=confidence,
                 raw_text=raw_text,
-                error="below classifier_confidence_threshold {:.3f}".format(self.confidence),
+                error="; ".join(reasons) or "classifier gate rejected",
             )
         except Exception as exc:
             self._log("warn", "RKNN factory sign inference failed: %s", exc)
@@ -282,15 +292,16 @@ class RknnFactorySignClassifierBackend:
             self.available = True
             self._log(
                 "info",
-                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f layout=%s color=%s crop=%s preprocess=%s",
+                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f margin=%.3f electronic_bias=%.3f layout=%s color=%s crop=%s",
                 self.model_path,
                 self.input_size,
                 RKNN_CLASS_NAMES,
                 self.confidence,
+                self.min_margin,
+                self.electronic_logit_bias,
                 self.input_layout,
                 self.input_color,
                 self.crop_mode,
-                self.preprocess_mode,
             )
         except Exception as exc:
             self._log("warn", "Factory sign RKNN classifier unavailable: %s", exc)
@@ -330,28 +341,10 @@ class RknnFactorySignClassifierBackend:
         return self.rknn.init_runtime()
 
     def _run_inference(self, image):
-        if self.preprocess_mode == "torch":
-            return self._run_inference_torch_preprocessed(image)
         try:
             return self.rknn.inference(inputs=[image], data_format=[self.input_layout])
         except TypeError:
             return self.rknn.inference(inputs=[image])
-
-    def _run_inference_torch_preprocessed(self, image):
-        kwargs = {
-            "inputs": [image],
-            "data_format": [self.input_layout],
-            "data_type": ["float32"],
-            "inputs_pass_through": [1],
-        }
-        try:
-            return self.rknn.inference(**kwargs)
-        except TypeError:
-            kwargs.pop("inputs_pass_through", None)
-            try:
-                return self.rknn.inference(**kwargs)
-            except TypeError:
-                return self.rknn.inference(inputs=[image])
 
     def _preprocess_for_rknn(self, frame):
         import cv2
@@ -363,15 +356,9 @@ class RknnFactorySignClassifierBackend:
         else:
             image = crop
         resized = cv2.resize(image, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
-        if self.preprocess_mode == "torch":
-            resized = resized.astype(np.float32) / 255.0
-            mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-            std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-            resized = (resized - mean) / std
         if self.input_layout == "nchw":
             resized = np.transpose(resized, (2, 0, 1))
-        dtype = np.float32 if self.preprocess_mode == "torch" else np.uint8
-        return np.expand_dims(resized, axis=0).astype(dtype)
+        return np.expand_dims(resized, axis=0).astype(np.uint8)
 
     def _select_crop(self, frame):
         h, w = frame.shape[:2]
@@ -397,6 +384,17 @@ class RknnFactorySignClassifierBackend:
         if arr.size < len(RKNN_CLASS_NAMES):
             raise RuntimeError("unexpected RKNN output size: {}".format(arr.shape))
         return arr[: len(RKNN_CLASS_NAMES)]
+
+    def _apply_logit_bias(self, logits):
+        import numpy as np
+
+        calibrated = np.asarray(logits, dtype=np.float32).copy()
+        try:
+            electronic_idx = RKNN_CLASS_NAMES.index("electronic")
+            calibrated[electronic_idx] += self.electronic_logit_bias
+        except ValueError:
+            pass
+        return calibrated
 
     @staticmethod
     def _softmax(logits):
@@ -569,14 +567,21 @@ class FactorySignOCRNode:
             rospy.logwarn("Ignoring recognition_mode=%s; this node now loads only the RKNN classifier.", self.recognition_mode)
             self.recognition_mode = "rknn_classifier"
         self.classifier_model_path = rospy.get_param("~classifier_model_path", "")
-        self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.05))
+        self.classifier_confidence = float(rospy.get_param("~classifier_confidence_threshold", 0.50))
         self.classifier_diagnostic_confidence = float(rospy.get_param("~classifier_diagnostic_confidence_threshold", 0.01))
         self.classifier_nms = float(rospy.get_param("~classifier_nms_iou_threshold", 0.45))
-        self.classifier_input_size = int(rospy.get_param("~classifier_input_size", 640))
+        self.classifier_input_size = int(rospy.get_param("~classifier_input_size", 224))
         self.classifier_input_layout = rospy.get_param("~classifier_input_layout", "nhwc").strip().lower()
-        self.classifier_input_color = rospy.get_param("~classifier_input_color", "rgb").strip().lower()
+        self.classifier_input_color = rospy.get_param("~classifier_input_color", "bgr").strip().lower()
         self.classifier_crop_mode = rospy.get_param("~classifier_crop_mode", "square").strip().lower()
-        self.classifier_preprocess_mode = rospy.get_param("~classifier_preprocess_mode", "rknn").strip().lower()
+        legacy_preprocess_mode = rospy.get_param("~classifier_preprocess_mode", "")
+        if legacy_preprocess_mode and str(legacy_preprocess_mode).strip().lower() != "rknn":
+            rospy.logwarn(
+                "Ignoring classifier_preprocess_mode=%s; torch/pass-through mode is disabled because it can crash RKNNLite.",
+                legacy_preprocess_mode,
+            )
+        self.classifier_electronic_logit_bias = float(rospy.get_param("~classifier_electronic_logit_bias", -0.6))
+        self.classifier_min_margin = float(rospy.get_param("~classifier_min_margin", 0.15))
         self.speech_mode = rospy.get_param("~speech_mode", "service").strip().lower()
         self.speech_service = rospy.get_param("~speech_service", "/competition_speech/announce")
         self.speech_timeout = float(rospy.get_param("~speech_service_timeout_sec", 0.5))
@@ -601,7 +606,8 @@ class FactorySignOCRNode:
                 input_layout=self.classifier_input_layout,
                 input_color=self.classifier_input_color,
                 crop_mode=self.classifier_crop_mode,
-                preprocess_mode=self.classifier_preprocess_mode,
+                electronic_logit_bias=self.classifier_electronic_logit_bias,
+                min_margin=self.classifier_min_margin,
             )
             rknn_backend.roi_scale = self.roi_scale
         self.recognizer = FactorySignRecognizer(self.classifier, rknn_backend, None, self.recognition_mode)
@@ -621,7 +627,7 @@ class FactorySignOCRNode:
         rospy.on_shutdown(self._on_shutdown)
         _repair_ros_logging()
         rospy.loginfo(
-            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
+            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s color=%s margin=%.3f electronic_bias=%.3f",
             self.image_topic,
             self.flip_image,
             self.recognition_mode,
@@ -630,6 +636,9 @@ class FactorySignOCRNode:
             self.preprocess_image_topic,
             self.speech_service,
             self.speech_topic,
+            self.classifier_input_color,
+            self.classifier_min_margin,
+            self.classifier_electronic_logit_bias,
         )
 
     def _image_cb(self, msg) -> None:
@@ -729,7 +738,7 @@ class FactorySignOCRNode:
             "spoken={}".format(spoken),
         ]
         if self.last_result.raw_text:
-            lines.append("ocr={}".format(self._ascii_preview(self.last_result.raw_text)))
+            lines.append("pred={}".format(self._ascii_preview(self.last_result.raw_text)))
         if self.last_result.error:
             lines.append("err={}".format(self._ascii_preview(self.last_result.error)))
         y = 24

@@ -14,7 +14,7 @@
 factory_sign_ocr_test/models/factory_sign_cls_rk3588.rknn
 ```
 
-模型输入为中心区域裁剪后的 RGB 图像，resize 到 `224x224`，输出三类 logits，再用 softmax 得到置信度：
+模型输入为中心区域裁剪后的 BGR 图像，resize 到 `224x224`，输出三类 logits。节点会对 `electronic` 类做一个可调 logit 偏置，再用 softmax 得到置信度，并用 top1-top2 margin 过滤弱判断：
 
 - `daily`：日用品加工车间
 - `electronic`：电子产品生产车间
@@ -149,10 +149,11 @@ recognition_mode: rknn_classifier
 classifier_model_path: ""
 classifier_input_size: 224
 classifier_input_layout: nhwc
-classifier_input_color: rgb
+classifier_input_color: bgr
 classifier_crop_mode: square
-classifier_preprocess_mode: rknn
 classifier_confidence_threshold: 0.50
+classifier_min_margin: 0.15
+classifier_electronic_logit_bias: -0.60
 publish_debug_image: true
 debug_image_topic: /factory_sign_ocr_test/debug_image
 debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
@@ -189,7 +190,7 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 运行识别节点时，终端会打印：
 
 - 识别来源：`rknn_cls`
-- RKNN logits/probs
+- RKNN raw logits / 校准后 logits / probs / margin
 - 归类结果
 - softmax 置信度
 - 投票窗口
@@ -197,30 +198,44 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 
 如果所有画面都稳定识别成同一类，按顺序做 A/B，不要同时改多个参数：
 
-1. 先试手动 PyTorch 归一化，排除 RKNN 内置 mean/std 语义差异：
+1. 先调电子类抑制。如果食品、日用品能出，但电子过强，把偏置调得更负：
 
 ```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch \
-  classifier_preprocess_mode:=torch classifier_input_layout:=nchw
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_electronic_logit_bias:=-1.0
 ```
 
-2. 再试 BGR，排除颜色通道差异：
+如果真实电子牌识别太困难，把偏置往 0 调：
 
 ```bash
-roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_color:=bgr
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_electronic_logit_bias:=-0.3
 ```
 
-3. 再试全图，排除中心方形裁剪切掉纸牌文字：
+2. 再试 RGB，排除颜色通道差异。当前小车实测 BGR 更可靠，所以默认是 BGR：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_color:=rgb
+```
+
+3. 调 margin。误报多就提高，漏报多就降低：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_min_margin:=0.25
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_min_margin:=0.05
+```
+
+4. 再试全图，排除中心方形裁剪切掉纸牌文字：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_crop_mode:=full
 ```
 
-4. 最后才试 `nchw` 布局：
+5. 最后才试 `nchw` 布局。RKNNLite 在当前模型上会提示需要 NHWC，默认不要改：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_layout:=nchw
 ```
+
+注意：`classifier_preprocess_mode:=torch` 已禁用。现场日志已经证明该 float pass-through 路径可能导致 RKNNLite 段错误退出，不能作为一键测试路径。
 
 
 
