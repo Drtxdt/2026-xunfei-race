@@ -19,6 +19,9 @@
   <arg name="classifier_input_color" default="bgr" />
   <arg name="classifier_crop_mode" default="square" />
   <arg name="classifier_preprocess_mode" default="rknn" />
+  <arg name="use_score_voting" default="true" />
+  <arg name="score_vote_min_score" default="0.42" />
+  <arg name="score_vote_min_margin" default="0.08" />
   <arg name="speech_mode" default="service" />
   <arg name="required" default="false" />
   <arg name="chars_per_second" default="3.0" />
@@ -56,6 +59,9 @@
     <param name="classifier_input_color" value="$(arg classifier_input_color)" />
     <param name="classifier_crop_mode" value="$(arg classifier_crop_mode)" />
     <param name="classifier_preprocess_mode" value="$(arg classifier_preprocess_mode)" />
+    <param name="use_score_voting" value="$(arg use_score_voting)" />
+    <param name="score_vote_min_score" value="$(arg score_vote_min_score)" />
+    <param name="score_vote_min_margin" value="$(arg score_vote_min_margin)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
   </node>
 

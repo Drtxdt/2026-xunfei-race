@@ -83,6 +83,7 @@ class RecognitionResult:
     confidence: float = 0.0
     source: str = "none"
     raw_text: str = ""
+    scores: Dict[str, float] = field(default_factory=dict)
     detections: List[Dict[str, object]] = field(default_factory=list)
     error: str = ""
 
@@ -135,6 +136,55 @@ class VoteWindow:
     def snapshot(self) -> List[Optional[str]]:
         return list(self._items)
 
+
+class ScoreVoteWindow:
+    """Sliding softmax-score window to avoid unstable frame-by-frame argmax voting."""
+
+    def __init__(self, size: int, min_score: float, min_margin: float) -> None:
+        self.size = max(1, int(size))
+        self.min_score = float(min_score)
+        self.min_margin = max(0.0, float(min_margin))
+        self._items: Deque[Dict[str, float]] = deque(maxlen=self.size)
+        self.last_average: Dict[str, float] = {}
+        self.last_margin: float = 0.0
+
+    def push(self, scores: Optional[Dict[str, float]]) -> Optional[str]:
+        if scores:
+            self._items.append({name: float(scores.get(name, 0.0)) for name in CATEGORY_NAMES})
+        else:
+            self._items.append({})
+        average = self.average()
+        self.last_average = average
+        if not average:
+            self.last_margin = 0.0
+            return None
+        ordered = sorted(average.items(), key=lambda item: item[1], reverse=True)
+        top_name, top_score = ordered[0]
+        second_score = ordered[1][1] if len(ordered) > 1 else 0.0
+        self.last_margin = float(top_score - second_score)
+        if top_score >= self.min_score and self.last_margin >= self.min_margin:
+            return top_name
+        return None
+
+    def average(self) -> Dict[str, float]:
+        valid = [item for item in self._items if item]
+        if not valid:
+            return {}
+        return {
+            name: sum(float(item.get(name, 0.0)) for item in valid) / float(len(valid))
+            for name in CATEGORY_NAMES
+        }
+
+    def snapshot(self) -> List[Dict[str, float]]:
+        return list(self._items)
+
+    def summary(self) -> str:
+        if not self.last_average:
+            return "{}"
+        return "{{{}}} margin={:.3f}".format(
+            ", ".join("{}:{:.3f}".format(name, self.last_average.get(name, 0.0)) for name in RKNN_CLASS_NAMES),
+            self.last_margin,
+        )
 
 
 
@@ -254,6 +304,7 @@ class RknnFactorySignClassifierBackend:
             confidence = float(probs[cls_id])
             margin = float(probs[cls_id] - probs[second_id]) if second_id != cls_id else confidence
             category = RKNN_CLASS_NAMES[cls_id] if 0 <= cls_id < len(RKNN_CLASS_NAMES) else None
+            scores = {name: float(probs[i]) for i, name in enumerate(RKNN_CLASS_NAMES)}
             raw_text = "raw_logits={} logits={} probs={} margin={:.3f}".format(
                 ["{:.3f}".format(float(v)) for v in logits.tolist()],
                 ["{:.3f}".format(float(v)) for v in calibrated_logits.tolist()],
@@ -261,7 +312,7 @@ class RknnFactorySignClassifierBackend:
                 margin,
             )
             if category and confidence >= self.confidence and margin >= self.min_margin:
-                return RecognitionResult(category=category, confidence=confidence, source="rknn_cls", raw_text=raw_text)
+                return RecognitionResult(category=category, confidence=confidence, source="rknn_cls", raw_text=raw_text, scores=scores)
             reasons = []
             if confidence < self.confidence:
                 reasons.append("confidence {:.3f} < {:.3f}".format(confidence, self.confidence))
@@ -271,6 +322,7 @@ class RknnFactorySignClassifierBackend:
                 source="rknn_cls",
                 confidence=confidence,
                 raw_text=raw_text,
+                scores=scores,
                 error="; ".join(reasons) or "classifier gate rejected",
             )
         except Exception as exc:
@@ -603,6 +655,12 @@ class FactorySignOCRNode:
             int(rospy.get_param("~vote_window_size", 5)),
             int(rospy.get_param("~vote_min_count", 2)),
         )
+        self.use_score_voting = bool(rospy.get_param("~use_score_voting", True))
+        self.score_vote = ScoreVoteWindow(
+            int(rospy.get_param("~vote_window_size", 5)),
+            float(rospy.get_param("~score_vote_min_score", 0.42)),
+            float(rospy.get_param("~score_vote_min_margin", 0.08)),
+        )
         rknn_backend = None
         if self.recognition_mode in ("auto", "rknn_classifier"):
             rknn_backend = RknnFactorySignClassifierBackend(
@@ -638,7 +696,7 @@ class FactorySignOCRNode:
         rospy.on_shutdown(self._on_shutdown)
         _repair_ros_logging()
         rospy.loginfo(
-            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s color=%s margin=%.3f biases={daily: %.3f, electronic: %.3f, food: %.3f}",
+            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s color=%s margin=%.3f score_vote=%s score_min=%.3f score_margin=%.3f biases={daily: %.3f, electronic: %.3f, food: %.3f}",
             self.image_topic,
             self.flip_image,
             self.recognition_mode,
@@ -649,6 +707,9 @@ class FactorySignOCRNode:
             self.speech_topic,
             self.classifier_input_color,
             self.classifier_min_margin,
+            self.use_score_voting,
+            self.score_vote.min_score,
+            self.score_vote.min_margin,
             self.classifier_daily_logit_bias,
             self.classifier_electronic_logit_bias,
             self.classifier_food_logit_bias,
@@ -674,19 +735,22 @@ class FactorySignOCRNode:
         processed = self._preprocess(frame)
         result = self.recognizer.recognize(frame)
         vote_category = result.category
-        confirmed = self.vote.push(vote_category)
+        hard_confirmed = self.vote.push(vote_category)
+        score_confirmed = self.score_vote.push(result.scores) if self.use_score_voting else None
+        confirmed = score_confirmed if self.use_score_voting else hard_confirmed
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed else False
 
         _repair_ros_logging()
         self.rospy.loginfo(
-            "factory_sign: source=%s text=%r category=%s conf=%.3f vote=%s confirmed=%s spoken=%s error=%s",
+            "factory_sign: source=%s text=%r category=%s conf=%.3f vote=%s score_vote=%s confirmed=%s spoken=%s error=%s",
             result.source,
             result.raw_text,
             result.category,
             result.confidence,
             self.vote.snapshot(),
+            self.score_vote.summary(),
             confirmed,
             spoken,
             result.error,
@@ -748,6 +812,7 @@ class FactorySignOCRNode:
             "mode={} source={}".format(self.recognition_mode, self.last_result.source),
             "category={} confirmed={} conf={:.2f}".format(self.last_result.category, self.last_confirmed, self.last_result.confidence),
             "vote={}".format(self.vote.snapshot()),
+            "score={}".format(self.score_vote.summary()),
             "spoken={}".format(spoken),
         ]
         if self.last_result.raw_text:

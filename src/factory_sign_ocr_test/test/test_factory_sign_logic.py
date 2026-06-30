@@ -10,7 +10,7 @@ SCRIPTS_DIR = os.path.join(PKG_DIR, "scripts")
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from factory_sign_ocr_node import FactorySignClassifier, FactorySignRecognizer, RecognitionResult, VoteWindow, _maybe_flip_frame, _repair_ros_logging
+from factory_sign_ocr_node import FactorySignClassifier, FactorySignRecognizer, RecognitionResult, ScoreVoteWindow, VoteWindow, _maybe_flip_frame, _repair_ros_logging
 
 
 def test_classifier_matches_requested_keywords():
@@ -36,6 +36,17 @@ def test_vote_window_confirms_two_hits_in_five_frames():
     assert vote.push("food") == "food"
 
     assert vote.snapshot() == [None, "food", "daily", "food"]
+
+
+def test_score_vote_window_confirms_average_daily_evidence():
+    vote = ScoreVoteWindow(size=5, min_score=0.40, min_margin=0.04)
+
+    assert vote.push({"daily": 0.39, "electronic": 0.36, "food": 0.25}) is None
+    assert vote.push({"daily": 0.43, "electronic": 0.34, "food": 0.23}) == "daily"
+
+    average = vote.average()
+    assert average["daily"] > average["electronic"]
+    assert "daily:" in vote.summary()
 
 
 class FakeRknnBackend:

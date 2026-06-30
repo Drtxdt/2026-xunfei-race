@@ -151,6 +151,11 @@ classifier_input_size: 224
 classifier_input_layout: nhwc
 classifier_input_color: bgr
 classifier_crop_mode: square
+vote_window_size: 5
+vote_min_count: 2
+use_score_voting: true
+score_vote_min_score: 0.42
+score_vote_min_margin: 0.08
 classifier_confidence_threshold: 0.50
 classifier_min_margin: 0.15
 classifier_daily_logit_bias: 0.45
@@ -163,8 +168,9 @@ debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
 
 稳定性规则：
 
-- 连续 5 帧投票。
-- 某类别出现次数不少于 2 次即确认。
+- 默认连续 5 帧做 softmax 分数平均，而不是只统计每帧 argmax。
+- 平均最高类分数不少于 `score_vote_min_score`，且领先第二名不少于 `score_vote_min_margin` 即确认。
+- 可用 `use_score_voting:=false` 回退到原来的硬投票：某类别出现次数不少于 2 次即确认。
 - 同类默认冷却 5 秒。
 - 类别变化立即播报。
 
@@ -193,6 +199,7 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 
 - 识别来源：`rknn_cls`
 - RKNN raw logits / 校准后 logits / probs / margin
+- score_vote 窗口平均分和平均 margin
 - 归类结果
 - softmax 置信度
 - 投票窗口
@@ -200,7 +207,19 @@ rostopic pub -1 /speak std_msgs/String "data: '识别到食品加工车间'"
 
 如果所有画面都稳定识别成同一类，按顺序做 A/B，不要同时改多个参数：
 
-1. 如果日用品偶尔闪一下但无法进入投票确认，先抬高 daily：
+1. 如果三类互相抢票，先调 soft vote，不要继续只拧 bias。日用品弱但持续有分数时，降低平均分门限：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch score_vote_min_score:=0.35
+```
+
+如果误报变多，提高平均 margin：
+
+```bash
+roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch score_vote_min_margin:=0.12
+```
+
+2. 如果日用品平均分仍然长期低于另外两类，再抬高 daily：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_daily_logit_bias:=0.70
@@ -212,7 +231,7 @@ roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_daily_lo
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_daily_logit_bias:=0.25
 ```
 
-2. 如果食品、日用品能出，但电子过强，把电子偏置调得更负：
+3. 如果食品、日用品能出，但电子过强，把电子偏置调得更负：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_electronic_logit_bias:=-1.0
@@ -224,26 +243,26 @@ roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_electron
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_electronic_logit_bias:=-0.3
 ```
 
-3. 再试 RGB，排除颜色通道差异。当前小车实测 BGR 更可靠，所以默认是 BGR：
+4. 再试 RGB，排除颜色通道差异。当前小车实测 BGR 更可靠，所以默认是 BGR：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_color:=rgb
 ```
 
-4. 调 margin。误报多就提高，漏报多就降低：
+5. 调单帧 classifier margin。误报多就提高，漏报多就降低：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_min_margin:=0.25
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_min_margin:=0.05
 ```
 
-5. 再试全图，排除中心方形裁剪切掉纸牌文字：
+6. 再试全图，排除中心方形裁剪切掉纸牌文字：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_crop_mode:=full
 ```
 
-6. 最后才试 `nchw` 布局。RKNNLite 在当前模型上会提示需要 NHWC，默认不要改：
+7. 最后才试 `nchw` 布局。RKNNLite 在当前模型上会提示需要 NHWC，默认不要改：
 
 ```bash
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch classifier_input_layout:=nchw

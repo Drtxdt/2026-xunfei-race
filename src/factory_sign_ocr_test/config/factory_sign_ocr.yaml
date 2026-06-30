@@ -7,6 +7,9 @@ inference_rate: 5.0
 cooldown_sec: 5.0
 vote_window_size: 5
 vote_min_count: 2
+use_score_voting: true              # average softmax scores over the vote window instead of only counting argmax frames
+score_vote_min_score: 0.42
+score_vote_min_margin: 0.08
 
 # Recognition backend
 recognition_mode: rknn_classifier   # fixed default: RKNNLite classifier only
