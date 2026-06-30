@@ -14,8 +14,8 @@ worker_restart_sec: 3.0
 jpeg_quality: 90
 
 # Image preprocessing before OCR
-roi_scale: 0.8
-resize_scale: 1.6
+roi_scale: 0.75
+resize_scale: 1.0
 use_sharpen: true
 use_adaptive_threshold: false
 
@@ -26,6 +26,7 @@ vote_min_count: 2
 
 # Debug/X11
 publish_debug_image: true
+debug_publish_rate: 5.0
 debug_image_topic: /factory_sign_ppocr_test/debug_image
 debug_preprocess_topic: /factory_sign_ppocr_test/preprocess_image
 debug_show_image: false

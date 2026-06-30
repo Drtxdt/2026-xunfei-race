@@ -117,8 +117,8 @@ ocr_min_score: 0.45
 ocr_timeout_sec: 60.0
 worker_startup_timeout_sec: 60.0
 inference_rate: 0.2
-roi_scale: 0.8
-resize_scale: 1.6
+roi_scale: 0.75
+resize_scale: 1.0
 vote_window_size: 5
 vote_min_count: 2
 cooldown_sec: 5.0
@@ -169,4 +169,14 @@ roslaunch factory_sign_ppocr_test factory_sign_ppocr_test.launch \
   paddle_python:=/home/ucar/miniforge3/envs/ppocrv6/bin/python \
   worker_startup_timeout_sec:=120 \
   ocr_timeout_sec:=60
+```
+
+## PP-OCRv5 性能说明
+
+当前默认优先初始化 `PP-OCRv5_mobile_det` 和 `PP-OCRv5_mobile_rec`。如果日志里看到 `PP-OCRv5_server_det` 或 `PP-OCRv5_server_rec`，说明当前 PaddleOCR 版本不接受 mobile 参数，会非常慢；应先解决模型选择，而不是继续加大超时。
+
+实时画面由 ROS 图像回调独立发布，不再等待 OCR 返回。若 debug 窗口仍黑屏，优先检查 `/factory_sign_ppocr_test/debug_image` 是否有频率：
+
+```bash
+rostopic hz /factory_sign_ppocr_test/debug_image
 ```

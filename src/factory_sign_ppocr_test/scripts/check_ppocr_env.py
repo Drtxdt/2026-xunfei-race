@@ -28,6 +28,8 @@ except Exception as exc:
     print("paddleocr import failed:", exc)
     raise
 attempts = [
+    dict(lang="ch", ocr_version="PP-OCRv5", text_detection_model_name="PP-OCRv5_mobile_det", text_recognition_model_name="PP-OCRv5_mobile_rec", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
+    dict(lang="ch", ocr_version="PP-OCRv5", text_detection_model_name="PP-OCRv5_mobile_det", text_recognition_model_name="PP-OCRv5_mobile_rec", use_angle_cls=False, show_log=False),
     dict(lang="ch", ocr_version="PP-OCRv5", use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False),
     dict(lang="ch", ocr_version="PP-OCRv5", use_angle_cls=False, show_log=False),
     dict(lang="ch", use_angle_cls=False, show_log=False),

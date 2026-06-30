@@ -8,7 +8,9 @@
   <arg name="inference_rate" default="0.2" />
   <arg name="ocr_timeout_sec" default="60.0" />
   <arg name="worker_startup_timeout_sec" default="60.0" />
-  <arg name="roi_scale" default="0.8" />
+  <arg name="roi_scale" default="0.75" />
+  <arg name="resize_scale" default="1.0" />
+  <arg name="debug_publish_rate" default="5.0" />
   <arg name="debug_image_topic" default="/factory_sign_ppocr_test/debug_image" />
   <arg name="debug_preprocess_topic" default="/factory_sign_ppocr_test/preprocess_image" />
   <arg name="debug_view" default="debug" />
@@ -41,6 +43,8 @@
     <param name="ocr_timeout_sec" value="$(arg ocr_timeout_sec)" />
     <param name="worker_startup_timeout_sec" value="$(arg worker_startup_timeout_sec)" />
     <param name="roi_scale" value="$(arg roi_scale)" />
+    <param name="resize_scale" value="$(arg resize_scale)" />
+    <param name="debug_publish_rate" value="$(arg debug_publish_rate)" />
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
     <param name="speech_mode" value="$(arg speech_mode)" />

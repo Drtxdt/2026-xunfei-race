@@ -25,6 +25,7 @@ class LocalPaddleOCR:
         self.lang = lang
         self.model_name = model_name
         self.min_score = float(min_score)
+        self.init_kwargs = {}
         self.engine = self._create_engine()
 
     def recognize(self, image_b64: str):
@@ -45,6 +46,23 @@ class LocalPaddleOCR:
             raise RuntimeError("Cannot import paddleocr.PaddleOCR: {}".format(exc))
 
         attempts = [
+            {
+                "lang": self.lang,
+                "ocr_version": self.model_name,
+                "text_detection_model_name": "PP-OCRv5_mobile_det",
+                "text_recognition_model_name": "PP-OCRv5_mobile_rec",
+                "use_doc_orientation_classify": False,
+                "use_doc_unwarping": False,
+                "use_textline_orientation": False,
+            },
+            {
+                "lang": self.lang,
+                "ocr_version": self.model_name,
+                "text_detection_model_name": "PP-OCRv5_mobile_det",
+                "text_recognition_model_name": "PP-OCRv5_mobile_rec",
+                "use_angle_cls": False,
+                "show_log": False,
+            },
             {
                 "lang": self.lang,
                 "ocr_version": self.model_name,
@@ -69,7 +87,9 @@ class LocalPaddleOCR:
         for kwargs in attempts:
             try:
                 with contextlib.redirect_stdout(sys.stderr):
-                    return PaddleOCR(**kwargs)
+                    engine = PaddleOCR(**kwargs)
+                self.init_kwargs = kwargs
+                return engine
             except Exception as exc:
                 last_error = exc
         raise RuntimeError("Failed to initialize PaddleOCR locally: {}".format(last_error))
@@ -224,7 +244,7 @@ def main() -> int:
 
     try:
         ocr = LocalPaddleOCR(args.lang, args.model_name, args.min_score)
-        emit({"type": "ready", "ok": True, "model_name": args.model_name, "lang": args.lang})
+        emit({"type": "ready", "ok": True, "model_name": args.model_name, "lang": args.lang, "init_kwargs": ocr.init_kwargs})
     except Exception as exc:
         emit({"type": "ready", "ok": False, "error": str(exc)})
         return 2

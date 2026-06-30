@@ -188,7 +188,13 @@ class LocalPPOCRClient:
             ready = self.responses.get(timeout=self.startup_timeout_sec)
             if ready.get("type") == "ready" and ready.get("ok"):
                 self.last_error = ""
-                self._log_info("Local PaddleOCR worker ready: python=%s model=%s lang=%s", self.paddle_python, self.model_name, self.lang)
+                self._log_info(
+                    "Local PaddleOCR worker ready: python=%s model=%s lang=%s init=%s",
+                    self.paddle_python,
+                    self.model_name,
+                    self.lang,
+                    ready.get("init_kwargs", {}),
+                )
                 return True
             self.last_error = ready.get("error", "worker failed to initialize")
             self._log_warn("Local PaddleOCR worker failed: %s", self.last_error)
@@ -300,8 +306,9 @@ class FactorySignPPOCRNode:
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
         self.flip_image = ros_bool(rospy.get_param("~flip", False), False)
         self.inference_rate = float(rospy.get_param("~inference_rate", 0.2))
-        self.roi_scale = float(rospy.get_param("~roi_scale", 0.8))
-        self.resize_scale = float(rospy.get_param("~resize_scale", 1.6))
+        self.roi_scale = float(rospy.get_param("~roi_scale", 0.75))
+        self.resize_scale = float(rospy.get_param("~resize_scale", 1.0))
+        self.debug_publish_rate = float(rospy.get_param("~debug_publish_rate", 5.0))
         self.use_sharpen = ros_bool(rospy.get_param("~use_sharpen", True), True)
         self.use_adaptive_threshold = ros_bool(rospy.get_param("~use_adaptive_threshold", False), False)
         self.jpeg_quality = int(rospy.get_param("~jpeg_quality", 90))
@@ -346,6 +353,7 @@ class FactorySignPPOCRNode:
         self.last_spoken_at_by_category: Dict[str, float] = {}
         self.last_roi_box = (0, 0, 0, 0)
         self.last_ocr_image = None
+        self.last_debug_publish_at = 0.0
 
         self.speak_pub = rospy.Publisher(self.speech_topic, String, queue_size=1)
         self.debug_pub = rospy.Publisher(self.debug_image_topic, Image, queue_size=1)
@@ -367,6 +375,7 @@ class FactorySignPPOCRNode:
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             self.latest_image = maybe_flip_frame(frame, self.flip_image)
+            self._publish_live_debug(self.latest_image)
         except Exception as exc:
             self.rospy.logwarn_throttle(2.0, "cv_bridge conversion failed: %s", exc)
 
@@ -463,6 +472,21 @@ class FactorySignPPOCRNode:
             self.preprocess_pub.publish(prep_msg)
         except Exception as exc:
             self.rospy.logwarn_throttle(2.0, "debug image publish failed: %s", exc)
+
+    def _publish_live_debug(self, frame) -> None:
+        if not self.publish_debug_image or self.debug_publish_rate <= 0:
+            return
+        now = time.time()
+        if now - self.last_debug_publish_at < 1.0 / self.debug_publish_rate:
+            return
+        self.last_debug_publish_at = now
+        try:
+            debug = self._draw_debug(frame, False)
+            msg = self.bridge.cv2_to_imgmsg(debug, "bgr8")
+            msg.header.stamp = self.rospy.Time.now()
+            self.debug_pub.publish(msg)
+        except Exception as exc:
+            self.rospy.logwarn_throttle(2.0, "live debug image publish failed: %s", exc)
 
     def _draw_debug(self, frame, spoken: bool):
         import cv2
