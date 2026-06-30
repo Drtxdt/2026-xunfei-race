@@ -35,6 +35,14 @@ roslaunch factory_sign_ppocr_test factory_sign_ppocr_test.launch \
   paddle_python:=/path/to/ppocr/env/bin/python3
 ```
 
+默认 OCR 调用走 PaddleOCR 的旧版 `ocr()` API：
+
+```bash
+ocr_api:=legacy
+```
+
+`predict` / `auto` 只建议用于诊断。当前小车环境里 `predict()` 可能首帧长时间不返回，表现为日志停在 `PPOCR request start id=1`。
+
 ## 编译
 
 ```bash
@@ -47,10 +55,20 @@ source devel/setup.bash
 
 ```bash
 rosrun factory_sign_ppocr_test check_ppocr_env.py \
-  --python /home/ucar/ppocrv6_env/bin/python3
+  --python /home/ucar/ppocrv6_env/bin/python3 \
+  --timeout-sec 180
 ```
 
 如果失败，先在小车本地准备 PaddleOCR 环境。不要把 PaddleOCR 3.x 强行装进 ROS Python3.7.3。
+
+检查脚本现在不只验证初始化，还会跑一次最小 OCR 请求。通过时应看到类似：
+
+```text
+PaddleOCR init ok with: ...
+PaddleOCR legacy ocr smoke ok: type=list elapsed_ms=...
+```
+
+如果只看到初始化成功，但 smoke 一直卡住，说明 PaddleOCR Python 推理 API 在当前环境不可用，应停止继续调 ROS 参数，转向 Paddle Lite/ONNX/RKNN 部署。
 
 示例方向：
 
@@ -114,6 +132,7 @@ paddle_python: /home/ucar/ppocrv6_env/bin/python3
 ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
+ocr_api: legacy
 ocr_timeout_sec: 120.0
 worker_startup_timeout_sec: 60.0
 inference_rate: 0.2
@@ -167,9 +186,20 @@ wait: false"
 ```bash
 roslaunch factory_sign_ppocr_test factory_sign_ppocr_test.launch \
   paddle_python:=/home/ucar/miniforge3/envs/ppocrv6/bin/python \
+  ocr_api:=legacy \
   worker_startup_timeout_sec:=120 \
   ocr_timeout_sec:=120
 ```
+
+启动后应看到：
+
+```text
+Local PaddleOCR worker ready: ... api=legacy ...
+PPOCR request start id=1 api=legacy
+PPOCR request done id=1 elapsed_ms=...
+```
+
+如果长时间没有 `PPOCR request done`，卡点仍在 PaddleOCR 本地推理 API，不在 ROS 图像链路。
 
 ## PP-OCRv5 性能说明
 

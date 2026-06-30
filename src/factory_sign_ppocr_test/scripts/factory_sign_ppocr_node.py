@@ -94,6 +94,7 @@ class LocalPPOCRClient:
         lang: str,
         model_name: str,
         min_score: float,
+        api: str,
         timeout_sec: float,
         startup_timeout_sec: float,
         restart_sec: float,
@@ -104,6 +105,9 @@ class LocalPPOCRClient:
         self.lang = lang
         self.model_name = model_name
         self.min_score = float(min_score)
+        self.api = (api or "legacy").strip().lower()
+        if self.api not in ("legacy", "predict", "auto"):
+            self.api = "legacy"
         self.timeout_sec = float(timeout_sec)
         self.startup_timeout_sec = max(1.0, float(startup_timeout_sec))
         self.restart_sec = float(restart_sec)
@@ -193,6 +197,8 @@ class LocalPPOCRClient:
             self.model_name,
             "--min-score",
             str(self.min_score),
+            "--api",
+            self.api,
         ]
         try:
             self.proc = subprocess.Popen(
@@ -209,10 +215,11 @@ class LocalPPOCRClient:
             if ready.get("type") == "ready" and ready.get("ok"):
                 self.last_error = ""
                 self._log_info(
-                    "Local PaddleOCR worker ready: python=%s model=%s lang=%s init=%s",
+                    "Local PaddleOCR worker ready: python=%s model=%s lang=%s api=%s init=%s",
                     self.paddle_python,
                     self.model_name,
                     self.lang,
+                    ready.get("api", self.api),
                     ready.get("init_kwargs", {}),
                 )
                 return True
@@ -355,6 +362,7 @@ class FactorySignPPOCRNode:
             lang=rospy.get_param("~ocr_lang", "ch"),
             model_name=rospy.get_param("~ocr_model_name", "PP-OCRv5"),
             min_score=float(rospy.get_param("~ocr_min_score", 0.45)),
+            api=rospy.get_param("~ocr_api", "legacy"),
             timeout_sec=float(rospy.get_param("~ocr_timeout_sec", 120.0)),
             startup_timeout_sec=float(rospy.get_param("~worker_startup_timeout_sec", 60.0)),
             restart_sec=float(rospy.get_param("~worker_restart_sec", 3.0)),
@@ -386,9 +394,10 @@ class FactorySignPPOCRNode:
         rospy.on_shutdown(self._on_shutdown)
 
         rospy.loginfo(
-            "factory_sign_ppocr_node ready: image=%s local_paddle_python=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
+            "factory_sign_ppocr_node ready: image=%s local_paddle_python=%s ocr_api=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s",
             self.image_topic,
             self.ocr_client.paddle_python,
+            self.ocr_client.api,
             self.debug_image_topic,
             self.preprocess_topic,
             self.speech_service,

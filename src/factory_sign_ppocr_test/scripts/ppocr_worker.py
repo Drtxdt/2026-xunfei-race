@@ -21,10 +21,13 @@ JSON_PREFIX = "__PPOCR_JSON__"
 
 
 class LocalPaddleOCR:
-    def __init__(self, lang: str, model_name: str, min_score: float) -> None:
+    def __init__(self, lang: str, model_name: str, min_score: float, api: str) -> None:
         self.lang = lang
         self.model_name = model_name
         self.min_score = float(min_score)
+        self.api = (api or "legacy").strip().lower()
+        if self.api not in ("legacy", "predict", "auto"):
+            self.api = "legacy"
         self.init_kwargs = {}
         self.engine = self._create_engine()
 
@@ -95,25 +98,41 @@ class LocalPaddleOCR:
         raise RuntimeError("Failed to initialize PaddleOCR locally: {}".format(last_error))
 
     def _recognize_image(self, image):
-        if hasattr(self.engine, "predict"):
+        legacy_error = None
+        if self.api in ("legacy", "auto"):
             try:
-                result = self._predict_with_temp_image(image)
-                parsed = self._parse_predict_result(result)
-                if parsed:
-                    return parsed
-            except TypeError:
-                try:
-                    result = self._predict_with_temp_image(image, keyword=False)
-                    parsed = self._parse_predict_result(result)
-                    if parsed:
-                        return parsed
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                return self._recognize_legacy(image)
+            except Exception as exc:
+                if self.api == "legacy":
+                    raise
+                legacy_error = exc
+        if self.api in ("predict", "auto"):
+            parsed = self._recognize_predict(image)
+            if parsed:
+                return parsed
+        if legacy_error is not None:
+            raise legacy_error
+        return []
+
+    def _recognize_legacy(self, image):
+        if not hasattr(self.engine, "ocr"):
+            raise RuntimeError("PaddleOCR object has no legacy ocr() API")
         with contextlib.redirect_stdout(sys.stderr):
             result = self.engine.ocr(image, cls=False)
         return self._parse_legacy_result(result)
+
+    def _recognize_predict(self, image):
+        if not hasattr(self.engine, "predict"):
+            raise RuntimeError("PaddleOCR object has no predict() API")
+        try:
+            result = self._predict_with_temp_image(image)
+            parsed = self._parse_predict_result(result)
+            if parsed:
+                return parsed
+        except TypeError:
+            result = self._predict_with_temp_image(image, keyword=False)
+            return self._parse_predict_result(result)
+        return []
 
     def _predict_with_temp_image(self, image, keyword: bool = True):
         import cv2
@@ -240,11 +259,19 @@ def main() -> int:
     parser.add_argument("--lang", default="ch")
     parser.add_argument("--model-name", default="PP-OCRv5")
     parser.add_argument("--min-score", type=float, default=0.45)
+    parser.add_argument("--api", choices=("legacy", "predict", "auto"), default="legacy")
     args = parser.parse_args()
 
     try:
-        ocr = LocalPaddleOCR(args.lang, args.model_name, args.min_score)
-        emit({"type": "ready", "ok": True, "model_name": args.model_name, "lang": args.lang, "init_kwargs": ocr.init_kwargs})
+        ocr = LocalPaddleOCR(args.lang, args.model_name, args.min_score, args.api)
+        emit({
+            "type": "ready",
+            "ok": True,
+            "model_name": args.model_name,
+            "lang": args.lang,
+            "api": ocr.api,
+            "init_kwargs": ocr.init_kwargs,
+        })
     except Exception as exc:
         emit({"type": "ready", "ok": False, "error": str(exc)})
         return 2
@@ -259,7 +286,7 @@ def main() -> int:
             if req.get("cmd") == "shutdown":
                 emit({"id": req.get("id"), "ok": True, "type": "shutdown"})
                 return 0
-            sys.stderr.write("PPOCR request start id={}\n".format(req.get("id")))
+            sys.stderr.write("PPOCR request start id={} api={}\n".format(req.get("id"), ocr.api))
             sys.stderr.flush()
             texts = ocr.recognize(req["image"])
             raw_text = " ".join(item.get("text", "") for item in texts if item.get("text"))
