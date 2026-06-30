@@ -191,6 +191,8 @@ class RknnFactorySignClassifierBackend:
         input_layout: str = "nhwc",
         input_color: str = "bgr",
         crop_mode: str = "square",
+        daily_logit_bias: float = 0.45,
+        food_logit_bias: float = 0.0,
         electronic_logit_bias: float = -0.6,
         min_margin: float = 0.15,
     ) -> None:
@@ -207,6 +209,11 @@ class RknnFactorySignClassifierBackend:
         self.crop_mode = (crop_mode or "square").strip().lower()
         if self.crop_mode not in ("square", "full", "roi"):
             self.crop_mode = "square"
+        self.logit_biases = {
+            "daily": float(daily_logit_bias),
+            "electronic": float(electronic_logit_bias),
+            "food": float(food_logit_bias),
+        }
         self.electronic_logit_bias = float(electronic_logit_bias)
         self.min_margin = max(0.0, float(min_margin))
         self.rknn = None
@@ -292,13 +299,13 @@ class RknnFactorySignClassifierBackend:
             self.available = True
             self._log(
                 "info",
-                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f margin=%.3f electronic_bias=%.3f layout=%s color=%s crop=%s",
+                "Factory sign RKNN classifier loaded: %s input=%d classes=%s threshold=%.3f margin=%.3f biases=%s layout=%s color=%s crop=%s",
                 self.model_path,
                 self.input_size,
                 RKNN_CLASS_NAMES,
                 self.confidence,
                 self.min_margin,
-                self.electronic_logit_bias,
+                self.logit_biases,
                 self.input_layout,
                 self.input_color,
                 self.crop_mode,
@@ -389,11 +396,11 @@ class RknnFactorySignClassifierBackend:
         import numpy as np
 
         calibrated = np.asarray(logits, dtype=np.float32).copy()
-        try:
-            electronic_idx = RKNN_CLASS_NAMES.index("electronic")
-            calibrated[electronic_idx] += self.electronic_logit_bias
-        except ValueError:
-            pass
+        for class_name, bias in getattr(self, "logit_biases", {}).items():
+            try:
+                calibrated[RKNN_CLASS_NAMES.index(class_name)] += float(bias)
+            except (ValueError, IndexError, TypeError):
+                continue
         return calibrated
 
     @staticmethod
@@ -580,6 +587,8 @@ class FactorySignOCRNode:
                 "Ignoring classifier_preprocess_mode=%s; torch/pass-through mode is disabled because it can crash RKNNLite.",
                 legacy_preprocess_mode,
             )
+        self.classifier_daily_logit_bias = float(rospy.get_param("~classifier_daily_logit_bias", 0.45))
+        self.classifier_food_logit_bias = float(rospy.get_param("~classifier_food_logit_bias", 0.0))
         self.classifier_electronic_logit_bias = float(rospy.get_param("~classifier_electronic_logit_bias", -0.6))
         self.classifier_min_margin = float(rospy.get_param("~classifier_min_margin", 0.15))
         self.speech_mode = rospy.get_param("~speech_mode", "service").strip().lower()
@@ -606,6 +615,8 @@ class FactorySignOCRNode:
                 input_layout=self.classifier_input_layout,
                 input_color=self.classifier_input_color,
                 crop_mode=self.classifier_crop_mode,
+                daily_logit_bias=self.classifier_daily_logit_bias,
+                food_logit_bias=self.classifier_food_logit_bias,
                 electronic_logit_bias=self.classifier_electronic_logit_bias,
                 min_margin=self.classifier_min_margin,
             )
@@ -627,7 +638,7 @@ class FactorySignOCRNode:
         rospy.on_shutdown(self._on_shutdown)
         _repair_ros_logging()
         rospy.loginfo(
-            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s color=%s margin=%.3f electronic_bias=%.3f",
+            "factory_sign_ocr_node ready: image=%s flip=%s mode=%s model=%s debug=%s preprocess=%s speech_service=%s speech_topic=%s color=%s margin=%.3f biases={daily: %.3f, electronic: %.3f, food: %.3f}",
             self.image_topic,
             self.flip_image,
             self.recognition_mode,
@@ -638,7 +649,9 @@ class FactorySignOCRNode:
             self.speech_topic,
             self.classifier_input_color,
             self.classifier_min_margin,
+            self.classifier_daily_logit_bias,
             self.classifier_electronic_logit_bias,
+            self.classifier_food_logit_bias,
         )
 
     def _image_cb(self, msg) -> None:

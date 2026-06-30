@@ -184,18 +184,22 @@ def test_rknn_classifier_can_still_rgb_swap_for_ab_debug():
     assert int(tensor[0, 0, 0, 0]) == 30
 
 
-def test_rknn_classifier_electronic_bias_reduces_electronic_logit():
+def test_rknn_classifier_logit_biases_apply_by_class_name():
     import numpy as np
     from factory_sign_ocr_node import RknnFactorySignClassifierBackend
 
     backend = RknnFactorySignClassifierBackend.__new__(RknnFactorySignClassifierBackend)
-    backend.electronic_logit_bias = -0.6
+    backend.logit_biases = {
+        "daily": 0.45,
+        "electronic": -0.6,
+        "food": 0.1,
+    }
 
     logits = backend._apply_logit_bias(np.array([0.0, 1.0, 0.0], dtype=np.float32))
 
+    assert abs(float(logits[0]) - 0.45) < 1e-6
     assert abs(float(logits[1]) - 0.4) < 1e-6
-    assert float(logits[0]) == 0.0
-    assert float(logits[2]) == 0.0
+    assert abs(float(logits[2]) - 0.1) < 1e-6
 
 
 def test_pick_best_detection_returns_top_category():

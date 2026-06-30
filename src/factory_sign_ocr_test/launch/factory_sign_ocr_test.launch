@@ -12,6 +12,8 @@
   <arg name="classifier_model_path" default="$(find factory_sign_ocr_test)/models/factory_sign_cls_rk3588.rknn" />
   <arg name="classifier_confidence_threshold" default="0.50" />
   <arg name="classifier_min_margin" default="0.15" />
+  <arg name="classifier_daily_logit_bias" default="0.45" />
+  <arg name="classifier_food_logit_bias" default="0.00" />
   <arg name="classifier_electronic_logit_bias" default="-0.60" />
   <arg name="classifier_input_layout" default="nhwc" />
   <arg name="classifier_input_color" default="bgr" />
@@ -46,6 +48,8 @@
     <param name="classifier_model_path" value="$(arg classifier_model_path)" />
     <param name="classifier_confidence_threshold" value="$(arg classifier_confidence_threshold)" />
     <param name="classifier_min_margin" value="$(arg classifier_min_margin)" />
+    <param name="classifier_daily_logit_bias" value="$(arg classifier_daily_logit_bias)" />
+    <param name="classifier_food_logit_bias" value="$(arg classifier_food_logit_bias)" />
     <param name="classifier_electronic_logit_bias" value="$(arg classifier_electronic_logit_bias)" />
     <param name="classifier_input_size" value="224" />
     <param name="classifier_input_layout" value="$(arg classifier_input_layout)" />
