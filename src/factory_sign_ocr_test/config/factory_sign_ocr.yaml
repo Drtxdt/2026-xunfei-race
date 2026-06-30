@@ -1,0 +1,50 @@
+# Camera/input
+image_topic: /usb_cam/image_raw
+flip: false                         # set true if the X11/debug image is horizontally mirrored
+inference_rate: 5.0
+
+# Recognition stability
+cooldown_sec: 5.0
+vote_window_size: 5
+vote_min_count: 2
+use_score_voting: true              # average softmax scores over the vote window instead of only counting argmax frames
+score_vote_min_score: 0.42
+score_vote_min_margin: 0.08
+
+# Recognition backend
+recognition_mode: rknn_classifier   # fixed default: RKNNLite classifier only
+classifier_model_path: ""           # empty = auto find factory_sign_ocr_test/models/factory_sign_cls_rk3588.rknn
+classifier_input_size: 224
+classifier_input_layout: nhwc       # nhwc is RKNNLite-friendly; set nchw only for A/B debug
+classifier_input_color: bgr         # bgr is the verified RKNN path on the car; rgb is only for A/B debug
+classifier_crop_mode: square        # square | full | roi
+classifier_confidence_threshold: 0.50
+classifier_min_margin: 0.15         # reject weak top1-top2 decisions
+classifier_daily_logit_bias: 0.45   # boost weak daily class observed on the car; tune 0.0..1.0
+classifier_food_logit_bias: 0.00
+classifier_electronic_logit_bias: -0.60  # suppress observed electronic over-prediction; tune -1.0..0.0
+
+# Debug ROI/preprocess image only; not used for OCR
+roi_scale: 0.8
+resize_scale: 1.8
+use_adaptive_threshold: true
+use_sharpen: true
+
+# Debug/X11
+publish_debug_image: true
+debug_image_topic: /factory_sign_ocr_test/debug_image
+debug_preprocess_topic: /factory_sign_ocr_test/preprocess_image
+debug_show_image: false             # direct cv2.imshow; prefer image_view through launch on MobaXterm
+
+# Speech
+speech_mode: service                # service | topic | auto
+speech_service: /competition_speech/announce
+speech_service_timeout_sec: 0.5
+speech_topic: /speak
+fallback_to_speech_topic: true
+speech_wait: false
+
+
+
+
+

@@ -1,0 +1,97 @@
+<launch>
+  <arg name="start_camera" default="true" />
+  <arg name="start_competition_speech" default="true" />
+  <arg name="start_viewer" default="true" />
+  <arg name="image_topic" default="/usb_cam/image_raw" />
+  <arg name="flip" default="false" />
+  <arg name="debug_image_topic" default="/factory_sign_ocr_test/debug_image" />
+  <arg name="debug_preprocess_topic" default="/factory_sign_ocr_test/preprocess_image" />
+  <arg name="debug_view" default="debug" />
+  <arg name="config_file" default="$(find factory_sign_ocr_test)/config/factory_sign_ocr.yaml" />
+  <arg name="recognition_mode" default="rknn_classifier" />
+  <arg name="classifier_model_path" default="$(find factory_sign_ocr_test)/models/factory_sign_cls_rk3588.rknn" />
+  <arg name="classifier_confidence_threshold" default="0.50" />
+  <arg name="classifier_min_margin" default="0.15" />
+  <arg name="classifier_daily_logit_bias" default="0.45" />
+  <arg name="classifier_food_logit_bias" default="0.00" />
+  <arg name="classifier_electronic_logit_bias" default="-0.60" />
+  <arg name="classifier_input_layout" default="nhwc" />
+  <arg name="classifier_input_color" default="bgr" />
+  <arg name="classifier_crop_mode" default="square" />
+  <arg name="classifier_preprocess_mode" default="rknn" />
+  <arg name="use_score_voting" default="true" />
+  <arg name="score_vote_min_score" default="0.42" />
+  <arg name="score_vote_min_margin" default="0.08" />
+  <arg name="speech_mode" default="service" />
+  <arg name="required" default="false" />
+  <arg name="chars_per_second" default="3.0" />
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_competition_speech)">
+    <include file="$(find ucar_2026_competition_speech)/launch/competition_speech.launch">
+      <arg name="chars_per_second" value="$(arg chars_per_second)" />
+    </include>
+  </group>
+
+  <node pkg="factory_sign_ocr_test"
+        type="factory_sign_ocr_node.py"
+        name="factory_sign_ocr_node"
+        output="screen"
+        required="$(arg required)"
+        launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="flip" value="$(arg flip)" />
+    <param name="debug_image_topic" value="$(arg debug_image_topic)" />
+    <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
+    <param name="recognition_mode" value="$(arg recognition_mode)" />
+    <param name="classifier_model_path" value="$(arg classifier_model_path)" />
+    <param name="classifier_confidence_threshold" value="$(arg classifier_confidence_threshold)" />
+    <param name="classifier_min_margin" value="$(arg classifier_min_margin)" />
+    <param name="classifier_daily_logit_bias" value="$(arg classifier_daily_logit_bias)" />
+    <param name="classifier_food_logit_bias" value="$(arg classifier_food_logit_bias)" />
+    <param name="classifier_electronic_logit_bias" value="$(arg classifier_electronic_logit_bias)" />
+    <param name="classifier_input_size" value="224" />
+    <param name="classifier_input_layout" value="$(arg classifier_input_layout)" />
+    <param name="classifier_input_color" value="$(arg classifier_input_color)" />
+    <param name="classifier_crop_mode" value="$(arg classifier_crop_mode)" />
+    <param name="classifier_preprocess_mode" value="$(arg classifier_preprocess_mode)" />
+    <param name="use_score_voting" value="$(arg use_score_voting)" />
+    <param name="score_vote_min_score" value="$(arg score_vote_min_score)" />
+    <param name="score_vote_min_margin" value="$(arg score_vote_min_margin)" />
+    <param name="speech_mode" value="$(arg speech_mode)" />
+  </node>
+
+  <group if="$(arg start_viewer)">
+    <group if="$(eval arg('debug_view') == 'preprocess')">
+      <node pkg="image_view" type="image_view" name="factory_sign_ocr_x11_preprocess_viewer" output="screen"
+            launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+        <remap from="image" to="$(arg debug_preprocess_topic)" />
+        <param name="image_transport" value="raw" />
+      </node>
+    </group>
+    <group if="$(eval arg('debug_view') == 'camera')">
+      <node pkg="image_view" type="image_view" name="factory_sign_ocr_x11_camera_viewer" output="screen"
+            launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+        <remap from="image" to="$(arg image_topic)" />
+        <param name="image_transport" value="raw" />
+      </node>
+    </group>
+    <group unless="$(eval arg('debug_view') == 'preprocess' or arg('debug_view') == 'camera')">
+      <node pkg="image_view" type="image_view" name="factory_sign_ocr_x11_debug_viewer" output="screen"
+            launch-prefix="bash -c 'sleep 4; exec &quot;$@&quot;' dummy">
+        <remap from="image" to="$(arg debug_image_topic)" />
+        <param name="image_transport" value="raw" />
+      </node>
+    </group>
+  </group>
+</launch>
+
+
+
+
+
+
