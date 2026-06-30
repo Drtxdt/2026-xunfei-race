@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import json
 import sys
 import time
@@ -63,7 +64,8 @@ class LocalPaddleOCR:
         last_error = None
         for kwargs in attempts:
             try:
-                return PaddleOCR(**kwargs)
+                with contextlib.redirect_stdout(sys.stderr):
+                    return PaddleOCR(**kwargs)
             except Exception as exc:
                 last_error = exc
         raise RuntimeError("Failed to initialize PaddleOCR locally: {}".format(last_error))
@@ -71,19 +73,25 @@ class LocalPaddleOCR:
     def _recognize_image(self, image):
         if hasattr(self.engine, "predict"):
             try:
-                parsed = self._parse_predict_result(self.engine.predict(input=image))
+                with contextlib.redirect_stdout(sys.stderr):
+                    result = self.engine.predict(input=image)
+                parsed = self._parse_predict_result(result)
                 if parsed:
                     return parsed
             except TypeError:
                 try:
-                    parsed = self._parse_predict_result(self.engine.predict(image))
+                    with contextlib.redirect_stdout(sys.stderr):
+                        result = self.engine.predict(image)
+                    parsed = self._parse_predict_result(result)
                     if parsed:
                         return parsed
                 except Exception:
                     pass
             except Exception:
                 pass
-        return self._parse_legacy_result(self.engine.ocr(image, cls=False))
+        with contextlib.redirect_stdout(sys.stderr):
+            result = self.engine.ocr(image, cls=False)
+        return self._parse_legacy_result(result)
 
     def _parse_predict_result(self, result):
         texts = []

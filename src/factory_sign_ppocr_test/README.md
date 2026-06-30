@@ -114,9 +114,9 @@ paddle_python: /home/ucar/ppocrv6_env/bin/python3
 ocr_model_name: PP-OCRv5
 ocr_lang: ch
 ocr_min_score: 0.45
-ocr_timeout_sec: 2.0
+ocr_timeout_sec: 15.0
 worker_startup_timeout_sec: 60.0
-inference_rate: 2.0
+inference_rate: 0.5
 roi_scale: 0.8
 resize_scale: 1.6
 vote_window_size: 5
