@@ -10,6 +10,7 @@
   <arg name="rec_model_path" default="" />
   <arg name="keys_path" default="" />
   <arg name="roi_scale" default="0.80" />
+  <arg name="rec_resize_mode" default="stretch" />
   <arg name="debug_image_topic" default="/factory_sign_ppocr_rknn_test/debug_image" />
   <arg name="debug_preprocess_topic" default="/factory_sign_ppocr_rknn_test/preprocess_image" />
   <arg name="debug_view" default="debug" />
@@ -43,6 +44,7 @@
     <param name="rec_model_path" value="$(arg rec_model_path)" />
     <param name="keys_path" value="$(arg keys_path)" />
     <param name="roi_scale" value="$(arg roi_scale)" />
+    <param name="rec_resize_mode" value="$(arg rec_resize_mode)" />
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
     <param name="speech_mode" value="$(arg speech_mode)" />

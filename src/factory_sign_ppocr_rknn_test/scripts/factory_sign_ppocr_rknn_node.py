@@ -232,6 +232,7 @@ class PPOCRRknnRecognizer:
         det_input_size: int,
         rec_image_height: int,
         rec_image_width: int,
+        rec_resize_mode: str,
         max_rec_crops: int,
         logger=None,
     ) -> None:
@@ -245,6 +246,9 @@ class PPOCRRknnRecognizer:
         self.det_input_size = int(det_input_size or 480)
         self.rec_h = int(rec_image_height or 48)
         self.rec_w = int(rec_image_width or 320)
+        self.rec_resize_mode = (rec_resize_mode or "stretch").strip().lower()
+        if self.rec_resize_mode not in ("stretch", "pad"):
+            self.rec_resize_mode = "stretch"
         self.max_rec_crops = max(1, int(max_rec_crops or 6))
         self.decoder = CTCLabelDecoder(keys_path)
         self.rec = RknnRuntime(rec_model_path, logger=logger)
@@ -294,7 +298,7 @@ class PPOCRRknnRecognizer:
         if crop is None or crop.size == 0:
             return "", 0.0, 0
         image = self._resize_rec_image(crop)
-        image = np.expand_dims(image, axis=0).astype("uint8")
+        image = np.expand_dims(image, axis=0).astype("float32") / 255.0
         started = time.time()
         outputs = self.rec.infer(image, data_format="nhwc")
         elapsed_ms = int((time.time() - started) * 1000)
@@ -310,6 +314,8 @@ class PPOCRRknnRecognizer:
         h, w = crop.shape[:2]
         if h <= 0 or w <= 0:
             return np.zeros((self.rec_h, self.rec_w, 3), dtype=np.uint8)
+        if self.rec_resize_mode == "stretch":
+            return cv2.resize(crop, (self.rec_w, self.rec_h), interpolation=cv2.INTER_CUBIC)
         ratio = min(float(self.rec_w) / float(w), float(self.rec_h) / float(h))
         new_w = max(1, min(self.rec_w, int(round(w * ratio))))
         new_h = max(1, min(self.rec_h, int(round(h * ratio))))
@@ -479,6 +485,7 @@ class FactorySignPPOCRRknnNode:
             det_input_size=int(self.rospy.get_param("~det_input_size", 480)),
             rec_image_height=int(self.rospy.get_param("~rec_image_height", 48)),
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
+            rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
             max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 6)),
             logger=self.rospy,
         )

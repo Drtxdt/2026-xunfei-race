@@ -7,7 +7,7 @@ SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
-from factory_sign_ppocr_rknn_node import CTCLabelDecoder, FactorySignKeywordClassifier, VoteWindow
+from factory_sign_ppocr_rknn_node import CTCLabelDecoder, FactorySignKeywordClassifier, PPOCRRknnRecognizer, VoteWindow
 
 
 def test_keyword_classifier_maps_requested_categories():
@@ -40,3 +40,16 @@ def test_ctc_decoder_handles_time_major_and_class_major():
     )
     assert decoder.decode(time_major)[0] == "食品"
     assert decoder.decode(time_major.T)[0] == "食品"
+
+
+def test_recognizer_resize_defaults_to_ppocr_stretch_shape():
+    recognizer = PPOCRRknnRecognizer.__new__(PPOCRRknnRecognizer)
+    recognizer.rec_h = 48
+    recognizer.rec_w = 320
+    recognizer.rec_resize_mode = "stretch"
+    crop = np.zeros((80, 180, 3), dtype=np.uint8)
+
+    resized = recognizer._resize_rec_image(crop)
+
+    assert resized.shape == (48, 320, 3)
+    assert resized.dtype == np.uint8
