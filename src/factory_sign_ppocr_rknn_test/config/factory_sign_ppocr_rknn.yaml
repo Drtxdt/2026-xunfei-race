@@ -1,6 +1,6 @@
 # Camera/input
 image_topic: /usb_cam/image_raw
-flip: false
+flip: true
 inference_rate: 5.0
 
 # RKNN PPOCR models. Empty paths auto-resolve to this package's models directory.
@@ -20,6 +20,7 @@ rec_image_height: 48
 rec_image_width: 320
 rec_resize_mode: stretch      # stretch matches rknn_model_zoo PPOCR-Rec demo; pad keeps aspect ratio
 max_rec_crops: 6
+use_global_rec_candidates: true
 
 # Image preprocessing
 roi_scale: 0.80

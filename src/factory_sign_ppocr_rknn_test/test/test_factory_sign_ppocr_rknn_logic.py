@@ -53,3 +53,15 @@ def test_recognizer_resize_defaults_to_ppocr_stretch_shape():
 
     assert resized.shape == (48, 320, 3)
     assert resized.dtype == np.uint8
+
+
+def test_global_rec_crops_include_center_bands():
+    recognizer = PPOCRRknnRecognizer.__new__(PPOCRRknnRecognizer)
+    image = np.zeros((100, 200, 3), dtype=np.uint8)
+
+    crops = recognizer._global_rec_crops(image)
+
+    assert len(crops) == 3
+    assert crops[0][0].shape == (100, 200, 3)
+    assert crops[1][0].shape == (60, 200, 3)
+    assert crops[2][0].shape == (40, 200, 3)

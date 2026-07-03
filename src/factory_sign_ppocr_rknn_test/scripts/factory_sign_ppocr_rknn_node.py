@@ -234,6 +234,7 @@ class PPOCRRknnRecognizer:
         rec_image_width: int,
         rec_resize_mode: str,
         max_rec_crops: int,
+        use_global_rec_candidates: bool,
         logger=None,
     ) -> None:
         self.logger = logger
@@ -250,6 +251,7 @@ class PPOCRRknnRecognizer:
         if self.rec_resize_mode not in ("stretch", "pad"):
             self.rec_resize_mode = "stretch"
         self.max_rec_crops = max(1, int(max_rec_crops or 6))
+        self.use_global_rec_candidates = bool(use_global_rec_candidates)
         self.decoder = CTCLabelDecoder(keys_path)
         self.rec = RknnRuntime(rec_model_path, logger=logger)
         self.det = None
@@ -264,11 +266,15 @@ class PPOCRRknnRecognizer:
         try:
             if self.mode == "ppocr_rknn_system" and self.det is not None:
                 boxes, det_ms = self._detect_boxes(image)
-                crops = self._crop_boxes(image, boxes)[: self.max_rec_crops]
+                crops = []
+                if self.use_global_rec_candidates:
+                    crops.extend(self._global_rec_crops(image))
+                crops.extend(self._crop_boxes(image, boxes))
+                crops = crops[: self.max_rec_crops]
             else:
                 h, w = image.shape[:2]
                 boxes = [[[0.0, 0.0], [float(w), 0.0], [float(w), float(h)], [0.0, float(h)]]]
-                crops = [(image, boxes[0])]
+                crops = self._global_rec_crops(image) if self.use_global_rec_candidates else [(image, boxes[0])]
             for crop, box in crops:
                 text, score, one_rec_ms = self._recognize_crop(crop)
                 rec_ms += one_rec_ms
@@ -323,6 +329,24 @@ class PPOCRRknnRecognizer:
         canvas = np.full((self.rec_h, self.rec_w, 3), 255, dtype=np.uint8)
         canvas[:new_h, :new_w] = resized
         return canvas
+
+    def _global_rec_crops(self, image):
+        h, w = image.shape[:2]
+        if h <= 0 or w <= 0:
+            return []
+        spans = [
+            (0.00, 1.00, "roi"),
+            (0.20, 0.80, "center60"),
+            (0.30, 0.70, "center40"),
+        ]
+        crops = []
+        for y0_ratio, y1_ratio, _name in spans:
+            y0 = max(0, min(h - 1, int(round(h * y0_ratio))))
+            y1 = max(y0 + 1, min(h, int(round(h * y1_ratio))))
+            crop = image[y0:y1, 0:w]
+            box = [[0.0, float(y0)], [float(w), float(y0)], [float(w), float(y1)], [0.0, float(y1)]]
+            crops.append((crop, box))
+        return crops
 
     def _detect_boxes(self, image):
         import cv2
@@ -413,7 +437,7 @@ class FactorySignPPOCRRknnNode:
         self.bridge = CvBridge()
 
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
-        self.flip_image = ros_bool(rospy.get_param("~flip", False), False)
+        self.flip_image = ros_bool(rospy.get_param("~flip", True), True)
         self.inference_rate = float(rospy.get_param("~inference_rate", 5.0))
         self.roi_scale = float(rospy.get_param("~roi_scale", 0.8))
         self.resize_scale = float(rospy.get_param("~resize_scale", 1.0))
@@ -487,6 +511,7 @@ class FactorySignPPOCRRknnNode:
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
             rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
             max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 6)),
+            use_global_rec_candidates=ros_bool(self.rospy.get_param("~use_global_rec_candidates", True), True),
             logger=self.rospy,
         )
 
@@ -529,10 +554,11 @@ class FactorySignPPOCRRknnNode:
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed else False
         self.rospy.loginfo(
-            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f vote=%s confirmed=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
+            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f texts=%s vote=%s confirmed=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
             result.raw_text,
             result.category,
             result.confidence,
+            self._texts_debug(result.texts),
             self.vote.snapshot(),
             confirmed,
             spoken,
@@ -627,6 +653,18 @@ class FactorySignPPOCRRknnNode:
     @staticmethod
     def _ascii_preview(text: str) -> str:
         return (text or "").encode("ascii", "replace").decode("ascii")[:110]
+
+    @staticmethod
+    def _texts_debug(texts: Sequence[OCRText]) -> List[str]:
+        out = []
+        for item in texts[:8]:
+            if len(item.box) == 4:
+                width = max(p[0] for p in item.box) - min(p[0] for p in item.box)
+                height = max(p[1] for p in item.box) - min(p[1] for p in item.box)
+                out.append("{:.2f}:{}({:.0f}x{:.0f})".format(item.score, item.text, width, height))
+            else:
+                out.append("{:.2f}:{}".format(item.score, item.text))
+        return out
 
     def _maybe_speak(self, category: str) -> bool:
         now = time.time()

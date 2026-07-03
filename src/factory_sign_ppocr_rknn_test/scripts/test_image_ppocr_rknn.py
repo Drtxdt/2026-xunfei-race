@@ -33,6 +33,7 @@ def main() -> int:
     parser.add_argument("--mode", default="ppocr_rknn_rec_only", choices=("ppocr_rknn_rec_only", "ppocr_rknn_system"))
     parser.add_argument("--roi-scale", type=float, default=0.8)
     parser.add_argument("--rec-resize-mode", default="stretch", choices=("stretch", "pad"))
+    parser.add_argument("--no-global-rec-candidates", action="store_true")
     args = parser.parse_args()
 
     sys.path.insert(0, os.path.dirname(__file__))
@@ -67,6 +68,7 @@ def main() -> int:
         rec_image_width=320,
         rec_resize_mode=args.rec_resize_mode,
         max_rec_crops=6,
+        use_global_rec_candidates=not args.no_global_rec_candidates,
     )
     try:
         result = recognizer.recognize(roi)
