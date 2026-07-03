@@ -1,0 +1,41 @@
+# Camera/input
+image_topic: /usb_cam/image_raw
+flip: false
+inference_rate: 0.2
+
+# Local PaddleOCR worker. This must be a local Python environment on the car.
+paddle_python: /home/ucar/ppocrv6_env/bin/python3
+ocr_model_name: PP-OCRv5
+ocr_lang: ch
+ocr_min_score: 0.45
+ocr_api: legacy
+ocr_timeout_sec: 120.0
+worker_startup_timeout_sec: 60.0
+worker_restart_sec: 3.0
+jpeg_quality: 90
+
+# Image preprocessing before OCR
+roi_scale: 0.75
+resize_scale: 1.0
+use_sharpen: true
+use_adaptive_threshold: false
+
+# Recognition stability
+cooldown_sec: 5.0
+vote_window_size: 5
+vote_min_count: 2
+
+# Debug/X11
+publish_debug_image: true
+debug_publish_rate: 5.0
+debug_image_topic: /factory_sign_ppocr_test/debug_image
+debug_preprocess_topic: /factory_sign_ppocr_test/preprocess_image
+debug_show_image: false
+
+# Speech
+speech_mode: service
+speech_service: /competition_speech/announce
+speech_service_timeout_sec: 0.5
+speech_topic: /speak
+fallback_to_speech_topic: true
+speech_wait: false

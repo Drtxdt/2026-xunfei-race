@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>factory_sign_ppocr_rknn_test</name>
+  <version>0.1.0</version>
+  <description>Standalone RKNNLite PP-OCR factory sign OCR and speech test package.</description>
+
+  <maintainer email="ucar@todo.todo">ucar</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>image_view</exec_depend>
+  <exec_depend>ucar_2026_competition_speech</exec_depend>
+
+  <export>
+  </export>
+</package>
