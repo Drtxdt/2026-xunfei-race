@@ -102,7 +102,7 @@ class FactorySignKeywordClassifier:
     }
     FEATURES: Dict[str, Tuple[Tuple[str, float], ...]] = {
         "food": (("food", 4.0), ("食品", 4.0), ("食", 2.5)),
-        "daily": (("daily", 4.0), ("日用品", 5.0), ("日用", 4.0), ("用品", 3.0), ("日", 1.8), ("用", 1.4)),
+        "daily": (("daily", 4.0), ("日用品", 6.0), ("日用", 5.0), ("用品", 4.4), ("日", 2.2), ("用", 1.9)),
         "electronic": (
             ("electronic", 4.0),
             ("电子产品", 5.0),
@@ -113,7 +113,7 @@ class FactorySignKeywordClassifier:
             ("产", 1.4),
         ),
     }
-    NON_DISCRIMINATIVE = ("车间", "车", "间", "加工", "品")
+    NON_DISCRIMINATIVE = ("车间", "车", "间", "加工")
     MIN_SCORE = 1.6
     MIN_MARGIN = 0.45
     FUZZY_MIN_RATIO = 0.52
@@ -533,7 +533,6 @@ class FactorySignPPOCRRknnNode:
         self.preprocess_topic = rospy.get_param("~debug_preprocess_topic", "/factory_sign_ppocr_rknn_test/preprocess_image")
 
         self.cooldown_sec = float(rospy.get_param("~cooldown_sec", 5.0))
-        self.vote = VoteWindow(int(rospy.get_param("~vote_window_size", 5)), int(rospy.get_param("~vote_min_count", 2)))
         self.classifier = FactorySignKeywordClassifier()
 
         self.recognizer = self._create_recognizer()
@@ -633,18 +632,17 @@ class FactorySignPPOCRRknnNode:
         result = self.recognizer.recognize(ocr_image)
         result.category, category_score, match_debug = self.classifier.classify_texts(result.texts)
         result.match_debug = "score={:.2f} {}".format(category_score, match_debug)
-        confirmed = self.vote.push(result.category)
+        confirmed = result.category
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed else False
         self.rospy.loginfo(
-            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f match=%s texts=%s vote=%s confirmed=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
+            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
             result.raw_text,
             result.category,
             result.confidence,
             result.match_debug,
             self._texts_debug(result.texts),
-            self.vote.snapshot(),
             confirmed,
             spoken,
             result.elapsed_ms,
@@ -722,7 +720,7 @@ class FactorySignPPOCRRknnNode:
         lines = [
             "source=ppocr_rknn_{}".format(self.recognizer.mode),
             "category={} confirmed={} conf={:.2f}".format(self.last_result.category, self.last_confirmed, self.last_result.confidence),
-            "vote={}".format(self.vote.snapshot()),
+            "decision=immediate cooldown={:.1f}s".format(self.cooldown_sec),
             "time={}ms det={} rec={} spoken={}".format(self.last_result.elapsed_ms, self.last_result.det_ms, self.last_result.rec_ms, spoken),
         ]
         if self.last_result.raw_text:

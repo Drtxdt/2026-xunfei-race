@@ -25,6 +25,8 @@ def test_keyword_classifier_uses_discriminative_fuzzy_features():
 
     assert classifier.classify("食品") == "food"
     assert classifier.classify("日用晶") == "daily"
+    assert classifier.classify("用品") == "daily"
+    assert classifier.classify("用") == "daily"
     assert classifier.classify("电子产生产") == "electronic"
 
 

@@ -28,10 +28,8 @@ resize_scale: 1.0
 use_sharpen: true
 use_adaptive_threshold: false
 
-# Recognition stability
+# Recognition stability. Decisions are immediate; cooldown prevents repeated speech.
 cooldown_sec: 5.0
-vote_window_size: 5
-vote_min_count: 2
 
 # Debug/X11
 publish_debug_image: true
