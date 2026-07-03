@@ -10,6 +10,7 @@ import re
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 
@@ -86,6 +87,7 @@ class RecognitionResult:
     confidence: float = 0.0
     raw_text: str = ""
     texts: List[OCRText] = field(default_factory=list)
+    match_debug: str = ""
     error: str = ""
     elapsed_ms: int = 0
     det_ms: int = 0
@@ -93,20 +95,82 @@ class RecognitionResult:
 
 
 class FactorySignKeywordClassifier:
-    KEYWORDS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
-        ("food", ("食品", "食", "food")),
-        ("daily", ("日用品", "日用", "daily")),
-        ("electronic", ("电子", "电", "electronic")),
-    )
+    TARGETS: Dict[str, str] = {
+        "food": "食品加工",
+        "daily": "日用品加工",
+        "electronic": "电子产品生产",
+    }
+    FEATURES: Dict[str, Tuple[Tuple[str, float], ...]] = {
+        "food": (("food", 4.0), ("食品", 4.0), ("食", 2.5)),
+        "daily": (("daily", 4.0), ("日用品", 5.0), ("日用", 4.0), ("用品", 3.0), ("日", 1.8), ("用", 1.4)),
+        "electronic": (
+            ("electronic", 4.0),
+            ("电子产品", 5.0),
+            ("电子", 4.2),
+            ("电", 2.6),
+            ("生产", 2.4),
+            ("产品", 1.8),
+            ("产", 1.4),
+        ),
+    }
+    NON_DISCRIMINATIVE = ("车间", "车", "间", "加工", "品")
+    MIN_SCORE = 1.6
+    MIN_MARGIN = 0.45
+    FUZZY_MIN_RATIO = 0.52
 
     def classify(self, text: str) -> Optional[str]:
-        normalized = re.sub(r"\s+", "", text or "").lower()
-        if not normalized:
-            return None
-        for category, keywords in self.KEYWORDS:
-            if any(keyword in normalized for keyword in keywords):
-                return category
-        return None
+        category, _score, _debug = self.classify_texts([OCRText(text=text or "", score=1.0)])
+        return category
+
+    def classify_texts(self, texts: Sequence[OCRText]) -> Tuple[Optional[str], float, str]:
+        scores = {category: 0.0 for category in self.TARGETS}
+        evidence: Dict[str, List[str]] = {category: [] for category in self.TARGETS}
+        for item in texts:
+            text = self._normalize(item.text)
+            if not text:
+                continue
+            weight = max(0.05, min(1.0, float(item.score or 0.0)))
+            for category in self.TARGETS:
+                value, hits = self._score_one(text, category)
+                if value > 0:
+                    scores[category] += value * weight
+                    evidence[category].extend(hits)
+
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        best_category, best_score = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+        debug = ",".join("{}:{:.2f}[{}]".format(k, scores[k], "|".join(evidence[k][:4])) for k in ("food", "daily", "electronic"))
+        if best_score < self.MIN_SCORE or best_score - second_score < self.MIN_MARGIN:
+            return None, best_score, debug
+        return best_category, best_score, debug
+
+    def _score_one(self, text: str, category: str) -> Tuple[float, List[str]]:
+        score = 0.0
+        hits: List[str] = []
+        stripped = text
+        for token in self.NON_DISCRIMINATIVE:
+            stripped = stripped.replace(token, "")
+        for token, value in self.FEATURES[category]:
+            if token in stripped:
+                score += value
+                hits.append(token)
+        if len(stripped) >= 2:
+            target = self.TARGETS[category]
+            ratio = SequenceMatcher(None, stripped, target).ratio()
+            if ratio >= self.FUZZY_MIN_RATIO:
+                fuzzy_score = 2.2 * ratio
+                score += fuzzy_score
+                hits.append("fuzzy{:.2f}".format(ratio))
+        return score, hits
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        text = (text or "").lower()
+        text = text.replace("車間", "车间").replace("工間", "车间")
+        text = text.replace("晶", "品").replace("吕", "品").replace("曰", "日")
+        text = re.sub(r"\s+", "", text)
+        text = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text)
+        return text
 
 
 class VoteWindow:
@@ -349,10 +413,8 @@ class PPOCRRknnRecognizer:
             (1.00, 1.00),
             (0.78, 0.78),
             (0.62, 0.62),
-            (0.48, 0.48),
             (1.00, 0.62),
             (1.00, 0.42),
-            (0.78, 0.42),
         ]
         boxes = []
         seen = set()
@@ -531,7 +593,7 @@ class FactorySignPPOCRRknnNode:
             rec_image_height=int(self.rospy.get_param("~rec_image_height", 48)),
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
             rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
-            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 10)),
+            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 8)),
             use_global_rec_candidates=ros_bool(self.rospy.get_param("~use_global_rec_candidates", True), True),
             logger=self.rospy,
         )
@@ -569,16 +631,18 @@ class FactorySignPPOCRRknnNode:
     def _process_once(self, frame) -> None:
         ocr_image, debug_preprocess = self._make_ocr_image(frame)
         result = self.recognizer.recognize(ocr_image)
-        result.category = self.classifier.classify(result.raw_text)
+        result.category, category_score, match_debug = self.classifier.classify_texts(result.texts)
+        result.match_debug = "score={:.2f} {}".format(category_score, match_debug)
         confirmed = self.vote.push(result.category)
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed else False
         self.rospy.loginfo(
-            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f texts=%s vote=%s confirmed=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
+            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f match=%s texts=%s vote=%s confirmed=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
             result.raw_text,
             result.category,
             result.confidence,
+            result.match_debug,
             self._texts_debug(result.texts),
             self.vote.snapshot(),
             confirmed,
@@ -663,6 +727,8 @@ class FactorySignPPOCRRknnNode:
         ]
         if self.last_result.raw_text:
             lines.append("text={}".format(self._ascii_preview(self.last_result.raw_text)))
+        if self.last_result.match_debug:
+            lines.append("match={}".format(self._ascii_preview(self.last_result.match_debug)))
         if self.last_result.error:
             lines.append("err={}".format(self._ascii_preview(self.last_result.error)))
         y = 24

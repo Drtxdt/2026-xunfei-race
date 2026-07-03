@@ -7,7 +7,7 @@ SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
-from factory_sign_ppocr_rknn_node import CTCLabelDecoder, FactorySignKeywordClassifier, PPOCRRknnRecognizer, VoteWindow
+from factory_sign_ppocr_rknn_node import CTCLabelDecoder, FactorySignKeywordClassifier, OCRText, PPOCRRknnRecognizer, VoteWindow
 
 
 def test_keyword_classifier_maps_requested_categories():
@@ -16,6 +16,31 @@ def test_keyword_classifier_maps_requested_categories():
     assert classifier.classify("日用品加工车间") == "daily"
     assert classifier.classify("电子产品生产车间") == "electronic"
     assert classifier.classify("FOOD") == "food"
+    assert classifier.classify("品") is None
+    assert classifier.classify("车间") is None
+
+
+def test_keyword_classifier_uses_discriminative_fuzzy_features():
+    classifier = FactorySignKeywordClassifier()
+
+    assert classifier.classify("食品") == "food"
+    assert classifier.classify("日用晶") == "daily"
+    assert classifier.classify("电子产生产") == "electronic"
+
+
+def test_keyword_classifier_scores_ocr_candidates_not_concatenated_noise():
+    classifier = FactorySignKeywordClassifier()
+    category, score, debug = classifier.classify_texts(
+        [
+            OCRText("品", 0.95),
+            OCRText("车间", 0.95),
+            OCRText("日用品", 0.72),
+        ]
+    )
+
+    assert category == "daily"
+    assert score > 1.6
+    assert "daily" in debug
 
 
 def test_vote_window_requires_min_count():
@@ -61,11 +86,11 @@ def test_global_rec_crops_include_center_bands():
 
     crops = recognizer._global_rec_crops(image)
 
-    assert len(crops) == 7
+    assert len(crops) == 5
     assert crops[0][0].shape == (100, 200, 3)
     assert crops[1][0].shape == (78, 156, 3)
     assert crops[2][0].shape == (62, 124, 3)
-    assert crops[5][0].shape == (42, 200, 3)
+    assert crops[4][0].shape == (42, 200, 3)
 
 
 def test_center_crop_boxes_are_unique_and_centered():
@@ -73,4 +98,4 @@ def test_center_crop_boxes_are_unique_and_centered():
 
     assert len(boxes) == len(set(boxes))
     assert boxes[0] == (0, 0, 200, 100)
-    assert boxes[3] == (52, 26, 148, 74)
+    assert boxes[3] == (0, 19, 200, 81)

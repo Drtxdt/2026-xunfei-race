@@ -12,7 +12,7 @@
   <arg name="roi_scale" default="0.80" />
   <arg name="resize_scale" default="1.0" />
   <arg name="rec_resize_mode" default="stretch" />
-  <arg name="max_rec_crops" default="10" />
+  <arg name="max_rec_crops" default="8" />
   <arg name="use_global_rec_candidates" default="true" />
   <arg name="debug_image_topic" default="/factory_sign_ppocr_rknn_test/debug_image" />
   <arg name="debug_preprocess_topic" default="/factory_sign_ppocr_rknn_test/preprocess_image" />
