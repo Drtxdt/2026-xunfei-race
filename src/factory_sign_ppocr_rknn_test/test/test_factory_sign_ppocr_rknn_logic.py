@@ -61,7 +61,16 @@ def test_global_rec_crops_include_center_bands():
 
     crops = recognizer._global_rec_crops(image)
 
-    assert len(crops) == 3
+    assert len(crops) == 7
     assert crops[0][0].shape == (100, 200, 3)
-    assert crops[1][0].shape == (60, 200, 3)
-    assert crops[2][0].shape == (40, 200, 3)
+    assert crops[1][0].shape == (78, 156, 3)
+    assert crops[2][0].shape == (62, 124, 3)
+    assert crops[5][0].shape == (42, 200, 3)
+
+
+def test_center_crop_boxes_are_unique_and_centered():
+    boxes = PPOCRRknnRecognizer._center_crop_boxes(200, 100)
+
+    assert len(boxes) == len(set(boxes))
+    assert boxes[0] == (0, 0, 200, 100)
+    assert boxes[3] == (52, 26, 148, 74)

@@ -19,7 +19,7 @@ det_input_size: 480
 rec_image_height: 48
 rec_image_width: 320
 rec_resize_mode: stretch      # stretch matches rknn_model_zoo PPOCR-Rec demo; pad keeps aspect ratio
-max_rec_crops: 6
+max_rec_crops: 10
 use_global_rec_candidates: true
 
 # Image preprocessing

@@ -334,19 +334,40 @@ class PPOCRRknnRecognizer:
         h, w = image.shape[:2]
         if h <= 0 or w <= 0:
             return []
-        spans = [
-            (0.00, 1.00, "roi"),
-            (0.20, 0.80, "center60"),
-            (0.30, 0.70, "center40"),
-        ]
         crops = []
-        for y0_ratio, y1_ratio, _name in spans:
-            y0 = max(0, min(h - 1, int(round(h * y0_ratio))))
-            y1 = max(y0 + 1, min(h, int(round(h * y1_ratio))))
-            crop = image[y0:y1, 0:w]
-            box = [[0.0, float(y0)], [float(w), float(y0)], [float(w), float(y1)], [0.0, float(y1)]]
+        for x0, y0, x1, y1 in self._center_crop_boxes(w, h):
+            crop = image[y0:y1, x0:x1]
+            box = [[float(x0), float(y0)], [float(x1), float(y0)], [float(x1), float(y1)], [float(x0), float(y1)]]
             crops.append((crop, box))
         return crops
+
+    @staticmethod
+    def _center_crop_boxes(width: int, height: int) -> List[Tuple[int, int, int, int]]:
+        if width <= 0 or height <= 0:
+            return []
+        specs = [
+            (1.00, 1.00),
+            (0.78, 0.78),
+            (0.62, 0.62),
+            (0.48, 0.48),
+            (1.00, 0.62),
+            (1.00, 0.42),
+            (0.78, 0.42),
+        ]
+        boxes = []
+        seen = set()
+        for sx, sy in specs:
+            crop_w = max(8, min(width, int(round(width * sx))))
+            crop_h = max(8, min(height, int(round(height * sy))))
+            x0 = max(0, (width - crop_w) // 2)
+            y0 = max(0, (height - crop_h) // 2)
+            x1 = min(width, x0 + crop_w)
+            y1 = min(height, y0 + crop_h)
+            key = (x0, y0, x1, y1)
+            if key not in seen and x1 > x0 and y1 > y0:
+                boxes.append(key)
+                seen.add(key)
+        return boxes
 
     def _detect_boxes(self, image):
         import cv2
@@ -510,7 +531,7 @@ class FactorySignPPOCRRknnNode:
             rec_image_height=int(self.rospy.get_param("~rec_image_height", 48)),
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
             rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
-            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 6)),
+            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 10)),
             use_global_rec_candidates=ros_bool(self.rospy.get_param("~use_global_rec_candidates", True), True),
             logger=self.rospy,
         )
