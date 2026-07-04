@@ -1,0 +1,47 @@
+# Camera/input
+image_topic: /usb_cam/image_raw
+flip: true
+inference_rate: 5.0
+
+# RKNN PPOCR models. Empty paths auto-resolve to this package's models directory.
+recognition_mode: ppocr_rknn_rec_only   # ppocr_rknn_rec_only or ppocr_rknn_system
+det_model_path: ""
+rec_model_path: ""
+keys_path: ""
+target: rk3588
+rec_only_if_det_missing: true
+
+# OCR thresholds and model shapes from Rockchip rknn_model_zoo PPOCR examples.
+ocr_min_score: 0.45
+det_box_thresh: 0.55
+det_binary_thresh: 0.30
+det_input_size: 480
+rec_image_height: 48
+rec_image_width: 320
+rec_resize_mode: stretch      # stretch matches rknn_model_zoo PPOCR-Rec demo; pad keeps aspect ratio
+max_rec_crops: 8
+use_global_rec_candidates: true
+
+# Image preprocessing
+roi_scale: 0.80
+resize_scale: 1.0
+use_sharpen: true
+use_adaptive_threshold: false
+
+# Recognition stability. Decisions are immediate; cooldown prevents repeated speech.
+cooldown_sec: 5.0
+
+# Debug/X11
+publish_debug_image: true
+debug_publish_rate: 8.0
+debug_image_topic: /factory_sign_ppocr_rknn_test/debug_image
+debug_preprocess_topic: /factory_sign_ppocr_rknn_test/preprocess_image
+debug_show_image: false
+
+# Speech
+speech_mode: service
+speech_service: /competition_speech/announce
+speech_service_timeout_sec: 0.5
+speech_topic: /speak
+fallback_to_speech_topic: true
+speech_wait: false
