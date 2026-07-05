@@ -34,14 +34,13 @@ public:
         stage_ = STARTUP;
         start_time_ = ros::Time::now();
 
-        // ===== 新增变量初始化 =====
         predicted_right_x_ = 160;
         lost_line_count_ = 0;
         last_angular_ = 0.0;
         last_line_time_ = ros::Time::now();
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow Competition (Enhanced) ");
+        ROS_INFO(" Stable Right Follow (StopLine Align) ");
         ROS_INFO("=================================");
     }
 
@@ -52,7 +51,7 @@ private:
         SEARCH_RIGHT_LINE = 1,
         FOLLOW_RIGHT_LINE = 2,
         STOP_LINE_FOUND = 3,
-        ALIGN_WITH_RIGHT_LINE = 4,
+        ALIGN_WITH_RIGHT_LINE = 4,   // 实际已改为“基于停止线对齐”
         GO_FORWARD = 5,
         FINAL_STOP = 6
     };
@@ -66,10 +65,13 @@ private:
         cv::Vec4f fit_line;
     };
 
+    // ===== 新增：停车线信息（包含角度） =====
     struct StopLineInfo
     {
         bool found = false;
         cv::Rect rect;
+        double angle_deg = 0.0;   // 相对于图像水平轴的夹角（0°表示水平）
+        int center_x = 0;
     };
 
     ros::NodeHandle nh_;
@@ -121,7 +123,7 @@ private:
     ros::Time stage_start_time_;
     ros::Time forward_start_time_;
 
-    // ===== 新增变量 =====
+    // 预测与容错变量
     int predicted_right_x_;
     int lost_line_count_;
     double last_angular_;
@@ -151,12 +153,12 @@ private:
         pnh.param("startup_time", startup_time_, 2.8);
 
         pnh.param("cross_area_threshold", cross_area_threshold_, 48000);
-        pnh.param("stop_line_min_width", stop_line_min_width_, 180);
-        pnh.param("stop_line_max_height", stop_line_max_height_, 30);
-        pnh.param("stop_line_min_area", stop_line_min_area_, 1200);
+        pnh.param("stop_line_min_width", stop_line_min_width_, 120);  // 放宽
+        pnh.param("stop_line_max_height", stop_line_max_height_, 40); // 放宽
+        pnh.param("stop_line_min_area", stop_line_min_area_, 800);    // 放宽
 
         pnh.param("align_speed", align_speed_, 0.18);
-        pnh.param("align_angle_threshold", align_angle_threshold_, 2.0);
+        pnh.param("align_angle_threshold", align_angle_threshold_, 1.0); // 收敛更严
         pnh.param("align_stop_time", align_stop_time_, 0.2);
         pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
 
@@ -189,14 +191,14 @@ private:
         const int h = frame.rows;
         const int w = frame.cols;
 
-        // ===== ROI 扩大：从 0.60 → 0.45 =====
+        // ROI 扩大（便于巡线）
         cv::Mat roi = frame(
             cv::Range(static_cast<int>(h * 0.45), h),
             cv::Range(0, w));
 
         cv::Mat mask = extractWhiteMask(roi);
         LineInfo right_line = findRightLine(mask);
-        StopLineInfo stop_line = findStopLine(mask);
+        StopLineInfo stop_line = findStopLine(mask); // 新检测函数
 
         geometry_msgs::Twist twist;
 
@@ -219,7 +221,8 @@ private:
             break;
 
         case ALIGN_WITH_RIGHT_LINE:
-            handleAlign(twist, right_line);
+            // ===== 新：基于停止线角度进行原地纠偏 =====
+            handleAlign(twist, stop_line);
             break;
 
         case GO_FORWARD:
@@ -233,7 +236,7 @@ private:
             break;
         }
 
-        // ===== 角速度低通滤波 =====
+        // 角速度滤波
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
         last_angular_ = twist.angular.z;
 
@@ -287,6 +290,7 @@ private:
         const LineInfo& right_line,
         const StopLineInfo& stop_line)
     {
+        // 先检测停止线（优先级别最高）
         if(stop_line.found)
         {
             resetPid();
@@ -296,7 +300,7 @@ private:
             return;
         }
 
-        // ===== 长时间丢线 → 进入搜索 =====
+        // 长时间丢线 → 搜索
         if(lost_line_count_ > 10)
         {
             enterStage(SEARCH_RIGHT_LINE, "LINE LOST, SEARCHING");
@@ -305,7 +309,6 @@ private:
             return;
         }
 
-        // ===== 短时丢线：使用预测值 =====
         int current_x = right_line.found ? right_line.x : predicted_right_x_;
         double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
 
@@ -319,7 +322,6 @@ private:
         else
         {
             lost_line_count_++;
-            // 使用预测值继续控制
         }
 
         const bool in_curve =
@@ -366,52 +368,48 @@ private:
 
         if(elapsed >= align_stop_time_)
         {
+            // 进入对齐阶段（使用停止线）
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
         }
 
-        // ===== 超时保护（若长时间未进入ALIGN） =====
         if(elapsed > 3.0)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "STOPLINE TIMEOUT");
         }
     }
 
-    void handleAlign(
-        geometry_msgs::Twist& twist,
-        const LineInfo& right_line)
+    // ===== 新：基于停止线的原地对齐 =====
+    void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& stop_line)
     {
-        // ===== 关键：慢速前进，避免原地盲转 =====
-        twist.linear.x = 0.05;
+        // 原地修正，不前进（用户要求“停下来”）
+        twist.linear.x = 0.0;
 
-        double angle_error = 0.0;
-
-        if(right_line.found)
+        if(!stop_line.found)
         {
-            angle_error = right_line.angle_deg - desired_angle_deg_;
-            // 更新预测值
-            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
-            lost_line_count_ = 0;
-            last_line_time_ = ros::Time::now();
-        }
-        else
-        {
-            lost_line_count_++;
-            // ===== 丢线：使用记忆方向 =====
-            angle_error = (last_right_x_ > 160) ? -8.0 : 8.0;
+            // 丢失停止线 → 慢速旋转寻找
+            twist.angular.z = -0.15;
+            // 超时保护：若2秒仍找不到，强制前进
+            if((ros::Time::now() - stage_start_time_).toSec() > 2.5)
+            {
+                enterStage(GO_FORWARD, "ALIGN LINE LOST, FORCE GO");
+            }
+            return;
         }
 
-        // ===== 角度闭环 =====
-        twist.angular.z = clamp(angle_error * 0.03, -0.18, 0.18);
+        // 目标：使停止线在图像中呈水平（角度=0）
+        double angle_error = stop_line.angle_deg - 0.0;
 
-        // ===== 成功条件 =====
-        if(right_line.found &&
-           std::fabs(angle_error) < align_angle_threshold_)
+        // 小增益，避免震荡
+        twist.angular.z = clamp(angle_error * 0.035, -0.2, 0.2);
+
+        // 垂直判定：角度误差小于1度
+        if(std::fabs(angle_error) < 1.0)
         {
-            enterStage(GO_FORWARD, "ALIGN OK");
+            enterStage(GO_FORWARD, "ALIGN OK, PERPENDICULAR");
         }
 
-        // ===== 防卡死超时 =====
-        if((ros::Time::now() - stage_start_time_).toSec() > 3.5)
+        // 全局超时保护：4秒内必须完成
+        if((ros::Time::now() - stage_start_time_).toSec() > 4.0)
         {
             enterStage(GO_FORWARD, "ALIGN TIMEOUT");
         }
@@ -505,7 +503,6 @@ private:
 
         if(info.points.size() < 6)
         {
-            // ===== 丢线处理：使用预测值 =====
             info.found = false;
             info.x = predicted_right_x_;
             info.angle_deg = desired_angle_deg_;
@@ -549,7 +546,6 @@ private:
         info.x = static_cast<int>(x_sum / x_count);
         info.angle_deg = rad2deg(std::atan2(vx, vy));
 
-        // ===== 更新预测 =====
         if(info.found)
         {
             predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * info.x;
@@ -560,53 +556,80 @@ private:
         return info;
     }
 
+    // ===== 新：专门针对底部横线的检测（更鲁棒） =====
     StopLineInfo findStopLine(const cv::Mat& mask)
     {
         StopLineInfo info;
+        const int h = mask.rows;
+        const int w = mask.cols;
+
+        // 只关注底部区域（横线通常在最下方）
+        cv::Mat bottom_roi = mask(
+            cv::Range(static_cast<int>(h * 0.65), h),
+            cv::Range(0, w));
 
         std::vector<std::vector<cv::Point> > contours;
         cv::findContours(
-            mask.clone(),
+            bottom_roi.clone(),
             contours,
             cv::RETR_EXTERNAL,
             cv::CHAIN_APPROX_SIMPLE);
 
-        int best_y = -1;
-        int total_white = 0;
+        double max_area = 0;
+        int best_idx = -1;
 
-        if(cross_area_threshold_ > 0)
+        for(size_t i = 0; i < contours.size(); ++i)
         {
-            total_white = cv::countNonZero(mask);
-        }
+            const auto& cnt = contours[i];
+            double area = cv::contourArea(cnt);
+            if(area < stop_line_min_area_) continue;
 
-        for(const auto& cnt : contours)
-        {
-            const cv::Rect rect = cv::boundingRect(cnt);
-            const double area = cv::contourArea(cnt);
+            cv::Rect rect = cv::boundingRect(cnt);
+            // 停车线应该是扁平的（高度小，宽度大）
+            if(rect.height > stop_line_max_height_) continue;
+            if(rect.width < stop_line_min_width_) continue;
 
-            // ===== 双条件校验（增加位置约束） =====
-            const bool wide_enough = rect.width >= stop_line_min_width_;
-            const bool flat_enough = rect.height <= stop_line_max_height_;
-            const bool area_enough = area >= stop_line_min_area_;
-            const bool low_enough = rect.y > mask.rows * 0.3;  // 避免误判上部
-
-            if(wide_enough && flat_enough && area_enough && low_enough)
+            // 拟合直线，判断角度
+            if(cnt.size() >= 5)
             {
-                if(rect.y > best_y)
-                {
-                    best_y = rect.y;
-                    info.rect = rect;
-                    info.found = true;
-                }
+                cv::Vec4f line;
+                cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
+                // 相对于x轴的角度（水平线为0°）
+                double angle = rad2deg(std::atan2(line[1], line[0]));
+                if(std::fabs(angle) > 25.0) continue; // 必须接近水平
+            }
+
+            if(area > max_area)
+            {
+                max_area = area;
+                best_idx = i;
             }
         }
 
-        if(!info.found &&
-           cross_area_threshold_ > 0 &&
-           total_white > cross_area_threshold_)
+        if(best_idx >= 0)
         {
+            const auto& cnt = contours[best_idx];
+            cv::Rect rect = cv::boundingRect(cnt);
+            cv::Vec4f line;
+            cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
+
             info.found = true;
-            info.rect = cv::Rect(0, 0, mask.cols, mask.rows);
+            info.rect = rect;
+            info.angle_deg = rad2deg(std::atan2(line[1], line[0])); // 水平=0
+            info.center_x = rect.x + rect.width / 2;
+        }
+
+        // 后备：如果轮廓没找到，但整体白色区域过大（原逻辑）
+        if(!info.found && cross_area_threshold_ > 0)
+        {
+            int total_white = cv::countNonZero(mask);
+            if(total_white > cross_area_threshold_)
+            {
+                info.found = true;
+                info.rect = cv::Rect(0, 0, w, h);
+                info.angle_deg = 0.0;
+                info.center_x = w / 2;
+            }
         }
 
         return info;
@@ -659,6 +682,11 @@ private:
         if(stop_line.found)
         {
             cv::rectangle(debug, stop_line.rect, cv::Scalar(0, 255, 0), 2);
+            // 显示角度
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "Ang:%.1f", stop_line.angle_deg);
+            cv::putText(debug, buf, cv::Point(stop_line.rect.x, stop_line.rect.y - 10),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
         }
 
         drawText(debug, 20, 30, "stage: " + stageName(stage_));
