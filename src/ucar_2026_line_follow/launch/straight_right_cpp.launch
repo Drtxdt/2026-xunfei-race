@@ -16,7 +16,8 @@
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
   </group>
 
-  <!-- 您的稳定右巡线节点（C++） -->
+  <!-- 稳定右巡线节点（C++） -->
+  <!-- 注意：type 必须和 CMakeLists.txt 中 add_executable 的名字一致 -->
   <node pkg="ucar_2026_line_follow"
         type="stable_right_follow"
         name="stable_right_follow_node"
