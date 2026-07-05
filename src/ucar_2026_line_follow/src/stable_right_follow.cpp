@@ -34,8 +34,14 @@ public:
         stage_ = STARTUP;
         start_time_ = ros::Time::now();
 
+        // ===== 新增变量初始化 =====
+        predicted_right_x_ = 160;
+        lost_line_count_ = 0;
+        last_angular_ = 0.0;
+        last_line_time_ = ros::Time::now();
+
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow Competition ");
+        ROS_INFO(" Stable Right Follow Competition (Enhanced) ");
         ROS_INFO("=================================");
     }
 
@@ -115,6 +121,12 @@ private:
     ros::Time stage_start_time_;
     ros::Time forward_start_time_;
 
+    // ===== 新增变量 =====
+    int predicted_right_x_;
+    int lost_line_count_;
+    double last_angular_;
+    ros::Time last_line_time_;
+
     void loadParams(ros::NodeHandle& pnh)
     {
         pnh.param("target_right_x", target_right_x_, 145);
@@ -177,8 +189,9 @@ private:
         const int h = frame.rows;
         const int w = frame.cols;
 
+        // ===== ROI 扩大：从 0.60 → 0.45 =====
         cv::Mat roi = frame(
-            cv::Range(static_cast<int>(h * 0.60), h),
+            cv::Range(static_cast<int>(h * 0.45), h),
             cv::Range(0, w));
 
         cv::Mat mask = extractWhiteMask(roi);
@@ -220,6 +233,10 @@ private:
             break;
         }
 
+        // ===== 角速度低通滤波 =====
+        twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
+        last_angular_ = twist.angular.z;
+
         cmd_pub_.publish(twist);
 
         if(show_debug_)
@@ -257,6 +274,8 @@ private:
 
         last_right_x_ = right_line.x;
         resetPid();
+        lost_line_count_ = 0;
+        predicted_right_x_ = right_line.x;
         enterStage(FOLLOW_RIGHT_LINE, "RIGHT LINE FOUND");
 
         twist.linear.x = 0.0;
@@ -277,36 +296,48 @@ private:
             return;
         }
 
-        if(!right_line.found)
+        // ===== 长时间丢线 → 进入搜索 =====
+        if(lost_line_count_ > 10)
         {
-            twist.linear.x = lost_line_speed_;
-            twist.angular.z = (last_right_x_ >= 0) ? -0.22 : -0.24;
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, SEARCHING");
+            twist.linear.x = search_speed_;
+            twist.angular.z = -0.2;
             return;
         }
 
-        last_right_x_ = right_line.x;
+        // ===== 短时丢线：使用预测值 =====
+        int current_x = right_line.found ? right_line.x : predicted_right_x_;
+        double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
+
+        if(right_line.found)
+        {
+            last_right_x_ = right_line.x;
+            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
+            lost_line_count_ = 0;
+            last_line_time_ = ros::Time::now();
+        }
+        else
+        {
+            lost_line_count_++;
+            // 使用预测值继续控制
+        }
 
         const bool in_curve =
             std::fabs(filtered_pos_error_) > curve_threshold_ ||
-            std::fabs(right_line.angle_deg - desired_angle_deg_) >
-                align_angle_threshold_;
+            std::fabs(current_angle - desired_angle_deg_) > align_angle_threshold_;
 
-        const double target =
-            target_right_x_ - (in_curve ? curve_offset_ : 0.0);
+        const double target = target_right_x_ - (in_curve ? curve_offset_ : 0.0);
 
-        const double pos_error = target - right_line.x;
+        const double pos_error = target - current_x;
 
         filtered_pos_error_ =
             (1.0 - error_filter_alpha_) * filtered_pos_error_ +
             error_filter_alpha_ * pos_error;
 
-        const double d_pos_error =
-            filtered_pos_error_ - last_pos_error_;
-
+        const double d_pos_error = filtered_pos_error_ - last_pos_error_;
         last_pos_error_ = filtered_pos_error_;
 
-        const double angle_error =
-            right_line.angle_deg - desired_angle_deg_;
+        const double angle_error = current_angle - desired_angle_deg_;
 
         double angular =
             kp_pos_ * filtered_pos_error_ +
@@ -328,8 +359,7 @@ private:
 
     void handleStopLineFound(geometry_msgs::Twist& twist)
     {
-        const double elapsed =
-            (ros::Time::now() - stage_start_time_).toSec();
+        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
 
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
@@ -338,42 +368,60 @@ private:
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
         }
+
+        // ===== 超时保护（若长时间未进入ALIGN） =====
+        if(elapsed > 3.0)
+        {
+            enterStage(ALIGN_WITH_RIGHT_LINE, "STOPLINE TIMEOUT");
+        }
     }
 
     void handleAlign(
         geometry_msgs::Twist& twist,
         const LineInfo& right_line)
     {
-        twist.linear.x = 0.0;
+        // ===== 关键：慢速前进，避免原地盲转 =====
+        twist.linear.x = 0.05;
 
-        if(!right_line.found)
+        double angle_error = 0.0;
+
+        if(right_line.found)
         {
-            twist.angular.z = -align_speed_;
-            return;
+            angle_error = right_line.angle_deg - desired_angle_deg_;
+            // 更新预测值
+            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
+            lost_line_count_ = 0;
+            last_line_time_ = ros::Time::now();
+        }
+        else
+        {
+            lost_line_count_++;
+            // ===== 丢线：使用记忆方向 =====
+            angle_error = (last_right_x_ > 160) ? -8.0 : 8.0;
         }
 
-        const double angle_error =
-            right_line.angle_deg - desired_angle_deg_;
+        // ===== 角度闭环 =====
+        twist.angular.z = clamp(angle_error * 0.03, -0.18, 0.18);
 
-        if(std::fabs(angle_error) <= align_angle_threshold_)
+        // ===== 成功条件 =====
+        if(right_line.found &&
+           std::fabs(angle_error) < align_angle_threshold_)
         {
-            forward_start_time_ = ros::Time::now();
-            enterStage(GO_FORWARD, "ALIGN OK, GO FORWARD");
-            twist.angular.z = 0.0;
-            return;
+            enterStage(GO_FORWARD, "ALIGN OK");
         }
 
-        twist.angular.z = (angle_error > 0.0) ?
-            align_speed_ :
-            -align_speed_;
+        // ===== 防卡死超时 =====
+        if((ros::Time::now() - stage_start_time_).toSec() > 3.5)
+        {
+            enterStage(GO_FORWARD, "ALIGN TIMEOUT");
+        }
     }
 
     void handleGoForward(geometry_msgs::Twist& twist)
     {
         const double speed = std::max(0.01, std::fabs(final_speed_));
         const double forward_time = final_distance_ / speed;
-        const double elapsed =
-            (ros::Time::now() - forward_start_time_).toSec();
+        const double elapsed = (ros::Time::now() - forward_start_time_).toSec();
 
         if(elapsed < forward_time)
         {
@@ -457,6 +505,11 @@ private:
 
         if(info.points.size() < 6)
         {
+            // ===== 丢线处理：使用预测值 =====
+            info.found = false;
+            info.x = predicted_right_x_;
+            info.angle_deg = desired_angle_deg_;
+            lost_line_count_++;
             return info;
         }
 
@@ -496,6 +549,14 @@ private:
         info.x = static_cast<int>(x_sum / x_count);
         info.angle_deg = rad2deg(std::atan2(vx, vy));
 
+        // ===== 更新预测 =====
+        if(info.found)
+        {
+            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * info.x;
+            lost_line_count_ = 0;
+            last_line_time_ = ros::Time::now();
+        }
+
         return info;
     }
 
@@ -523,11 +584,13 @@ private:
             const cv::Rect rect = cv::boundingRect(cnt);
             const double area = cv::contourArea(cnt);
 
+            // ===== 双条件校验（增加位置约束） =====
             const bool wide_enough = rect.width >= stop_line_min_width_;
             const bool flat_enough = rect.height <= stop_line_max_height_;
             const bool area_enough = area >= stop_line_min_area_;
+            const bool low_enough = rect.y > mask.rows * 0.3;  // 避免误判上部
 
-            if(wide_enough && flat_enough && area_enough)
+            if(wide_enough && flat_enough && area_enough && low_enough)
             {
                 if(rect.y > best_y)
                 {
@@ -609,6 +672,7 @@ private:
                 "angle: %.2f",
                 right_line.found ? right_line.angle_deg : 0.0));
         drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
+        drawText(debug, 20, 180, format("lost: %d", lost_line_count_));
 
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
