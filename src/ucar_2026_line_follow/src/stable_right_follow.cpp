@@ -43,7 +43,7 @@ public:
         start_moving_time_ = ros::Time::now();
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Final Version) ");
+        ROS_INFO(" Stable Right Follow (Anti-Sway & Stop Time) ");
         ROS_INFO("=================================");
     }
 
@@ -80,7 +80,7 @@ private:
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
 
-    // ========== 可调参数（可在线修改） ==========
+    // ========== 可调参数 ==========
     int target_right_x_;                // 目标右线位置（像素）
     double base_speed_;                 // 直道速度 (m/s)
     double curve_speed_;                // 弯道速度 (m/s)
@@ -108,11 +108,11 @@ private:
 
     double align_speed_;                // 对齐时旋转速度上限
     double align_angle_threshold_;      // 对齐角度阈值 (度)
-    double align_stop_time_;            // 停车后等待时间 (s)
+    double align_stop_time_;            // 停车后等待时间 (s) <-- 这里改成1.5秒
     double desired_angle_deg_;          // 期望角度 (0° 表示水平)
 
     double final_speed_;                // 直走速度 (m/s)
-    double final_distance_;             // 直走距离 (m)
+    double final_distance_;             // 直走距离 (m)    <-- 这里改成0.60
 
     bool show_debug_;                   // 是否显示调试窗口
 
@@ -139,24 +139,25 @@ private:
     // ========== 参数加载 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
+        // --- 防飘优化参数 ---
         pnh.param("target_right_x", target_right_x_, 145);
 
-        pnh.param("base_speed", base_speed_, 0.34);
-        pnh.param("curve_speed", curve_speed_, 0.27);
+        pnh.param("base_speed", base_speed_, 0.30);        // 0.34 -> 0.30
+        pnh.param("curve_speed", curve_speed_, 0.24);      // 0.27 -> 0.24
         pnh.param("search_speed", search_speed_, 0.12);
         pnh.param("lost_line_speed", lost_line_speed_, 0.14);
         pnh.param("startup_speed", startup_speed_, 0.45);
 
-        pnh.param("kp_pos", kp_pos_, 0.0055);
-        pnh.param("kd_pos", kd_pos_, 0.0018);
-        pnh.param("kp_angle", kp_angle_, 0.40);
+        pnh.param("kp_pos", kp_pos_, 0.0040);              // 0.0055 -> 0.0040
+        pnh.param("kd_pos", kd_pos_, 0.0020);              // 0.0018 -> 0.0020
+        pnh.param("kp_angle", kp_angle_, 0.30);            // 0.40 -> 0.30
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
-        pnh.param("curve_gain", curve_gain_, 1.2);
+        pnh.param("curve_gain", curve_gain_, 1.0);         // 1.2 -> 1.0
 
-        pnh.param("max_angular", max_angular_, 0.55);
-        pnh.param("error_filter_alpha", error_filter_alpha_, 0.22);
+        pnh.param("max_angular", max_angular_, 0.45);      // 0.55 -> 0.45
+        pnh.param("error_filter_alpha", error_filter_alpha_, 0.18); // 0.22 -> 0.18
 
         pnh.param("startup_time", startup_time_, 2.8);
 
@@ -167,11 +168,11 @@ private:
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        pnh.param("align_stop_time", align_stop_time_, 0.2);
+        pnh.param("align_stop_time", align_stop_time_, 1.5); // 0.2 -> 1.5 (停车1.5秒)
         pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
 
         pnh.param("final_speed", final_speed_, 0.20);
-        pnh.param("final_distance", final_distance_, 0.70);
+        pnh.param("final_distance", final_distance_, 0.60);  // 0.70 -> 0.60
 
         pnh.param("show_debug", show_debug_, true);
     }
@@ -376,9 +377,11 @@ private:
     {
         const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
 
+        // 必须让车停住
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
 
+        // 这里 align_stop_time_ 现在是 1.5 秒，小车会停稳 1.5 秒
         if(elapsed >= align_stop_time_)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
@@ -392,12 +395,13 @@ private:
 
     void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& stop_line)
     {
-        twist.linear.x = 0.0;   // 原地对齐
+        // 原地旋转修正，不前进
+        twist.linear.x = 0.0;
 
         if(!stop_line.found)
         {
             twist.angular.z = -0.12;
-            if((ros::Time::now() - stage_start_time_).toSec() > 2.5)
+            if((ros::Time::now() - stage_start_time_).toSec() > 3.0)
             {
                 enterStage(GO_FORWARD, "ALIGN LINE LOST, FORCE GO");
             }
@@ -772,15 +776,15 @@ private:
 
     // ========== 辅助函数 ==========
     void enterStage(Stage stage, const char* message)
-{
-    stage_ = stage;
-    stage_start_time_ = ros::Time::now();
-    // 进入直走阶段时，同时复位计时器
-    if (stage == GO_FORWARD) {
-        forward_start_time_ = ros::Time::now();
+    {
+        stage_ = stage;
+        stage_start_time_ = ros::Time::now();
+        // 进入直走阶段时，同时复位计时器
+        if (stage == GO_FORWARD) {
+            forward_start_time_ = ros::Time::now();
+        }
+        ROS_INFO("%s", message);
     }
-    ROS_INFO("%s", message);
-}
 
     void resetPid()
     {
