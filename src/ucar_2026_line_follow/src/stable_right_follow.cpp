@@ -39,11 +39,10 @@ public:
         last_angular_ = 0.0;
         last_line_time_ = ros::Time::now();
 
-        // 记录开始移动的时刻（用于10秒内忽略停车线）
         start_moving_time_ = ros::Time::now();
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Anti-Sway & Stop Time) ");
+        ROS_INFO(" Stable Right Follow (Robust Version) ");
         ROS_INFO("=================================");
     }
 
@@ -80,7 +79,7 @@ private:
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
 
-    // ========== 可调参数 ==========
+    // ========== 可调参数（可通过 launch 文件覆盖） ==========
     int target_right_x_;                // 目标右线位置（像素）
     double base_speed_;                 // 直道速度 (m/s)
     double curve_speed_;                // 弯道速度 (m/s)
@@ -88,9 +87,9 @@ private:
     double lost_line_speed_;            // 丢线速度 (m/s)
     double startup_speed_;              // 启动速度 (m/s)
 
-    double kp_pos_;                     // 位置比例增益 (控制横向纠偏力度)
-    double kd_pos_;                     // 位置微分增益 (抑制震荡)
-    double kp_angle_;                   // 角度比例增益 (控制线方向纠偏)
+    double kp_pos_;                     // 位置比例增益
+    double kd_pos_;                     // 位置微分增益
+    double kp_angle_;                   // 角度比例增益
 
     double curve_threshold_;            // 判断弯道的误差阈值
     double curve_offset_;               // 弯道偏移量
@@ -108,11 +107,11 @@ private:
 
     double align_speed_;                // 对齐时旋转速度上限
     double align_angle_threshold_;      // 对齐角度阈值 (度)
-    double align_stop_time_;            // 停车后等待时间 (s) <-- 这里改成1.5秒
+    double align_stop_time_;            // 停车后等待时间 (s)
     double desired_angle_deg_;          // 期望角度 (0° 表示水平)
 
     double final_speed_;                // 直走速度 (m/s)
-    double final_distance_;             // 直走距离 (m)    <-- 这里改成0.60
+    double final_distance_;             // 直走距离 (m)
 
     bool show_debug_;                   // 是否显示调试窗口
 
@@ -131,6 +130,8 @@ private:
     int lost_line_count_;
     double last_angular_;
     ros::Time last_line_time_;
+    double last_vx_ = 0.0;
+    double last_vy_ = 1.0;
 
     // 时间控制
     ros::Time start_moving_time_;
@@ -139,25 +140,24 @@ private:
     // ========== 参数加载 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
-        // --- 防飘优化参数 ---
         pnh.param("target_right_x", target_right_x_, 145);
 
-        pnh.param("base_speed", base_speed_, 0.30);        // 0.34 -> 0.30
-        pnh.param("curve_speed", curve_speed_, 0.24);      // 0.27 -> 0.24
+        pnh.param("base_speed", base_speed_, 0.22);        // 降低速度，提高稳定性
+        pnh.param("curve_speed", curve_speed_, 0.18);      // 弯道更慢
         pnh.param("search_speed", search_speed_, 0.12);
         pnh.param("lost_line_speed", lost_line_speed_, 0.14);
         pnh.param("startup_speed", startup_speed_, 0.45);
 
-        pnh.param("kp_pos", kp_pos_, 0.0040);              // 0.0055 -> 0.0040
-        pnh.param("kd_pos", kd_pos_, 0.0020);              // 0.0018 -> 0.0020
-        pnh.param("kp_angle", kp_angle_, 0.30);            // 0.40 -> 0.30
+        pnh.param("kp_pos", kp_pos_, 0.0035);              // 降低比例，减少过冲
+        pnh.param("kd_pos", kd_pos_, 0.0025);              // 增大微分，抑制震荡
+        pnh.param("kp_angle", kp_angle_, 0.25);            // 降低角度增益
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
-        pnh.param("curve_gain", curve_gain_, 1.0);         // 1.2 -> 1.0
+        pnh.param("curve_gain", curve_gain_, 0.9);         // 弯道增益降低
 
-        pnh.param("max_angular", max_angular_, 0.45);      // 0.55 -> 0.45
-        pnh.param("error_filter_alpha", error_filter_alpha_, 0.18); // 0.22 -> 0.18
+        pnh.param("max_angular", max_angular_, 0.40);      // 限制最大转向
+        pnh.param("error_filter_alpha", error_filter_alpha_, 0.30); // 更平滑
 
         pnh.param("startup_time", startup_time_, 2.8);
 
@@ -168,11 +168,11 @@ private:
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        pnh.param("align_stop_time", align_stop_time_, 1.5); // 0.2 -> 1.5 (停车1.5秒)
+        pnh.param("align_stop_time", align_stop_time_, 1.5); // 停车1.5秒
         pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
 
         pnh.param("final_speed", final_speed_, 0.20);
-        pnh.param("final_distance", final_distance_, 0.60);  // 0.70 -> 0.60
+        pnh.param("final_distance", final_distance_, 0.60);  // 直走60cm
 
         pnh.param("show_debug", show_debug_, true);
     }
@@ -201,7 +201,7 @@ private:
         const int h = frame.rows;
         const int w = frame.cols;
 
-        // ROI 扩大至 45% 高度，便于看到更多线
+        // ROI 扩大至 45% 高度
         cv::Mat roi = frame(
             cv::Range(static_cast<int>(h * 0.45), h),
             cv::Range(0, w));
@@ -245,7 +245,7 @@ private:
             break;
         }
 
-        // 角速度低通滤波（平滑输出，减少抖动）
+        // 角速度低通滤波
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
         last_angular_ = twist.angular.z;
 
@@ -314,15 +314,16 @@ private:
             return;
         }
 
-        // 长时间丢线 → 搜索
-        if(lost_line_count_ > 10)
+        // 长时间丢线（超过30帧）强制搜索
+        if(lost_line_count_ > 30)
         {
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, SEARCHING");
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST FOR TOO LONG");
             twist.linear.x = search_speed_;
             twist.angular.z = -0.2;
             return;
         }
 
+        // 短时间丢线使用预测
         int current_x = right_line.found ? right_line.x : predicted_right_x_;
         double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
 
@@ -343,7 +344,10 @@ private:
             std::fabs(current_angle - desired_angle_deg_) > align_angle_threshold_;
 
         const double target = target_right_x_ - (in_curve ? curve_offset_ : 0.0);
-        const double pos_error = target - current_x;
+
+        double pos_error = target - current_x;
+        // 死区：误差小于3像素不修正
+        if (std::fabs(pos_error) < 3.0) pos_error = 0.0;
 
         // 低通滤波
         filtered_pos_error_ =
@@ -360,7 +364,14 @@ private:
             kd_pos_ * d_pos_error +
             kp_angle_ * deg2rad(angle_error);
 
-        double linear_speed = in_curve ? curve_speed_ : base_speed_;
+        double linear_speed = base_speed_;
+        if (in_curve || std::fabs(filtered_pos_error_) > 40) {
+            linear_speed = curve_speed_;
+        }
+        // 大误差进一步减速
+        if (std::fabs(filtered_pos_error_) > 60) {
+            linear_speed *= 0.8;
+        }
 
         if(in_curve)
         {
@@ -377,11 +388,11 @@ private:
     {
         const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
 
-        // 必须让车停住
+        // 必须停住
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
 
-        // 这里 align_stop_time_ 现在是 1.5 秒，小车会停稳 1.5 秒
+        // 停车1.5秒（align_stop_time_ 已设为1.5）
         if(elapsed >= align_stop_time_)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
@@ -395,8 +406,7 @@ private:
 
     void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& stop_line)
     {
-        // 原地旋转修正，不前进
-        twist.linear.x = 0.0;
+        twist.linear.x = 0.0;   // 原地对齐
 
         if(!stop_line.found)
         {
@@ -411,7 +421,7 @@ private:
         double angle_error = stop_line.angle_deg - 0.0;
         double angular_cmd = clamp(angle_error * 0.035, -0.18, 0.18);
 
-        // 加入死区，防止小角度震荡
+        // 死区，防止小角度震荡
         if(std::fabs(angle_error) < 0.2)
         {
             angular_cmd = 0.0;
@@ -464,48 +474,30 @@ private:
     // ========== 图像处理 ==========
     cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
-        cv::Mat blur;
-        cv::GaussianBlur(roi, blur, cv::Size(5, 5), 0);
+        cv::Mat gray;
+        cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
 
-        cv::Mat hsv;
-        cv::cvtColor(blur, hsv, cv::COLOR_BGR2HSV);
+        // 自适应阈值（处理光照不均）
+        cv::Mat adaptive;
+        cv::adaptiveThreshold(gray, adaptive, 255,
+                              cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+                              cv::THRESH_BINARY, 21, 10);
 
-        cv::Mat mask;
-        cv::inRange(
-            hsv,
-            cv::Scalar(0, 0, 200),
-            cv::Scalar(180, 45, 255),
-            mask);
+        // 形态学闭运算填充孔洞
+        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5,5));
+        cv::morphologyEx(adaptive, adaptive, cv::MORPH_CLOSE, kernel);
+        cv::morphologyEx(adaptive, adaptive, cv::MORPH_OPEN, kernel);
 
-        cv::Mat kernel = cv::Mat::ones(5, 5, CV_8U);
-        cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
-        cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
-        cv::medianBlur(mask, mask, 5);
-        cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
-
-        std::vector<std::vector<cv::Point> > contours;
-        cv::findContours(
-            mask,
-            contours,
-            cv::RETR_EXTERNAL,
-            cv::CHAIN_APPROX_SIMPLE);
-
-        cv::Mat clean_mask = cv::Mat::zeros(mask.size(), CV_8UC1);
-
-        for(const auto& cnt : contours)
-        {
-            if(cv::contourArea(cnt) > 260.0)
-            {
-                cv::drawContours(
-                    clean_mask,
-                    std::vector<std::vector<cv::Point> >{cnt},
-                    -1,
-                    cv::Scalar(255),
-                    -1);
+        // 保留大连通域（去除噪声）
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(adaptive, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        cv::Mat clean = cv::Mat::zeros(adaptive.size(), CV_8UC1);
+        for(auto& cnt : contours) {
+            if(cv::contourArea(cnt) > 200) {
+                cv::drawContours(clean, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), -1);
             }
         }
-
-        return clean_mask;
+        return clean;
     }
 
     LineInfo findRightLine(const cv::Mat& mask)
@@ -536,6 +528,10 @@ private:
             info.x = predicted_right_x_;
             info.angle_deg = desired_angle_deg_;
             lost_line_count_++;
+            // 外推：如果最近有方向，就用方向预测
+            if (last_line_time_ != ros::Time(0) && (ros::Time::now() - last_line_time_).toSec() < 0.5) {
+                info.x = predicted_right_x_ + (int)(last_vx_ * 2);
+            }
             return info;
         }
 
@@ -575,12 +571,12 @@ private:
         info.x = static_cast<int>(x_sum / x_count);
         info.angle_deg = rad2deg(std::atan2(vx, vy));
 
-        if(info.found)
-        {
-            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * info.x;
-            lost_line_count_ = 0;
-            last_line_time_ = ros::Time::now();
-        }
+        // 更新预测
+        predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * info.x;
+        lost_line_count_ = 0;
+        last_line_time_ = ros::Time::now();
+        last_vx_ = vx;
+        last_vy_ = vy;
 
         return info;
     }
@@ -614,8 +610,9 @@ private:
 
             cv::Rect rect = cv::boundingRect(cnt);
 
-            // 几何约束：宽 > 4*高（真正的停车线很扁）
-            if(rect.width < rect.height * 4) continue;
+            // 严格约束：位置在底部、宽高比大、高度小
+            if(rect.y < h * 0.65) continue;          // 必须在底部区域
+            if(rect.width < rect.height * 5) continue; // 宽高比 > 5
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
 
@@ -648,7 +645,7 @@ private:
             info.center_x = rect.x + rect.width / 2;
         }
 
-        // 后备：大区域白色检测
+        // 后备：大区域白色检测（仅当且阈值大于0）
         if(!info.found && cross_area_threshold_ > 0)
         {
             int total_white = cv::countNonZero(mask);
