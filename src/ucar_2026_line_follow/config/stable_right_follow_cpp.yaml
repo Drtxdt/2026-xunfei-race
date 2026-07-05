@@ -1,15 +1,59 @@
-target_right_x: 155
+###############
+# Line follow
+###############
+target_right_x: 145
 
-base_speed: 0.32
-curve_speed: 0.28
-search_speed: 0.10
+base_speed: 0.34
+curve_speed: 0.27
+search_speed: 0.12
+lost_line_speed: 0.14
+startup_speed: 0.45
 
-kp: 0.0052
-kd: 0.0018
+###############
+# PID
+###############
+kp_pos: 0.0055
+kd_pos: 0.0018
+kp_angle: 0.40
 
-cross_area_threshold: 48000
+max_angular: 0.55
+error_filter_alpha: 0.22
 
+###############
+# Curve
+###############
+curve_threshold: 35.0
+curve_offset: 15.0
+curve_gain: 1.2
+
+###############
+# Startup
+###############
 startup_time: 2.8
-forward_time: 0.9
 
+###############
+# Stop line
+###############
+cross_area_threshold: 48000
+stop_line_min_width: 180
+stop_line_max_height: 30
+stop_line_min_area: 1200
+
+###############
+# Align
+###############
+align_speed: 0.18
+align_angle_threshold: 2.0
+align_stop_time: 0.2
+desired_angle_deg: 0.0
+
+###############
+# Final forward
+###############
+final_speed: 0.20
+final_distance: 0.70
+
+###############
+# Debug
+###############
 show_debug: true
