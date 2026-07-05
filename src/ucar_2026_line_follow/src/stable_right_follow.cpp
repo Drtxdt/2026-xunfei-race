@@ -472,7 +472,7 @@ private:
     }
 
     // ========== 图像处理 ==========
-        cv::Mat extractWhiteMask(const cv::Mat& roi)
+            cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat gray;
         cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
@@ -487,18 +487,17 @@ private:
         cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
         cv::medianBlur(mask, mask, 5);
 
-        // 保留面积大于 200 的大连通域（去除小噪点）
+        // 保留面积大于200的大连通域（去除小噪点）
         std::vector<std::vector<cv::Point>> contours;
         cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
         cv::Mat clean = cv::Mat::zeros(mask.size(), CV_8UC1);
-        for(auto& cnt : contours) {
+        for(const auto& cnt : contours) {
             if(cv::contourArea(cnt) > 200) {
                 cv::drawContours(clean, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), -1);
             }
         }
         return clean;
     }
-
     {
         LineInfo info;
         const int h = mask.rows;
