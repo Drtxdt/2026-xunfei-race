@@ -6,143 +6,161 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
 class StableRightFollowNode
 {
 public:
-
     StableRightFollowNode()
     {
-        //------------------------------------------
-        // 参数
-        //------------------------------------------
-
         ros::NodeHandle pnh("~");
 
-        pnh.param("target_right_x", target_right_x_, 155);
+        loadParams(pnh);
 
-        pnh.param("base_speed", base_speed_, 0.32);
-        pnh.param("curve_speed", curve_speed_, 0.28);
-        pnh.param("search_speed", search_speed_, 0.10);
+        cmd_pub_ = nh_.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
+        image_sub_ = nh_.subscribe(
+            "/usb_cam/image_raw",
+            1,
+            &StableRightFollowNode::imageCallback,
+            this);
 
-        pnh.param("kp", kp_, 0.0052);
-        pnh.param("kd", kd_, 0.0018);
-
-        pnh.param("startup_time", startup_time_, 2.8);
-        pnh.param("forward_time", forward_time_, 0.9);
-
-        pnh.param("cross_area_threshold",
-                  cross_area_threshold_,
-                  48000);
-
-        pnh.param("show_debug",
-                  show_debug_,
-                  true);
-
-        //------------------------------------------
-        // ROS
-        //------------------------------------------
-
-        cmd_pub_ =
-            nh_.advertise<geometry_msgs::Twist>(
-                "/cmd_vel",
-                1
-            );
-
-        image_sub_ =
-            nh_.subscribe(
-                "/usb_cam/image_raw",
-                1,
-                &StableRightFollowNode::imageCallback,
-                this
-            );
-
-        //------------------------------------------
-        // PID
-        //------------------------------------------
-
-        last_error_ = 0.0;
-        filtered_error_ = 0.0;
-
-        //------------------------------------------
-        // 状态机
-        //------------------------------------------
-
-        stage_ = 0;
-
+        last_pos_error_ = 0.0;
+        filtered_pos_error_ = 0.0;
+        last_right_x_ = -1;
+        stage_ = STARTUP;
         start_time_ = ros::Time::now();
 
-        last_right_x_ = -1;
-
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow Started ");
+        ROS_INFO(" Stable Right Follow Competition ");
         ROS_INFO("=================================");
     }
 
 private:
+    enum Stage
+    {
+        STARTUP = 0,
+        SEARCH_RIGHT_LINE = 1,
+        FOLLOW_RIGHT_LINE = 2,
+        STOP_LINE_FOUND = 3,
+        ALIGN_WITH_RIGHT_LINE = 4,
+        GO_FORWARD = 5,
+        FINAL_STOP = 6
+    };
 
-    //------------------------------------------
-    // ROS
-    //------------------------------------------
+    struct LineInfo
+    {
+        bool found = false;
+        int x = -1;
+        double angle_deg = 0.0;
+        std::vector<cv::Point> points;
+        cv::Vec4f fit_line;
+    };
+
+    struct StopLineInfo
+    {
+        bool found = false;
+        cv::Rect rect;
+    };
 
     ros::NodeHandle nh_;
-
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
-
-    //------------------------------------------
-    // 参数
-    //------------------------------------------
 
     int target_right_x_;
 
     double base_speed_;
     double curve_speed_;
     double search_speed_;
+    double lost_line_speed_;
+    double startup_speed_;
 
-    double kp_;
-    double kd_;
+    double kp_pos_;
+    double kd_pos_;
+    double kp_angle_;
+
+    double curve_threshold_;
+    double curve_offset_;
+    double curve_gain_;
+
+    double max_angular_;
+    double error_filter_alpha_;
 
     double startup_time_;
-    double forward_time_;
 
     int cross_area_threshold_;
+    int stop_line_min_width_;
+    int stop_line_max_height_;
+    int stop_line_min_area_;
+
+    double align_speed_;
+    double align_angle_threshold_;
+    double align_stop_time_;
+    double desired_angle_deg_;
+
+    double final_speed_;
+    double final_distance_;
 
     bool show_debug_;
 
-    //------------------------------------------
-    // PID
-    //------------------------------------------
-
-    double last_error_;
-    double filtered_error_;
-
-    //------------------------------------------
-    // 状态机
-    //------------------------------------------
-
-    int stage_;
-
-    ros::Time start_time_;
-    ros::Time forward_start_time_;
-
+    double last_pos_error_;
+    double filtered_pos_error_;
     int last_right_x_;
 
-    //------------------------------------------
-    // 图像回调
-    //------------------------------------------
+    Stage stage_;
+    ros::Time start_time_;
+    ros::Time stage_start_time_;
+    ros::Time forward_start_time_;
 
-    void imageCallback(
-        const sensor_msgs::ImageConstPtr& msg)
+    void loadParams(ros::NodeHandle& pnh)
+    {
+        pnh.param("target_right_x", target_right_x_, 145);
+
+        pnh.param("base_speed", base_speed_, 0.34);
+        pnh.param("curve_speed", curve_speed_, 0.27);
+        pnh.param("search_speed", search_speed_, 0.12);
+        pnh.param("lost_line_speed", lost_line_speed_, 0.14);
+        pnh.param("startup_speed", startup_speed_, 0.45);
+
+        pnh.param("kp_pos", kp_pos_, 0.0055);
+        pnh.param("kd_pos", kd_pos_, 0.0018);
+        pnh.param("kp_angle", kp_angle_, 0.40);
+
+        pnh.param("curve_threshold", curve_threshold_, 35.0);
+        pnh.param("curve_offset", curve_offset_, 15.0);
+        pnh.param("curve_gain", curve_gain_, 1.2);
+
+        pnh.param("max_angular", max_angular_, 0.55);
+        pnh.param("error_filter_alpha", error_filter_alpha_, 0.22);
+
+        pnh.param("startup_time", startup_time_, 2.8);
+
+        pnh.param("cross_area_threshold", cross_area_threshold_, 48000);
+        pnh.param("stop_line_min_width", stop_line_min_width_, 180);
+        pnh.param("stop_line_max_height", stop_line_max_height_, 30);
+        pnh.param("stop_line_min_area", stop_line_min_area_, 1200);
+
+        pnh.param("align_speed", align_speed_, 0.18);
+        pnh.param("align_angle_threshold", align_angle_threshold_, 2.0);
+        pnh.param("align_stop_time", align_stop_time_, 0.2);
+        pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
+
+        pnh.param("final_speed", final_speed_, 0.20);
+        pnh.param("final_distance", final_distance_, 0.70);
+
+        pnh.param("show_debug", show_debug_, true);
+    }
+
+    void imageCallback(const sensor_msgs::ImageConstPtr& msg)
     {
         cv::Mat frame;
 
         try
         {
-            frame =
-                cv_bridge::toCvCopy(
-                    msg,
-                    "bgr8"
-                )->image;
+            frame = cv_bridge::toCvCopy(msg, "bgr8")->image;
         }
         catch(cv_bridge::Exception& e)
         {
@@ -150,519 +168,580 @@ private:
             return;
         }
 
-        int h = frame.rows;
-        int w = frame.cols;
+        if(frame.empty())
+        {
+            stopCar();
+            return;
+        }
 
-        //------------------------------------------
-        // ROI
-        //------------------------------------------
+        const int h = frame.rows;
+        const int w = frame.cols;
 
-        cv::Mat roi =
-            frame(
-                cv::Range(
-                    int(h * 0.60),
-                    h
-                ),
-                cv::Range(
-                    0,
-                    w
-                )
-            );
+        cv::Mat roi = frame(
+            cv::Range(static_cast<int>(h * 0.60), h),
+            cv::Range(0, w));
 
-        //------------------------------------------
-        // 白线提取
-        //------------------------------------------
-
-        cv::Mat mask =
-            extractWhiteMask(roi);
+        cv::Mat mask = extractWhiteMask(roi);
+        LineInfo right_line = findRightLine(mask);
+        StopLineInfo stop_line = findStopLine(mask);
 
         geometry_msgs::Twist twist;
 
-        //------------------------------------------
-        // STAGE 0
-        //------------------------------------------
-
-        if(stage_ == 0)
+        switch(stage_)
         {
-            double elapsed =
-                (ros::Time::now() -
-                 start_time_).toSec();
+        case STARTUP:
+            handleStartup(twist);
+            break;
 
-            if(elapsed < startup_time_)
-            {
-                twist.linear.x = 0.45;
-                twist.angular.z = 0.0;
+        case SEARCH_RIGHT_LINE:
+            handleSearch(twist, right_line);
+            break;
 
-                cmd_pub_.publish(twist);
+        case FOLLOW_RIGHT_LINE:
+            handleFollow(twist, right_line, stop_line);
+            break;
 
-                return;
-            }
+        case STOP_LINE_FOUND:
+            handleStopLineFound(twist);
+            break;
 
-            ROS_INFO("ENTER SEARCH MODE");
+        case ALIGN_WITH_RIGHT_LINE:
+            handleAlign(twist, right_line);
+            break;
 
-            stage_ = 1;
+        case GO_FORWARD:
+            handleGoForward(twist);
+            break;
+
+        case FINAL_STOP:
+        default:
+            twist.linear.x = 0.0;
+            twist.angular.z = 0.0;
+            break;
         }
 
-        //------------------------------------------
-        // 找右边线
-        //------------------------------------------
+        cmd_pub_.publish(twist);
 
-        int right_x =
-            findRightLine(mask);
-
-        //------------------------------------------
-        // STAGE 1
-        //------------------------------------------
-
-        if(stage_ == 1)
+        if(show_debug_)
         {
-            if(right_x < 0)
-            {
-                twist.linear.x = 0.10;
-                twist.angular.z = -0.26;
-
-                cmd_pub_.publish(twist);
-
-                return;
-            }
-
-            ROS_INFO("RIGHT LINE FOUND");
-
-            last_right_x_ = right_x;
-
-            stage_ = 2;
-        }
-
-        //------------------------------------------
-        // STAGE 2
-        //------------------------------------------
-
-        if(stage_ == 2)
-        {
-            int cross_area =
-                cv::countNonZero(mask);
-
-            if(cross_area >
-               cross_area_threshold_)
-            {
-                ROS_INFO("STOP LINE DETECTED");
-
-                stage_ = 3;
-
-                forward_start_time_ =
-                    ros::Time::now();
-
-                return;
-            }
-
-            //----------------------------------
-            // 丢线
-            //----------------------------------
-
-            if(right_x < 0)
-            {
-                if(last_right_x_ >= 0)
-                {
-                    twist.linear.x = 0.14;
-                    twist.angular.z = -0.22;
-                }
-                else
-                {
-                    twist.linear.x = 0.10;
-                    twist.angular.z = -0.24;
-                }
-
-                cmd_pub_.publish(twist);
-
-                return;
-            }
-
-            last_right_x_ = right_x;
-
-            //----------------------------------
-            // PID
-            //----------------------------------
-
-            double error =
-                target_right_x_ -
-                right_x;
-
-            double alpha = 0.22;
-
-            filtered_error_ =
-                (1.0 - alpha) *
-                filtered_error_
-                +
-                alpha * error;
-
-            double d_error =
-                filtered_error_
-                -
-                last_error_;
-
-            last_error_ =
-                filtered_error_;
-
-            double angular =
-                kp_ * filtered_error_
-                +
-                kd_ * d_error;
-
-            double linear_speed;
-
-            //----------------------------------
-            // 弯道增强
-            //----------------------------------
-
-            if(std::fabs(filtered_error_) > 38)
-            {
-                linear_speed =
-                    curve_speed_;
-
-                angular *= 1.18;
-            }
-            else
-            {
-                linear_speed =
-                    base_speed_;
-            }
-
-            //----------------------------------
-            // 限幅
-            //----------------------------------
-
-            if(angular > 0.55)
-                angular = 0.55;
-
-            if(angular < -0.55)
-                angular = -0.55;
-
-            twist.linear.x =
-                linear_speed;
-
-            twist.angular.z =
-                angular;
-
-            cmd_pub_.publish(twist);
-
-            //----------------------------------
-            // Debug
-            //----------------------------------
-
-            if(show_debug_)
-            {
-                cv::Mat debug;
-
-                cv::cvtColor(
-                    mask,
-                    debug,
-                    cv::COLOR_GRAY2BGR
-                );
-
-                cv::line(
-                    debug,
-                    cv::Point(
-                        target_right_x_,
-                        0
-                    ),
-                    cv::Point(
-                        target_right_x_,
-                        mask.rows
-                    ),
-                    cv::Scalar(
-                        255,
-                        0,
-                        0
-                    ),
-                    2
-                );
-
-                cv::circle(
-                    debug,
-                    cv::Point(
-                        right_x,
-                        mask.rows / 2
-                    ),
-                    5,
-                    cv::Scalar(
-                        0,
-                        0,
-                        255
-                    ),
-                    -1
-                );
-
-                char buf[100];
-
-                sprintf(
-                    buf,
-                    "ERR: %.2f",
-                    filtered_error_
-                );
-
-                cv::putText(
-                    debug,
-                    buf,
-                    cv::Point(20,40),
-                    cv::FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    cv::Scalar(
-                        0,
-                        255,
-                        0
-                    ),
-                    2
-                );
-
-                cv::imshow(
-                    "right_follow",
-                    debug
-                );
-
-                cv::waitKey(1);
-            }
-
-            return;
-        }
-
-        //------------------------------------------
-        // STAGE 3
-        //------------------------------------------
-
-        if(stage_ == 3)
-        {
-            double elapsed =
-                (ros::Time::now()
-                 -
-                 forward_start_time_).toSec();
-
-            if(elapsed < forward_time_)
-            {
-                twist.linear.x = 0.12;
-                twist.angular.z = 0.0;
-
-                cmd_pub_.publish(twist);
-
-                return;
-            }
-
-            stage_ = 4;
-        }
-
-        //------------------------------------------
-        // STAGE 4
-        //------------------------------------------
-
-        if(stage_ == 4)
-        {
-            stopCar();
-
-            ROS_INFO_THROTTLE(
-                1.0,
-                "FINAL STOP"
-            );
-
-            return;
+            showDebug(mask, right_line, stop_line, twist);
         }
     }
 
-    //------------------------------------------
-    // 白线提取
-    //------------------------------------------
+    void handleStartup(geometry_msgs::Twist& twist)
+    {
+        const double elapsed = (ros::Time::now() - start_time_).toSec();
 
-    cv::Mat extractWhiteMask(
-        const cv::Mat& roi)
+        if(elapsed < startup_time_)
+        {
+            twist.linear.x = startup_speed_;
+            twist.angular.z = 0.0;
+            return;
+        }
+
+        enterStage(SEARCH_RIGHT_LINE, "ENTER SEARCH MODE");
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+    }
+
+    void handleSearch(
+        geometry_msgs::Twist& twist,
+        const LineInfo& right_line)
+    {
+        if(!right_line.found)
+        {
+            twist.linear.x = search_speed_;
+            twist.angular.z = -0.26;
+            return;
+        }
+
+        last_right_x_ = right_line.x;
+        resetPid();
+        enterStage(FOLLOW_RIGHT_LINE, "RIGHT LINE FOUND");
+
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+    }
+
+    void handleFollow(
+        geometry_msgs::Twist& twist,
+        const LineInfo& right_line,
+        const StopLineInfo& stop_line)
+    {
+        if(stop_line.found)
+        {
+            resetPid();
+            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED");
+            twist.linear.x = 0.0;
+            twist.angular.z = 0.0;
+            return;
+        }
+
+        if(!right_line.found)
+        {
+            twist.linear.x = lost_line_speed_;
+            twist.angular.z = (last_right_x_ >= 0) ? -0.22 : -0.24;
+            return;
+        }
+
+        last_right_x_ = right_line.x;
+
+        const bool in_curve =
+            std::fabs(filtered_pos_error_) > curve_threshold_ ||
+            std::fabs(right_line.angle_deg - desired_angle_deg_) >
+                align_angle_threshold_;
+
+        const double target =
+            target_right_x_ - (in_curve ? curve_offset_ : 0.0);
+
+        const double pos_error = target - right_line.x;
+
+        filtered_pos_error_ =
+            (1.0 - error_filter_alpha_) * filtered_pos_error_ +
+            error_filter_alpha_ * pos_error;
+
+        const double d_pos_error =
+            filtered_pos_error_ - last_pos_error_;
+
+        last_pos_error_ = filtered_pos_error_;
+
+        const double angle_error =
+            right_line.angle_deg - desired_angle_deg_;
+
+        double angular =
+            kp_pos_ * filtered_pos_error_ +
+            kd_pos_ * d_pos_error +
+            kp_angle_ * deg2rad(angle_error);
+
+        double linear_speed = in_curve ? curve_speed_ : base_speed_;
+
+        if(in_curve)
+        {
+            angular *= curve_gain_;
+        }
+
+        angular = clamp(angular, -max_angular_, max_angular_);
+
+        twist.linear.x = linear_speed;
+        twist.angular.z = angular;
+    }
+
+    void handleStopLineFound(geometry_msgs::Twist& twist)
+    {
+        const double elapsed =
+            (ros::Time::now() - stage_start_time_).toSec();
+
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+
+        if(elapsed >= align_stop_time_)
+        {
+            enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
+        }
+    }
+
+    void handleAlign(
+        geometry_msgs::Twist& twist,
+        const LineInfo& right_line)
+    {
+        twist.linear.x = 0.0;
+
+        if(!right_line.found)
+        {
+            twist.angular.z = -align_speed_;
+            return;
+        }
+
+        const double angle_error =
+            right_line.angle_deg - desired_angle_deg_;
+
+        if(std::fabs(angle_error) <= align_angle_threshold_)
+        {
+            forward_start_time_ = ros::Time::now();
+            enterStage(GO_FORWARD, "ALIGN OK, GO FORWARD");
+            twist.angular.z = 0.0;
+            return;
+        }
+
+        twist.angular.z = (angle_error > 0.0) ?
+            align_speed_ :
+            -align_speed_;
+    }
+
+    void handleGoForward(geometry_msgs::Twist& twist)
+    {
+        const double speed = std::max(0.01, std::fabs(final_speed_));
+        const double forward_time = final_distance_ / speed;
+        const double elapsed =
+            (ros::Time::now() - forward_start_time_).toSec();
+
+        if(elapsed < forward_time)
+        {
+            twist.linear.x = final_speed_;
+            twist.angular.z = 0.0;
+            return;
+        }
+
+        enterStage(FINAL_STOP, "FINAL STOP");
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+    }
+
+    cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat blur;
-
-        cv::GaussianBlur(
-            roi,
-            blur,
-            cv::Size(5,5),
-            0
-        );
+        cv::GaussianBlur(roi, blur, cv::Size(5, 5), 0);
 
         cv::Mat hsv;
-
-        cv::cvtColor(
-            blur,
-            hsv,
-            cv::COLOR_BGR2HSV
-        );
+        cv::cvtColor(blur, hsv, cv::COLOR_BGR2HSV);
 
         cv::Mat mask;
-
         cv::inRange(
             hsv,
-            cv::Scalar(
-                0,
-                0,
-                200
-            ),
-            cv::Scalar(
-                180,
-                45,
-                255
-            ),
-            mask
-        );
+            cv::Scalar(0, 0, 200),
+            cv::Scalar(180, 45, 255),
+            mask);
 
-        cv::Mat kernel =
-            cv::Mat::ones(
-                5,
-                5,
-                CV_8U
-            );
+        cv::Mat kernel = cv::Mat::ones(5, 5, CV_8U);
+        cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+        cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+        cv::medianBlur(mask, mask, 5);
+        cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
 
-        cv::morphologyEx(
-            mask,
-            mask,
-            cv::MORPH_OPEN,
-            kernel
-        );
-
-        cv::morphologyEx(
-            mask,
-            mask,
-            cv::MORPH_CLOSE,
-            kernel
-        );
-
-        cv::medianBlur(
-            mask,
-            mask,
-            5
-        );
-
-        cv::GaussianBlur(
-            mask,
-            mask,
-            cv::Size(5,5),
-            0
-        );
-
-        std::vector<
-            std::vector<cv::Point>
-        > contours;
-
+        std::vector<std::vector<cv::Point> > contours;
         cv::findContours(
             mask,
             contours,
             cv::RETR_EXTERNAL,
-            cv::CHAIN_APPROX_SIMPLE
-        );
+            cv::CHAIN_APPROX_SIMPLE);
 
-        cv::Mat clean_mask =
-            cv::Mat::zeros(
-                mask.size(),
-                CV_8UC1
-            );
+        cv::Mat clean_mask = cv::Mat::zeros(mask.size(), CV_8UC1);
 
-        for(auto& cnt : contours)
+        for(const auto& cnt : contours)
         {
-            double area =
-                cv::contourArea(cnt);
-
-            if(area > 260)
+            if(cv::contourArea(cnt) > 260.0)
             {
                 cv::drawContours(
                     clean_mask,
-                    std::vector<
-                        std::vector<cv::Point>
-                    >{cnt},
+                    std::vector<std::vector<cv::Point> >{cnt},
                     -1,
                     cv::Scalar(255),
-                    -1
-                );
+                    -1);
             }
         }
 
         return clean_mask;
     }
 
-    //------------------------------------------
-    // 找右边线
-    //------------------------------------------
-
-    int findRightLine(
-        const cv::Mat& mask)
+    LineInfo findRightLine(const cv::Mat& mask)
     {
-        int h =
-            mask.rows;
+        LineInfo info;
+        const int h = mask.rows;
+        const int w = mask.cols;
 
-        std::vector<int> rows;
-
-        rows.push_back(
-            int(h * 0.50)
-        );
-
-        rows.push_back(
-            int(h * 0.60)
-        );
-
-        rows.push_back(
-            int(h * 0.70)
-        );
-
-        std::vector<int> points;
-
-        for(auto y : rows)
+        for(int y = static_cast<int>(h * 0.20);
+            y < static_cast<int>(h * 0.92);
+            y += 4)
         {
-            const uchar* ptr =
-                mask.ptr<uchar>(y);
+            const uchar* ptr = mask.ptr<uchar>(y);
 
-            for(int x = mask.cols - 1;
-                x >= 0;
-                x--)
+            for(int x = w - 1; x >= 0; --x)
             {
                 if(ptr[x] > 0)
                 {
-                    points.push_back(x);
+                    info.points.push_back(cv::Point(x, y));
                     break;
                 }
             }
         }
 
-        if(points.empty())
-            return -1;
+        if(info.points.size() < 6)
+        {
+            return info;
+        }
 
-        double sum = 0.0;
+        double x_sum = 0.0;
+        int x_count = 0;
 
-        for(auto p : points)
-            sum += p;
+        for(const auto& p : info.points)
+        {
+            if(p.y > h * 0.45)
+            {
+                x_sum += p.x;
+                ++x_count;
+            }
+        }
 
-        return static_cast<int>(
-            sum / points.size()
-        );
+        if(x_count == 0)
+        {
+            for(const auto& p : info.points)
+            {
+                x_sum += p.x;
+            }
+            x_count = static_cast<int>(info.points.size());
+        }
+
+        cv::fitLine(
+            info.points,
+            info.fit_line,
+            cv::DIST_L2,
+            0.0,
+            0.01,
+            0.01);
+
+        const double vx = info.fit_line[0];
+        const double vy = info.fit_line[1];
+
+        info.found = true;
+        info.x = static_cast<int>(x_sum / x_count);
+        info.angle_deg = rad2deg(std::atan2(vx, vy));
+
+        return info;
     }
 
-    //------------------------------------------
-    // 停车
-    //------------------------------------------
+    StopLineInfo findStopLine(const cv::Mat& mask)
+    {
+        StopLineInfo info;
+
+        std::vector<std::vector<cv::Point> > contours;
+        cv::findContours(
+            mask.clone(),
+            contours,
+            cv::RETR_EXTERNAL,
+            cv::CHAIN_APPROX_SIMPLE);
+
+        int best_y = -1;
+        int total_white = 0;
+
+        if(cross_area_threshold_ > 0)
+        {
+            total_white = cv::countNonZero(mask);
+        }
+
+        for(const auto& cnt : contours)
+        {
+            const cv::Rect rect = cv::boundingRect(cnt);
+            const double area = cv::contourArea(cnt);
+
+            const bool wide_enough = rect.width >= stop_line_min_width_;
+            const bool flat_enough = rect.height <= stop_line_max_height_;
+            const bool area_enough = area >= stop_line_min_area_;
+
+            if(wide_enough && flat_enough && area_enough)
+            {
+                if(rect.y > best_y)
+                {
+                    best_y = rect.y;
+                    info.rect = rect;
+                    info.found = true;
+                }
+            }
+        }
+
+        if(!info.found &&
+           cross_area_threshold_ > 0 &&
+           total_white > cross_area_threshold_)
+        {
+            info.found = true;
+            info.rect = cv::Rect(0, 0, mask.cols, mask.rows);
+        }
+
+        return info;
+    }
+
+    void showDebug(
+        const cv::Mat& mask,
+        const LineInfo& right_line,
+        const StopLineInfo& stop_line,
+        const geometry_msgs::Twist& twist)
+    {
+        cv::Mat debug;
+        cv::cvtColor(mask, debug, cv::COLOR_GRAY2BGR);
+
+        const bool in_curve =
+            std::fabs(filtered_pos_error_) > curve_threshold_;
+        const int active_target =
+            target_right_x_ - (in_curve ? static_cast<int>(curve_offset_) : 0);
+
+        cv::line(
+            debug,
+            cv::Point(target_right_x_, 0),
+            cv::Point(target_right_x_, mask.rows),
+            cv::Scalar(255, 0, 0),
+            2);
+
+        cv::line(
+            debug,
+            cv::Point(active_target, 0),
+            cv::Point(active_target, mask.rows),
+            cv::Scalar(0, 255, 255),
+            2);
+
+        if(right_line.found)
+        {
+            for(const auto& p : right_line.points)
+            {
+                cv::circle(debug, p, 2, cv::Scalar(0, 180, 255), -1);
+            }
+
+            drawFitLine(debug, right_line.fit_line, cv::Scalar(0, 0, 255));
+            cv::circle(
+                debug,
+                cv::Point(right_line.x, mask.rows / 2),
+                5,
+                cv::Scalar(0, 0, 255),
+                -1);
+        }
+
+        if(stop_line.found)
+        {
+            cv::rectangle(debug, stop_line.rect, cv::Scalar(0, 255, 0), 2);
+        }
+
+        drawText(debug, 20, 30, "stage: " + stageName(stage_));
+        drawText(debug, 20, 60, format("target: %d", active_target));
+        drawText(debug, 20, 90, format("err: %.2f", filtered_pos_error_));
+        drawText(
+            debug,
+            20,
+            120,
+            format(
+                "angle: %.2f",
+                right_line.found ? right_line.angle_deg : 0.0));
+        drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
+
+        cv::imshow("right_follow", debug);
+        cv::waitKey(1);
+    }
+
+    void drawFitLine(
+        cv::Mat& image,
+        const cv::Vec4f& line,
+        const cv::Scalar& color)
+    {
+        const float vx = line[0];
+        const float vy = line[1];
+        const float x0 = line[2];
+        const float y0 = line[3];
+
+        if(std::fabs(vy) < 1e-5)
+        {
+            return;
+        }
+
+        const int y1 = 0;
+        const int y2 = image.rows - 1;
+        const int x1 = static_cast<int>(x0 + (y1 - y0) * vx / vy);
+        const int x2 = static_cast<int>(x0 + (y2 - y0) * vx / vy);
+
+        cv::line(
+            image,
+            cv::Point(clampInt(x1, 0, image.cols - 1), y1),
+            cv::Point(clampInt(x2, 0, image.cols - 1), y2),
+            color,
+            2);
+    }
+
+    void drawText(
+        cv::Mat& image,
+        int x,
+        int y,
+        const std::string& text)
+    {
+        cv::putText(
+            image,
+            text,
+            cv::Point(x, y),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.55,
+            cv::Scalar(0, 255, 0),
+            2);
+    }
+
+    void enterStage(Stage stage, const char* message)
+    {
+        stage_ = stage;
+        stage_start_time_ = ros::Time::now();
+        ROS_INFO("%s", message);
+    }
+
+    void resetPid()
+    {
+        last_pos_error_ = 0.0;
+        filtered_pos_error_ = 0.0;
+    }
 
     void stopCar()
     {
         geometry_msgs::Twist twist;
-
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
-
         cmd_pub_.publish(twist);
+    }
+
+    std::string stageName(Stage stage) const
+    {
+        switch(stage)
+        {
+        case STARTUP:
+            return "STARTUP";
+        case SEARCH_RIGHT_LINE:
+            return "SEARCH";
+        case FOLLOW_RIGHT_LINE:
+            return "FOLLOW";
+        case STOP_LINE_FOUND:
+            return "STOP_LINE";
+        case ALIGN_WITH_RIGHT_LINE:
+            return "ALIGN";
+        case GO_FORWARD:
+            return "FORWARD";
+        case FINAL_STOP:
+            return "FINAL_STOP";
+        default:
+            return "UNKNOWN";
+        }
+    }
+
+    std::string format(const char* fmt, double value)
+    {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), fmt, value);
+        return std::string(buf);
+    }
+
+    std::string format(const char* fmt, int value)
+    {
+        char buf[80];
+        std::snprintf(buf, sizeof(buf), fmt, value);
+        return std::string(buf);
+    }
+
+    double deg2rad(double deg) const
+    {
+        return deg * CV_PI / 180.0;
+    }
+
+    double rad2deg(double rad) const
+    {
+        return rad * 180.0 / CV_PI;
+    }
+
+    double clamp(double value, double low, double high) const
+    {
+        return std::max(low, std::min(value, high));
+    }
+
+    int clampInt(int value, int low, int high) const
+    {
+        return std::max(low, std::min(value, high));
     }
 };
 
-int main(
-    int argc,
-    char** argv)
+int main(int argc, char** argv)
 {
-    ros::init(
-    argc,
-    argv,
-    "stable_right_follow_cpp"
-);
+    ros::init(argc, argv, "stable_right_follow_cpp");
 
     StableRightFollowNode node;
-
     ros::spin();
 
     return 0;
