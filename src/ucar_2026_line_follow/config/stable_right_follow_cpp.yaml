@@ -39,9 +39,10 @@ startup_time: 2.8
 ###############
 # 放宽停车线检测参数，配合 C++ 代码中的几何约束
 cross_area_threshold: 48000
-stop_line_min_width: 120   # 180 → 120
-stop_line_max_height: 40   # 30 → 40
-stop_line_min_area: 800    # 1200 → 800
+# 停车线检测参数（放宽，让车能认出白线）
+stop_line_min_width: 80      # 120 → 80（允许更短的线）
+stop_line_max_height: 50     # 40 → 50（允许稍微厚一点的线）
+stop_line_min_area: 400      # 800 → 400（降低面积门槛）
 
 ###############
 # Align

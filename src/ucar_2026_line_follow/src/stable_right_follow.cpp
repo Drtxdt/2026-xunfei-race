@@ -472,26 +472,25 @@ private:
     }
 
     // ========== 图像处理 ==========
-    cv::Mat extractWhiteMask(const cv::Mat& roi)
+        cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat gray;
         cv::cvtColor(roi, gray, cv::COLOR_BGR2GRAY);
 
-        // 自适应阈值（处理光照不均）
-        cv::Mat adaptive;
-        cv::adaptiveThreshold(gray, adaptive, 255,
-                              cv::ADAPTIVE_THRESH_GAUSSIAN_C,
-                              cv::THRESH_BINARY, 21, 10);
+        // 使用灰度阈值（固定阈值195，比赛白线通常是纯白，非常亮）
+        cv::Mat mask;
+        cv::threshold(gray, mask, 195, 255, cv::THRESH_BINARY);
 
-        // 形态学闭运算填充孔洞
-        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5,5));
-        cv::morphologyEx(adaptive, adaptive, cv::MORPH_CLOSE, kernel);
-        cv::morphologyEx(adaptive, adaptive, cv::MORPH_OPEN, kernel);
+        // 形态学开闭运算去除噪声和填充孔洞
+        cv::Mat kernel = cv::Mat::ones(5, 5, CV_8U);
+        cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
+        cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
+        cv::medianBlur(mask, mask, 5);
 
-        // 保留大连通域（去除噪声）
+        // 保留面积大于 200 的大连通域（去除小噪点）
         std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(adaptive, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-        cv::Mat clean = cv::Mat::zeros(adaptive.size(), CV_8UC1);
+        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        cv::Mat clean = cv::Mat::zeros(mask.size(), CV_8UC1);
         for(auto& cnt : contours) {
             if(cv::contourArea(cnt) > 200) {
                 cv::drawContours(clean, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), -1);
@@ -500,7 +499,6 @@ private:
         return clean;
     }
 
-    LineInfo findRightLine(const cv::Mat& mask)
     {
         LineInfo info;
         const int h = mask.rows;
