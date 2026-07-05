@@ -39,8 +39,11 @@ public:
         last_angular_ = 0.0;
         last_line_time_ = ros::Time::now();
 
+        // ===== 新增：记录开始移动的时刻 =====
+        start_moving_time_ = ros::Time::now();
+
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (StopLine Align) ");
+        ROS_INFO(" Stable Right Follow (Time-based Stop) ");
         ROS_INFO("=================================");
     }
 
@@ -51,7 +54,7 @@ private:
         SEARCH_RIGHT_LINE = 1,
         FOLLOW_RIGHT_LINE = 2,
         STOP_LINE_FOUND = 3,
-        ALIGN_WITH_RIGHT_LINE = 4,   // 实际已改为“基于停止线对齐”
+        ALIGN_WITH_RIGHT_LINE = 4,
         GO_FORWARD = 5,
         FINAL_STOP = 6
     };
@@ -65,12 +68,11 @@ private:
         cv::Vec4f fit_line;
     };
 
-    // ===== 新增：停车线信息（包含角度） =====
     struct StopLineInfo
     {
         bool found = false;
         cv::Rect rect;
-        double angle_deg = 0.0;   // 相对于图像水平轴的夹角（0°表示水平）
+        double angle_deg = 0.0;
         int center_x = 0;
     };
 
@@ -129,6 +131,11 @@ private:
     double last_angular_;
     ros::Time last_line_time_;
 
+    // ===== 新增：记录机器人开始移动的时刻 =====
+    ros::Time start_moving_time_;
+    // ===== 新增：前10秒忽略停车线 =====
+    double stop_line_ignore_time_ = 10.0;
+
     void loadParams(ros::NodeHandle& pnh)
     {
         pnh.param("target_right_x", target_right_x_, 145);
@@ -153,12 +160,12 @@ private:
         pnh.param("startup_time", startup_time_, 2.8);
 
         pnh.param("cross_area_threshold", cross_area_threshold_, 48000);
-        pnh.param("stop_line_min_width", stop_line_min_width_, 120);  // 放宽
-        pnh.param("stop_line_max_height", stop_line_max_height_, 40); // 放宽
-        pnh.param("stop_line_min_area", stop_line_min_area_, 800);    // 放宽
+        pnh.param("stop_line_min_width", stop_line_min_width_, 120);
+        pnh.param("stop_line_max_height", stop_line_max_height_, 40);
+        pnh.param("stop_line_min_area", stop_line_min_area_, 800);
 
         pnh.param("align_speed", align_speed_, 0.18);
-        pnh.param("align_angle_threshold", align_angle_threshold_, 1.0); // 收敛更严
+        pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
         pnh.param("align_stop_time", align_stop_time_, 0.2);
         pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
 
@@ -191,14 +198,13 @@ private:
         const int h = frame.rows;
         const int w = frame.cols;
 
-        // ROI 扩大（便于巡线）
         cv::Mat roi = frame(
             cv::Range(static_cast<int>(h * 0.45), h),
             cv::Range(0, w));
 
         cv::Mat mask = extractWhiteMask(roi);
         LineInfo right_line = findRightLine(mask);
-        StopLineInfo stop_line = findStopLine(mask); // 新检测函数
+        StopLineInfo stop_line = findStopLine(mask);
 
         geometry_msgs::Twist twist;
 
@@ -221,7 +227,6 @@ private:
             break;
 
         case ALIGN_WITH_RIGHT_LINE:
-            // ===== 新：基于停止线角度进行原地纠偏 =====
             handleAlign(twist, stop_line);
             break;
 
@@ -236,7 +241,6 @@ private:
             break;
         }
 
-        // 角速度滤波
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
         last_angular_ = twist.angular.z;
 
@@ -259,6 +263,8 @@ private:
             return;
         }
 
+        // ===== 记录开始移动的时刻 =====
+        start_moving_time_ = ros::Time::now();
         enterStage(SEARCH_RIGHT_LINE, "ENTER SEARCH MODE");
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
@@ -290,11 +296,16 @@ private:
         const LineInfo& right_line,
         const StopLineInfo& stop_line)
     {
-        // 先检测停止线（优先级别最高）
-        if(stop_line.found)
+        // ============================================================
+        // 关键修改：前10秒内绝对忽略停车线检测
+        // ============================================================
+        double elapsed_since_move = (ros::Time::now() - start_moving_time_).toSec();
+        bool ignore_stop_line = (elapsed_since_move < stop_line_ignore_time_);
+
+        if(stop_line.found && !ignore_stop_line)
         {
             resetPid();
-            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED");
+            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED (TIME>=10s)");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -329,7 +340,6 @@ private:
             std::fabs(current_angle - desired_angle_deg_) > align_angle_threshold_;
 
         const double target = target_right_x_ - (in_curve ? curve_offset_ : 0.0);
-
         const double pos_error = target - current_x;
 
         filtered_pos_error_ =
@@ -368,7 +378,6 @@ private:
 
         if(elapsed >= align_stop_time_)
         {
-            // 进入对齐阶段（使用停止线）
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
         }
 
@@ -378,17 +387,13 @@ private:
         }
     }
 
-    // ===== 新：基于停止线的原地对齐 =====
     void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& stop_line)
     {
-        // 原地修正，不前进（用户要求“停下来”）
-        twist.linear.x = 0.0;
+        twist.linear.x = 0.0; // 原地对齐
 
         if(!stop_line.found)
         {
-            // 丢失停止线 → 慢速旋转寻找
             twist.angular.z = -0.15;
-            // 超时保护：若2秒仍找不到，强制前进
             if((ros::Time::now() - stage_start_time_).toSec() > 2.5)
             {
                 enterStage(GO_FORWARD, "ALIGN LINE LOST, FORCE GO");
@@ -396,19 +401,14 @@ private:
             return;
         }
 
-        // 目标：使停止线在图像中呈水平（角度=0）
         double angle_error = stop_line.angle_deg - 0.0;
-
-        // 小增益，避免震荡
         twist.angular.z = clamp(angle_error * 0.035, -0.2, 0.2);
 
-        // 垂直判定：角度误差小于1度
         if(std::fabs(angle_error) < 1.0)
         {
             enterStage(GO_FORWARD, "ALIGN OK, PERPENDICULAR");
         }
 
-        // 全局超时保护：4秒内必须完成
         if((ros::Time::now() - stage_start_time_).toSec() > 4.0)
         {
             enterStage(GO_FORWARD, "ALIGN TIMEOUT");
@@ -556,14 +556,14 @@ private:
         return info;
     }
 
-    // ===== 新：专门针对底部横线的检测（更鲁棒） =====
+    // ===== 增加了宽高比和角度约束，避免拐弯处误检 =====
     StopLineInfo findStopLine(const cv::Mat& mask)
     {
         StopLineInfo info;
         const int h = mask.rows;
         const int w = mask.cols;
 
-        // 只关注底部区域（横线通常在最下方）
+        // 只看底部区域（更靠近车头）
         cv::Mat bottom_roi = mask(
             cv::Range(static_cast<int>(h * 0.65), h),
             cv::Range(0, w));
@@ -585,18 +585,19 @@ private:
             if(area < stop_line_min_area_) continue;
 
             cv::Rect rect = cv::boundingRect(cnt);
-            // 停车线应该是扁平的（高度小，宽度大）
+
+            // 核心约束：宽度必须大于高度的4倍（真正的停车线很扁）
+            if(rect.width < rect.height * 4) continue;
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
 
-            // 拟合直线，判断角度
             if(cnt.size() >= 5)
             {
                 cv::Vec4f line;
                 cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
-                // 相对于x轴的角度（水平线为0°）
                 double angle = rad2deg(std::atan2(line[1], line[0]));
-                if(std::fabs(angle) > 25.0) continue; // 必须接近水平
+                // 必须接近水平（-15° ~ +15°），拐弯处的线倾斜度大
+                if(std::fabs(angle) > 15.0) continue;
             }
 
             if(area > max_area)
@@ -615,11 +616,11 @@ private:
 
             info.found = true;
             info.rect = rect;
-            info.angle_deg = rad2deg(std::atan2(line[1], line[0])); // 水平=0
+            info.angle_deg = rad2deg(std::atan2(line[1], line[0]));
             info.center_x = rect.x + rect.width / 2;
         }
 
-        // 后备：如果轮廓没找到，但整体白色区域过大（原逻辑）
+        // 后备逻辑
         if(!info.found && cross_area_threshold_ > 0)
         {
             int total_white = cv::countNonZero(mask);
@@ -682,23 +683,17 @@ private:
         if(stop_line.found)
         {
             cv::rectangle(debug, stop_line.rect, cv::Scalar(0, 255, 0), 2);
-            // 显示角度
             char buf[32];
             std::snprintf(buf, sizeof(buf), "Ang:%.1f", stop_line.angle_deg);
             cv::putText(debug, buf, cv::Point(stop_line.rect.x, stop_line.rect.y - 10),
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
         }
 
+        double elapsed = (ros::Time::now() - start_moving_time_).toSec();
         drawText(debug, 20, 30, "stage: " + stageName(stage_));
         drawText(debug, 20, 60, format("target: %d", active_target));
         drawText(debug, 20, 90, format("err: %.2f", filtered_pos_error_));
-        drawText(
-            debug,
-            20,
-            120,
-            format(
-                "angle: %.2f",
-                right_line.found ? right_line.angle_deg : 0.0));
+        drawText(debug, 20, 120, format("time: %.1fs", elapsed));
         drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
         drawText(debug, 20, 180, format("lost: %d", lost_line_count_));
 
