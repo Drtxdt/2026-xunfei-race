@@ -772,11 +772,15 @@ private:
 
     // ========== 辅助函数 ==========
     void enterStage(Stage stage, const char* message)
-    {
-        stage_ = stage;
-        stage_start_time_ = ros::Time::now();
-        ROS_INFO("%s", message);
+{
+    stage_ = stage;
+    stage_start_time_ = ros::Time::now();
+    // 进入直走阶段时，同时复位计时器
+    if (stage == GO_FORWARD) {
+        forward_start_time_ = ros::Time::now();
     }
+    ROS_INFO("%s", message);
+}
 
     void resetPid()
     {
