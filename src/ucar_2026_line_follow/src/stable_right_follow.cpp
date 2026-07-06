@@ -35,14 +35,18 @@ public:
         start_time_ = ros::Time::now();
 
         predicted_right_x_ = 160;
+        predicted_left_x_ = 160;
         lost_line_count_ = 0;
         last_angular_ = 0.0;
         last_line_time_ = ros::Time::now();
 
         start_moving_time_ = ros::Time::now();
 
+        // 停车线连续检测计数
+        stop_line_confirm_count_ = 0;
+
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Robust Version) ");
+        ROS_INFO(" Stable Right Follow (Enhanced) ");
         ROS_INFO("=================================");
     }
 
@@ -126,6 +130,7 @@ private:
     ros::Time forward_start_time_;
 
     int predicted_right_x_;
+    int predicted_left_x_;
     int lost_line_count_;
     double last_angular_;
     ros::Time last_line_time_;
@@ -134,6 +139,10 @@ private:
 
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;
+
+    // 停车线连续确认计数
+    int stop_line_confirm_count_;
+    StopLineInfo last_stop_line_;
 
     // ========== 参数加载 ==========
     void loadParams(ros::NodeHandle& pnh)
@@ -205,6 +214,7 @@ private:
 
         cv::Mat mask = extractWhiteMask(roi);
         LineInfo right_line = findRightLine(mask);
+        LineInfo left_line = findLeftLine(mask);  // 新增左线检测
         StopLineInfo stop_line = findStopLine(mask);
 
         geometry_msgs::Twist twist;
@@ -220,7 +230,7 @@ private:
             break;
 
         case FOLLOW_RIGHT_LINE:
-            handleFollow(twist, right_line, stop_line);
+            handleFollow(twist, right_line, left_line, stop_line);
             break;
 
         case STOP_LINE_FOUND:
@@ -249,7 +259,7 @@ private:
 
         if(show_debug_)
         {
-            showDebug(mask, right_line, stop_line, twist);
+            showDebug(mask, right_line, left_line, stop_line, twist);
         }
     }
 
@@ -295,20 +305,35 @@ private:
     void handleFollow(
         geometry_msgs::Twist& twist,
         const LineInfo& right_line,
+        const LineInfo& left_line,
         const StopLineInfo& stop_line)
     {
         double elapsed_since_move = (ros::Time::now() - start_moving_time_).toSec();
         bool ignore_stop_line = (elapsed_since_move < stop_line_ignore_time_);
 
+        // 停车线检测（连续3帧确认）
         if(stop_line.found && !ignore_stop_line)
         {
-            resetPid();
-            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED (TIME>=10s)");
-            twist.linear.x = 0.0;
-            twist.angular.z = 0.0;
-            return;
+            if(stop_line_confirm_count_ >= 3)
+            {
+                resetPid();
+                enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED (TIME>=10s)");
+                twist.linear.x = 0.0;
+                twist.angular.z = 0.0;
+                return;
+            }
+            else
+            {
+                stop_line_confirm_count_++;
+                last_stop_line_ = stop_line;
+            }
+        }
+        else
+        {
+            stop_line_confirm_count_ = 0;
         }
 
+        // 长时间丢线（超过30帧）强制搜索
         if(lost_line_count_ > 30)
         {
             enterStage(SEARCH_RIGHT_LINE, "LINE LOST FOR TOO LONG");
@@ -317,61 +342,78 @@ private:
             return;
         }
 
-        int current_x = right_line.found ? right_line.x : predicted_right_x_;
-        double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
-
+        // 右线存在 → 正常巡线
         if(right_line.found)
         {
             last_right_x_ = right_line.x;
             predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
             lost_line_count_ = 0;
             last_line_time_ = ros::Time::now();
+
+            int current_x = right_line.x;
+            double current_angle = right_line.angle_deg;
+
+            const bool in_curve =
+                std::fabs(filtered_pos_error_) > curve_threshold_ ||
+                std::fabs(current_angle - desired_angle_deg_) > align_angle_threshold_;
+
+            const double target = target_right_x_ - (in_curve ? curve_offset_ : 0.0);
+
+            double pos_error = target - current_x;
+            if (std::fabs(pos_error) < 3.0) pos_error = 0.0;
+
+            filtered_pos_error_ =
+                (1.0 - error_filter_alpha_) * filtered_pos_error_ +
+                error_filter_alpha_ * pos_error;
+
+            const double d_pos_error = filtered_pos_error_ - last_pos_error_;
+            last_pos_error_ = filtered_pos_error_;
+
+            const double angle_error = current_angle - desired_angle_deg_;
+
+            double angular =
+                kp_pos_ * filtered_pos_error_ +
+                kd_pos_ * d_pos_error +
+                kp_angle_ * deg2rad(angle_error);
+
+            double linear_speed = base_speed_;
+            if (in_curve || std::fabs(filtered_pos_error_) > 40) {
+                linear_speed = curve_speed_;
+            }
+            if (std::fabs(filtered_pos_error_) > 60) {
+                linear_speed *= 0.8;
+            }
+
+            if(in_curve)
+            {
+                angular *= curve_gain_;
+            }
+
+            angular = clamp(angular, -max_angular_, max_angular_);
+
+            twist.linear.x = linear_speed;
+            twist.angular.z = angular;
         }
         else
         {
+            // 右线丢失
             lost_line_count_++;
+            // 使用左线辅助
+            if(left_line.found)
+            {
+                // 左线存在 → 右转，防止压左线
+                double angle_error = left_line.angle_deg - desired_angle_deg_;
+                double angular = clamp(kp_angle_ * deg2rad(angle_error) * 0.5, -0.3, 0.3);
+                twist.linear.x = curve_speed_ * 0.6;
+                twist.angular.z = angular;
+            }
+            else
+            {
+                // 双线丢失 → 左转搜索
+                twist.linear.x = lost_line_speed_;
+                twist.angular.z = -0.2;
+            }
         }
-
-        const bool in_curve =
-            std::fabs(filtered_pos_error_) > curve_threshold_ ||
-            std::fabs(current_angle - desired_angle_deg_) > align_angle_threshold_;
-
-        const double target = target_right_x_ - (in_curve ? curve_offset_ : 0.0);
-
-        double pos_error = target - current_x;
-        if (std::fabs(pos_error) < 3.0) pos_error = 0.0;
-
-        filtered_pos_error_ =
-            (1.0 - error_filter_alpha_) * filtered_pos_error_ +
-            error_filter_alpha_ * pos_error;
-
-        const double d_pos_error = filtered_pos_error_ - last_pos_error_;
-        last_pos_error_ = filtered_pos_error_;
-
-        const double angle_error = current_angle - desired_angle_deg_;
-
-        double angular =
-            kp_pos_ * filtered_pos_error_ +
-            kd_pos_ * d_pos_error +
-            kp_angle_ * deg2rad(angle_error);
-
-        double linear_speed = base_speed_;
-        if (in_curve || std::fabs(filtered_pos_error_) > 40) {
-            linear_speed = curve_speed_;
-        }
-        if (std::fabs(filtered_pos_error_) > 60) {
-            linear_speed *= 0.8;
-        }
-
-        if(in_curve)
-        {
-            angular *= curve_gain_;
-        }
-
-        angular = clamp(angular, -max_angular_, max_angular_);
-
-        twist.linear.x = linear_speed;
-        twist.angular.z = angular;
     }
 
     void handleStopLineFound(geometry_msgs::Twist& twist)
@@ -561,6 +603,78 @@ private:
         return info;
     }
 
+    // ========== 新增：左线检测 ==========
+    LineInfo findLeftLine(const cv::Mat& mask)
+    {
+        LineInfo info;
+        const int h = mask.rows;
+        const int w = mask.cols;
+
+        for(int y = static_cast<int>(h * 0.20);
+            y < static_cast<int>(h * 0.92);
+            y += 4)
+        {
+            const uchar* ptr = mask.ptr<uchar>(y);
+
+            for(int x = 0; x < w; ++x)
+            {
+                if(ptr[x] > 0)
+                {
+                    info.points.push_back(cv::Point(x, y));
+                    break;
+                }
+            }
+        }
+
+        if(info.points.size() < 6)
+        {
+            info.found = false;
+            info.x = predicted_left_x_;
+            info.angle_deg = desired_angle_deg_;
+            return info;
+        }
+
+        double x_sum = 0.0;
+        int x_count = 0;
+
+        for(const auto& p : info.points)
+        {
+            if(p.y > h * 0.45)
+            {
+                x_sum += p.x;
+                ++x_count;
+            }
+        }
+
+        if(x_count == 0)
+        {
+            for(const auto& p : info.points)
+            {
+                x_sum += p.x;
+            }
+            x_count = static_cast<int>(info.points.size());
+        }
+
+        cv::fitLine(
+            info.points,
+            info.fit_line,
+            cv::DIST_L2,
+            0.0,
+            0.01,
+            0.01);
+
+        const double vx = info.fit_line[0];
+        const double vy = info.fit_line[1];
+
+        info.found = true;
+        info.x = static_cast<int>(x_sum / x_count);
+        info.angle_deg = rad2deg(std::atan2(vx, vy));
+
+        predicted_left_x_ = 0.7 * predicted_left_x_ + 0.3 * info.x;
+
+        return info;
+    }
+
     StopLineInfo findStopLine(const cv::Mat& mask)
     {
         StopLineInfo info;
@@ -589,8 +703,9 @@ private:
 
             cv::Rect rect = cv::boundingRect(cnt);
 
+            // 放宽条件但保留位置约束
             if(rect.y < h * 0.65) continue;
-            if(rect.width < rect.height * 5) continue;
+            if(rect.width < rect.height * 4) continue;  // 放宽到4倍
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
 
@@ -599,7 +714,7 @@ private:
                 cv::Vec4f line;
                 cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
                 double angle = rad2deg(std::atan2(line[1], line[0]));
-                if(std::fabs(angle) > 15.0) continue;
+                if(std::fabs(angle) > 20.0) continue;  // 放宽到20°
             }
 
             if(area > max_area)
@@ -641,6 +756,7 @@ private:
     void showDebug(
         const cv::Mat& mask,
         const LineInfo& right_line,
+        const LineInfo& left_line,
         const StopLineInfo& stop_line,
         const geometry_msgs::Twist& twist)
     {
@@ -652,6 +768,7 @@ private:
         const int active_target =
             target_right_x_ - (in_curve ? static_cast<int>(curve_offset_) : 0);
 
+        // 右线目标
         cv::line(
             debug,
             cv::Point(target_right_x_, 0),
@@ -666,6 +783,7 @@ private:
             cv::Scalar(0, 255, 255),
             2);
 
+        // 绘制右线
         if(right_line.found)
         {
             for(const auto& p : right_line.points)
@@ -679,6 +797,22 @@ private:
                 cv::Point(right_line.x, mask.rows / 2),
                 5,
                 cv::Scalar(0, 0, 255),
+                -1);
+        }
+
+        // 绘制左线
+        if(left_line.found)
+        {
+            for(const auto& p : left_line.points)
+            {
+                cv::circle(debug, p, 2, cv::Scalar(255, 180, 0), -1);
+            }
+            drawFitLine(debug, left_line.fit_line, cv::Scalar(0, 255, 0));
+            cv::circle(
+                debug,
+                cv::Point(left_line.x, mask.rows / 2),
+                5,
+                cv::Scalar(0, 255, 0),
                 -1);
         }
 
@@ -762,6 +896,7 @@ private:
     {
         last_pos_error_ = 0.0;
         filtered_pos_error_ = 0.0;
+        stop_line_confirm_count_ = 0;
     }
 
     void stopCar()
