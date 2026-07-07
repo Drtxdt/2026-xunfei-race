@@ -41,11 +41,11 @@ public:
 
         start_moving_time_ = ros::Time::now();
 
-        // ===== 修改 ===== 左转预处理标志
-        need_left_turn_ = false;
+        // ===== 修改 ===== 丢失恢复状态初始化
+        lost_recovery_active_ = false;
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Tuned) ");
+        ROS_INFO(" Stable Right Follow (Lost Recovery + Stop Tune) ");
         ROS_INFO("=================================");
     }
 
@@ -82,7 +82,7 @@ private:
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
 
-    // ========== 参数 ==========
+    // ========== 可调参数 ==========
     int target_right_x_;
     double base_speed_;
     double curve_speed_;
@@ -136,11 +136,14 @@ private:
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;
 
-    // ===== 修改 ===== 左转预处理变量
-    bool need_left_turn_;
-    ros::Time left_turn_start_time_;
-    const double left_turn_duration_ = 0.7;   // 0.6rad/s * 0.7s ≈ 24°
-    const double left_turn_angular_ = 0.6;
+    // ===== 修改 ===== 丢失恢复相关变量
+    bool lost_recovery_active_;               // 是否正在执行恢复序列
+    ros::Time lost_recovery_start_;           // 恢复开始时间
+    enum LostRecoveryPhase { STOP_1S, TURN_25DEG, DONE };
+    LostRecoveryPhase recovery_phase_;        // 当前恢复阶段
+    const double stop_duration_ = 1.0;        // 停车1秒
+    const double turn_angular_ = 0.6;         // 左转角速度 (rad/s)
+    const double turn_duration_ = 0.73;       // 0.6 * 0.73 ≈ 25°
 
     // ========== 参数加载 ==========
     void loadParams(ros::NodeHandle& pnh)
@@ -173,10 +176,10 @@ private:
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        // ===== 修改 ===== 缩短等待时间至0.5秒
+        // ===== 修改 ===== 停车线等待时间缩短为 0.5 秒
         pnh.param("align_stop_time", align_stop_time_, 0.5);
-        // ===== 修改 ===== 目标角度改为-5°（左转5°）
-        pnh.param("desired_angle_deg", desired_angle_deg_, -5.0);
+        // ===== 修改 ===== 期望角度改为 -8°，即停车对齐时左转8°
+        pnh.param("desired_angle_deg", desired_angle_deg_, -8.0);
 
         pnh.param("final_speed", final_speed_, 0.20);
         pnh.param("final_distance", final_distance_, 0.60);
@@ -272,19 +275,40 @@ private:
 
     void handleSearch(geometry_msgs::Twist& twist, const LineInfo& right_line)
     {
-        // ===== 修改 ===== 如果需要左转预处理，先执行左转
-        if(need_left_turn_)
+        // ===== 修改 ===== 如果处于丢失恢复状态，先执行恢复序列
+        if(lost_recovery_active_)
         {
-            double elapsed = (ros::Time::now() - left_turn_start_time_).toSec();
-            if(elapsed < left_turn_duration_)
+            double elapsed = (ros::Time::now() - lost_recovery_start_).toSec();
+
+            // 根据当前阶段执行动作
+            if(recovery_phase_ == STOP_1S)
             {
-                twist.linear.x = search_speed_;
-                twist.angular.z = left_turn_angular_;   // 左转
+                // 停车1秒
+                twist.linear.x = 0.0;
+                twist.angular.z = 0.0;
+                if(elapsed >= stop_duration_)
+                {
+                    // 进入左转阶段
+                    recovery_phase_ = TURN_25DEG;
+                    lost_recovery_start_ = ros::Time::now();
+                }
                 return;
             }
-            else
+            else if(recovery_phase_ == TURN_25DEG)
             {
-                need_left_turn_ = false;   // 左转完成
+                // 左转25度
+                twist.linear.x = search_speed_;      // 低速前进同时左转
+                twist.angular.z = turn_angular_;     // 正值左转
+                if(elapsed >= turn_duration_)
+                {
+                    // 恢复完成，清除标志，继续执行原来的搜索逻辑
+                    lost_recovery_active_ = false;
+                    // 注意：不return，让程序继续执行后面的原搜索代码
+                }
+                else
+                {
+                    return;
+                }
             }
         }
 
@@ -321,12 +345,14 @@ private:
             return;
         }
 
-        // ===== 修改 ===== 丢线处理：左转25°后再搜索
+        // ===== 修改 ===== 丢线处理：启动恢复序列（停车1s + 左转25°）
         if(lost_line_count_ > 10)
         {
-            need_left_turn_ = true;
-            left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, LEFT TURN 25° THEN SEARCH");
+            // 启动恢复序列
+            lost_recovery_active_ = true;
+            lost_recovery_start_ = ros::Time::now();
+            recovery_phase_ = STOP_1S;   // 先停车1秒
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, RECOVER (STOP 1s + LEFT 25°)");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -411,7 +437,7 @@ private:
             return;
         }
 
-        // ===== 修改 ===== 使用 desired_angle_deg_，实现左转5°对齐
+        // desired_angle_deg_ 已改为 -8°，这里自动使用
         double angle_error = stop_line.angle_deg - desired_angle_deg_;
         double angular_cmd = clamp(angle_error * 0.035, -0.18, 0.18);
 
@@ -462,7 +488,7 @@ private:
         twist.angular.z = 0.0;
     }
 
-    // ========== 图像处理（保持不变） ==========
+    // ========== 图像处理 ==========
     cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat blur;
@@ -590,7 +616,7 @@ private:
         return info;
     }
 
-    // ========== 调试显示（保持不变） ==========
+    // ========== 调试显示 ==========
     void showDebug(const cv::Mat& mask, const LineInfo& right_line,
                    const StopLineInfo& stop_line, const geometry_msgs::Twist& twist)
     {
@@ -615,12 +641,12 @@ private:
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0,255,255), 1);
         }
         double elapsed = (ros::Time::now() - start_moving_time_).toSec();
-        drawText(debug, 20,30, "stage: " + stageName(stage_));
-        drawText(debug, 20,60, format("target: %d", active_target));
-        drawText(debug, 20,90, format("err: %.2f", filtered_pos_error_));
-        drawText(debug, 20,120, format("time: %.1fs", elapsed));
-        drawText(debug, 20,150, format("cmd w: %.3f", twist.angular.z));
-        drawText(debug, 20,180, format("lost: %d", lost_line_count_));
+        drawText(debug, 20, 30,  "stage: " + stageName(stage_));
+        drawText(debug, 20, 60,  format("target: %d", active_target));
+        drawText(debug, 20, 90,  format("err: %.2f", filtered_pos_error_));
+        drawText(debug, 20, 120, format("time: %.1fs", elapsed));
+        drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
+        drawText(debug, 20, 180, format("lost: %d", lost_line_count_));
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
     }
