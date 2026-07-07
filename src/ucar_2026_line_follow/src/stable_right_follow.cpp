@@ -41,11 +41,11 @@ public:
 
         start_moving_time_ = ros::Time::now();
 
-        // ====== 修改 ====== 左转预处理标志
-        need_left_pre_turn_ = false;
+        // ===== 修改 ===== 左转预处理标志
+        need_left_turn_ = false;
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Lost Line Left Turn + Stop Tune) ");
+        ROS_INFO(" Stable Right Follow (Tuned) ");
         ROS_INFO("=================================");
     }
 
@@ -82,7 +82,7 @@ private:
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
 
-    // ========== 可调参数 ==========
+    // ========== 参数 ==========
     int target_right_x_;
     double base_speed_;
     double curve_speed_;
@@ -136,10 +136,10 @@ private:
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;
 
-    // ====== 修改 ====== 左转预处理变量
-    bool need_left_pre_turn_;
+    // ===== 修改 ===== 左转预处理变量
+    bool need_left_turn_;
     ros::Time left_turn_start_time_;
-    const double left_turn_duration_ = 0.73;   // 0.6 rad/s * 0.73s ≈ 0.438 rad ≈ 25°
+    const double left_turn_duration_ = 0.7;   // 0.6rad/s * 0.7s ≈ 24°
     const double left_turn_angular_ = 0.6;
 
     // ========== 参数加载 ==========
@@ -173,9 +173,9 @@ private:
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        // ====== 修改 ====== 缩短停车线等待时间至0.5秒
+        // ===== 修改 ===== 缩短等待时间至0.5秒
         pnh.param("align_stop_time", align_stop_time_, 0.5);
-        // ====== 修改 ====== 目标角度改为-5度（左转5°）
+        // ===== 修改 ===== 目标角度改为-5°（左转5°）
         pnh.param("desired_angle_deg", desired_angle_deg_, -5.0);
 
         pnh.param("final_speed", final_speed_, 0.20);
@@ -272,19 +272,19 @@ private:
 
     void handleSearch(geometry_msgs::Twist& twist, const LineInfo& right_line)
     {
-        // ====== 修改 ====== 如果需要左转预处理，先执行左转
-        if(need_left_pre_turn_)
+        // ===== 修改 ===== 如果需要左转预处理，先执行左转
+        if(need_left_turn_)
         {
             double elapsed = (ros::Time::now() - left_turn_start_time_).toSec();
             if(elapsed < left_turn_duration_)
             {
                 twist.linear.x = search_speed_;
-                twist.angular.z = left_turn_angular_;   // 左转正值
+                twist.angular.z = left_turn_angular_;   // 左转
                 return;
             }
             else
             {
-                need_left_pre_turn_ = false;
+                need_left_turn_ = false;   // 左转完成
             }
         }
 
@@ -315,16 +315,16 @@ private:
         if(stop_line.found && !ignore_stop_line)
         {
             resetPid();
-            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED (TIME>=10s)");
+            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
         }
 
-        // ====== 修改 ====== 丢线处理：记录左转标志后进入搜索
+        // ===== 修改 ===== 丢线处理：左转25°后再搜索
         if(lost_line_count_ > 10)
         {
-            need_left_pre_turn_ = true;
+            need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
             enterStage(SEARCH_RIGHT_LINE, "LINE LOST, LEFT TURN 25° THEN SEARCH");
             twist.linear.x = 0.0;
@@ -411,7 +411,7 @@ private:
             return;
         }
 
-        // desired_angle_deg_ 已改为 -5°，这里自动使用
+        // ===== 修改 ===== 使用 desired_angle_deg_，实现左转5°对齐
         double angle_error = stop_line.angle_deg - desired_angle_deg_;
         double angular_cmd = clamp(angle_error * 0.035, -0.18, 0.18);
 
@@ -462,7 +462,7 @@ private:
         twist.angular.z = 0.0;
     }
 
-    // ========== 图像处理 ==========
+    // ========== 图像处理（保持不变） ==========
     cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat blur;
@@ -590,7 +590,7 @@ private:
         return info;
     }
 
-    // ========== 调试显示 ==========
+    // ========== 调试显示（保持不变） ==========
     void showDebug(const cv::Mat& mask, const LineInfo& right_line,
                    const StopLineInfo& stop_line, const geometry_msgs::Twist& twist)
     {
@@ -598,7 +598,7 @@ private:
         cv::cvtColor(mask, debug, cv::COLOR_GRAY2BGR);
         const bool in_curve = std::fabs(filtered_pos_error_) > curve_threshold_;
         const int active_target = target_right_x_ - (in_curve ? static_cast<int>(curve_offset_) : 0);
-        cv::line(debug, cv::Point(target_right_x_, 0), cv::Point(target_right_x_, mask.rows), cv::Scalar(255,0,0),2);
+        cv::line(debug, cv::Point(target_right_x_,0), cv::Point(target_right_x_, mask.rows), cv::Scalar(255,0,0),2);
         cv::line(debug, cv::Point(active_target,0), cv::Point(active_target, mask.rows), cv::Scalar(0,255,255),2);
         if(right_line.found)
         {
@@ -615,20 +615,20 @@ private:
                         cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0,255,255), 1);
         }
         double elapsed = (ros::Time::now() - start_moving_time_).toSec();
-        drawText(debug, 20, 30,  "stage: " + stageName(stage_));
-        drawText(debug, 20, 60,  format("target: %d", active_target));
-        drawText(debug, 20, 90,  format("err: %.2f", filtered_pos_error_));
-        drawText(debug, 20, 120, format("time: %.1fs", elapsed));
-        drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
-        drawText(debug, 20, 180, format("lost: %d", lost_line_count_));
+        drawText(debug, 20,30, "stage: " + stageName(stage_));
+        drawText(debug, 20,60, format("target: %d", active_target));
+        drawText(debug, 20,90, format("err: %.2f", filtered_pos_error_));
+        drawText(debug, 20,120, format("time: %.1fs", elapsed));
+        drawText(debug, 20,150, format("cmd w: %.3f", twist.angular.z));
+        drawText(debug, 20,180, format("lost: %d", lost_line_count_));
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
     }
 
     void drawFitLine(cv::Mat& img, const cv::Vec4f& line, const cv::Scalar& color)
     {
-        float vx = line[0], vy = line[1], x0 = line[2], y0 = line[3];
-        if(std::fabs(vy) < 1e-5) return;
+        float vx=line[0], vy=line[1], x0=line[2], y0=line[3];
+        if(std::fabs(vy)<1e-5) return;
         int y1=0, y2=img.rows-1;
         int x1 = static_cast<int>(x0 + (y1-y0)*vx/vy);
         int x2 = static_cast<int>(x0 + (y2-y0)*vx/vy);
@@ -683,7 +683,6 @@ private:
     {
         char buf[80]; std::snprintf(buf, sizeof(buf), fmt, value); return buf;
     }
-
     std::string format(const char* fmt, int value)
     {
         char buf[80]; std::snprintf(buf, sizeof(buf), fmt, value); return buf;
