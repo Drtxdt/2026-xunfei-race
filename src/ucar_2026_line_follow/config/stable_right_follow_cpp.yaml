@@ -1,11 +1,12 @@
 ###############
 # Line follow
 ###############
-target_right_x: 145
+target_right_x: 125          # 145 → 130，车更靠左，远离右线
+curve_offset: 60.0           # 15 → 20，弯道额外远离右线
 
 # 速度调低，让车更稳
-base_speed: 0.22          # 0.34 → 0.22
-curve_speed: 0.18         # 0.27 → 0.18
+base_speed: 0.22             # 0.30 → 0.22
+curve_speed: 0.18            # 0.24 → 0.18
 search_speed: 0.12
 lost_line_speed: 0.14
 startup_speed: 0.45
@@ -13,21 +14,20 @@ startup_speed: 0.45
 ###############
 # PID
 ###############
-# 降低比例、增加微分，抑制蛇形
-kp_pos: 0.0035            # 0.0055 → 0.0035
-kd_pos: 0.0025            # 0.0018 → 0.0025
-kp_angle: 0.25            # 0.40 → 0.25
+# 降低比例、增加微分，抑制蛇形，减少飘动
+kp_pos: 0.0032               # 0.0040 → 0.0032
+kd_pos: 0.0030               # 0.0020 → 0.0030
+kp_angle: 0.25               # 0.30 → 0.25
 
 # 限制最大转向速度，提高平滑度
-max_angular: 0.40         # 0.55 → 0.40
-error_filter_alpha: 0.30  # 0.22 → 0.30（更平滑）
+max_angular: 0.40            # 0.45 → 0.40
+error_filter_alpha: 0.25     # 0.18 → 0.25（滤波更强，更平滑）
 
 ###############
 # Curve
 ###############
 curve_threshold: 35.0
-curve_offset: 15.0
-curve_gain: 0.9           # 1.2 → 0.9（弯道不冲）
+curve_gain: 0.9              # 1.0 → 0.9（弯道不冲）
 
 ###############
 # Startup
@@ -37,26 +37,24 @@ startup_time: 2.8
 ###############
 # Stop line
 ###############
-# 放宽停车线检测参数，配合 C++ 代码中的几何约束
 cross_area_threshold: 48000
-# 停车线检测参数（放宽，让车能认出白线）
-stop_line_min_width: 80      # 120 → 80（允许更短的线）
-stop_line_max_height: 50     # 40 → 50（允许稍微厚一点的线）
-stop_line_min_area: 400      # 800 → 400（降低面积门槛）
+stop_line_min_width: 80      # 120 → 80
+stop_line_max_height: 50     # 40 → 50
+stop_line_min_area: 400      # 800 → 400
 
 ###############
 # Align
 ###############
 align_speed: 0.18
-align_angle_threshold: 2.0   # 如果想对齐更准，可改为 1.0
-align_stop_time: 1.5         # 0.2 → 1.5（停车停 1.5 秒）
-desired_angle_deg: 0.0
+align_angle_threshold: 2.0
+align_stop_time: 0.5         # 1.5 → 0.5（缩短等待）
+desired_angle_deg: -5.0      # 0.0 → -5.0（垂直基础上左转5°）
 
 ###############
 # Final forward
 ###############
 final_speed: 0.20
-final_distance: 0.60         # 0.70 → 0.60（直走 60 厘米）
+final_distance: 0.60
 
 ###############
 # Debug
