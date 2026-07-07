@@ -242,6 +242,7 @@ private:
             twist.angular.z = 0.0;
             break;
         }
+    }
 
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
         last_angular_ = twist.angular.z;
@@ -410,6 +411,8 @@ private:
             }
             return;
         }
+        return clean;
+    }
 
         // ===== 修改 ===== 使用 desired_angle_deg_，实现左转5°对齐
         double angle_error = stop_line.angle_deg - desired_angle_deg_;
