@@ -41,11 +41,11 @@ public:
 
         start_moving_time_ = ros::Time::now();
 
-        // ---------- 修改 ---------- 新增左转预处理标志
+        // ====== 修改 ====== 左转预处理标志
         need_left_pre_turn_ = false;
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Lost Line Left Turn) ");
+        ROS_INFO(" Stable Right Follow (Lost Line Left Turn + Stop Tune) ");
         ROS_INFO("=================================");
     }
 
@@ -136,11 +136,11 @@ private:
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;
 
-    // ---------- 修改 ---------- 左转预处理相关变量
+    // ====== 修改 ====== 左转预处理变量
     bool need_left_pre_turn_;
     ros::Time left_turn_start_time_;
-    const double left_turn_duration_ = 0.7;   // 约25° (0.6 rad/s * 0.7s ≈ 0.42 rad = 24°)
-    const double left_turn_angular_ = 0.6;    // 左转角速度 (rad/s)
+    const double left_turn_duration_ = 0.73;   // 0.6 rad/s * 0.73s ≈ 0.438 rad ≈ 25°
+    const double left_turn_angular_ = 0.6;
 
     // ========== 参数加载 ==========
     void loadParams(ros::NodeHandle& pnh)
@@ -173,9 +173,10 @@ private:
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        // ---------- 修改 ---------- 停车线等待时间缩短为0.8秒
-        pnh.param("align_stop_time", align_stop_time_, 0.8);
-        pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
+        // ====== 修改 ====== 缩短停车线等待时间至0.5秒
+        pnh.param("align_stop_time", align_stop_time_, 0.5);
+        // ====== 修改 ====== 目标角度改为-5度（左转5°）
+        pnh.param("desired_angle_deg", desired_angle_deg_, -5.0);
 
         pnh.param("final_speed", final_speed_, 0.20);
         pnh.param("final_distance", final_distance_, 0.60);
@@ -271,7 +272,7 @@ private:
 
     void handleSearch(geometry_msgs::Twist& twist, const LineInfo& right_line)
     {
-        // ---------- 修改 ---------- 如果需要左转预处理，先执行左转
+        // ====== 修改 ====== 如果需要左转预处理，先执行左转
         if(need_left_pre_turn_)
         {
             double elapsed = (ros::Time::now() - left_turn_start_time_).toSec();
@@ -283,7 +284,7 @@ private:
             }
             else
             {
-                need_left_pre_turn_ = false;   // 左转完成，接下来执行原来的搜索逻辑
+                need_left_pre_turn_ = false;
             }
         }
 
@@ -291,7 +292,7 @@ private:
         if(!right_line.found)
         {
             twist.linear.x = search_speed_;
-            twist.angular.z = -0.26;   // 右转
+            twist.angular.z = -0.26;
             return;
         }
 
@@ -320,12 +321,12 @@ private:
             return;
         }
 
-        // ---------- 修改 ---------- 丢线处理：启动左转预处理
+        // ====== 修改 ====== 丢线处理：记录左转标志后进入搜索
         if(lost_line_count_ > 10)
         {
             need_left_pre_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST -> LEFT TURN 25° THEN SEARCH");
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, LEFT TURN 25° THEN SEARCH");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -390,7 +391,6 @@ private:
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
         }
-
         if(elapsed > 3.0)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "STOPLINE TIMEOUT");
@@ -411,7 +411,8 @@ private:
             return;
         }
 
-        double angle_error = stop_line.angle_deg - 0.0;
+        // desired_angle_deg_ 已改为 -5°，这里自动使用
+        double angle_error = stop_line.angle_deg - desired_angle_deg_;
         double angular_cmd = clamp(angle_error * 0.035, -0.18, 0.18);
 
         if(std::fabs(angle_error) < 0.2)
@@ -465,30 +466,27 @@ private:
     cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat blur;
-        cv::GaussianBlur(roi, blur, cv::Size(5, 5), 0);
+        cv::GaussianBlur(roi, blur, cv::Size(5,5),0);
         cv::Mat hsv;
         cv::cvtColor(blur, hsv, cv::COLOR_BGR2HSV);
         cv::Mat mask;
-        cv::inRange(hsv, cv::Scalar(0, 0, 200), cv::Scalar(180, 45, 255), mask);
+        cv::inRange(hsv, cv::Scalar(0,0,200), cv::Scalar(180,45,255), mask);
 
-        cv::Mat kernel = cv::Mat::ones(5, 5, CV_8U);
+        cv::Mat kernel = cv::Mat::ones(5,5, CV_8U);
         cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
         cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
         cv::medianBlur(mask, mask, 5);
-        cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
+        cv::GaussianBlur(mask, mask, cv::Size(5,5), 0);
 
-        std::vector<std::vector<cv::Point> > contours;
+        std::vector<std::vector<cv::Point>> contours;
         cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-        cv::Mat clean_mask = cv::Mat::zeros(mask.size(), CV_8UC1);
+        cv::Mat clean = cv::Mat::zeros(mask.size(), CV_8UC1);
         for(const auto& cnt : contours)
         {
             if(cv::contourArea(cnt) > 260.0)
-            {
-                cv::drawContours(clean_mask, std::vector<std::vector<cv::Point> >{cnt},
-                                 -1, cv::Scalar(255), -1);
-            }
+                cv::drawContours(clean, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), -1);
         }
-        return clean_mask;
+        return clean;
     }
 
     LineInfo findRightLine(const cv::Mat& mask)
@@ -496,19 +494,18 @@ private:
         LineInfo info;
         const int h = mask.rows;
         const int w = mask.cols;
-        for(int y = static_cast<int>(h * 0.20); y < static_cast<int>(h * 0.92); y += 4)
+        for(int y = static_cast<int>(h*0.20); y < static_cast<int>(h*0.92); y+=4)
         {
             const uchar* ptr = mask.ptr<uchar>(y);
-            for(int x = w - 1; x >= 0; --x)
+            for(int x = w-1; x>=0; --x)
             {
                 if(ptr[x] > 0)
                 {
-                    info.points.push_back(cv::Point(x, y));
+                    info.points.push_back(cv::Point(x,y));
                     break;
                 }
             }
         }
-
         if(info.points.size() < 6)
         {
             info.found = false;
@@ -517,29 +514,26 @@ private:
             lost_line_count_++;
             return info;
         }
-
         double x_sum = 0.0;
         int x_count = 0;
         for(const auto& p : info.points)
         {
-            if(p.y > h * 0.45) { x_sum += p.x; x_count++; }
+            if(p.y > h*0.45) { x_sum += p.x; x_count++; }
         }
         if(x_count == 0)
         {
             for(const auto& p : info.points) x_sum += p.x;
             x_count = static_cast<int>(info.points.size());
         }
-
         cv::fitLine(info.points, info.fit_line, cv::DIST_L2, 0.0, 0.01, 0.01);
         const double vx = info.fit_line[0];
         const double vy = info.fit_line[1];
         info.found = true;
-        info.x = static_cast<int>(x_sum / x_count);
-        info.angle_deg = rad2deg(std::atan2(vx, vy));
-
+        info.x = static_cast<int>(x_sum/x_count);
+        info.angle_deg = rad2deg(std::atan2(vx,vy));
         if(info.found)
         {
-            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * info.x;
+            predicted_right_x_ = 0.7*predicted_right_x_ + 0.3*info.x;
             lost_line_count_ = 0;
             last_line_time_ = ros::Time::now();
         }
@@ -551,10 +545,9 @@ private:
         StopLineInfo info;
         const int h = mask.rows;
         const int w = mask.cols;
-        cv::Mat bottom_roi = mask(cv::Range(static_cast<int>(h * 0.65), h), cv::Range(0, w));
-
-        std::vector<std::vector<cv::Point> > contours;
-        cv::findContours(bottom_roi.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+        cv::Mat bottom = mask(cv::Range(static_cast<int>(h*0.65), h), cv::Range(0,w));
+        std::vector<std::vector<cv::Point>> contours;
+        cv::findContours(bottom.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
         double max_area = 0;
         int best_idx = -1;
         for(size_t i = 0; i < contours.size(); ++i)
@@ -562,7 +555,7 @@ private:
             double area = cv::contourArea(contours[i]);
             if(area < stop_line_min_area_) continue;
             cv::Rect rect = cv::boundingRect(contours[i]);
-            if(rect.width < rect.height * 4) continue;
+            if(rect.width < rect.height*4) continue;
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
             if(contours[i].size() >= 5)
@@ -573,7 +566,6 @@ private:
             }
             if(area > max_area) { max_area = area; best_idx = i; }
         }
-
         if(best_idx >= 0)
         {
             const auto& cnt = contours[best_idx];
@@ -583,17 +575,16 @@ private:
             info.found = true;
             info.rect = rect;
             info.angle_deg = rad2deg(std::atan2(line[1], line[0]));
-            info.center_x = rect.x + rect.width / 2;
+            info.center_x = rect.x + rect.width/2;
         }
-
         if(!info.found && cross_area_threshold_ > 0)
         {
             if(cv::countNonZero(mask) > cross_area_threshold_)
             {
                 info.found = true;
-                info.rect = cv::Rect(0, 0, w, h);
+                info.rect = cv::Rect(0,0,w,h);
                 info.angle_deg = 0.0;
-                info.center_x = w / 2;
+                info.center_x = w/2;
             }
         }
         return info;
@@ -605,30 +596,24 @@ private:
     {
         cv::Mat debug;
         cv::cvtColor(mask, debug, cv::COLOR_GRAY2BGR);
-
         const bool in_curve = std::fabs(filtered_pos_error_) > curve_threshold_;
         const int active_target = target_right_x_ - (in_curve ? static_cast<int>(curve_offset_) : 0);
-
-        cv::line(debug, cv::Point(target_right_x_, 0), cv::Point(target_right_x_, mask.rows),
-                 cv::Scalar(255, 0, 0), 2);
-        cv::line(debug, cv::Point(active_target, 0), cv::Point(active_target, mask.rows),
-                 cv::Scalar(0, 255, 255), 2);
-
+        cv::line(debug, cv::Point(target_right_x_, 0), cv::Point(target_right_x_, mask.rows), cv::Scalar(255,0,0),2);
+        cv::line(debug, cv::Point(active_target,0), cv::Point(active_target, mask.rows), cv::Scalar(0,255,255),2);
         if(right_line.found)
         {
-            for(const auto& p : right_line.points) cv::circle(debug, p, 2, cv::Scalar(0, 180, 255), -1);
-            drawFitLine(debug, right_line.fit_line, cv::Scalar(0, 0, 255));
-            cv::circle(debug, cv::Point(right_line.x, mask.rows/2), 5, cv::Scalar(0, 0, 255), -1);
+            for(const auto& p : right_line.points) cv::circle(debug, p, 2, cv::Scalar(0,180,255), -1);
+            drawFitLine(debug, right_line.fit_line, cv::Scalar(0,0,255));
+            cv::circle(debug, cv::Point(right_line.x, mask.rows/2), 5, cv::Scalar(0,0,255), -1);
         }
         if(stop_line.found)
         {
-            cv::rectangle(debug, stop_line.rect, cv::Scalar(0, 255, 0), 2);
+            cv::rectangle(debug, stop_line.rect, cv::Scalar(0,255,0), 2);
             char buf[32];
             snprintf(buf, sizeof(buf), "Ang:%.1f", stop_line.angle_deg);
             cv::putText(debug, buf, cv::Point(stop_line.rect.x, stop_line.rect.y-10),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0,255,255), 1);
         }
-
         double elapsed = (ros::Time::now() - start_moving_time_).toSec();
         drawText(debug, 20, 30,  "stage: " + stageName(stage_));
         drawText(debug, 20, 60,  format("target: %d", active_target));
@@ -636,26 +621,24 @@ private:
         drawText(debug, 20, 120, format("time: %.1fs", elapsed));
         drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
         drawText(debug, 20, 180, format("lost: %d", lost_line_count_));
-
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
     }
 
-    void drawFitLine(cv::Mat& image, const cv::Vec4f& line, const cv::Scalar& color)
+    void drawFitLine(cv::Mat& img, const cv::Vec4f& line, const cv::Scalar& color)
     {
         float vx = line[0], vy = line[1], x0 = line[2], y0 = line[3];
         if(std::fabs(vy) < 1e-5) return;
-        int y1 = 0, y2 = image.rows - 1;
-        int x1 = static_cast<int>(x0 + (y1 - y0) * vx / vy);
-        int x2 = static_cast<int>(x0 + (y2 - y0) * vx / vy);
-        cv::line(image, cv::Point(clampInt(x1,0,image.cols-1), y1),
-                 cv::Point(clampInt(x2,0,image.cols-1), y2), color, 2);
+        int y1=0, y2=img.rows-1;
+        int x1 = static_cast<int>(x0 + (y1-y0)*vx/vy);
+        int x2 = static_cast<int>(x0 + (y2-y0)*vx/vy);
+        cv::line(img, cv::Point(clampInt(x1,0,img.cols-1), y1),
+                 cv::Point(clampInt(x2,0,img.cols-1), y2), color, 2);
     }
 
-    void drawText(cv::Mat& image, int x, int y, const std::string& text)
+    void drawText(cv::Mat& img, int x, int y, const std::string& text)
     {
-        cv::putText(image, text, cv::Point(x,y), cv::FONT_HERSHEY_SIMPLEX, 0.55,
-                    cv::Scalar(0,255,0), 2);
+        cv::putText(img, text, cv::Point(x,y), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0,255,0),2);
     }
 
     // ========== 辅助函数 ==========
