@@ -22,6 +22,18 @@ chmod +x debug/patch_speech_command_offline_tts.sh
 ./debug/patch_speech_command_offline_tts.sh
 ```
 
+The patch also sets the legacy offline TTS synthesis speed to `60`, which was
+validated on the robot as a more suitable competition announcement speed than
+the original `100`.
+
+To tune the speed without editing the robot source by hand, pass
+`TTS_SPEED` when running the patch:
+
+```bash
+TTS_SPEED=50 ./debug/patch_speech_command_offline_tts.sh
+TTS_SPEED=70 ./debug/patch_speech_command_offline_tts.sh
+```
+
 If TTS fails with `QTTSAudioGet failed, error code: 11210`, the appid and MSC TTS
 resources do not match. Copy the SDK resources for appid `97d4e3db` to the robot,
 then rerun the script with the resource directory:
