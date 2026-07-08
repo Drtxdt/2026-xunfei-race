@@ -3,6 +3,7 @@ set -euo pipefail
 
 APPID="${1:-97d4e3db}"
 RESOURCE_DIR="${2:-}"
+TTS_SPEED="${TTS_SPEED:-60}"
 SPEECH_COMMAND_DIR="${SPEECH_COMMAND_DIR:-/home/ucar/ucar_ws/src/speech_command}"
 UCAR_WS="${UCAR_WS:-/home/ucar/ucar_ws}"
 VOICE_NODE="${SPEECH_COMMAND_DIR}/src/voice_speak_node.cpp"
@@ -17,6 +18,10 @@ echo "Patching speech_command offline TTS appid to ${APPID}"
 cp -n "${VOICE_NODE}" "${VOICE_NODE}.bak"
 sed -i -E "s/appid = [0-9a-fA-F]+/appid = ${APPID}/g" "${VOICE_NODE}"
 grep -n "appid =" "${VOICE_NODE}"
+
+echo "Patching speech_command offline TTS speed to ${TTS_SPEED}"
+sed -i -E "s/speed = [0-9]+/speed = ${TTS_SPEED}/g" "${VOICE_NODE}"
+grep -n "speed =" "${VOICE_NODE}"
 
 if [ -n "${RESOURCE_DIR}" ]; then
   if [ ! -d "${RESOURCE_DIR}" ]; then
@@ -47,7 +52,7 @@ rm -rf /home/ucar/2026-xunfei-race/msc
 
 echo "Rebuilding /home/ucar/ucar_ws"
 cd "${UCAR_WS}"
-catkin_make
+catkin_make --pkg speech_command
 
 echo "Done. Test with:"
 echo "  source ${UCAR_WS}/devel/setup.bash"
