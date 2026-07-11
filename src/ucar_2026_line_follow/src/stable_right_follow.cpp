@@ -49,6 +49,7 @@ public:
 
         // ===== 修改 ===== “检测到右转”触发计数
         right_turn_count_ = 0.0;
+        right_turn_cooldown_until_ = ros::Time::now();
 
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Tuned) ");
@@ -113,6 +114,9 @@ private:
     double right_turn_angle_threshold_deg_;
     int right_turn_trigger_count_;
     double right_turn_count_;
+    // ===== 修改 ===== 触发后的冷却时间，防止角度噪声导致反复停车-左转（"一抽一抽"）
+    double right_turn_cooldown_sec_;
+    ros::Time right_turn_cooldown_until_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -201,8 +205,9 @@ private:
         pnh.param("safety_speed_scale", safety_speed_scale_, 0.6);
 
         // ===== 修改 ===== 用“检测到右转”代替“丢失右线”触发停车+左转修正
-        pnh.param("right_turn_angle_threshold_deg", right_turn_angle_threshold_deg_, 12.0);
-        pnh.param("right_turn_trigger_count", right_turn_trigger_count_, 4);
+        pnh.param("right_turn_angle_threshold_deg", right_turn_angle_threshold_deg_, 15.0);
+        pnh.param("right_turn_trigger_count", right_turn_trigger_count_, 6);
+        pnh.param("right_turn_cooldown_sec", right_turn_cooldown_sec_, 2.5);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
@@ -418,8 +423,12 @@ private:
             predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
             last_line_time_ = ros::Time::now();
 
+            // ===== 修改 ===== 必须角度偏差 且 位置误差同时偏大，才算真正进入右转弯道；
+            // 单纯角度读数噪声抖一下（直道上也可能发生）不会累积触发，避免反复停车-左转
             double angle_dev = std::fabs(current_angle - desired_angle_deg_);
-            if(angle_dev > right_turn_angle_threshold_deg_)
+            bool angle_bad = angle_dev > right_turn_angle_threshold_deg_;
+            bool pos_bad = std::fabs(filtered_pos_error_) > curve_threshold_;
+            if(angle_bad && pos_bad)
             {
                 right_turn_count_ += 1.0;
             }
@@ -434,9 +443,14 @@ private:
             lost_line_count_ += 1.0;
         }
 
-        if(right_turn_count_ >= right_turn_trigger_count_)
+        // ===== 修改 ===== 冷却期内不重新触发，防止刚做完一次停车-左转、
+        // 车还没稳定住又被噪声立刻拉回来，导致“一抽一抽”走不动
+        bool in_cooldown = ros::Time::now() < right_turn_cooldown_until_;
+
+        if(!in_cooldown && right_turn_count_ >= right_turn_trigger_count_)
         {
             right_turn_count_ = 0.0;
+            right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
             enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT TURN");
@@ -446,8 +460,9 @@ private:
         }
 
         // 丢线兜底：即便角度检测没提前抓到，线真的完全丢失时依然要触发同一套停车+左转
-        if(lost_line_count_ > 10.0)
+        if(!in_cooldown && lost_line_count_ > 10.0)
         {
+            right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
             enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT TURN");

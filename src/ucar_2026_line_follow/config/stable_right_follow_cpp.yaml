@@ -51,10 +51,11 @@ search_right_angular: 0.14
 ###############
 # 触发条件：用“检测到右转”代替“丢失右线”
 ###############
-# 只要右线拟合角度和期望角度偏差超过该阈值，且连续满足 right_turn_trigger_count 帧，
-# 就提前触发停车+左转修正（不必等到线完全丢失）；丢线依然保留作为兜底(阈值10帧)
-right_turn_angle_threshold_deg: 12.0
-right_turn_trigger_count: 4
+# 必须同时满足：角度偏差超过阈值 且 位置误差也超过弯道阈值，才计入右转判定，
+# 单纯角度噪声（直道也可能抖动）不会误触发；连续 right_turn_trigger_count 帧才真正触发
+right_turn_angle_threshold_deg: 15.0   # 12 → 15，减少直道噪声误判
+right_turn_trigger_count: 6            # 4 → 6，要求更持续的信号
+right_turn_cooldown_sec: 2.5           # 新增：触发一次后2.5秒内不再重新触发，防止反复停车-左转导致"一抽一抽"
 ###############
 # Stop line（放宽识别门槛，提升第一条横线的识别成功率）
 ###############
