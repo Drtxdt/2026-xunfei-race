@@ -47,6 +47,9 @@ public:
         // ===== 修改 ===== PID 积分项 & 微分限幅相关运行时变量
         integral_pos_error_ = 0.0;
 
+        // ===== 修改 ===== “检测到右转”触发计数
+        right_turn_count_ = 0.0;
+
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Tuned) ");
         ROS_INFO("=================================");
@@ -105,6 +108,11 @@ private:
     double hard_safety_margin_px_;
     double safety_min_angular_;
     double safety_speed_scale_;
+
+    // ===== 修改 ===== 用“检测到右转”代替“丢失右线”作为停车左转修正的触发条件
+    double right_turn_angle_threshold_deg_;
+    int right_turn_trigger_count_;
+    double right_turn_count_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -191,6 +199,10 @@ private:
         pnh.param("hard_safety_margin_px", hard_safety_margin_px_, 20.0);
         pnh.param("safety_min_angular", safety_min_angular_, 0.22);
         pnh.param("safety_speed_scale", safety_speed_scale_, 0.6);
+
+        // ===== 修改 ===== 用“检测到右转”代替“丢失右线”触发停车+左转修正
+        pnh.param("right_turn_angle_threshold_deg", right_turn_angle_threshold_deg_, 12.0);
+        pnh.param("right_turn_trigger_count", right_turn_trigger_count_, 4);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
@@ -371,6 +383,7 @@ private:
         last_right_x_ = right_line.x;
         resetPid();
         lost_line_count_ = 0.0;
+        right_turn_count_ = 0.0;
         predicted_right_x_ = right_line.x;
         enterStage(FOLLOW_RIGHT_LINE, "RIGHT LINE FOUND");
         twist.linear.x = 0.0;
@@ -393,32 +406,55 @@ private:
             return;
         }
 
-        // ===== 修改 ===== 丢线计数改为“找到线时缓慢衰减”而非瞬间清零，
-        // 弯道处右线检测偶尔闪现一帧不会把计数打回0，保证第二次丢线也能可靠触发左转停车修正
+        // ===== 修改 ===== 触发条件由“丢失右线”改为“检测到右转”：
+        // 只要还能看到右线，就用其拟合角度判断是否正在进入右转弯道，
+        // 提前原地停车+左转修正，而不是等到线完全丢失才反应（丢失往往已经太晚/太近了）
+        int current_x = right_line.found ? right_line.x : predicted_right_x_;
+        double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
+
         if(right_line.found)
         {
             last_right_x_ = right_line.x;
             predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
-            lost_line_count_ = std::max(0.0, lost_line_count_ - 2.0);
             last_line_time_ = ros::Time::now();
+
+            double angle_dev = std::fabs(current_angle - desired_angle_deg_);
+            if(angle_dev > right_turn_angle_threshold_deg_)
+            {
+                right_turn_count_ += 1.0;
+            }
+            else
+            {
+                right_turn_count_ = std::max(0.0, right_turn_count_ - 1.0);
+            }
+            lost_line_count_ = std::max(0.0, lost_line_count_ - 2.0);
         }
         else
         {
             lost_line_count_ += 1.0;
         }
 
-        if(lost_line_count_ > 10.0)
+        if(right_turn_count_ >= right_turn_trigger_count_)
         {
+            right_turn_count_ = 0.0;
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, STOP & LEFT TURN ~25 DEG");
+            enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT TURN");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
         }
 
-        int current_x = right_line.found ? right_line.x : predicted_right_x_;
-        double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
+        // 丢线兜底：即便角度检测没提前抓到，线真的完全丢失时依然要触发同一套停车+左转
+        if(lost_line_count_ > 10.0)
+        {
+            need_left_turn_ = true;
+            left_turn_start_time_ = ros::Time::now();
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT TURN");
+            twist.linear.x = 0.0;
+            twist.angular.z = 0.0;
+            return;
+        }
 
         const bool in_curve =
             std::fabs(filtered_pos_error_) > curve_threshold_ ||
@@ -676,6 +712,46 @@ private:
                 info.center_x = w/2;
             }
         }
+
+        // ===== 修改 ===== 行密度兜底检测：如果轮廓法仍未识别到，
+        // 逐行检查底部区域是否有一整条“横向大片白色”（覆盖率高的行），
+        // 这种情况通常就是停车线，但因形状/断裂被轮廓过滤掉了
+        if(!info.found)
+        {
+            const double row_white_ratio_thresh = 0.5;
+            const int min_consecutive_rows = 4;
+            int run_start = -1;
+            int run_len = 0;
+            int best_start = -1, best_len = 0;
+            for(int y = 0; y < bottom_h; ++y)
+            {
+                int white_count = cv::countNonZero(bottom.row(y));
+                double ratio = static_cast<double>(white_count) / std::max(1, w);
+                if(ratio >= row_white_ratio_thresh)
+                {
+                    if(run_start < 0) run_start = y;
+                    run_len++;
+                }
+                else
+                {
+                    if(run_len > best_len) { best_len = run_len; best_start = run_start; }
+                    run_start = -1;
+                    run_len = 0;
+                }
+            }
+            if(run_len > best_len) { best_len = run_len; best_start = run_start; }
+
+            if(best_len >= min_consecutive_rows)
+            {
+                info.found = true;
+                info.rect = cv::Rect(0, best_start, w, best_len);
+                info.angle_deg = 0.0;
+                info.center_x = w/2;
+                ROS_INFO_THROTTLE(1.0,
+                    "[StopLine row-scan fallback] rows=%d start=%d (ratio>=%.2f)",
+                    best_len, best_start, row_white_ratio_thresh);
+            }
+        }
         return info;
     }
 
@@ -710,6 +786,7 @@ private:
         drawText(debug, 20,120, format("time: %.1fs", elapsed));
         drawText(debug, 20,150, format("cmd w: %.3f", twist.angular.z));
         drawText(debug, 20,180, format("lost: %.1f", lost_line_count_));
+        drawText(debug, 20,210, format("rturn: %.1f", right_turn_count_));
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
     }

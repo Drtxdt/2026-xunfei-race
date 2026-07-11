@@ -37,7 +37,7 @@ error_filter_alpha: 0.25     # 0.18 → 0.25（滤波更强，更平滑）
 curve_threshold: 35.0
 curve_gain: 0.9              # 1.0 → 0.9（弯道不冲）
 ###############
-# Lost line -> 先停车原地左转(~25°)再搜索
+# Lost line -> 先停车原地左转(~12°)再搜索
 ###############
 lost_line_stop_duration: 1.5   # 停车+左转总时长，控制在1~2秒
 lost_line_turn_angle_deg: 12.0 # 25 → 12，左转幅度减小
@@ -48,6 +48,13 @@ left_turn_max_angular: 0.9
 # 左转修正完成后，缓慢向右扫描找线（比之前更慢更稳，避免又找过头）
 search_right_speed: 0.08
 search_right_angular: 0.14
+###############
+# 触发条件：用“检测到右转”代替“丢失右线”
+###############
+# 只要右线拟合角度和期望角度偏差超过该阈值，且连续满足 right_turn_trigger_count 帧，
+# 就提前触发停车+左转修正（不必等到线完全丢失）；丢线依然保留作为兜底(阈值10帧)
+right_turn_angle_threshold_deg: 12.0
+right_turn_trigger_count: 4
 ###############
 # Stop line（放宽识别门槛，提升第一条横线的识别成功率）
 ###############
