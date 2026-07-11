@@ -36,11 +36,14 @@ curve_gain: 0.9              # 1.0 → 0.9（弯道不冲）
 # Lost line -> 先停车原地左转(~25°)再搜索
 ###############
 lost_line_stop_duration: 1.5   # 停车+左转总时长，控制在1~2秒
-lost_line_turn_angle_deg: 25.0 # 期望原地左转角度
+lost_line_turn_angle_deg: 12.0 # 25 → 12，左转幅度减小
 # 左转期间若右线仍可见且过近，主动增大角速度远离右线
 left_turn_safety_margin_px: 40.0
 left_turn_extra_gain: 0.01
 left_turn_max_angular: 0.9
+# 左转修正完成后，缓慢向右扫描找线（比之前更慢更稳，避免又找过头）
+search_right_speed: 0.08
+search_right_angular: 0.14
 ###############
 # Stop line（放宽识别门槛，提升第一条横线的识别成功率）
 ###############

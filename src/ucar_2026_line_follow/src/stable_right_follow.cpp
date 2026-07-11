@@ -155,7 +155,11 @@ private:
     bool need_left_turn_;
     ros::Time left_turn_start_time_;
     double lost_line_stop_duration_;   // 停车+左转总时长（1~2秒）
-    double lost_line_turn_angle_deg_;  // 期望原地左转角度（约25°）
+    double lost_line_turn_angle_deg_;  // 期望原地左转角度（约12°）
+
+    // ===== 修改 ===== 左转修正完成后，缓慢向右扫描找线的速度参数
+    double search_right_speed_;
+    double search_right_angular_;
 
     // ===== 修改 ===== 左转时若右线仍可见且过近，额外增大角速度，主动远离右线
     double left_turn_safety_margin_px_;
@@ -216,7 +220,12 @@ private:
 
         // ===== 修改 ===== 丢线后先停车、原地左转参数
         pnh.param("lost_line_stop_duration", lost_line_stop_duration_, 1.5);
-        pnh.param("lost_line_turn_angle_deg", lost_line_turn_angle_deg_, 25.0);
+        // ===== 修改 ===== 25° → 12°，左转幅度减小
+        pnh.param("lost_line_turn_angle_deg", lost_line_turn_angle_deg_, 12.0);
+
+        // ===== 修改 ===== 左转修正完成后，缓慢向右扫描找线（比之前的0.12/-0.26更慢更稳）
+        pnh.param("search_right_speed", search_right_speed_, 0.08);
+        pnh.param("search_right_angular", search_right_angular_, 0.14);
 
         pnh.param("left_turn_safety_margin_px", left_turn_safety_margin_px_, 40.0);
         pnh.param("left_turn_extra_gain", left_turn_extra_gain_, 0.01);
@@ -344,11 +353,11 @@ private:
             }
         }
 
-        // 原来的右转搜索逻辑（小车缓慢前进 + 右转扫描找线）
+        // ===== 修改 ===== 原地左转修正完成后，改为缓慢向右扫描找线（降低角速度，避免又转过头）
         if(!right_line.found)
         {
-            twist.linear.x = search_speed_;
-            twist.angular.z = -0.26;
+            twist.linear.x = search_right_speed_;
+            twist.angular.z = -search_right_angular_;
             return;
         }
 
