@@ -10,9 +10,9 @@ search_speed: 0.12
 lost_line_speed: 0.14
 startup_speed: 0.45
 ###############
-# Startup（开机直行距离减半，尽快切入右线跟随）
+# Startup（开机直行距离增加到之前的1.7倍，尽早稳定进入右线跟随前先走更远一点）
 ###############
-startup_time: 1.4            # 2.8 → 1.4（距离减半，因为速度不变，距离=速度*时间）
+startup_time: 2.4            # 1.4 → 2.4（1.4 * 1.7 ≈ 2.4）
 ###############
 # PID
 ###############
@@ -24,6 +24,10 @@ ki_pos: 0.00035
 integral_clamp: 60.0
 # 新增：微分限幅，抑制入弯瞬间误差跳变造成的“微分冲击”（第一次拐弯左转过多压线的主因）
 d_error_clamp: 25.0
+# 新增：硬安全下限——距离右线过近时，不管PID算出多少，强制至少这么大的左转角速度，并限速
+hard_safety_margin_px: 20.0
+safety_min_angular: 0.22
+safety_speed_scale: 0.6
 # 限制最大转向速度，提高平滑度
 max_angular: 0.40            # 0.45 → 0.40
 error_filter_alpha: 0.25     # 0.18 → 0.25（滤波更强，更平滑）

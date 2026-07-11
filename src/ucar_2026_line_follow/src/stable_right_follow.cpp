@@ -101,6 +101,10 @@ private:
     double integral_clamp_;
     // ===== 修改 ===== 微分项限幅，抑制入弯瞬间误差跳变造成的“微分冲击”导致的过度左转
     double d_error_clamp_;
+    // ===== 修改 ===== 硬安全下限：距离右线过近时强制的最小左转角速度 & 限速比例
+    double hard_safety_margin_px_;
+    double safety_min_angular_;
+    double safety_speed_scale_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -184,6 +188,9 @@ private:
         pnh.param("ki_pos", ki_pos_, 0.00035);
         pnh.param("integral_clamp", integral_clamp_, 60.0);
         pnh.param("d_error_clamp", d_error_clamp_, 25.0);
+        pnh.param("hard_safety_margin_px", hard_safety_margin_px_, 20.0);
+        pnh.param("safety_min_angular", safety_min_angular_, 0.22);
+        pnh.param("safety_speed_scale", safety_speed_scale_, 0.6);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
@@ -192,8 +199,8 @@ private:
         pnh.param("max_angular", max_angular_, 0.45);
         pnh.param("error_filter_alpha", error_filter_alpha_, 0.18);
 
-        // ===== 修改 ===== 开机直行距离改为原来一半（时间减半，速度不变 => 距离减半）
-        pnh.param("startup_time", startup_time_, 1.4);
+        // ===== 修改 ===== 开机直行距离增加到之前的1.7倍（1.4 * 1.7 ≈ 2.4）
+        pnh.param("startup_time", startup_time_, 2.4);
 
         pnh.param("cross_area_threshold", cross_area_threshold_, 48000);
         pnh.param("stop_line_min_width", stop_line_min_width_, 120);
@@ -452,6 +459,15 @@ private:
 
         angular = clamp(angular, -max_angular_, max_angular_);
 
+        // ===== 修改 ===== 硬安全下限：只要距离右线过近（不管是否在弯道/PID算出多少），
+        // 强制保证至少有这么大的左转修正，并降低线速度给出更多反应时间。
+        // 这是针对“一直贴右线太近、压线”这个持续性问题的兜底措施。
+        if(current_x < target_right_x_ - hard_safety_margin_px_)
+        {
+            angular = std::max(angular, safety_min_angular_);
+            linear_speed = std::min(linear_speed, base_speed_ * safety_speed_scale_);
+        }
+
         twist.linear.x = linear_speed;
         twist.angular.z = angular;
     }
@@ -600,6 +616,8 @@ private:
         cv::findContours(bottom.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
         double max_area = 0;
         int best_idx = -1;
+        double best_reject_area = 0.0;
+        cv::Rect best_reject_rect;
         for(size_t i = 0; i < contours.size(); ++i)
         {
             double area = cv::contourArea(contours[i]);
@@ -610,10 +628,15 @@ private:
             if(rect.width < stop_line_min_width_) continue;
 
             double fill_ratio = area / std::max(1.0, static_cast<double>(rect.width * rect.height));
-            if(fill_ratio < stop_line_min_fill_ratio_) continue;
-
             double bottom_edge = rect.y + rect.height;
-            if(bottom_edge < bottom_h * stop_line_bottom_margin_ratio_) continue;
+
+            if(fill_ratio < stop_line_min_fill_ratio_ || bottom_edge < bottom_h * stop_line_bottom_margin_ratio_)
+            {
+                // ===== 修改 ===== 诊断日志：记录“差一点被判定为停车线”的候选框，
+                // 方便在没有画面的情况下通过 rosout 判断具体是哪个阈值卡住了
+                if(area > best_reject_area) { best_reject_area = area; best_reject_rect = rect; }
+                continue;
+            }
 
             if(contours[i].size() >= 5)
             {
@@ -622,6 +645,15 @@ private:
                 if(std::fabs(rad2deg(std::atan2(line[1], line[0]))) > 15.0) continue;
             }
             if(area > max_area) { max_area = area; best_idx = i; }
+        }
+        if(best_idx < 0 && best_reject_area > 0.0)
+        {
+            double fr = best_reject_area / std::max(1.0, static_cast<double>(best_reject_rect.width * best_reject_rect.height));
+            double be = best_reject_rect.y + best_reject_rect.height;
+            ROS_INFO_THROTTLE(1.0,
+                "[StopLine reject] area=%.0f w=%d h=%d fill=%.2f(need>=%.2f) bottom=%.0f(need>=%.0f)",
+                best_reject_area, best_reject_rect.width, best_reject_rect.height,
+                fr, stop_line_min_fill_ratio_, be, bottom_h * stop_line_bottom_margin_ratio_);
         }
         if(best_idx >= 0)
         {
