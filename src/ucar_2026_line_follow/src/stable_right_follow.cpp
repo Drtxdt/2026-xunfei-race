@@ -35,17 +35,17 @@ public:
         start_time_ = ros::Time::now();
 
         predicted_right_x_ = 160;
-        lost_line_count_ = 0;
+        lost_line_count_ = 0.0;
         last_angular_ = 0.0;
         last_line_time_ = ros::Time::now();
 
         start_moving_time_ = ros::Time::now();
 
-        // ===== 修改 ===== 左转预处理标志
+        // ===== 修改 ===== 左转预处理标志（丢线后先停下原地左转）
         need_left_turn_ = false;
 
-        // ===== 修改 ===== 对齐阶段（盲转5°）状态
-        align_turn_done_ = false;
+        // ===== 修改 ===== PID 积分项 & 微分限幅相关运行时变量
+        integral_pos_error_ = 0.0;
 
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Tuned) ");
@@ -96,6 +96,11 @@ private:
     double kp_pos_;
     double kd_pos_;
     double kp_angle_;
+    // ===== 修改 ===== 新增积分项，消除弯道后长期贴右线的稳态误差
+    double ki_pos_;
+    double integral_clamp_;
+    // ===== 修改 ===== 微分项限幅，抑制入弯瞬间误差跳变造成的“微分冲击”导致的过度左转
+    double d_error_clamp_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -110,7 +115,6 @@ private:
     int stop_line_min_width_;
     int stop_line_max_height_;
     int stop_line_min_area_;
-    // ===== 修改 ===== 停车横线识别加强参数
     double stop_line_min_fill_ratio_;
     double stop_line_bottom_margin_ratio_;
 
@@ -118,7 +122,6 @@ private:
     double align_angle_threshold_;
     double align_stop_time_;
     double desired_angle_deg_;
-    // ===== 修改 ===== 对齐阶段盲转角速度（rad/s），转动时长由 |desired_angle_deg_| 计算
     double align_angular_speed_;
 
     double final_speed_;
@@ -129,6 +132,8 @@ private:
     // ========== 运行时变量 ==========
     double last_pos_error_;
     double filtered_pos_error_;
+    // ===== 修改 ===== 积分误差累计
+    double integral_pos_error_;
     int last_right_x_;
 
     Stage stage_;
@@ -137,26 +142,25 @@ private:
     ros::Time forward_start_time_;
 
     int predicted_right_x_;
-    int lost_line_count_;
+    // ===== 修改 ===== 改为浮点数并支持“找到线时缓慢衰减”而不是瞬间清零，
+    // 避免弯道处右线检测偶尔闪现导致丢线计数被强制清零、从而第二次不再触发左转
+    double lost_line_count_;
     double last_angular_;
     ros::Time last_line_time_;
 
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;
 
-    // ===== 修改 ===== 左转预处理变量
+    // ===== 修改 ===== 丢线后先停车、原地左转的相关参数与状态
     bool need_left_turn_;
     ros::Time left_turn_start_time_;
-    const double left_turn_duration_ = 0.7;   // 0.6rad/s * 0.7s ≈ 24°（基础左转时长）
-    const double left_turn_angular_ = 0.6;
+    double lost_line_stop_duration_;   // 停车+左转总时长（1~2秒）
+    double lost_line_turn_angle_deg_;  // 期望原地左转角度（约25°）
 
-    // ===== 修改 ===== 左转时主动远离右线的安全参数
-    double left_turn_safety_margin_px_;  // 距离右线过近的像素阈值（相对于 target_right_x_）
-    double left_turn_extra_gain_;        // 每像素过近量对应的额外角速度增益
-    double left_turn_max_angular_;       // 左转阶段角速度上限（含主动远离部分）
-
-    // ===== 修改 ===== 对齐阶段（盲转）状态量
-    bool align_turn_done_;
+    // ===== 修改 ===== 左转时若右线仍可见且过近，额外增大角速度，主动远离右线
+    double left_turn_safety_margin_px_;
+    double left_turn_extra_gain_;
+    double left_turn_max_angular_;
 
     // ========== 参数加载 ==========
     void loadParams(ros::NodeHandle& pnh)
@@ -172,6 +176,10 @@ private:
         pnh.param("kp_pos", kp_pos_, 0.0040);
         pnh.param("kd_pos", kd_pos_, 0.0020);
         pnh.param("kp_angle", kp_angle_, 0.30);
+        // ===== 修改 ===== 积分项 & 微分限幅
+        pnh.param("ki_pos", ki_pos_, 0.00035);
+        pnh.param("integral_clamp", integral_clamp_, 60.0);
+        pnh.param("d_error_clamp", d_error_clamp_, 25.0);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
@@ -180,31 +188,36 @@ private:
         pnh.param("max_angular", max_angular_, 0.45);
         pnh.param("error_filter_alpha", error_filter_alpha_, 0.18);
 
-        pnh.param("startup_time", startup_time_, 2.8);
+        // ===== 修改 ===== 开机直行距离改为原来一半（时间减半，速度不变 => 距离减半）
+        pnh.param("startup_time", startup_time_, 1.4);
 
         pnh.param("cross_area_threshold", cross_area_threshold_, 48000);
         pnh.param("stop_line_min_width", stop_line_min_width_, 120);
         pnh.param("stop_line_max_height", stop_line_max_height_, 40);
         pnh.param("stop_line_min_area", stop_line_min_area_, 800);
-        // ===== 修改 ===== 停车横线识别加强参数（填充率 & 靠底部程度）
-        pnh.param("stop_line_min_fill_ratio", stop_line_min_fill_ratio_, 0.45);
-        pnh.param("stop_line_bottom_margin_ratio", stop_line_bottom_margin_ratio_, 0.55);
+        // ===== 修改 ===== 放宽识别门槛以提升召回率，同时仍能过滤明显噪声
+        pnh.param("stop_line_min_fill_ratio", stop_line_min_fill_ratio_, 0.35);
+        pnh.param("stop_line_bottom_margin_ratio", stop_line_bottom_margin_ratio_, 0.40);
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        // ===== 修改 ===== 缩短等待时间至0.5秒
-        pnh.param("align_stop_time", align_stop_time_, 0.5);
-        // ===== 修改 ===== 目标角度改为-5°（左转5°）
+        // ===== 修改 ===== 停车确认等待时间（很短，只是防抖），角度修正在 ALIGN 阶段进行
+        pnh.param("align_stop_time", align_stop_time_, 0.3);
         pnh.param("desired_angle_deg", desired_angle_deg_, -5.0);
-        // ===== 修改 ===== 对齐阶段盲转角速度
-        pnh.param("align_angular_speed", align_angular_speed_, 0.35);
+        // ===== 修改 ===== ALIGN 阶段盲转角速度，需与 desired_angle_deg_ 配合，
+        // 使 “停车确认 + 原地转5°” 总时长落在 1~2 秒
+        pnh.param("align_angular_speed", align_angular_speed_, 0.10);
 
         pnh.param("final_speed", final_speed_, 0.20);
+        // ===== 修改 ===== 直行距离与原来一致（此项不是用户要求减半的那个直行距离）
         pnh.param("final_distance", final_distance_, 0.60);
 
         pnh.param("show_debug", show_debug_, true);
 
-        // ===== 修改 ===== 左转丢线时主动远离右线参数
+        // ===== 修改 ===== 丢线后先停车、原地左转参数
+        pnh.param("lost_line_stop_duration", lost_line_stop_duration_, 1.5);
+        pnh.param("lost_line_turn_angle_deg", lost_line_turn_angle_deg_, 25.0);
+
         pnh.param("left_turn_safety_margin_px", left_turn_safety_margin_px_, 40.0);
         pnh.param("left_turn_extra_gain", left_turn_extra_gain_, 0.01);
         pnh.param("left_turn_max_angular", left_turn_max_angular_, 0.9);
@@ -291,51 +304,47 @@ private:
             return;
         }
         start_moving_time_ = ros::Time::now();
-        enterStage(SEARCH_RIGHT_LINE, "ENTER SEARCH MODE");
+        enterStage(SEARCH_RIGHT_LINE, "ENTER SEARCH MODE (half distance startup done)");
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
     }
 
     void handleSearch(geometry_msgs::Twist& twist, const LineInfo& right_line)
     {
-        // ===== 修改 ===== 如果需要左转预处理，先执行左转（丢线后的25°左转）
+        // ===== 修改 ===== 丢线恢复：先原地停车（linear=0）在1~2秒内完成左转角度修正，
+        // 不再一边前进一边转，避免第二次曲线处因视觉闪烁导致修正被跳过/距离右线过近
         if(need_left_turn_)
         {
             double elapsed = (ros::Time::now() - left_turn_start_time_).toSec();
-            if(elapsed < left_turn_duration_)
+
+            double planned_angular =
+                deg2rad(lost_line_turn_angle_deg_) / std::max(0.1, lost_line_stop_duration_);
+
+            // 若右线仍可见且距离过近，适当加大角速度，主动增加与右线的距离
+            if(right_line.found)
             {
-                // ===== 修改 ===== 左转过程中主动增加与右线的距离，防止压线
-                double dynamic_angular = left_turn_angular_;
-                double linear_speed = search_speed_;
-
-                if(right_line.found)
+                double closeness =
+                    (target_right_x_ - left_turn_safety_margin_px_) - right_line.x;
+                if(closeness > 0.0)
                 {
-                    // right_line.x 越小，说明右线越靠近图像中部/左侧，车体越容易压线
-                    // 当 right_line.x 小于 (target_right_x_ - safety_margin) 时视为过近
-                    double closeness =
-                        (target_right_x_ - left_turn_safety_margin_px_) - right_line.x;
-                    if(closeness > 0.0)
-                    {
-                        double extra = closeness * left_turn_extra_gain_;
-                        dynamic_angular += extra;
-                        // 过近时额外降低线速度，给转向更多时间远离线
-                        linear_speed = std::min(linear_speed, search_speed_ * 0.6);
-                    }
+                    planned_angular += closeness * left_turn_extra_gain_;
                 }
+            }
+            planned_angular = clamp(planned_angular, 0.0, left_turn_max_angular_);
 
-                dynamic_angular = clamp(dynamic_angular, 0.0, left_turn_max_angular_);
-
-                twist.linear.x = linear_speed;
-                twist.angular.z = dynamic_angular;   // 左转（正值）
+            if(elapsed < lost_line_stop_duration_)
+            {
+                twist.linear.x = 0.0;          // 完全停车，只做原地旋转修正
+                twist.angular.z = planned_angular;
                 return;
             }
             else
             {
-                need_left_turn_ = false;   // 左转完成
+                need_left_turn_ = false;   // 左转完成，进入正常搜索
             }
         }
 
-        // 原来的右转搜索逻辑
+        // 原来的右转搜索逻辑（小车缓慢前进 + 右转扫描找线）
         if(!right_line.found)
         {
             twist.linear.x = search_speed_;
@@ -345,7 +354,7 @@ private:
 
         last_right_x_ = right_line.x;
         resetPid();
-        lost_line_count_ = 0;
+        lost_line_count_ = 0.0;
         predicted_right_x_ = right_line.x;
         enterStage(FOLLOW_RIGHT_LINE, "RIGHT LINE FOUND");
         twist.linear.x = 0.0;
@@ -368,12 +377,25 @@ private:
             return;
         }
 
-        // ===== 修改 ===== 丢线处理：左转25°后再搜索（同时在左转时主动远离右线，见 handleSearch）
-        if(lost_line_count_ > 10)
+        // ===== 修改 ===== 丢线计数改为“找到线时缓慢衰减”而非瞬间清零，
+        // 弯道处右线检测偶尔闪现一帧不会把计数打回0，保证第二次丢线也能可靠触发左转停车修正
+        if(right_line.found)
+        {
+            last_right_x_ = right_line.x;
+            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
+            lost_line_count_ = std::max(0.0, lost_line_count_ - 2.0);
+            last_line_time_ = ros::Time::now();
+        }
+        else
+        {
+            lost_line_count_ += 1.0;
+        }
+
+        if(lost_line_count_ > 10.0)
         {
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, LEFT TURN 25° THEN SEARCH");
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, STOP & LEFT TURN ~25 DEG");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -381,18 +403,6 @@ private:
 
         int current_x = right_line.found ? right_line.x : predicted_right_x_;
         double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
-
-        if(right_line.found)
-        {
-            last_right_x_ = right_line.x;
-            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
-            lost_line_count_ = 0;
-            last_line_time_ = ros::Time::now();
-        }
-        else
-        {
-            lost_line_count_++;
-        }
 
         const bool in_curve =
             std::fabs(filtered_pos_error_) > curve_threshold_ ||
@@ -405,14 +415,23 @@ private:
             (1.0 - error_filter_alpha_) * filtered_pos_error_ +
             error_filter_alpha_ * pos_error;
 
-        const double d_pos_error = filtered_pos_error_ - last_pos_error_;
+        // ===== 修改 ===== 微分项限幅：防止入弯瞬间误差跳变产生“微分冲击”，
+        // 这是之前“第一次拐弯处向左转过多、压到左边线”的主要原因之一
+        double d_pos_error = filtered_pos_error_ - last_pos_error_;
+        d_pos_error = clamp(d_pos_error, -d_error_clamp_, d_error_clamp_);
         last_pos_error_ = filtered_pos_error_;
+
+        // ===== 修改 ===== 积分项（带抗饱和限幅）：消除弯道之后长期贴右线的稳态偏差
+        integral_pos_error_ = clamp(
+            integral_pos_error_ + filtered_pos_error_,
+            -integral_clamp_, integral_clamp_);
 
         const double angle_error = current_angle - desired_angle_deg_;
 
         double angular =
             kp_pos_ * filtered_pos_error_ +
             kd_pos_ * d_pos_error +
+            ki_pos_ * integral_pos_error_ +
             kp_angle_ * deg2rad(angle_error);
 
         double linear_speed = in_curve ? curve_speed_ : base_speed_;
@@ -434,18 +453,22 @@ private:
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
 
+        // ===== 修改 ===== 这里只是短暂防抖确认停止线（不做转向），
+        // 真正的角度修正在紧接着的 ALIGN 阶段（同样保持停车状态）完成，
+        // 两段相加控制在 1~2 秒内
         if(elapsed >= align_stop_time_)
         {
-            enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
+            enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE (stop & correct 5 deg)");
         }
-        if(elapsed > 3.0)
+        if(elapsed > 2.0)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "STOPLINE TIMEOUT");
         }
     }
 
-    // ===== 修改 ===== 对齐阶段改为盲转：停车后直接左转 |desired_angle_deg_|（5°），
-    // 不再依赖视觉持续跟踪停止线角度（避免转动过程中横线丢失导致对齐失败）
+    // ===== 修改 ===== 对齐阶段：全程保持停车（linear=0），原地左转 |desired_angle_deg_|（5°），
+    // 不依赖视觉持续跟踪，转动时长由 align_angular_speed_ 决定，
+    // 与 STOP_LINE_FOUND 的短暂确认时间相加，总停车+修正时间落在 1~2 秒
     void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& /*stop_line*/)
     {
         twist.linear.x = 0.0;
@@ -456,13 +479,11 @@ private:
 
         if(elapsed < turn_duration)
         {
-            // desired_angle_deg_ 为负表示左转，角速度正值对应左转
-            twist.angular.z = align_angular_speed_;
+            twist.angular.z = align_angular_speed_;   // 正值 = 左转
             return;
         }
 
         twist.angular.z = 0.0;
-        align_turn_done_ = true;
         enterStage(GO_FORWARD, "ALIGN DONE (5 DEG LEFT TURN)");
     }
 
@@ -530,10 +551,11 @@ private:
         }
         if(info.points.size() < 6)
         {
+            // ===== 修改 ===== 这里不再直接修改 lost_line_count_（避免和 handleFollow 中的
+            // 累计逻辑重复计数，导致丢线计数增长过快或不一致）
             info.found = false;
             info.x = predicted_right_x_;
             info.angle_deg = desired_angle_deg_;
-            lost_line_count_++;
             return info;
         }
         double x_sum = 0.0;
@@ -553,16 +575,11 @@ private:
         info.found = true;
         info.x = static_cast<int>(x_sum/x_count);
         info.angle_deg = rad2deg(std::atan2(vx,vy));
-        if(info.found)
-        {
-            predicted_right_x_ = 0.7*predicted_right_x_ + 0.3*info.x;
-            lost_line_count_ = 0;
-            last_line_time_ = ros::Time::now();
-        }
         return info;
     }
 
-    // ===== 修改 ===== 停车横线识别加强：增加填充率检查与靠底部检查，减少误检
+    // ===== 修改 ===== 停车横线识别：放宽召回（fill_ratio / bottom_margin 阈值降低），
+    // 同时保留基本几何过滤，减少“识别不到第一条横线”的漏检
     StopLineInfo findStopLine(const cv::Mat& mask)
     {
         StopLineInfo info;
@@ -583,13 +600,9 @@ private:
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
 
-            // ===== 修改 ===== 填充率检查：真正的横线是实心矩形，填充率应较高，
-            // 可排除噪声、断裂白斑等造成的误检
             double fill_ratio = area / std::max(1.0, static_cast<double>(rect.width * rect.height));
             if(fill_ratio < stop_line_min_fill_ratio_) continue;
 
-            // ===== 修改 ===== 靠底部检查：横线应出现在 ROI 靠近车体的一侧（底部），
-            // 避免把画面中部/上部的白色区域误判为横线
             double bottom_edge = rect.y + rect.height;
             if(bottom_edge < bottom_h * stop_line_bottom_margin_ratio_) continue;
 
@@ -655,7 +668,7 @@ private:
         drawText(debug, 20,90, format("err: %.2f", filtered_pos_error_));
         drawText(debug, 20,120, format("time: %.1fs", elapsed));
         drawText(debug, 20,150, format("cmd w: %.3f", twist.angular.z));
-        drawText(debug, 20,180, format("lost: %d", lost_line_count_));
+        drawText(debug, 20,180, format("lost: %.1f", lost_line_count_));
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
     }
@@ -682,7 +695,6 @@ private:
         stage_ = stage;
         stage_start_time_ = ros::Time::now();
         if(stage == GO_FORWARD) forward_start_time_ = ros::Time::now();
-        if(stage == ALIGN_WITH_RIGHT_LINE) align_turn_done_ = false;
         ROS_INFO("%s", message);
     }
 
@@ -690,6 +702,7 @@ private:
     {
         last_pos_error_ = 0.0;
         filtered_pos_error_ = 0.0;
+        integral_pos_error_ = 0.0;   // ===== 修改 ===== 每次重新找到线时清空积分，避免历史误差带入
     }
 
     void stopCar()

@@ -2,7 +2,7 @@
 # Line follow
 ###############
 target_right_x: 125          # 145 → 130，车更靠左，远离右线
-curve_offset: 60.0           # 15 → 20，弯道额外远离右线
+curve_offset: 60.0           # 15 → 60，弯道额外远离右线
 # 速度调低，让车更稳
 base_speed: 0.22             # 0.30 → 0.22
 curve_speed: 0.18            # 0.24 → 0.18
@@ -10,12 +10,20 @@ search_speed: 0.12
 lost_line_speed: 0.14
 startup_speed: 0.45
 ###############
+# Startup（开机直行距离减半，尽快切入右线跟随）
+###############
+startup_time: 1.4            # 2.8 → 1.4（距离减半，因为速度不变，距离=速度*时间）
+###############
 # PID
 ###############
-# 降低比例、增加微分，抑制蛇形，减少飘动
 kp_pos: 0.0032               # 0.0040 → 0.0032
 kd_pos: 0.0030               # 0.0020 → 0.0030
 kp_angle: 0.25               # 0.30 → 0.25
+# 新增：积分项，消除弯道后长期贴右线的稳态误差；带抗饱和限幅
+ki_pos: 0.00035
+integral_clamp: 60.0
+# 新增：微分限幅，抑制入弯瞬间误差跳变造成的“微分冲击”（第一次拐弯左转过多压线的主因）
+d_error_clamp: 25.0
 # 限制最大转向速度，提高平滑度
 max_angular: 0.40            # 0.45 → 0.40
 error_filter_alpha: 0.25     # 0.18 → 0.25（滤波更强，更平滑）
@@ -25,35 +33,32 @@ error_filter_alpha: 0.25     # 0.18 → 0.25（滤波更强，更平滑）
 curve_threshold: 35.0
 curve_gain: 0.9              # 1.0 → 0.9（弯道不冲）
 ###############
-# Startup
+# Lost line -> 先停车原地左转(~25°)再搜索
 ###############
-startup_time: 2.8
+lost_line_stop_duration: 1.5   # 停车+左转总时长，控制在1~2秒
+lost_line_turn_angle_deg: 25.0 # 期望原地左转角度
+# 左转期间若右线仍可见且过近，主动增大角速度远离右线
+left_turn_safety_margin_px: 40.0
+left_turn_extra_gain: 0.01
+left_turn_max_angular: 0.9
 ###############
-# Lost line -> left turn (~25 deg) then search
-###############
-# 丢线后左转的基础角速度/时长在代码中固定为 0.6rad/s * 0.7s ≈ 24°
-# 下面参数用于左转过程中"主动远离右线，防止压线"
-left_turn_safety_margin_px: 40.0   # 右线像素x小于 (target_right_x - 该值) 视为过近
-left_turn_extra_gain: 0.01         # 每像素过近量 -> 额外角速度增益 (rad/s per px)
-left_turn_max_angular: 0.9         # 左转阶段角速度上限（含主动远离部分）
-###############
-# Stop line
+# Stop line（放宽识别门槛，提升第一条横线的识别成功率）
 ###############
 cross_area_threshold: 48000
-stop_line_min_width: 80      # 120 → 80
-stop_line_max_height: 50     # 40 → 50
-stop_line_min_area: 400      # 800 → 400
-# 新增：识别加强，降低误检率
-stop_line_min_fill_ratio: 0.45        # 轮廓面积/外接矩形面积，越接近1越像实心横线
-stop_line_bottom_margin_ratio: 0.55   # 横线下边缘需位于底部ROI的靠后比例范围内
+stop_line_min_width: 80
+stop_line_max_height: 50
+stop_line_min_area: 400
+stop_line_min_fill_ratio: 0.35        # 0.45 → 0.35，降低漏检
+stop_line_bottom_margin_ratio: 0.40   # 0.55 → 0.40，降低漏检
 ###############
-# Align (停车后盲转对齐)
+# Align（停车后原地左转5°做角度修正，全程停车+修正总时长约1~2秒）
 ###############
 align_speed: 0.18
 align_angle_threshold: 2.0
-align_stop_time: 0.5         # 1.5 → 0.5（缩短等待）
-desired_angle_deg: -5.0      # 0.0 → -5.0（垂直基础上左转5°）
-align_angular_speed: 0.35    # 新增：对齐阶段盲转角速度(rad/s)，转动时长 = |desired_angle_deg|(rad) / 该值
+align_stop_time: 0.3         # 仅做防抖确认，不做转向；真正的转向在ALIGN阶段
+desired_angle_deg: -5.0      # 停车后需要原地左转的角度
+align_angular_speed: 0.10    # 转动时长 = |desired_angle_deg|(rad)/该值 ≈ 0.87s，
+                              # 加上 align_stop_time(0.3s) 总计约1.2秒
 ###############
 # Final forward
 ###############
