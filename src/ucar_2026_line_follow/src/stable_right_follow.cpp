@@ -51,10 +51,6 @@ public:
         right_turn_count_ = 0.0;
         right_turn_cooldown_until_ = ros::Time::now();
 
-        detected_corner_count_ = 0;
-        second_corner_done_ = false;
-        second_corner_stable_count_ = 0;
-
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Tuned) ");
         ROS_INFO("=================================");
@@ -69,10 +65,7 @@ private:
         STOP_LINE_FOUND = 3,
         ALIGN_WITH_RIGHT_LINE = 4,
         GO_FORWARD = 5,
-        FINAL_STOP = 6,
-        SECOND_CORNER_ADVANCE = 7,
-        SECOND_CORNER_STOP = 8,
-        SECOND_CORNER_TRACK_TURN = 9
+        FINAL_STOP = 6
     };
 
     struct LineInfo
@@ -124,18 +117,6 @@ private:
     // ===== 淇敼 ===== 瑙﹀彂鍚庣殑鍐峰嵈鏃堕棿锛岄槻姝㈣搴﹀櫔澹板鑷村弽澶嶅仠杞?宸﹁浆锛?涓€鎶戒竴鎶?锛?
     double right_turn_cooldown_sec_;
     ros::Time right_turn_cooldown_until_;
-
-    // 绗簩涓皷瑙掞細瓒婅繃鎷愮偣鍚庡啀鍋滆溅锛屽苟渚濇嵁鍙崇嚎闂幆瀹屾垚鍙宠浆
-    double second_corner_advance_distance_;
-    double second_corner_advance_speed_;
-    double second_corner_stop_time_;
-    double second_corner_search_speed_;
-    double second_corner_search_angular_;
-    double second_corner_max_angular_;
-    double second_corner_kp_pos_;
-    double second_corner_kp_angle_;
-    int second_corner_stable_frames_;
-    double second_corner_timeout_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -201,17 +182,13 @@ private:
     double left_turn_extra_gain_;
     double left_turn_max_angular_;
 
-    int detected_corner_count_;
-    bool second_corner_done_;
-    int second_corner_stable_count_;
-
     // ========== 鍙傛暟鍔犺浇 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
         pnh.param("target_right_x", target_right_x_, 145);
 
-        pnh.param("base_speed", base_speed_, 0.36);
-        pnh.param("curve_speed", curve_speed_, 0.28);
+        pnh.param("base_speed", base_speed_, 0.30);
+        pnh.param("curve_speed", curve_speed_, 0.24);
         pnh.param("search_speed", search_speed_, 0.12);
         pnh.param("lost_line_speed", lost_line_speed_, 0.14);
         pnh.param("startup_speed", startup_speed_, 0.45);
@@ -331,15 +308,6 @@ private:
         case GO_FORWARD:
             handleGoForward(twist);
             break;
-        case SECOND_CORNER_ADVANCE:
-            handleSecondCornerAdvance(twist, right_line);
-            break;
-        case SECOND_CORNER_STOP:
-            handleSecondCornerStop(twist);
-            break;
-        case SECOND_CORNER_TRACK_TURN:
-            handleSecondCornerTrackTurn(twist, right_line);
-            break;
         case FINAL_STOP:
         default:
             twist.linear.x = 0.0;
@@ -347,14 +315,7 @@ private:
             break;
         }
 
-        if(stage_ == STARTUP || stage_ == SEARCH_RIGHT_LINE || stage_ == FOLLOW_RIGHT_LINE)
-        {
-            twist.angular.z = 0.60 * last_angular_ + 0.40 * twist.angular.z;
-        }
-        else
-        {
-            last_angular_ = 0.0;
-        }
+        twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
         last_angular_ = twist.angular.z;
 
         cmd_pub_.publish(twist);
@@ -490,20 +451,6 @@ private:
         {
             right_turn_count_ = 0.0;
             right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
-            detected_corner_count_++;
-
-            if(detected_corner_count_ == 2 && !second_corner_done_)
-            {
-                second_corner_done_ = true;
-                second_corner_stable_count_ = 0;
-                resetPid();
-                enterStage(SECOND_CORNER_ADVANCE,
-                           "SECOND CORNER: PASS APEX THEN ADVANCE 25CM");
-                twist.linear.x = second_corner_advance_speed_;
-                twist.angular.z = 0.0;
-                return;
-            }
-
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
             enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT TURN");
@@ -516,20 +463,6 @@ private:
         if(!in_cooldown && lost_line_count_ > 10.0)
         {
             right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
-            detected_corner_count_++;
-
-            if(detected_corner_count_ == 2 && !second_corner_done_)
-            {
-                second_corner_done_ = true;
-                second_corner_stable_count_ = 0;
-                resetPid();
-                enterStage(SECOND_CORNER_ADVANCE,
-                           "SECOND CORNER LOST: PASS APEX THEN ADVANCE 25CM");
-                twist.linear.x = second_corner_advance_speed_;
-                twist.angular.z = 0.0;
-                return;
-            }
-
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
             enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT TURN");
@@ -588,135 +521,6 @@ private:
 
         twist.linear.x = linear_speed;
         twist.angular.z = angular;
-    }
-
-
-    void handleSecondCornerAdvance(geometry_msgs::Twist& twist,
-                                   const LineInfo& right_line)
-    {
-        const double speed = std::max(0.05, std::fabs(second_corner_advance_speed_));
-        const double duration = second_corner_advance_distance_ / speed;
-        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
-
-        if(elapsed < duration)
-        {
-            twist.linear.x = second_corner_advance_speed_;
-            twist.angular.z = 0.0;
-
-            if(right_line.found)
-            {
-                const double pos_error = target_right_x_ - right_line.x;
-                const double angle_error = right_line.angle_deg - desired_angle_deg_;
-                const double correction =
-                    0.35 * second_corner_kp_pos_ * pos_error +
-                    0.30 * second_corner_kp_angle_ * deg2rad(angle_error);
-
-                twist.angular.z = clamp(correction, -0.12, 0.12);
-            }
-            return;
-        }
-
-        enterStage(SECOND_CORNER_STOP,
-                   "SECOND CORNER: ADVANCE DONE, STOP BEFORE RIGHT TURN");
-        twist.linear.x = 0.0;
-        twist.angular.z = 0.0;
-    }
-
-    void handleSecondCornerStop(geometry_msgs::Twist& twist)
-    {
-        twist.linear.x = 0.0;
-        twist.angular.z = 0.0;
-
-        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
-        if(elapsed >= second_corner_stop_time_)
-        {
-            second_corner_stable_count_ = 0;
-            enterStage(SECOND_CORNER_TRACK_TURN,
-                       "SECOND CORNER: TRACK RIGHT LINE TO TURN");
-        }
-    }
-
-    void handleSecondCornerTrackTurn(geometry_msgs::Twist& twist,
-                                     const LineInfo& right_line)
-    {
-        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
-
-        if(!right_line.found)
-        {
-            second_corner_stable_count_ = 0;
-            twist.linear.x = 0.0;
-
-            const double ramp =
-                clamp(elapsed / std::max(0.5, second_corner_timeout_), 0.0, 1.0);
-            const double search_w =
-                second_corner_search_angular_ +
-                ramp * (second_corner_max_angular_ - second_corner_search_angular_);
-
-            twist.angular.z = -clamp(search_w,
-                                     second_corner_search_angular_,
-                                     second_corner_max_angular_);
-            return;
-        }
-
-        predicted_right_x_ =
-            static_cast<int>(0.75 * predicted_right_x_ + 0.25 * right_line.x);
-
-        const double pos_error = target_right_x_ - right_line.x;
-        const double angle_error = right_line.angle_deg - desired_angle_deg_;
-
-        double angular =
-            second_corner_kp_pos_ * pos_error +
-            second_corner_kp_angle_ * deg2rad(angle_error);
-
-        angular = clamp(angular,
-                        -second_corner_max_angular_,
-                        second_corner_max_angular_);
-
-        const bool line_stable =
-            std::fabs(pos_error) < 22.0 &&
-            std::fabs(angle_error) < 12.0 &&
-            right_line.points.size() >= 8;
-
-        if(line_stable)
-            second_corner_stable_count_++;
-        else
-            second_corner_stable_count_ =
-                std::max(0, second_corner_stable_count_ - 1);
-
-        const double severity =
-            clamp(std::fabs(pos_error) / 80.0 +
-                  std::fabs(angle_error) / 60.0, 0.0, 1.0);
-
-        twist.linear.x =
-            second_corner_search_speed_ * (1.0 - 0.55 * severity);
-        twist.angular.z = angular;
-
-        if(second_corner_stable_count_ >= second_corner_stable_frames_)
-        {
-            last_right_x_ = right_line.x;
-            predicted_right_x_ = right_line.x;
-            lost_line_count_ = 0.0;
-            right_turn_count_ = 0.0;
-            need_left_turn_ = false;
-            resetPid();
-
-            right_turn_cooldown_until_ =
-                ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
-
-            enterStage(FOLLOW_RIGHT_LINE,
-                       "SECOND CORNER: RIGHT LINE STABLE, RESUME FOLLOW");
-
-            twist.linear.x = 0.0;
-            twist.angular.z = 0.0;
-            return;
-        }
-
-        if(elapsed > second_corner_timeout_)
-        {
-            ROS_WARN_THROTTLE(
-                1.0,
-                "SECOND CORNER tracking timeout, keep searching by vision");
-        }
     }
 
     void handleStopLineFound(geometry_msgs::Twist& twist)
@@ -1052,9 +856,6 @@ private:
         case STOP_LINE_FOUND: return "STOP_LINE";
         case ALIGN_WITH_RIGHT_LINE: return "ALIGN";
         case GO_FORWARD: return "FORWARD";
-        case SECOND_CORNER_ADVANCE: return "CORNER_ADVANCE";
-        case SECOND_CORNER_STOP: return "CORNER_STOP";
-        case SECOND_CORNER_TRACK_TURN: return "CORNER_TRACK";
         case FINAL_STOP: return "FINAL_STOP";
         default: return "UNKNOWN";
         }
