@@ -51,12 +51,9 @@ public:
         right_turn_count_ = 0.0;
         right_turn_cooldown_until_ = ros::Time::now();
 
-        // 绗簩涓皷閿愬彸杞笓鐢ㄧ姸鎬?
         detected_corner_count_ = 0;
-        second_corner_sequence_done_ = false;
+        second_corner_done_ = false;
         second_corner_stable_count_ = 0;
-        second_corner_last_seen_angle_ = 0.0;
-        second_corner_last_seen_x_ = target_right_x_;
 
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Tuned) ");
@@ -74,7 +71,8 @@ private:
         GO_FORWARD = 5,
         FINAL_STOP = 6,
         SECOND_CORNER_ADVANCE = 7,
-        SECOND_CORNER_ADAPTIVE_FOLLOW = 8
+        SECOND_CORNER_STOP = 8,
+        SECOND_CORNER_TRACK_TURN = 9
     };
 
     struct LineInfo
@@ -127,22 +125,17 @@ private:
     double right_turn_cooldown_sec_;
     ros::Time right_turn_cooldown_until_;
 
-    // 绗簩涓皷閿愬彸杞細瓒婅繃灏栫偣鍚庡畬鍏ㄤ緷闈犲彸绾胯瑙夐棴鐜紝涓嶅啓姝昏浆瑙?
+    // 绗簩涓皷瑙掞細瓒婅繃鎷愮偣鍚庡啀鍋滆溅锛屽苟渚濇嵁鍙崇嚎闂幆瀹屾垚鍙宠浆
     double second_corner_advance_distance_;
     double second_corner_advance_speed_;
-    double second_corner_advance_max_angular_;
-    double second_corner_follow_speed_;
-    double second_corner_min_speed_;
+    double second_corner_stop_time_;
+    double second_corner_search_speed_;
+    double second_corner_search_angular_;
+    double second_corner_max_angular_;
     double second_corner_kp_pos_;
     double second_corner_kp_angle_;
-    double second_corner_max_angular_;
-    double second_corner_search_speed_;
-    double second_corner_search_angular_min_;
-    double second_corner_search_angular_max_;
-    double second_corner_search_ramp_sec_;
-    double second_corner_stable_pos_px_;
-    double second_corner_stable_angle_deg_;
     int second_corner_stable_frames_;
+    double second_corner_timeout_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -209,18 +202,16 @@ private:
     double left_turn_max_angular_;
 
     int detected_corner_count_;
-    bool second_corner_sequence_done_;
+    bool second_corner_done_;
     int second_corner_stable_count_;
-    double second_corner_last_seen_angle_;
-    int second_corner_last_seen_x_;
 
     // ========== 鍙傛暟鍔犺浇 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
         pnh.param("target_right_x", target_right_x_, 145);
 
-        pnh.param("base_speed", base_speed_, 0.30);
-        pnh.param("curve_speed", curve_speed_, 0.24);
+        pnh.param("base_speed", base_speed_, 0.36);
+        pnh.param("curve_speed", curve_speed_, 0.28);
         pnh.param("search_speed", search_speed_, 0.12);
         pnh.param("lost_line_speed", lost_line_speed_, 0.14);
         pnh.param("startup_speed", startup_speed_, 0.45);
@@ -240,22 +231,6 @@ private:
         pnh.param("right_turn_angle_threshold_deg", right_turn_angle_threshold_deg_, 15.0);
         pnh.param("right_turn_trigger_count", right_turn_trigger_count_, 6);
         pnh.param("right_turn_cooldown_sec", right_turn_cooldown_sec_, 2.5);
-
-        pnh.param("second_corner_advance_distance", second_corner_advance_distance_, 0.25);
-        pnh.param("second_corner_advance_speed", second_corner_advance_speed_, 0.32);
-        pnh.param("second_corner_advance_max_angular", second_corner_advance_max_angular_, 0.22);
-        pnh.param("second_corner_follow_speed", second_corner_follow_speed_, 0.26);
-        pnh.param("second_corner_min_speed", second_corner_min_speed_, 0.10);
-        pnh.param("second_corner_kp_pos", second_corner_kp_pos_, 0.0050);
-        pnh.param("second_corner_kp_angle", second_corner_kp_angle_, 0.42);
-        pnh.param("second_corner_max_angular", second_corner_max_angular_, 0.75);
-        pnh.param("second_corner_search_speed", second_corner_search_speed_, 0.10);
-        pnh.param("second_corner_search_angular_min", second_corner_search_angular_min_, 0.18);
-        pnh.param("second_corner_search_angular_max", second_corner_search_angular_max_, 0.62);
-        pnh.param("second_corner_search_ramp_sec", second_corner_search_ramp_sec_, 1.8);
-        pnh.param("second_corner_stable_pos_px", second_corner_stable_pos_px_, 16.0);
-        pnh.param("second_corner_stable_angle_deg", second_corner_stable_angle_deg_, 10.0);
-        pnh.param("second_corner_stable_frames", second_corner_stable_frames_, 8);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
@@ -359,8 +334,11 @@ private:
         case SECOND_CORNER_ADVANCE:
             handleSecondCornerAdvance(twist, right_line);
             break;
-        case SECOND_CORNER_ADAPTIVE_FOLLOW:
-            handleSecondCornerAdaptiveFollow(twist, right_line);
+        case SECOND_CORNER_STOP:
+            handleSecondCornerStop(twist);
+            break;
+        case SECOND_CORNER_TRACK_TURN:
+            handleSecondCornerTrackTurn(twist, right_line);
             break;
         case FINAL_STOP:
         default:
@@ -369,12 +347,9 @@ private:
             break;
         }
 
-        // 姝ｅ父寰嚎鏃跺仛杞悜骞虫粦锛涘仠杞﹀拰鍘熷湴杞悜闃舵涓嶅钩婊戯紝閬垮厤娈嬩綑瑙掗€熷害閫犳垚婊戝姩
-        if(stage_ == STARTUP || stage_ == SEARCH_RIGHT_LINE ||
-           stage_ == FOLLOW_RIGHT_LINE || stage_ == SECOND_CORNER_ADVANCE ||
-           stage_ == SECOND_CORNER_ADAPTIVE_FOLLOW)
+        if(stage_ == STARTUP || stage_ == SEARCH_RIGHT_LINE || stage_ == FOLLOW_RIGHT_LINE)
         {
-            twist.angular.z = 0.55 * last_angular_ + 0.45 * twist.angular.z;
+            twist.angular.z = 0.60 * last_angular_ + 0.40 * twist.angular.z;
         }
         else
         {
@@ -517,25 +492,21 @@ private:
             right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
             detected_corner_count_++;
 
-            // 绗簩涓皷閿愬彸杞笉鍦ㄥ皷鐐瑰绔嬪嵆杞集锛氬厛鐩磋瓒婅繃鎷愮偣绾?5cm锛屽啀鍋滆溅鍘熷湴鍙宠浆
-            if(detected_corner_count_ == 2 && !second_corner_sequence_done_)
+            if(detected_corner_count_ == 2 && !second_corner_done_)
             {
-                second_corner_sequence_done_ = true;
+                second_corner_done_ = true;
                 second_corner_stable_count_ = 0;
-                second_corner_last_seen_angle_ = current_angle;
-                second_corner_last_seen_x_ = current_x;
                 resetPid();
                 enterStage(SECOND_CORNER_ADVANCE,
-                           "SECOND CORNER: ADVANCE 25CM BEFORE RIGHT TURN");
+                           "SECOND CORNER: PASS APEX THEN ADVANCE 25CM");
                 twist.linear.x = second_corner_advance_speed_;
                 twist.angular.z = 0.0;
                 return;
             }
 
-            // 鍏朵粬寮亾缁х画閲囩敤鍘熸潵鐨勬俯鍜屼慨姝?
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT CORRECTION");
+            enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT TURN");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -547,16 +518,13 @@ private:
             right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
             detected_corner_count_++;
 
-            // 灏栬澶勫彲鑳界洿鎺ヤ涪绾匡紝鍥犳鍏滃簳瑙﹀彂涔熷繀椤昏鍏モ€滅鍑犱釜鎷愮偣鈥?
-            if(detected_corner_count_ == 2 && !second_corner_sequence_done_)
+            if(detected_corner_count_ == 2 && !second_corner_done_)
             {
-                second_corner_sequence_done_ = true;
+                second_corner_done_ = true;
                 second_corner_stable_count_ = 0;
-                second_corner_last_seen_angle_ = desired_angle_deg_;
-                second_corner_last_seen_x_ = predicted_right_x_;
                 resetPid();
                 enterStage(SECOND_CORNER_ADVANCE,
-                           "SECOND CORNER (LOST LINE): ADVANCE 25CM BEFORE RIGHT TURN");
+                           "SECOND CORNER LOST: PASS APEX THEN ADVANCE 25CM");
                 twist.linear.x = second_corner_advance_speed_;
                 twist.angular.z = 0.0;
                 return;
@@ -564,7 +532,7 @@ private:
 
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT CORRECTION");
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT TURN");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -622,6 +590,7 @@ private:
         twist.angular.z = angular;
     }
 
+
     void handleSecondCornerAdvance(geometry_msgs::Twist& twist,
                                    const LineInfo& right_line)
     {
@@ -631,128 +600,123 @@ private:
 
         if(elapsed < duration)
         {
-            // 瓒婅繃灏栫偣鏃朵笉鏄洸鐩磋锛氬彸绾夸粛鍙灏卞仛灏忓箙闂幆淇锛?
-            // 浣嗛檺鍒舵渶澶ц閫熷害锛岄伩鍏嶈溅澶磋繃鏃╁垏鍚戝皷瑙掑唴渚ц€屽帇绾裤€?
-            double angular = 0.0;
+            twist.linear.x = second_corner_advance_speed_;
+            twist.angular.z = 0.0;
+
             if(right_line.found)
             {
-                second_corner_last_seen_angle_ = right_line.angle_deg;
-                second_corner_last_seen_x_ = right_line.x;
-
                 const double pos_error = target_right_x_ - right_line.x;
                 const double angle_error = right_line.angle_deg - desired_angle_deg_;
+                const double correction =
+                    0.35 * second_corner_kp_pos_ * pos_error +
+                    0.30 * second_corner_kp_angle_ * deg2rad(angle_error);
 
-                angular =
-                    0.55 * second_corner_kp_pos_ * pos_error +
-                    0.55 * second_corner_kp_angle_ * deg2rad(angle_error);
-
-                angular = clamp(
-                    angular,
-                    -second_corner_advance_max_angular_,
-                    second_corner_advance_max_angular_);
+                twist.angular.z = clamp(correction, -0.12, 0.12);
             }
-
-            twist.linear.x = second_corner_advance_speed_;
-            twist.angular.z = angular;
             return;
         }
 
-        second_corner_stable_count_ = 0;
-        resetPid();
-        enterStage(
-            SECOND_CORNER_ADAPTIVE_FOLLOW,
-            "SECOND CORNER: ADAPTIVE RIGHT-LINE FOLLOW");
-        twist.linear.x = second_corner_search_speed_;
+        enterStage(SECOND_CORNER_STOP,
+                   "SECOND CORNER: ADVANCE DONE, STOP BEFORE RIGHT TURN");
+        twist.linear.x = 0.0;
         twist.angular.z = 0.0;
     }
 
-    void handleSecondCornerAdaptiveFollow(geometry_msgs::Twist& twist,
-                                          const LineInfo& right_line)
+    void handleSecondCornerStop(geometry_msgs::Twist& twist)
+    {
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+
+        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
+        if(elapsed >= second_corner_stop_time_)
+        {
+            second_corner_stable_count_ = 0;
+            enterStage(SECOND_CORNER_TRACK_TURN,
+                       "SECOND CORNER: TRACK RIGHT LINE TO TURN");
+        }
+    }
+
+    void handleSecondCornerTrackTurn(geometry_msgs::Twist& twist,
+                                     const LineInfo& right_line)
     {
         const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
 
-        if(right_line.found)
+        if(!right_line.found)
         {
-            second_corner_last_seen_angle_ = right_line.angle_deg;
-            second_corner_last_seen_x_ = right_line.x;
-            predicted_right_x_ =
-                static_cast<int>(0.65 * predicted_right_x_ + 0.35 * right_line.x);
+            second_corner_stable_count_ = 0;
+            twist.linear.x = 0.0;
 
-            const double pos_error = target_right_x_ - right_line.x;
-            const double angle_error = right_line.angle_deg - desired_angle_deg_;
+            const double ramp =
+                clamp(elapsed / std::max(0.5, second_corner_timeout_), 0.0, 1.0);
+            const double search_w =
+                second_corner_search_angular_ +
+                ramp * (second_corner_max_angular_ - second_corner_search_angular_);
 
-            // 浣嶇疆 + 鍙宠竟绾挎柟鍚戝弻闂幆銆傚満鍦版嫄瑙掓槸60掳銆?5掳銆?0掳鎴栧渾寮ч兘涓嶉噸瑕侊紝
-            // 鎺у埗鍣ㄥ彧鏍规嵁褰撳墠鐪嬪埌鐨勫彸绾垮疄鏃跺喅瀹氳浆澶氬皯銆?
-            double angular =
-                second_corner_kp_pos_ * pos_error +
-                second_corner_kp_angle_ * deg2rad(angle_error);
-
-            angular = clamp(
-                angular,
-                -second_corner_max_angular_,
-                second_corner_max_angular_);
-
-            // 鍋忓樊瓒婂ぇ瓒婃參锛岀粰杞悜鐣欏嚭鏃堕棿锛涜窡绋冲悗鑷姩鎭㈠杈冮珮閫熷害銆?
-            const double severity = clamp(
-                std::fabs(pos_error) / 80.0 +
-                std::fabs(angle_error) / 70.0,
-                0.0, 1.0);
-
-            double linear_speed =
-                second_corner_follow_speed_ * (1.0 - 0.62 * severity);
-            linear_speed = std::max(second_corner_min_speed_, linear_speed);
-
-            const bool position_stable =
-                std::fabs(pos_error) <= second_corner_stable_pos_px_;
-            const bool angle_stable =
-                std::fabs(angle_error) <= second_corner_stable_angle_deg_;
-
-            if(position_stable && angle_stable)
-                second_corner_stable_count_++;
-            else
-                second_corner_stable_count_ =
-                    std::max(0, second_corner_stable_count_ - 1);
-
-            twist.linear.x = linear_speed;
-            twist.angular.z = angular;
-
-            if(second_corner_stable_count_ >= second_corner_stable_frames_)
-            {
-                lost_line_count_ = 0.0;
-                right_turn_count_ = 0.0;
-                predicted_right_x_ = right_line.x;
-                resetPid();
-                right_turn_cooldown_until_ =
-                    ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
-                enterStage(
-                    FOLLOW_RIGHT_LINE,
-                    "SECOND CORNER: RIGHT LINE STABLE, RESUME NORMAL FOLLOW");
-            }
+            twist.angular.z = -clamp(search_w,
+                                     second_corner_search_angular_,
+                                     second_corner_max_angular_);
             return;
         }
 
-        // 鐪嬩笉鍒板彸绾挎椂涓嶆寜鍥哄畾瑙掑害鏃嬭浆锛岃€屾槸閫愭鎵╁ぇ鍙冲悜鎼滅储銆?
-        // 鍒濇湡灏忚閫熷害闃叉杞繃澶达紝闀挎椂闂翠粛鏈壘鍒版椂鍐嶉€愭笎澧炲己銆?
-        second_corner_stable_count_ = 0;
-        const double ramp = clamp(
-            elapsed / std::max(0.1, second_corner_search_ramp_sec_),
-            0.0, 1.0);
+        predicted_right_x_ =
+            static_cast<int>(0.75 * predicted_right_x_ + 0.25 * right_line.x);
 
-        double search_angular =
-            second_corner_search_angular_min_ +
-            ramp * (second_corner_search_angular_max_ -
-                    second_corner_search_angular_min_);
+        const double pos_error = target_right_x_ - right_line.x;
+        const double angle_error = right_line.angle_deg - desired_angle_deg_;
 
-        // 鑻ヤ涪绾垮墠鍙崇嚎宸茬粡鏄庢樉鍚戝彸鍊炬枩锛屽垯绋嶅井鍔犲揩鍙冲悜鎼滅储锛?
-        // 浠嶇劧鍙娇鐢ㄨ瑙夊巻鍙诧紝涓嶄緷璧栧浐瀹氬湴鍥捐搴︺€?
-        const double remembered_right_curve =
-            clamp((-second_corner_last_seen_angle_) / 45.0, 0.0, 1.0);
-        search_angular *= (1.0 + 0.25 * remembered_right_curve);
-        search_angular = std::min(
-            search_angular, second_corner_search_angular_max_);
+        double angular =
+            second_corner_kp_pos_ * pos_error +
+            second_corner_kp_angle_ * deg2rad(angle_error);
 
-        twist.linear.x = second_corner_search_speed_;
-        twist.angular.z = -search_angular;
+        angular = clamp(angular,
+                        -second_corner_max_angular_,
+                        second_corner_max_angular_);
+
+        const bool line_stable =
+            std::fabs(pos_error) < 22.0 &&
+            std::fabs(angle_error) < 12.0 &&
+            right_line.points.size() >= 8;
+
+        if(line_stable)
+            second_corner_stable_count_++;
+        else
+            second_corner_stable_count_ =
+                std::max(0, second_corner_stable_count_ - 1);
+
+        const double severity =
+            clamp(std::fabs(pos_error) / 80.0 +
+                  std::fabs(angle_error) / 60.0, 0.0, 1.0);
+
+        twist.linear.x =
+            second_corner_search_speed_ * (1.0 - 0.55 * severity);
+        twist.angular.z = angular;
+
+        if(second_corner_stable_count_ >= second_corner_stable_frames_)
+        {
+            last_right_x_ = right_line.x;
+            predicted_right_x_ = right_line.x;
+            lost_line_count_ = 0.0;
+            right_turn_count_ = 0.0;
+            need_left_turn_ = false;
+            resetPid();
+
+            right_turn_cooldown_until_ =
+                ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
+
+            enterStage(FOLLOW_RIGHT_LINE,
+                       "SECOND CORNER: RIGHT LINE STABLE, RESUME FOLLOW");
+
+            twist.linear.x = 0.0;
+            twist.angular.z = 0.0;
+            return;
+        }
+
+        if(elapsed > second_corner_timeout_)
+        {
+            ROS_WARN_THROTTLE(
+                1.0,
+                "SECOND CORNER tracking timeout, keep searching by vision");
+        }
     }
 
     void handleStopLineFound(geometry_msgs::Twist& twist)
@@ -1089,7 +1053,8 @@ private:
         case ALIGN_WITH_RIGHT_LINE: return "ALIGN";
         case GO_FORWARD: return "FORWARD";
         case SECOND_CORNER_ADVANCE: return "CORNER_ADVANCE";
-        case SECOND_CORNER_ADAPTIVE_FOLLOW: return "CORNER_ADAPTIVE";
+        case SECOND_CORNER_STOP: return "CORNER_STOP";
+        case SECOND_CORNER_TRACK_TURN: return "CORNER_TRACK";
         case FINAL_STOP: return "FINAL_STOP";
         default: return "UNKNOWN";
         }
