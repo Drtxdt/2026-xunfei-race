@@ -64,7 +64,7 @@ public:
     }
 
 private:
-    enum StageA 
+    enum Stage
     {
         STARTUP = 0,
         SEARCH_RIGHT_LINE = 1,
