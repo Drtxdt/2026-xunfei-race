@@ -45,14 +45,30 @@ right_turn_trigger_count: 6
 right_turn_cooldown_sec: 3.0
 
 ###############
-# 第二个尖锐右转
-# 检测到第二个右转后：直行25cm -> 停0.25s -> 原地右转72° -> 重新找右线
+# 第二个尖锐右转：完全视觉闭环，不写死角度
+# 先越过尖点约25cm（期间仍做小幅视觉修正），随后根据右边线位置和斜率自适应转向
 ###############
 second_corner_advance_distance: 0.25
 second_corner_advance_speed: 0.32
-second_corner_stop_time: 0.25
-second_corner_turn_angle_deg: 72.0
-second_corner_turn_angular: 0.55
+second_corner_advance_max_angular: 0.22
+
+# 看见右线时的位置/角度双闭环
+second_corner_follow_speed: 0.26
+second_corner_min_speed: 0.10
+second_corner_kp_pos: 0.0050
+second_corner_kp_angle: 0.42
+second_corner_max_angular: 0.75
+
+# 暂时看不见右线时，逐渐扩大向右搜索，不使用固定转角
+second_corner_search_speed: 0.10
+second_corner_search_angular_min: 0.18
+second_corner_search_angular_max: 0.62
+second_corner_search_ramp_sec: 1.8
+
+# 连续稳定若干帧后恢复正常循线
+second_corner_stable_pos_px: 16.0
+second_corner_stable_angle_deg: 10.0
+second_corner_stable_frames: 8
 
 ###############
 # Stop line
