@@ -41,15 +41,19 @@ public:
 
         start_moving_time_ = ros::Time::now();
 
-        // ===== 修改 ===== 左转预处理标志（丢线后先停下原地左转）
+        // ===== 淇敼 ===== 宸﹁浆棰勫鐞嗘爣蹇楋紙涓㈢嚎鍚庡厛鍋滀笅鍘熷湴宸﹁浆锛?
         need_left_turn_ = false;
 
-        // ===== 修改 ===== PID 积分项 & 微分限幅相关运行时变量
+        // ===== 淇敼 ===== PID 绉垎椤?& 寰垎闄愬箙鐩稿叧杩愯鏃跺彉閲?
         integral_pos_error_ = 0.0;
 
-        // ===== 修改 ===== “检测到右转”触发计数
+        // ===== 淇敼 ===== 鈥滄娴嬪埌鍙宠浆鈥濊Е鍙戣鏁?
         right_turn_count_ = 0.0;
         right_turn_cooldown_until_ = ros::Time::now();
+
+        // 绗簩涓皷閿愬彸杞笓鐢ㄧ姸鎬?
+        detected_corner_count_ = 0;
+        second_corner_sequence_done_ = false;
 
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Tuned) ");
@@ -65,7 +69,10 @@ private:
         STOP_LINE_FOUND = 3,
         ALIGN_WITH_RIGHT_LINE = 4,
         GO_FORWARD = 5,
-        FINAL_STOP = 6
+        FINAL_STOP = 6,
+        SECOND_CORNER_ADVANCE = 7,
+        SECOND_CORNER_STOP = 8,
+        SECOND_CORNER_RIGHT_TURN = 9
     };
 
     struct LineInfo
@@ -89,7 +96,7 @@ private:
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
 
-    // ========== 参数 ==========
+    // ========== 鍙傛暟 ==========
     int target_right_x_;
     double base_speed_;
     double curve_speed_;
@@ -100,23 +107,30 @@ private:
     double kp_pos_;
     double kd_pos_;
     double kp_angle_;
-    // ===== 修改 ===== 新增积分项，消除弯道后长期贴右线的稳态误差
+    // ===== 淇敼 ===== 鏂板绉垎椤癸紝娑堥櫎寮亾鍚庨暱鏈熻创鍙崇嚎鐨勭ǔ鎬佽宸?
     double ki_pos_;
     double integral_clamp_;
-    // ===== 修改 ===== 微分项限幅，抑制入弯瞬间误差跳变造成的“微分冲击”导致的过度左转
+    // ===== 淇敼 ===== 寰垎椤归檺骞咃紝鎶戝埗鍏ュ集鐬棿璇樊璺冲彉閫犳垚鐨勨€滃井鍒嗗啿鍑烩€濆鑷寸殑杩囧害宸﹁浆
     double d_error_clamp_;
-    // ===== 修改 ===== 硬安全下限：距离右线过近时强制的最小左转角速度 & 限速比例
+    // ===== 淇敼 ===== 纭畨鍏ㄤ笅闄愶細璺濈鍙崇嚎杩囪繎鏃跺己鍒剁殑鏈€灏忓乏杞閫熷害 & 闄愰€熸瘮渚?
     double hard_safety_margin_px_;
     double safety_min_angular_;
     double safety_speed_scale_;
 
-    // ===== 修改 ===== 用“检测到右转”代替“丢失右线”作为停车左转修正的触发条件
+    // ===== 淇敼 ===== 鐢ㄢ€滄娴嬪埌鍙宠浆鈥濅唬鏇库€滀涪澶卞彸绾库€濅綔涓哄仠杞﹀乏杞慨姝ｇ殑瑙﹀彂鏉′欢
     double right_turn_angle_threshold_deg_;
     int right_turn_trigger_count_;
     double right_turn_count_;
-    // ===== 修改 ===== 触发后的冷却时间，防止角度噪声导致反复停车-左转（"一抽一抽"）
+    // ===== 淇敼 ===== 瑙﹀彂鍚庣殑鍐峰嵈鏃堕棿锛岄槻姝㈣搴﹀櫔澹板鑷村弽澶嶅仠杞?宸﹁浆锛?涓€鎶戒竴鎶?锛?
     double right_turn_cooldown_sec_;
     ros::Time right_turn_cooldown_until_;
+
+    // 绗簩涓皷閿愬彸杞細鍏堣秺杩囨嫄鐐逛竴娈佃窛绂伙紝鍐嶅仠杞﹀師鍦板彸杞?
+    double second_corner_advance_distance_;
+    double second_corner_advance_speed_;
+    double second_corner_stop_time_;
+    double second_corner_turn_angle_deg_;
+    double second_corner_turn_angular_;
 
     double curve_threshold_;
     double curve_offset_;
@@ -145,10 +159,10 @@ private:
 
     bool show_debug_;
 
-    // ========== 运行时变量 ==========
+    // ========== 杩愯鏃跺彉閲?==========
     double last_pos_error_;
     double filtered_pos_error_;
-    // ===== 修改 ===== 积分误差累计
+    // ===== 淇敼 ===== 绉垎璇樊绱
     double integral_pos_error_;
     int last_right_x_;
 
@@ -158,8 +172,8 @@ private:
     ros::Time forward_start_time_;
 
     int predicted_right_x_;
-    // ===== 修改 ===== 改为浮点数并支持“找到线时缓慢衰减”而不是瞬间清零，
-    // 避免弯道处右线检测偶尔闪现导致丢线计数被强制清零、从而第二次不再触发左转
+    // ===== 淇敼 ===== 鏀逛负娴偣鏁板苟鏀寔鈥滄壘鍒扮嚎鏃剁紦鎱㈣“鍑忊€濊€屼笉鏄灛闂存竻闆讹紝
+    // 閬垮厤寮亾澶勫彸绾挎娴嬪伓灏旈棯鐜板鑷翠涪绾胯鏁拌寮哄埗娓呴浂銆佷粠鑰岀浜屾涓嶅啀瑙﹀彂宸﹁浆
     double lost_line_count_;
     double last_angular_;
     ros::Time last_line_time_;
@@ -167,22 +181,26 @@ private:
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;
 
-    // ===== 修改 ===== 丢线后先停车、原地左转的相关参数与状态
+    // ===== 淇敼 ===== 涓㈢嚎鍚庡厛鍋滆溅銆佸師鍦板乏杞殑鐩稿叧鍙傛暟涓庣姸鎬?
     bool need_left_turn_;
     ros::Time left_turn_start_time_;
-    double lost_line_stop_duration_;   // 停车+左转总时长（1~2秒）
-    double lost_line_turn_angle_deg_;  // 期望原地左转角度（约12°）
+    double lost_line_stop_duration_;   // 鍋滆溅+宸﹁浆鎬绘椂闀匡紙1~2绉掞級
+    double lost_line_turn_angle_deg_;  // 鏈熸湜鍘熷湴宸﹁浆瑙掑害锛堢害12掳锛?
 
-    // ===== 修改 ===== 左转修正完成后，缓慢向右扫描找线的速度参数
+    // ===== 淇敼 ===== 宸﹁浆淇瀹屾垚鍚庯紝缂撴參鍚戝彸鎵弿鎵剧嚎鐨勯€熷害鍙傛暟
     double search_right_speed_;
     double search_right_angular_;
 
-    // ===== 修改 ===== 左转时若右线仍可见且过近，额外增大角速度，主动远离右线
+    // ===== 淇敼 ===== 宸﹁浆鏃惰嫢鍙崇嚎浠嶅彲瑙佷笖杩囪繎锛岄澶栧澶ц閫熷害锛屼富鍔ㄨ繙绂诲彸绾?
     double left_turn_safety_margin_px_;
     double left_turn_extra_gain_;
     double left_turn_max_angular_;
 
-    // ========== 参数加载 ==========
+    int detected_corner_count_;
+    bool second_corner_sequence_done_;
+    ros::Time second_corner_stage_start_time_;
+
+    // ========== 鍙傛暟鍔犺浇 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
         pnh.param("target_right_x", target_right_x_, 145);
@@ -196,7 +214,7 @@ private:
         pnh.param("kp_pos", kp_pos_, 0.0040);
         pnh.param("kd_pos", kd_pos_, 0.0020);
         pnh.param("kp_angle", kp_angle_, 0.30);
-        // ===== 修改 ===== 积分项 & 微分限幅
+        // ===== 淇敼 ===== 绉垎椤?& 寰垎闄愬箙
         pnh.param("ki_pos", ki_pos_, 0.00035);
         pnh.param("integral_clamp", integral_clamp_, 60.0);
         pnh.param("d_error_clamp", d_error_clamp_, 25.0);
@@ -204,10 +222,16 @@ private:
         pnh.param("safety_min_angular", safety_min_angular_, 0.22);
         pnh.param("safety_speed_scale", safety_speed_scale_, 0.6);
 
-        // ===== 修改 ===== 用“检测到右转”代替“丢失右线”触发停车+左转修正
+        // ===== 淇敼 ===== 鐢ㄢ€滄娴嬪埌鍙宠浆鈥濅唬鏇库€滀涪澶卞彸绾库€濊Е鍙戝仠杞?宸﹁浆淇
         pnh.param("right_turn_angle_threshold_deg", right_turn_angle_threshold_deg_, 15.0);
         pnh.param("right_turn_trigger_count", right_turn_trigger_count_, 6);
         pnh.param("right_turn_cooldown_sec", right_turn_cooldown_sec_, 2.5);
+
+        pnh.param("second_corner_advance_distance", second_corner_advance_distance_, 0.25);
+        pnh.param("second_corner_advance_speed", second_corner_advance_speed_, 0.32);
+        pnh.param("second_corner_stop_time", second_corner_stop_time_, 0.25);
+        pnh.param("second_corner_turn_angle_deg", second_corner_turn_angle_deg_, 72.0);
+        pnh.param("second_corner_turn_angular", second_corner_turn_angular_, 0.55);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
@@ -216,38 +240,38 @@ private:
         pnh.param("max_angular", max_angular_, 0.45);
         pnh.param("error_filter_alpha", error_filter_alpha_, 0.18);
 
-        // ===== 修改 ===== 开机直行距离增加到之前的1.7倍（1.4 * 1.7 ≈ 2.4）
+        // ===== 淇敼 ===== 寮€鏈虹洿琛岃窛绂诲鍔犲埌涔嬪墠鐨?.7鍊嶏紙1.4 * 1.7 鈮?2.4锛?
         pnh.param("startup_time", startup_time_, 2.4);
 
         pnh.param("cross_area_threshold", cross_area_threshold_, 48000);
         pnh.param("stop_line_min_width", stop_line_min_width_, 120);
         pnh.param("stop_line_max_height", stop_line_max_height_, 40);
         pnh.param("stop_line_min_area", stop_line_min_area_, 800);
-        // ===== 修改 ===== 放宽识别门槛以提升召回率，同时仍能过滤明显噪声
+        // ===== 淇敼 ===== 鏀惧璇嗗埆闂ㄦ浠ユ彁鍗囧彫鍥炵巼锛屽悓鏃朵粛鑳借繃婊ゆ槑鏄惧櫔澹?
         pnh.param("stop_line_min_fill_ratio", stop_line_min_fill_ratio_, 0.35);
         pnh.param("stop_line_bottom_margin_ratio", stop_line_bottom_margin_ratio_, 0.40);
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        // ===== 修改 ===== 停车确认等待时间（很短，只是防抖），角度修正在 ALIGN 阶段进行
+        // ===== 淇敼 ===== 鍋滆溅纭绛夊緟鏃堕棿锛堝緢鐭紝鍙槸闃叉姈锛夛紝瑙掑害淇鍦?ALIGN 闃舵杩涜
         pnh.param("align_stop_time", align_stop_time_, 0.3);
         pnh.param("desired_angle_deg", desired_angle_deg_, -5.0);
-        // ===== 修改 ===== ALIGN 阶段盲转角速度，需与 desired_angle_deg_ 配合，
-        // 使 “停车确认 + 原地转5°” 总时长落在 1~2 秒
+        // ===== 淇敼 ===== ALIGN 闃舵鐩茶浆瑙掗€熷害锛岄渶涓?desired_angle_deg_ 閰嶅悎锛?
+        // 浣?鈥滃仠杞︾‘璁?+ 鍘熷湴杞?掳鈥?鎬绘椂闀胯惤鍦?1~2 绉?
         pnh.param("align_angular_speed", align_angular_speed_, 0.10);
 
         pnh.param("final_speed", final_speed_, 0.20);
-        // ===== 修改 ===== 直行距离与原来一致（此项不是用户要求减半的那个直行距离）
+        // ===== 淇敼 ===== 鐩磋璺濈涓庡師鏉ヤ竴鑷达紙姝ら」涓嶆槸鐢ㄦ埛瑕佹眰鍑忓崐鐨勯偅涓洿琛岃窛绂伙級
         pnh.param("final_distance", final_distance_, 0.60);
 
         pnh.param("show_debug", show_debug_, true);
 
-        // ===== 修改 ===== 丢线后先停车、原地左转参数
+        // ===== 淇敼 ===== 涓㈢嚎鍚庡厛鍋滆溅銆佸師鍦板乏杞弬鏁?
         pnh.param("lost_line_stop_duration", lost_line_stop_duration_, 1.5);
-        // ===== 修改 ===== 25° → 12°，左转幅度减小
+        // ===== 淇敼 ===== 25掳 鈫?12掳锛屽乏杞箙搴﹀噺灏?
         pnh.param("lost_line_turn_angle_deg", lost_line_turn_angle_deg_, 12.0);
 
-        // ===== 修改 ===== 左转修正完成后，缓慢向右扫描找线（比之前的0.12/-0.26更慢更稳）
+        // ===== 淇敼 ===== 宸﹁浆淇瀹屾垚鍚庯紝缂撴參鍚戝彸鎵弿鎵剧嚎锛堟瘮涔嬪墠鐨?.12/-0.26鏇存參鏇寸ǔ锛?
         pnh.param("search_right_speed", search_right_speed_, 0.08);
         pnh.param("search_right_angular", search_right_angular_, 0.14);
 
@@ -256,7 +280,7 @@ private:
         pnh.param("left_turn_max_angular", left_turn_max_angular_, 0.9);
     }
 
-    // ========== 图像回调 ==========
+    // ========== 鍥惧儚鍥炶皟 ==========
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
     {
         cv::Mat frame;
@@ -308,6 +332,15 @@ private:
         case GO_FORWARD:
             handleGoForward(twist);
             break;
+        case SECOND_CORNER_ADVANCE:
+            handleSecondCornerAdvance(twist);
+            break;
+        case SECOND_CORNER_STOP:
+            handleSecondCornerStop(twist);
+            break;
+        case SECOND_CORNER_RIGHT_TURN:
+            handleSecondCornerRightTurn(twist);
+            break;
         case FINAL_STOP:
         default:
             twist.linear.x = 0.0;
@@ -315,7 +348,15 @@ private:
             break;
         }
 
-        twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
+        // 姝ｅ父寰嚎鏃跺仛杞悜骞虫粦锛涘仠杞﹀拰鍘熷湴杞悜闃舵涓嶅钩婊戯紝閬垮厤娈嬩綑瑙掗€熷害閫犳垚婊戝姩
+        if(stage_ == STARTUP || stage_ == SEARCH_RIGHT_LINE || stage_ == FOLLOW_RIGHT_LINE)
+        {
+            twist.angular.z = 0.55 * last_angular_ + 0.45 * twist.angular.z;
+        }
+        else
+        {
+            last_angular_ = 0.0;
+        }
         last_angular_ = twist.angular.z;
 
         cmd_pub_.publish(twist);
@@ -326,7 +367,7 @@ private:
         }
     }
 
-    // ========== 状态机处理函数 ==========
+    // ========== 鐘舵€佹満澶勭悊鍑芥暟 ==========
     void handleStartup(geometry_msgs::Twist& twist)
     {
         const double elapsed = (ros::Time::now() - start_time_).toSec();
@@ -344,8 +385,8 @@ private:
 
     void handleSearch(geometry_msgs::Twist& twist, const LineInfo& right_line)
     {
-        // ===== 修改 ===== 丢线恢复：先原地停车（linear=0）在1~2秒内完成左转角度修正，
-        // 不再一边前进一边转，避免第二次曲线处因视觉闪烁导致修正被跳过/距离右线过近
+        // ===== 淇敼 ===== 涓㈢嚎鎭㈠锛氬厛鍘熷湴鍋滆溅锛坙inear=0锛夊湪1~2绉掑唴瀹屾垚宸﹁浆瑙掑害淇锛?
+        // 涓嶅啀涓€杈瑰墠杩涗竴杈硅浆锛岄伩鍏嶇浜屾鏇茬嚎澶勫洜瑙嗚闂儊瀵艰嚧淇琚烦杩?璺濈鍙崇嚎杩囪繎
         if(need_left_turn_)
         {
             double elapsed = (ros::Time::now() - left_turn_start_time_).toSec();
@@ -353,7 +394,7 @@ private:
             double planned_angular =
                 deg2rad(lost_line_turn_angle_deg_) / std::max(0.1, lost_line_stop_duration_);
 
-            // 若右线仍可见且距离过近，适当加大角速度，主动增加与右线的距离
+            // 鑻ュ彸绾夸粛鍙涓旇窛绂昏繃杩戯紝閫傚綋鍔犲ぇ瑙掗€熷害锛屼富鍔ㄥ鍔犱笌鍙崇嚎鐨勮窛绂?
             if(right_line.found)
             {
                 double closeness =
@@ -367,17 +408,17 @@ private:
 
             if(elapsed < lost_line_stop_duration_)
             {
-                twist.linear.x = 0.0;          // 完全停车，只做原地旋转修正
+                twist.linear.x = 0.0;          // 瀹屽叏鍋滆溅锛屽彧鍋氬師鍦版棆杞慨姝?
                 twist.angular.z = planned_angular;
                 return;
             }
             else
             {
-                need_left_turn_ = false;   // 左转完成，进入正常搜索
+                need_left_turn_ = false;   // 宸﹁浆瀹屾垚锛岃繘鍏ユ甯告悳绱?
             }
         }
 
-        // ===== 修改 ===== 原地左转修正完成后，改为缓慢向右扫描找线（降低角速度，避免又转过头）
+        // ===== 淇敼 ===== 鍘熷湴宸﹁浆淇瀹屾垚鍚庯紝鏀逛负缂撴參鍚戝彸鎵弿鎵剧嚎锛堥檷浣庤閫熷害锛岄伩鍏嶅張杞繃澶达級
         if(!right_line.found)
         {
             twist.linear.x = search_right_speed_;
@@ -411,9 +452,9 @@ private:
             return;
         }
 
-        // ===== 修改 ===== 触发条件由“丢失右线”改为“检测到右转”：
-        // 只要还能看到右线，就用其拟合角度判断是否正在进入右转弯道，
-        // 提前原地停车+左转修正，而不是等到线完全丢失才反应（丢失往往已经太晚/太近了）
+        // ===== 淇敼 ===== 瑙﹀彂鏉′欢鐢扁€滀涪澶卞彸绾库€濇敼涓衡€滄娴嬪埌鍙宠浆鈥濓細
+        // 鍙杩樿兘鐪嬪埌鍙崇嚎锛屽氨鐢ㄥ叾鎷熷悎瑙掑害鍒ゆ柇鏄惁姝ｅ湪杩涘叆鍙宠浆寮亾锛?
+        // 鎻愬墠鍘熷湴鍋滆溅+宸﹁浆淇锛岃€屼笉鏄瓑鍒扮嚎瀹屽叏涓㈠け鎵嶅弽搴旓紙涓㈠け寰€寰€宸茬粡澶櫄/澶繎浜嗭級
         int current_x = right_line.found ? right_line.x : predicted_right_x_;
         double current_angle = right_line.found ? right_line.angle_deg : desired_angle_deg_;
 
@@ -423,8 +464,8 @@ private:
             predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * right_line.x;
             last_line_time_ = ros::Time::now();
 
-            // ===== 修改 ===== 必须角度偏差 且 位置误差同时偏大，才算真正进入右转弯道；
-            // 单纯角度读数噪声抖一下（直道上也可能发生）不会累积触发，避免反复停车-左转
+            // ===== 淇敼 ===== 蹇呴』瑙掑害鍋忓樊 涓?浣嶇疆璇樊鍚屾椂鍋忓ぇ锛屾墠绠楃湡姝ｈ繘鍏ュ彸杞集閬擄紱
+            // 鍗曠函瑙掑害璇绘暟鍣０鎶栦竴涓嬶紙鐩撮亾涓婁篃鍙兘鍙戠敓锛変笉浼氱疮绉Е鍙戯紝閬垮厤鍙嶅鍋滆溅-宸﹁浆
             double angle_dev = std::fabs(current_angle - desired_angle_deg_);
             bool angle_bad = angle_dev > right_turn_angle_threshold_deg_;
             bool pos_bad = std::fabs(filtered_pos_error_) > curve_threshold_;
@@ -443,29 +484,59 @@ private:
             lost_line_count_ += 1.0;
         }
 
-        // ===== 修改 ===== 冷却期内不重新触发，防止刚做完一次停车-左转、
-        // 车还没稳定住又被噪声立刻拉回来，导致“一抽一抽”走不动
+        // ===== 淇敼 ===== 鍐峰嵈鏈熷唴涓嶉噸鏂拌Е鍙戯紝闃叉鍒氬仛瀹屼竴娆″仠杞?宸﹁浆銆?
+        // 杞﹁繕娌＄ǔ瀹氫綇鍙堣鍣０绔嬪埢鎷夊洖鏉ワ紝瀵艰嚧鈥滀竴鎶戒竴鎶解€濊蛋涓嶅姩
         bool in_cooldown = ros::Time::now() < right_turn_cooldown_until_;
 
         if(!in_cooldown && right_turn_count_ >= right_turn_trigger_count_)
         {
             right_turn_count_ = 0.0;
             right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
+            detected_corner_count_++;
+
+            // 绗簩涓皷閿愬彸杞笉鍦ㄥ皷鐐瑰绔嬪嵆杞集锛氬厛鐩磋瓒婅繃鎷愮偣绾?5cm锛屽啀鍋滆溅鍘熷湴鍙宠浆
+            if(detected_corner_count_ == 2 && !second_corner_sequence_done_)
+            {
+                second_corner_sequence_done_ = true;
+                second_corner_stage_start_time_ = ros::Time::now();
+                resetPid();
+                enterStage(SECOND_CORNER_ADVANCE,
+                           "SECOND CORNER: ADVANCE 25CM BEFORE RIGHT TURN");
+                twist.linear.x = second_corner_advance_speed_;
+                twist.angular.z = 0.0;
+                return;
+            }
+
+            // 鍏朵粬寮亾缁х画閲囩敤鍘熸潵鐨勬俯鍜屼慨姝?
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT TURN");
+            enterStage(SEARCH_RIGHT_LINE, "RIGHT TURN DETECTED, STOP & LEFT CORRECTION");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
         }
 
-        // 丢线兜底：即便角度检测没提前抓到，线真的完全丢失时依然要触发同一套停车+左转
+        // 涓㈢嚎鍏滃簳锛氬嵆渚胯搴︽娴嬫病鎻愬墠鎶撳埌锛岀嚎鐪熺殑瀹屽叏涓㈠け鏃朵緷鐒惰瑙﹀彂鍚屼竴濂楀仠杞?宸﹁浆
         if(!in_cooldown && lost_line_count_ > 10.0)
         {
             right_turn_cooldown_until_ = ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
+            detected_corner_count_++;
+
+            // 灏栬澶勫彲鑳界洿鎺ヤ涪绾匡紝鍥犳鍏滃簳瑙﹀彂涔熷繀椤昏鍏モ€滅鍑犱釜鎷愮偣鈥?
+            if(detected_corner_count_ == 2 && !second_corner_sequence_done_)
+            {
+                second_corner_sequence_done_ = true;
+                resetPid();
+                enterStage(SECOND_CORNER_ADVANCE,
+                           "SECOND CORNER (LOST LINE): ADVANCE 25CM BEFORE RIGHT TURN");
+                twist.linear.x = second_corner_advance_speed_;
+                twist.angular.z = 0.0;
+                return;
+            }
+
             need_left_turn_ = true;
             left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT TURN");
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST (fallback), STOP & LEFT CORRECTION");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -482,13 +553,13 @@ private:
             (1.0 - error_filter_alpha_) * filtered_pos_error_ +
             error_filter_alpha_ * pos_error;
 
-        // ===== 修改 ===== 微分项限幅：防止入弯瞬间误差跳变产生“微分冲击”，
-        // 这是之前“第一次拐弯处向左转过多、压到左边线”的主要原因之一
+        // ===== 淇敼 ===== 寰垎椤归檺骞咃細闃叉鍏ュ集鐬棿璇樊璺冲彉浜х敓鈥滃井鍒嗗啿鍑烩€濓紝
+        // 杩欐槸涔嬪墠鈥滅涓€娆℃嫄寮鍚戝乏杞繃澶氥€佸帇鍒板乏杈圭嚎鈥濈殑涓昏鍘熷洜涔嬩竴
         double d_pos_error = filtered_pos_error_ - last_pos_error_;
         d_pos_error = clamp(d_pos_error, -d_error_clamp_, d_error_clamp_);
         last_pos_error_ = filtered_pos_error_;
 
-        // ===== 修改 ===== 积分项（带抗饱和限幅）：消除弯道之后长期贴右线的稳态偏差
+        // ===== 淇敼 ===== 绉垎椤癸紙甯︽姉楗卞拰闄愬箙锛夛細娑堥櫎寮亾涔嬪悗闀挎湡璐村彸绾跨殑绋虫€佸亸宸?
         integral_pos_error_ = clamp(
             integral_pos_error_ + filtered_pos_error_,
             -integral_clamp_, integral_clamp_);
@@ -510,9 +581,9 @@ private:
 
         angular = clamp(angular, -max_angular_, max_angular_);
 
-        // ===== 修改 ===== 硬安全下限：只要距离右线过近（不管是否在弯道/PID算出多少），
-        // 强制保证至少有这么大的左转修正，并降低线速度给出更多反应时间。
-        // 这是针对“一直贴右线太近、压线”这个持续性问题的兜底措施。
+        // ===== 淇敼 ===== 纭畨鍏ㄤ笅闄愶細鍙璺濈鍙崇嚎杩囪繎锛堜笉绠℃槸鍚﹀湪寮亾/PID绠楀嚭澶氬皯锛夛紝
+        // 寮哄埗淇濊瘉鑷冲皯鏈夎繖涔堝ぇ鐨勫乏杞慨姝ｏ紝骞堕檷浣庣嚎閫熷害缁欏嚭鏇村鍙嶅簲鏃堕棿銆?
+        // 杩欐槸閽堝鈥滀竴鐩磋创鍙崇嚎澶繎銆佸帇绾库€濊繖涓寔缁€ч棶棰樼殑鍏滃簳鎺柦銆?
         if(current_x < target_right_x_ - hard_safety_margin_px_)
         {
             angular = std::max(angular, safety_min_angular_);
@@ -523,15 +594,74 @@ private:
         twist.angular.z = angular;
     }
 
+    void handleSecondCornerAdvance(geometry_msgs::Twist& twist)
+    {
+        const double speed = std::max(0.05, std::fabs(second_corner_advance_speed_));
+        const double duration = second_corner_advance_distance_ / speed;
+        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
+
+        if(elapsed < duration)
+        {
+            // 绌胯繃灏栬鏃朵繚鎸佺洿琛岋紝涓嶅啀杩介殢绐佺劧鎶樺洖鐨勫彸绾?
+            twist.linear.x = second_corner_advance_speed_;
+            twist.angular.z = 0.0;
+            return;
+        }
+
+        enterStage(SECOND_CORNER_STOP, "SECOND CORNER: ADVANCE DONE, STOP");
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+    }
+
+    void handleSecondCornerStop(geometry_msgs::Twist& twist)
+    {
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+
+        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
+        if(elapsed >= second_corner_stop_time_)
+        {
+            enterStage(SECOND_CORNER_RIGHT_TURN,
+                       "SECOND CORNER: START IN-PLACE RIGHT TURN");
+        }
+    }
+
+    void handleSecondCornerRightTurn(geometry_msgs::Twist& twist)
+    {
+        const double angular = std::max(0.05, std::fabs(second_corner_turn_angular_));
+        const double duration =
+            std::fabs(deg2rad(second_corner_turn_angle_deg_)) / angular;
+        const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
+
+        if(elapsed < duration)
+        {
+            twist.linear.x = 0.0;
+            twist.angular.z = -angular;  // ROS涓礋瑙掗€熷害涓哄彸杞?
+            return;
+        }
+
+        // 杞畬鍚庨噸鏂版悳绱㈠彸绾匡紝涓嶇珛鍗冲悜鍙嶆柟鍚戣ˉ鍋?
+        need_left_turn_ = false;
+        lost_line_count_ = 0.0;
+        right_turn_count_ = 0.0;
+        resetPid();
+        right_turn_cooldown_until_ =
+            ros::Time::now() + ros::Duration(right_turn_cooldown_sec_);
+        enterStage(SEARCH_RIGHT_LINE,
+                   "SECOND CORNER: RIGHT TURN DONE, SEARCH RIGHT LINE");
+        twist.linear.x = 0.0;
+        twist.angular.z = 0.0;
+    }
+
     void handleStopLineFound(geometry_msgs::Twist& twist)
     {
         const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
 
-        // ===== 修改 ===== 这里只是短暂防抖确认停止线（不做转向），
-        // 真正的角度修正在紧接着的 ALIGN 阶段（同样保持停车状态）完成，
-        // 两段相加控制在 1~2 秒内
+        // ===== 淇敼 ===== 杩欓噷鍙槸鐭殏闃叉姈纭鍋滄绾匡紙涓嶅仛杞悜锛夛紝
+        // 鐪熸鐨勮搴︿慨姝ｅ湪绱ф帴鐫€鐨?ALIGN 闃舵锛堝悓鏍蜂繚鎸佸仠杞︾姸鎬侊級瀹屾垚锛?
+        // 涓ゆ鐩稿姞鎺у埗鍦?1~2 绉掑唴
         if(elapsed >= align_stop_time_)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE (stop & correct 5 deg)");
@@ -542,9 +672,9 @@ private:
         }
     }
 
-    // ===== 修改 ===== 对齐阶段：全程保持停车（linear=0），原地左转 |desired_angle_deg_|（5°），
-    // 不依赖视觉持续跟踪，转动时长由 align_angular_speed_ 决定，
-    // 与 STOP_LINE_FOUND 的短暂确认时间相加，总停车+修正时间落在 1~2 秒
+    // ===== 淇敼 ===== 瀵归綈闃舵锛氬叏绋嬩繚鎸佸仠杞︼紙linear=0锛夛紝鍘熷湴宸﹁浆 |desired_angle_deg_|锛?掳锛夛紝
+    // 涓嶄緷璧栬瑙夋寔缁窡韪紝杞姩鏃堕暱鐢?align_angular_speed_ 鍐冲畾锛?
+    // 涓?STOP_LINE_FOUND 鐨勭煭鏆傜‘璁ゆ椂闂寸浉鍔狅紝鎬诲仠杞?淇鏃堕棿钀藉湪 1~2 绉?
     void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& /*stop_line*/)
     {
         twist.linear.x = 0.0;
@@ -555,7 +685,7 @@ private:
 
         if(elapsed < turn_duration)
         {
-            twist.angular.z = align_angular_speed_;   // 正值 = 左转
+            twist.angular.z = align_angular_speed_;   // 姝ｅ€?= 宸﹁浆
             return;
         }
 
@@ -581,7 +711,7 @@ private:
         twist.angular.z = 0.0;
     }
 
-    // ========== 图像处理（保持不变） ==========
+    // ========== 鍥惧儚澶勭悊锛堜繚鎸佷笉鍙橈級 ==========
     cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat blur;
@@ -627,8 +757,8 @@ private:
         }
         if(info.points.size() < 6)
         {
-            // ===== 修改 ===== 这里不再直接修改 lost_line_count_（避免和 handleFollow 中的
-            // 累计逻辑重复计数，导致丢线计数增长过快或不一致）
+            // ===== 淇敼 ===== 杩欓噷涓嶅啀鐩存帴淇敼 lost_line_count_锛堥伩鍏嶅拰 handleFollow 涓殑
+            // 绱閫昏緫閲嶅璁℃暟锛屽鑷翠涪绾胯鏁板闀胯繃蹇垨涓嶄竴鑷达級
             info.found = false;
             info.x = predicted_right_x_;
             info.angle_deg = desired_angle_deg_;
@@ -654,8 +784,8 @@ private:
         return info;
     }
 
-    // ===== 修改 ===== 停车横线识别：放宽召回（fill_ratio / bottom_margin 阈值降低），
-    // 同时保留基本几何过滤，减少“识别不到第一条横线”的漏检
+    // ===== 淇敼 ===== 鍋滆溅妯嚎璇嗗埆锛氭斁瀹藉彫鍥烇紙fill_ratio / bottom_margin 闃堝€奸檷浣庯級锛?
+    // 鍚屾椂淇濈暀鍩烘湰鍑犱綍杩囨护锛屽噺灏戔€滆瘑鍒笉鍒扮涓€鏉℃í绾库€濈殑婕忔
     StopLineInfo findStopLine(const cv::Mat& mask)
     {
         StopLineInfo info;
@@ -683,8 +813,8 @@ private:
 
             if(fill_ratio < stop_line_min_fill_ratio_ || bottom_edge < bottom_h * stop_line_bottom_margin_ratio_)
             {
-                // ===== 修改 ===== 诊断日志：记录“差一点被判定为停车线”的候选框，
-                // 方便在没有画面的情况下通过 rosout 判断具体是哪个阈值卡住了
+                // ===== 淇敼 ===== 璇婃柇鏃ュ織锛氳褰曗€滃樊涓€鐐硅鍒ゅ畾涓哄仠杞︾嚎鈥濈殑鍊欓€夋锛?
+                // 鏂逛究鍦ㄦ病鏈夌敾闈㈢殑鎯呭喌涓嬮€氳繃 rosout 鍒ゆ柇鍏蜂綋鏄摢涓槇鍊煎崱浣忎簡
                 if(area > best_reject_area) { best_reject_area = area; best_reject_rect = rect; }
                 continue;
             }
@@ -728,9 +858,9 @@ private:
             }
         }
 
-        // ===== 修改 ===== 行密度兜底检测：如果轮廓法仍未识别到，
-        // 逐行检查底部区域是否有一整条“横向大片白色”（覆盖率高的行），
-        // 这种情况通常就是停车线，但因形状/断裂被轮廓过滤掉了
+        // ===== 淇敼 ===== 琛屽瘑搴﹀厹搴曟娴嬶細濡傛灉杞粨娉曚粛鏈瘑鍒埌锛?
+        // 閫愯妫€鏌ュ簳閮ㄥ尯鍩熸槸鍚︽湁涓€鏁存潯鈥滄í鍚戝ぇ鐗囩櫧鑹测€濓紙瑕嗙洊鐜囬珮鐨勮锛夛紝
+        // 杩欑鎯呭喌閫氬父灏辨槸鍋滆溅绾匡紝浣嗗洜褰㈢姸/鏂琚疆寤撹繃婊ゆ帀浜?
         if(!info.found)
         {
             const double row_white_ratio_thresh = 0.5;
@@ -770,7 +900,7 @@ private:
         return info;
     }
 
-    // ========== 调试显示（保持不变） ==========
+    // ========== 璋冭瘯鏄剧ず锛堜繚鎸佷笉鍙橈級 ==========
     void showDebug(const cv::Mat& mask, const LineInfo& right_line,
                    const StopLineInfo& stop_line, const geometry_msgs::Twist& twist)
     {
@@ -822,7 +952,7 @@ private:
         cv::putText(img, text, cv::Point(x,y), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0,255,0),2);
     }
 
-    // ========== 辅助函数 ==========
+    // ========== 杈呭姪鍑芥暟 ==========
     void enterStage(Stage stage, const char* message)
     {
         stage_ = stage;
@@ -835,7 +965,7 @@ private:
     {
         last_pos_error_ = 0.0;
         filtered_pos_error_ = 0.0;
-        integral_pos_error_ = 0.0;   // ===== 修改 ===== 每次重新找到线时清空积分，避免历史误差带入
+        integral_pos_error_ = 0.0;   // ===== 淇敼 ===== 姣忔閲嶆柊鎵惧埌绾挎椂娓呯┖绉垎锛岄伩鍏嶅巻鍙茶宸甫鍏?
     }
 
     void stopCar()
@@ -856,6 +986,9 @@ private:
         case STOP_LINE_FOUND: return "STOP_LINE";
         case ALIGN_WITH_RIGHT_LINE: return "ALIGN";
         case GO_FORWARD: return "FORWARD";
+        case SECOND_CORNER_ADVANCE: return "CORNER_ADVANCE";
+        case SECOND_CORNER_STOP: return "CORNER_STOP";
+        case SECOND_CORNER_RIGHT_TURN: return "CORNER_RIGHT";
         case FINAL_STOP: return "FINAL_STOP";
         default: return "UNKNOWN";
         }
