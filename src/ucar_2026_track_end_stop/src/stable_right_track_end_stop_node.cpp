@@ -108,27 +108,30 @@ private:
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
     private_nh_.param("target_right_x", target_right_x_, 200);
-    private_nh_.param("base_speed", base_speed_, 0.26);
-    private_nh_.param("curve_speed", curve_speed_, 0.16);
+    private_nh_.param("base_speed", base_speed_, 0.22);
+    private_nh_.param("curve_speed", curve_speed_, 0.13);
     private_nh_.param("search_speed", search_speed_, 0.10);
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.26);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.10);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.18);
-    private_nh_.param("kp", kp_, 0.0042);
-    private_nh_.param("kd", kd_, 0.0008);
-    private_nh_.param("error_alpha", error_alpha_, 0.18);
+    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.08);
+    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.15);
+    private_nh_.param("kp", kp_, 0.0034);
+    private_nh_.param("kd", kd_, 0.0005);
+    private_nh_.param("error_alpha", error_alpha_, 0.26);
     private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
-    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
-    private_nh_.param("steering_deadband_px", steering_deadband_px_, 5.0);
-    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.18);
-    private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.78);
-    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.50);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.04);
-    private_nh_.param("curve_angular_step", curve_angular_step_, 0.08);
+    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.00);
+    private_nh_.param("max_angular_speed", max_angular_speed_, 0.34);
+    private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
+    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.12);
+    private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.30);
+    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.65);
+    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.40);
+    private_nh_.param("straight_angular_step", straight_angular_step_, 0.025);
+    private_nh_.param("curve_angular_step", curve_angular_step_, 0.055);
     private_nh_.param("right_guard_error_px", right_guard_error_px_, 70.0);
-    private_nh_.param("right_guard_speed", right_guard_speed_, 0.12);
+    private_nh_.param("right_guard_speed", right_guard_speed_, 0.09);
+    private_nh_.param("right_guard_max_angular_speed", right_guard_max_angular_speed_, 0.26);
+    private_nh_.param("recovering_angular_gain", recovering_angular_gain_, 0.68);
+    private_nh_.param("reverse_brake_factor", reverse_brake_factor_, 0.35);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
     private_nh_.param("white_s_max", white_s_max_, 45);
@@ -358,19 +361,29 @@ private:
       angular *= curve_angular_gain_;
     }
 
+    // Once the detected line is moving back toward its target, unload some
+    // steering instead of carrying the full command past the target.
+    if (!inside_deadband && control_error * control_derivative < 0.0)
+      angular *= recovering_angular_gain_;
+
     // A large negative error previously received two gain boosts and could
     // drive the chassis onto the right-hand line.  Keep the turn authority for
     // the bend, but slow down further while that risky correction is active.
-    if (filtered_error_ < -right_guard_error_px_)
+    const bool right_guard_active = filtered_error_ < -right_guard_error_px_;
+    if (right_guard_active)
       linear = std::min(linear, right_guard_speed_);
 
     const double positive_limit = in_curve ? max_angular_speed_ : max_straight_angular_speed_;
-    const double negative_limit = std::min(positive_limit, max_right_angular_speed_);
+    double negative_limit = std::min(positive_limit, max_right_angular_speed_);
+    if (right_guard_active)
+      negative_limit = std::min(negative_limit, right_guard_max_angular_speed_);
     angular = clampDouble(angular, -negative_limit, positive_limit);
 
     // Smooth small straight-line corrections heavily.  In a real bend use a
     // lighter filter and a larger step so the car still turns in time.
     const double angular_alpha = in_curve ? curve_angular_alpha_ : straight_angular_alpha_;
+    if (filtered_angular_ * angular < 0.0)
+      filtered_angular_ *= reverse_brake_factor_;
     const double filtered_target = angular_alpha * filtered_angular_ +
                                    (1.0 - angular_alpha) * angular;
     const double angular_step = in_curve ? curve_angular_step_ : straight_angular_step_;
@@ -378,6 +391,7 @@ private:
                                      -angular_step, angular_step);
     if (inside_deadband && std::fabs(filtered_angular_) < 0.015)
       filtered_angular_ = 0.0;
+    filtered_angular_ = clampDouble(filtered_angular_, -negative_limit, positive_limit);
 
     result.filtered_error = filtered_error_;
     result.linear = linear;
@@ -624,27 +638,30 @@ private:
   double startup_speed_ = 0.45;
 
   int target_right_x_ = 200;
-  double base_speed_ = 0.26;
-  double curve_speed_ = 0.16;
+  double base_speed_ = 0.22;
+  double curve_speed_ = 0.13;
   double search_speed_ = 0.10;
   double search_angular_speed_ = -0.26;
-  double lost_linear_speed_ = 0.10;
-  double lost_angular_speed_ = -0.18;
-  double kp_ = 0.0042;
-  double kd_ = 0.0008;
-  double error_alpha_ = 0.18;
+  double lost_linear_speed_ = 0.08;
+  double lost_angular_speed_ = -0.15;
+  double kp_ = 0.0034;
+  double kd_ = 0.0005;
+  double error_alpha_ = 0.26;
   double curve_error_threshold_ = 38.0;
-  double curve_angular_gain_ = 1.05;
-  double max_angular_speed_ = 0.40;
-  double steering_deadband_px_ = 5.0;
-  double max_straight_angular_speed_ = 0.18;
-  double max_right_angular_speed_ = 0.34;
-  double straight_angular_alpha_ = 0.78;
-  double curve_angular_alpha_ = 0.50;
-  double straight_angular_step_ = 0.04;
-  double curve_angular_step_ = 0.08;
+  double curve_angular_gain_ = 1.00;
+  double max_angular_speed_ = 0.34;
+  double steering_deadband_px_ = 7.0;
+  double max_straight_angular_speed_ = 0.12;
+  double max_right_angular_speed_ = 0.30;
+  double straight_angular_alpha_ = 0.65;
+  double curve_angular_alpha_ = 0.40;
+  double straight_angular_step_ = 0.025;
+  double curve_angular_step_ = 0.055;
   double right_guard_error_px_ = 70.0;
-  double right_guard_speed_ = 0.12;
+  double right_guard_speed_ = 0.09;
+  double right_guard_max_angular_speed_ = 0.26;
+  double recovering_angular_gain_ = 0.68;
+  double reverse_brake_factor_ = 0.35;
 
   double roi_y_start_ratio_ = 0.60;
   int white_s_max_ = 45;
