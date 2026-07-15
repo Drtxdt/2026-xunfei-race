@@ -129,6 +129,7 @@ private:
     private_nh_.param("curve_angular_step", curve_angular_step_, 0.08);
     private_nh_.param("right_guard_error_px", right_guard_error_px_, 70.0);
     private_nh_.param("right_guard_speed", right_guard_speed_, 0.12);
+    private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
     private_nh_.param("white_s_max", white_s_max_, 45);
@@ -376,8 +377,17 @@ private:
     const double angular_step = in_curve ? curve_angular_step_ : straight_angular_step_;
     filtered_angular_ += clampDouble(filtered_target - filtered_angular_,
                                      -angular_step, angular_step);
-    if (inside_deadband && std::fabs(filtered_angular_) < 0.015)
-      filtered_angular_ = 0.0;
+    if (inside_deadband)
+    {
+      filtered_angular_ *= deadband_angular_decay_;
+      if (std::fabs(filtered_angular_) < 0.015)
+        filtered_angular_ = 0.0;
+    }
+
+    // Enforce the active straight/curve limit on the final command as well.
+    // Without this second clamp, a large bend command stored in the filter can
+    // leak into the straight section and keep steering toward the line.
+    filtered_angular_ = clampDouble(filtered_angular_, -negative_limit, positive_limit);
 
     result.filtered_error = filtered_error_;
     result.linear = linear;
@@ -645,6 +655,7 @@ private:
   double curve_angular_step_ = 0.08;
   double right_guard_error_px_ = 70.0;
   double right_guard_speed_ = 0.12;
+  double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
   int white_s_max_ = 45;
