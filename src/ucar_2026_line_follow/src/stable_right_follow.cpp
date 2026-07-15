@@ -42,6 +42,9 @@ public:
         // 璁板綍寮€濮嬬Щ鍔ㄧ殑鏃跺埢锛堢敤浜?0绉掑唴蹇界暐鍋滆溅绾匡級
         start_moving_time_ = ros::Time::now();
 
+        // ===== 修改 ===== 左转预处理标志
+        need_left_turn_ = false;
+
         ROS_INFO("=================================");
         ROS_INFO(" Stable Right Follow (Final Version) ");
         ROS_INFO("=================================");
@@ -180,7 +183,6 @@ private:
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
     {
         cv::Mat frame;
-
         try
         {
             frame = cv_bridge::toCvCopy(msg, "bgr8")->image;
@@ -190,7 +192,6 @@ private:
             ROS_ERROR("%s", e.what());
             return;
         }
-
         if(frame.empty())
         {
             stopCar();
@@ -216,33 +217,28 @@ private:
         case STARTUP:
             handleStartup(twist);
             break;
-
         case SEARCH_RIGHT_LINE:
             handleSearch(twist, right_line);
             break;
-
         case FOLLOW_RIGHT_LINE:
             handleFollow(twist, right_line, stop_line);
             break;
-
         case STOP_LINE_FOUND:
             handleStopLineFound(twist);
             break;
-
         case ALIGN_WITH_RIGHT_LINE:
             handleAlign(twist, stop_line);
             break;
-
         case GO_FORWARD:
             handleGoForward(twist);
             break;
-
         case FINAL_STOP:
         default:
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             break;
         }
+    }
 
         // 瑙掗€熷害浣庨€氭护娉紙骞虫粦杈撳嚭锛屽噺灏戞姈鍔級
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
@@ -260,7 +256,6 @@ private:
     void handleStartup(geometry_msgs::Twist& twist)
     {
         const double elapsed = (ros::Time::now() - start_time_).toSec();
-
         if(elapsed < startup_time_)
         {
             twist.linear.x = startup_speed_;
@@ -274,10 +269,25 @@ private:
         twist.angular.z = 0.0;
     }
 
-    void handleSearch(
-        geometry_msgs::Twist& twist,
-        const LineInfo& right_line)
+    void handleSearch(geometry_msgs::Twist& twist, const LineInfo& right_line)
     {
+        // ===== 修改 ===== 如果需要左转预处理，先执行左转
+        if(need_left_turn_)
+        {
+            double elapsed = (ros::Time::now() - left_turn_start_time_).toSec();
+            if(elapsed < left_turn_duration_)
+            {
+                twist.linear.x = search_speed_;
+                twist.angular.z = left_turn_angular_;   // 左转
+                return;
+            }
+            else
+            {
+                need_left_turn_ = false;   // 左转完成
+            }
+        }
+
+        // 原来的右转搜索逻辑
         if(!right_line.found)
         {
             twist.linear.x = search_speed_;
@@ -290,15 +300,13 @@ private:
         lost_line_count_ = 0;
         predicted_right_x_ = right_line.x;
         enterStage(FOLLOW_RIGHT_LINE, "RIGHT LINE FOUND");
-
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
     }
 
-    void handleFollow(
-        geometry_msgs::Twist& twist,
-        const LineInfo& right_line,
-        const StopLineInfo& stop_line)
+    void handleFollow(geometry_msgs::Twist& twist,
+                      const LineInfo& right_line,
+                      const StopLineInfo& stop_line)
     {
         // 鍓?0绉掑拷鐣ュ仠杞︾嚎妫€娴?
         double elapsed_since_move = (ros::Time::now() - start_moving_time_).toSec();
@@ -307,7 +315,7 @@ private:
         if(stop_line.found && !ignore_stop_line)
         {
             resetPid();
-            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED (TIME>=10s)");
+            enterStage(STOP_LINE_FOUND, "STOP LINE DETECTED");
             twist.linear.x = 0.0;
             twist.angular.z = 0.0;
             return;
@@ -375,7 +383,6 @@ private:
     void handleStopLineFound(geometry_msgs::Twist& twist)
     {
         const double elapsed = (ros::Time::now() - stage_start_time_).toSec();
-
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
 
@@ -383,7 +390,6 @@ private:
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "ENTER ALIGN MODE");
         }
-
         if(elapsed > 3.0)
         {
             enterStage(ALIGN_WITH_RIGHT_LINE, "STOPLINE TIMEOUT");
@@ -403,8 +409,11 @@ private:
             }
             return;
         }
+        return clean;
+    }
 
-        double angle_error = stop_line.angle_deg - 0.0;
+        // ===== 修改 ===== 使用 desired_angle_deg_，实现左转5°对齐
+        double angle_error = stop_line.angle_deg - desired_angle_deg_;
         double angular_cmd = clamp(angle_error * 0.035, -0.18, 0.18);
 
         // 鍔犲叆姝诲尯锛岄槻姝㈠皬瑙掑害闇囪崱
@@ -473,7 +482,7 @@ private:
             cv::Scalar(180, 45, 255),
             mask);
 
-        cv::Mat kernel = cv::Mat::ones(5, 5, CV_8U);
+        cv::Mat kernel = cv::Mat::ones(5,5, CV_8U);
         cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
         cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
         cv::medianBlur(mask, mask, 5);
@@ -509,23 +518,18 @@ private:
         LineInfo info;
         const int h = mask.rows;
         const int w = mask.cols;
-
-        for(int y = static_cast<int>(h * 0.20);
-            y < static_cast<int>(h * 0.92);
-            y += 4)
+        for(int y = static_cast<int>(h*0.20); y < static_cast<int>(h*0.92); y+=4)
         {
             const uchar* ptr = mask.ptr<uchar>(y);
-
-            for(int x = w - 1; x >= 0; --x)
+            for(int x = w-1; x>=0; --x)
             {
                 if(ptr[x] > 0)
                 {
-                    info.points.push_back(cv::Point(x, y));
+                    info.points.push_back(cv::Point(x,y));
                     break;
                 }
             }
         }
-
         if(info.points.size() < 6)
         {
             info.found = false;
@@ -534,39 +538,20 @@ private:
             lost_line_count_++;
             return info;
         }
-
         double x_sum = 0.0;
         int x_count = 0;
-
         for(const auto& p : info.points)
         {
-            if(p.y > h * 0.45)
-            {
-                x_sum += p.x;
-                ++x_count;
-            }
+            if(p.y > h*0.45) { x_sum += p.x; x_count++; }
         }
-
         if(x_count == 0)
         {
-            for(const auto& p : info.points)
-            {
-                x_sum += p.x;
-            }
+            for(const auto& p : info.points) x_sum += p.x;
             x_count = static_cast<int>(info.points.size());
         }
-
-        cv::fitLine(
-            info.points,
-            info.fit_line,
-            cv::DIST_L2,
-            0.0,
-            0.01,
-            0.01);
-
+        cv::fitLine(info.points, info.fit_line, cv::DIST_L2, 0.0, 0.01, 0.01);
         const double vx = info.fit_line[0];
         const double vy = info.fit_line[1];
-
         info.found = true;
         info.x = static_cast<int>(x_sum / x_count);
         info.angle_deg = rad2deg(std::atan2(vx, vy));
@@ -601,11 +586,9 @@ private:
 
         double max_area = 0;
         int best_idx = -1;
-
         for(size_t i = 0; i < contours.size(); ++i)
         {
-            const auto& cnt = contours[i];
-            double area = cv::contourArea(cnt);
+            double area = cv::contourArea(contours[i]);
             if(area < stop_line_min_area_) continue;
 
             cv::Rect rect = cv::boundingRect(cnt);
@@ -614,8 +597,7 @@ private:
             if(rect.width < rect.height * 4) continue;
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
-
-            if(cnt.size() >= 5)
+            if(contours[i].size() >= 5)
             {
                 cv::Vec4f line;
                 cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
@@ -629,34 +611,31 @@ private:
                 max_area = area;
                 best_idx = i;
             }
+            if(area > max_area) { max_area = area; best_idx = i; }
         }
-
         if(best_idx >= 0)
         {
             const auto& cnt = contours[best_idx];
             cv::Rect rect = cv::boundingRect(cnt);
             cv::Vec4f line;
             cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
-
             info.found = true;
             info.rect = rect;
             info.angle_deg = rad2deg(std::atan2(line[1], line[0]));
-            info.center_x = rect.x + rect.width / 2;
+            info.center_x = rect.x + rect.width/2;
         }
 
         // 鍚庡锛氬ぇ鍖哄煙鐧借壊妫€娴?
         if(!info.found && cross_area_threshold_ > 0)
         {
-            int total_white = cv::countNonZero(mask);
-            if(total_white > cross_area_threshold_)
+            if(cv::countNonZero(mask) > cross_area_threshold_)
             {
                 info.found = true;
-                info.rect = cv::Rect(0, 0, w, h);
+                info.rect = cv::Rect(0,0,w,h);
                 info.angle_deg = 0.0;
-                info.center_x = w / 2;
+                info.center_x = w/2;
             }
         }
-
         return info;
     }
 
@@ -669,105 +648,49 @@ private:
     {
         cv::Mat debug;
         cv::cvtColor(mask, debug, cv::COLOR_GRAY2BGR);
-
-        const bool in_curve =
-            std::fabs(filtered_pos_error_) > curve_threshold_;
-        const int active_target =
-            target_right_x_ - (in_curve ? static_cast<int>(curve_offset_) : 0);
-
-        cv::line(
-            debug,
-            cv::Point(target_right_x_, 0),
-            cv::Point(target_right_x_, mask.rows),
-            cv::Scalar(255, 0, 0),
-            2);
-
-        cv::line(
-            debug,
-            cv::Point(active_target, 0),
-            cv::Point(active_target, mask.rows),
-            cv::Scalar(0, 255, 255),
-            2);
-
+        const bool in_curve = std::fabs(filtered_pos_error_) > curve_threshold_;
+        const int active_target = target_right_x_ - (in_curve ? static_cast<int>(curve_offset_) : 0);
+        cv::line(debug, cv::Point(target_right_x_,0), cv::Point(target_right_x_, mask.rows), cv::Scalar(255,0,0),2);
+        cv::line(debug, cv::Point(active_target,0), cv::Point(active_target, mask.rows), cv::Scalar(0,255,255),2);
         if(right_line.found)
         {
-            for(const auto& p : right_line.points)
-            {
-                cv::circle(debug, p, 2, cv::Scalar(0, 180, 255), -1);
-            }
-
-            drawFitLine(debug, right_line.fit_line, cv::Scalar(0, 0, 255));
-            cv::circle(
-                debug,
-                cv::Point(right_line.x, mask.rows / 2),
-                5,
-                cv::Scalar(0, 0, 255),
-                -1);
+            for(const auto& p : right_line.points) cv::circle(debug, p, 2, cv::Scalar(0,180,255), -1);
+            drawFitLine(debug, right_line.fit_line, cv::Scalar(0,0,255));
+            cv::circle(debug, cv::Point(right_line.x, mask.rows/2), 5, cv::Scalar(0,0,255), -1);
         }
-
         if(stop_line.found)
         {
-            cv::rectangle(debug, stop_line.rect, cv::Scalar(0, 255, 0), 2);
+            cv::rectangle(debug, stop_line.rect, cv::Scalar(0,255,0), 2);
             char buf[32];
-            std::snprintf(buf, sizeof(buf), "Ang:%.1f", stop_line.angle_deg);
-            cv::putText(debug, buf, cv::Point(stop_line.rect.x, stop_line.rect.y - 10),
-                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 255, 255), 1);
+            snprintf(buf, sizeof(buf), "Ang:%.1f", stop_line.angle_deg);
+            cv::putText(debug, buf, cv::Point(stop_line.rect.x, stop_line.rect.y-10),
+                        cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0,255,255), 1);
         }
-
         double elapsed = (ros::Time::now() - start_moving_time_).toSec();
-        drawText(debug, 20, 30, "stage: " + stageName(stage_));
-        drawText(debug, 20, 60, format("target: %d", active_target));
-        drawText(debug, 20, 90, format("err: %.2f", filtered_pos_error_));
-        drawText(debug, 20, 120, format("time: %.1fs", elapsed));
-        drawText(debug, 20, 150, format("cmd w: %.3f", twist.angular.z));
-        drawText(debug, 20, 180, format("lost: %d", lost_line_count_));
-
+        drawText(debug, 20,30, "stage: " + stageName(stage_));
+        drawText(debug, 20,60, format("target: %d", active_target));
+        drawText(debug, 20,90, format("err: %.2f", filtered_pos_error_));
+        drawText(debug, 20,120, format("time: %.1fs", elapsed));
+        drawText(debug, 20,150, format("cmd w: %.3f", twist.angular.z));
+        drawText(debug, 20,180, format("lost: %d", lost_line_count_));
         cv::imshow("right_follow", debug);
         cv::waitKey(1);
     }
 
-    void drawFitLine(
-        cv::Mat& image,
-        const cv::Vec4f& line,
-        const cv::Scalar& color)
+    void drawFitLine(cv::Mat& img, const cv::Vec4f& line, const cv::Scalar& color)
     {
-        const float vx = line[0];
-        const float vy = line[1];
-        const float x0 = line[2];
-        const float y0 = line[3];
-
-        if(std::fabs(vy) < 1e-5)
-        {
-            return;
-        }
-
-        const int y1 = 0;
-        const int y2 = image.rows - 1;
-        const int x1 = static_cast<int>(x0 + (y1 - y0) * vx / vy);
-        const int x2 = static_cast<int>(x0 + (y2 - y0) * vx / vy);
-
-        cv::line(
-            image,
-            cv::Point(clampInt(x1, 0, image.cols - 1), y1),
-            cv::Point(clampInt(x2, 0, image.cols - 1), y2),
-            color,
-            2);
+        float vx=line[0], vy=line[1], x0=line[2], y0=line[3];
+        if(std::fabs(vy)<1e-5) return;
+        int y1=0, y2=img.rows-1;
+        int x1 = static_cast<int>(x0 + (y1-y0)*vx/vy);
+        int x2 = static_cast<int>(x0 + (y2-y0)*vx/vy);
+        cv::line(img, cv::Point(clampInt(x1,0,img.cols-1), y1),
+                 cv::Point(clampInt(x2,0,img.cols-1), y2), color, 2);
     }
 
-    void drawText(
-        cv::Mat& image,
-        int x,
-        int y,
-        const std::string& text)
+    void drawText(cv::Mat& img, int x, int y, const std::string& text)
     {
-        cv::putText(
-            image,
-            text,
-            cv::Point(x, y),
-            cv::FONT_HERSHEY_SIMPLEX,
-            0.55,
-            cv::Scalar(0, 255, 0),
-            2);
+        cv::putText(img, text, cv::Point(x,y), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0,255,0),2);
     }
 
     // ========== 杈呭姪鍑芥暟 ==========
@@ -800,66 +723,36 @@ private:
     {
         switch(stage)
         {
-        case STARTUP:
-            return "STARTUP";
-        case SEARCH_RIGHT_LINE:
-            return "SEARCH";
-        case FOLLOW_RIGHT_LINE:
-            return "FOLLOW";
-        case STOP_LINE_FOUND:
-            return "STOP_LINE";
-        case ALIGN_WITH_RIGHT_LINE:
-            return "ALIGN";
-        case GO_FORWARD:
-            return "FORWARD";
-        case FINAL_STOP:
-            return "FINAL_STOP";
-        default:
-            return "UNKNOWN";
+        case STARTUP: return "STARTUP";
+        case SEARCH_RIGHT_LINE: return "SEARCH";
+        case FOLLOW_RIGHT_LINE: return "FOLLOW";
+        case STOP_LINE_FOUND: return "STOP_LINE";
+        case ALIGN_WITH_RIGHT_LINE: return "ALIGN";
+        case GO_FORWARD: return "FORWARD";
+        case FINAL_STOP: return "FINAL_STOP";
+        default: return "UNKNOWN";
         }
     }
 
     std::string format(const char* fmt, double value)
     {
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), fmt, value);
-        return std::string(buf);
+        char buf[80]; std::snprintf(buf, sizeof(buf), fmt, value); return buf;
     }
-
     std::string format(const char* fmt, int value)
     {
-        char buf[80];
-        std::snprintf(buf, sizeof(buf), fmt, value);
-        return std::string(buf);
+        char buf[80]; std::snprintf(buf, sizeof(buf), fmt, value); return buf;
     }
 
-    double deg2rad(double deg) const
-    {
-        return deg * CV_PI / 180.0;
-    }
-
-    double rad2deg(double rad) const
-    {
-        return rad * 180.0 / CV_PI;
-    }
-
-    double clamp(double value, double low, double high) const
-    {
-        return std::max(low, std::min(value, high));
-    }
-
-    int clampInt(int value, int low, int high) const
-    {
-        return std::max(low, std::min(value, high));
-    }
+    double deg2rad(double deg) const { return deg * CV_PI / 180.0; }
+    double rad2deg(double rad) const { return rad * 180.0 / CV_PI; }
+    double clamp(double v, double lo, double hi) const { return std::max(lo, std::min(v, hi)); }
+    int clampInt(int v, int lo, int hi) const { return std::max(lo, std::min(v, hi)); }
 };
 
 int main(int argc, char** argv)
 {
     ros::init(argc, argv, "stable_right_follow_cpp");
-
     StableRightFollowNode node;
     ros::spin();
-
     return 0;
 }
