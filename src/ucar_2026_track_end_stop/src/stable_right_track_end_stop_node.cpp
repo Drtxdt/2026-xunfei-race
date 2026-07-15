@@ -65,6 +65,7 @@ private:
     SearchRightLine,
     Follow,
     EndDetected,
+    TurnRight,
     Forward50cm,
     FinalStop,
     Finish
@@ -103,22 +104,32 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_time", startup_time_, 2.8);
+    private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
     private_nh_.param("target_right_x", target_right_x_, 200);
-    private_nh_.param("base_speed", base_speed_, 0.32);
-    private_nh_.param("curve_speed", curve_speed_, 0.28);
+    private_nh_.param("base_speed", base_speed_, 0.26);
+    private_nh_.param("curve_speed", curve_speed_, 0.16);
     private_nh_.param("search_speed", search_speed_, 0.10);
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.26);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.14);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.22);
-    private_nh_.param("kp", kp_, 0.0052);
-    private_nh_.param("kd", kd_, 0.0018);
-    private_nh_.param("error_alpha", error_alpha_, 0.22);
+    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.10);
+    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.18);
+    private_nh_.param("kp", kp_, 0.0042);
+    private_nh_.param("kd", kd_, 0.0008);
+    private_nh_.param("error_alpha", error_alpha_, 0.18);
     private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
-    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.18);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.55);
+    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
+    private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
+    private_nh_.param("steering_deadband_px", steering_deadband_px_, 5.0);
+    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.18);
+    private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
+    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.78);
+    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.50);
+    private_nh_.param("straight_angular_step", straight_angular_step_, 0.04);
+    private_nh_.param("curve_angular_step", curve_angular_step_, 0.08);
+    private_nh_.param("right_guard_error_px", right_guard_error_px_, 70.0);
+    private_nh_.param("right_guard_speed", right_guard_speed_, 0.12);
+    private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
     private_nh_.param("white_s_max", white_s_max_, 45);
@@ -132,6 +143,8 @@ private:
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
     private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
+    private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
+    private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -227,12 +240,33 @@ private:
         hardStop();
         if ((now - state_start_time_).toSec() >= end_stop_hold_)
         {
+          state_ = State::TurnRight;
+          state_start_time_ = now;
+          ROS_INFO("turning left %.1f deg at %.2f rad/s before parking",
+                   end_turn_left_angle_deg_, end_turn_left_angular_speed_);
+        }
+        break;
+
+      case State::TurnRight:
+      {
+        const double turn_duration = (end_turn_left_angle_deg_ * M_PI / 180.0) /
+                                     std::max(end_turn_left_angular_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < turn_duration)
+        {
+          setStatus("stable_right_turn_left_align");
+          cmd.angular.z = end_turn_left_angular_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
           state_ = State::Forward50cm;
           state_start_time_ = now;
-          ROS_INFO("driving straight forward %.2f m at %.2f m/s after end detection",
+          hardStop();
+          ROS_INFO("driving straight forward %.2f m at %.2f m/s after alignment",
                    end_forward_distance_m_, end_forward_speed_);
         }
         break;
+      }
 
       case State::Forward50cm:
       {
@@ -312,22 +346,52 @@ private:
     const double d_error = filtered_error_ - last_error_;
     last_error_ = filtered_error_;
 
-    double angular = kp_ * filtered_error_ + kd_ * d_error;
-
-if (filtered_error_ < -15.0)
-{
-  angular *= 1.35;
-}
+    const double abs_error = std::fabs(filtered_error_);
+    const bool inside_deadband = abs_error <= steering_deadband_px_;
+    const double control_error = inside_deadband ? 0.0 : filtered_error_;
+    const double control_derivative = inside_deadband ? 0.0 : d_error;
+    double angular = kp_ * control_error + kd_ * control_derivative;
     double linear = base_speed_;
-    if (std::fabs(filtered_error_) > curve_error_threshold_)
+    const bool in_curve = abs_error > curve_error_threshold_;
+    if (in_curve)
     {
       linear = curve_speed_;
       angular *= curve_angular_gain_;
     }
 
+    // A large negative error previously received two gain boosts and could
+    // drive the chassis onto the right-hand line.  Keep the turn authority for
+    // the bend, but slow down further while that risky correction is active.
+    if (filtered_error_ < -right_guard_error_px_)
+      linear = std::min(linear, right_guard_speed_);
+
+    const double positive_limit = in_curve ? max_angular_speed_ : max_straight_angular_speed_;
+    const double negative_limit = std::min(positive_limit, max_right_angular_speed_);
+    angular = clampDouble(angular, -negative_limit, positive_limit);
+
+    // Smooth small straight-line corrections heavily.  In a real bend use a
+    // lighter filter and a larger step so the car still turns in time.
+    const double angular_alpha = in_curve ? curve_angular_alpha_ : straight_angular_alpha_;
+    const double filtered_target = angular_alpha * filtered_angular_ +
+                                   (1.0 - angular_alpha) * angular;
+    const double angular_step = in_curve ? curve_angular_step_ : straight_angular_step_;
+    filtered_angular_ += clampDouble(filtered_target - filtered_angular_,
+                                     -angular_step, angular_step);
+    if (inside_deadband)
+    {
+      filtered_angular_ *= deadband_angular_decay_;
+      if (std::fabs(filtered_angular_) < 0.015)
+        filtered_angular_ = 0.0;
+    }
+
+    // Enforce the active straight/curve limit on the final command as well.
+    // Without this second clamp, a large bend command stored in the filter can
+    // leak into the straight section and keep steering toward the line.
+    filtered_angular_ = clampDouble(filtered_angular_, -negative_limit, positive_limit);
+
     result.filtered_error = filtered_error_;
     result.linear = linear;
-    result.angular = clampDouble(angular, -max_angular_speed_, max_angular_speed_);
+    result.angular = filtered_angular_;
     return result;
   }
 
@@ -431,7 +495,10 @@ if (filtered_error_ < -15.0)
     {
       setStatus("stable_right_lost");
       cmd.linear.x = lost_linear_speed_;
-      cmd.angular.z = last_right_x_ >= 0 ? lost_angular_speed_ : search_angular_speed_;
+      const double target_angular = last_right_x_ >= 0 ? lost_angular_speed_ : search_angular_speed_;
+      cmd.angular.z = clampDouble(target_angular,
+                                  last_angular_ - curve_angular_step_,
+                                  last_angular_ + curve_angular_step_);
       publishCmd(cmd);
       return;
     }
@@ -440,7 +507,12 @@ if (filtered_error_ < -15.0)
     last_detection_time_ = ros::Time::now();
     cmd.linear.x = follow.linear;
     cmd.angular.z = follow.angular;
-    setStatus("stable_right_tracking");
+    if (follow.filtered_error < -right_guard_error_px_)
+      setStatus("stable_right_tracking_right_guard");
+    else if (std::fabs(follow.filtered_error) > curve_error_threshold_)
+      setStatus("stable_right_tracking_curve");
+    else
+      setStatus("stable_right_tracking");
     publishCmd(cmd);
   }
 
@@ -558,22 +630,32 @@ if (filtered_error_ < -15.0)
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_time_ = 2.8;
+  double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
   int target_right_x_ = 200;
-  double base_speed_ = 0.32;
-  double curve_speed_ = 0.28;
+  double base_speed_ = 0.26;
+  double curve_speed_ = 0.16;
   double search_speed_ = 0.10;
   double search_angular_speed_ = -0.26;
-  double lost_linear_speed_ = 0.14;
-  double lost_angular_speed_ = -0.22;
-  double kp_ = 0.0052;
-  double kd_ = 0.0018;
-  double error_alpha_ = 0.22;
+  double lost_linear_speed_ = 0.10;
+  double lost_angular_speed_ = -0.18;
+  double kp_ = 0.0042;
+  double kd_ = 0.0008;
+  double error_alpha_ = 0.18;
   double curve_error_threshold_ = 38.0;
-  double curve_angular_gain_ = 1.18;
-  double max_angular_speed_ = 0.55;
+  double curve_angular_gain_ = 1.05;
+  double max_angular_speed_ = 0.40;
+  double steering_deadband_px_ = 5.0;
+  double max_straight_angular_speed_ = 0.18;
+  double max_right_angular_speed_ = 0.34;
+  double straight_angular_alpha_ = 0.78;
+  double curve_angular_alpha_ = 0.50;
+  double straight_angular_step_ = 0.04;
+  double curve_angular_step_ = 0.08;
+  double right_guard_error_px_ = 70.0;
+  double right_guard_speed_ = 0.12;
+  double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
   int white_s_max_ = 45;
@@ -587,6 +669,8 @@ if (filtered_error_ < -15.0)
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.65;
   double end_forward_speed_ = 0.17;
+  double end_turn_left_angle_deg_ = 10.0;
+  double end_turn_left_angular_speed_ = 0.50;
 
   State state_ = State::Idle;
   ros::Time start_time_;
@@ -596,6 +680,7 @@ if (filtered_error_ < -15.0)
 
   double last_error_ = 0.0;
   double filtered_error_ = 0.0;
+  double filtered_angular_ = 0.0;
   int last_right_x_ = -1;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;

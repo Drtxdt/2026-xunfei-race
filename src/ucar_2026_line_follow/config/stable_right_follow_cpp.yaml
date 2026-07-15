@@ -2,60 +2,99 @@
 # Line follow
 ###############
 target_right_x: 125          # 145 → 130，车更靠左，远离右线
-curve_offset: 60.0           # 15 → 20，弯道额外远离右线
-
+curve_offset: 60.0           # 15 → 60，弯道额外远离右线
 # 速度调低，让车更稳
-base_speed: 0.22             # 0.30 → 0.22
-curve_speed: 0.18            # 0.24 → 0.18
-search_speed: 0.12
-lost_line_speed: 0.14
+base_speed: 0.36             # 0.30 → 0.22
+curve_speed: 0.28            # 0.24 → 0.18
+search_speed: 0.15
+lost_line_speed: 0.18
 startup_speed: 0.45
-
+###############
+# Startup（开机直行距离增加到之前的1.7倍，尽早稳定进入右线跟随前先走更远一点）
+###############
+startup_time: 2.4            # 1.4 → 2.4（1.4 * 1.7 ≈ 2.4）
 ###############
 # PID
 ###############
-# 降低比例、增加微分，抑制蛇形，减少飘动
 kp_pos: 0.0032               # 0.0040 → 0.0032
 kd_pos: 0.0030               # 0.0020 → 0.0030
 kp_angle: 0.25               # 0.30 → 0.25
-
+# 新增：积分项，消除弯道后长期贴右线的稳态误差；带抗饱和限幅
+ki_pos: 0.00035
+integral_clamp: 60.0
+# 新增：微分限幅，抑制入弯瞬间误差跳变造成的“微分冲击”（第一次拐弯左转过多压线的主因）
+d_error_clamp: 25.0
+# 新增：硬安全下限——距离右线过近时，不管PID算出多少，强制至少这么大的左转角速度，并限速
+hard_safety_margin_px: 20.0
+safety_min_angular: 0.22
+safety_speed_scale: 0.6
 # 限制最大转向速度，提高平滑度
 max_angular: 0.40            # 0.45 → 0.40
 error_filter_alpha: 0.25     # 0.18 → 0.25（滤波更强，更平滑）
-
 ###############
 # Curve
 ###############
 curve_threshold: 35.0
 curve_gain: 0.9              # 1.0 → 0.9（弯道不冲）
+###############
+# Lost line -> 先停车原地左转(~12°)再搜索
+###############
+lost_line_stop_duration: 1.5   # 停车+左转总时长，控制在1~2秒
+lost_line_turn_angle_deg: 12.0 # 25 → 12，左转幅度减小
+# 左转期间若右线仍可见且过近，主动增大角速度远离右线
+left_turn_safety_margin_px: 40.0
+left_turn_extra_gain: 0.01
+left_turn_max_angular: 0.9
+# 左转修正完成后，缓慢向右扫描找线（比之前更慢更稳，避免又找过头）
+search_right_speed: 0.11
+search_right_angular: 0.18
+###############
+# 触发条件：用“检测到右转”代替“丢失右线”
+###############
+# 必须同时满足：角度偏差超过阈值 且 位置误差也超过弯道阈值，才计入右转判定，
+# 单纯角度噪声（直道也可能抖动）不会误触发；连续 right_turn_trigger_count 帧才真正触发
+right_turn_angle_threshold_deg: 15.0   # 12 → 15，减少直道噪声误判
+right_turn_trigger_count: 6            # 4 → 6，要求更持续的信号
+right_turn_cooldown_sec: 2.5           # 新增：触发一次后2.5秒内不再重新触发，防止反复停车-左转导致"一抽一抽"
 
 ###############
-# Startup
+# Second sharp corner
+# 只对第二个尖锐右转增加：越过尖点25cm、停车、依据右线闭环完成右转
 ###############
-startup_time: 2.8
+second_corner_advance_distance: 0.25
+second_corner_advance_speed: 0.34
+second_corner_stop_time: 0.30
+second_corner_search_speed: 0.10
+second_corner_search_angular: 0.32
+second_corner_max_angular: 0.75
+second_corner_kp_pos: 0.0050
+second_corner_kp_angle: 0.42
+second_corner_stable_frames: 8
+second_corner_timeout: 4.0
 
 ###############
-# Stop line
+# Stop line（放宽识别门槛，提升第一条横线的识别成功率）
 ###############
 cross_area_threshold: 48000
-stop_line_min_width: 80      # 120 → 80
-stop_line_max_height: 50     # 40 → 50
-stop_line_min_area: 400      # 800 → 400
-
+stop_line_min_width: 80
+stop_line_max_height: 50
+stop_line_min_area: 400
+stop_line_min_fill_ratio: 0.35        # 0.45 → 0.35，降低漏检
+stop_line_bottom_margin_ratio: 0.40   # 0.55 → 0.40，降低漏检
 ###############
-# Align
+# Align（停车后原地左转5°做角度修正，全程停车+修正总时长约1~2秒）
 ###############
 align_speed: 0.18
 align_angle_threshold: 2.0
-align_stop_time: 0.5         # 1.5 → 0.5（缩短等待）
-desired_angle_deg: -5.0      # 0.0 → -5.0（垂直基础上左转5°）
-
+align_stop_time: 0.3         # 仅做防抖确认，不做转向；真正的转向在ALIGN阶段
+desired_angle_deg: -5.0      # 停车后需要原地左转的角度
+align_angular_speed: 0.10    # 转动时长 = |desired_angle_deg|(rad)/该值 ≈ 0.87s，
+                              # 加上 align_stop_time(0.3s) 总计约1.2秒
 ###############
 # Final forward
 ###############
 final_speed: 0.20
 final_distance: 0.60
-
 ###############
 # Debug
 ###############

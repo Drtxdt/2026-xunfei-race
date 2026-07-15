@@ -39,13 +39,14 @@ public:
         last_angular_ = 0.0;
         last_line_time_ = ros::Time::now();
 
+        // 璁板綍寮€濮嬬Щ鍔ㄧ殑鏃跺埢锛堢敤浜?0绉掑唴蹇界暐鍋滆溅绾匡級
         start_moving_time_ = ros::Time::now();
 
         // ===== 修改 ===== 左转预处理标志
         need_left_turn_ = false;
 
         ROS_INFO("=================================");
-        ROS_INFO(" Stable Right Follow (Tuned) ");
+        ROS_INFO(" Stable Right Follow (Final Version) ");
         ROS_INFO("=================================");
     }
 
@@ -82,43 +83,43 @@ private:
     ros::Publisher cmd_pub_;
     ros::Subscriber image_sub_;
 
-    // ========== 参数 ==========
-    int target_right_x_;
-    double base_speed_;
-    double curve_speed_;
-    double search_speed_;
-    double lost_line_speed_;
-    double startup_speed_;
+    // ========== 鍙皟鍙傛暟锛堝彲鍦ㄧ嚎淇敼锛?==========
+    int target_right_x_;                // 鐩爣鍙崇嚎浣嶇疆锛堝儚绱狅級
+    double base_speed_;                 // 鐩撮亾閫熷害 (m/s)
+    double curve_speed_;                // 寮亾閫熷害 (m/s)
+    double search_speed_;               // 鎼滅储閫熷害 (m/s)
+    double lost_line_speed_;            // 涓㈢嚎閫熷害 (m/s)
+    double startup_speed_;              // 鍚姩閫熷害 (m/s)
 
-    double kp_pos_;
-    double kd_pos_;
-    double kp_angle_;
+    double kp_pos_;                     // 浣嶇疆姣斾緥澧炵泭 (鎺у埗妯悜绾犲亸鍔涘害)
+    double kd_pos_;                     // 浣嶇疆寰垎澧炵泭 (鎶戝埗闇囪崱)
+    double kp_angle_;                   // 瑙掑害姣斾緥澧炵泭 (鎺у埗绾挎柟鍚戠籂鍋?
 
-    double curve_threshold_;
-    double curve_offset_;
-    double curve_gain_;
+    double curve_threshold_;            // 鍒ゆ柇寮亾鐨勮宸槇鍊?
+    double curve_offset_;               // 寮亾鍋忕Щ閲?
+    double curve_gain_;                 // 寮亾瑙掗€熷害澧炵泭
 
-    double max_angular_;
-    double error_filter_alpha_;
+    double max_angular_;                // 鏈€澶ц閫熷害 (rad/s)
+    double error_filter_alpha_;         // 浣庨€氭护娉㈢郴鏁?
 
-    double startup_time_;
+    double startup_time_;               // 鍚姩闃舵鎸佺画鏃堕棿 (s)
 
-    int cross_area_threshold_;
-    int stop_line_min_width_;
-    int stop_line_max_height_;
-    int stop_line_min_area_;
+    int cross_area_threshold_;          // 澶х櫧鑹插尯鍩熷悗澶囬槇鍊?
+    int stop_line_min_width_;           // 鍋滆溅绾挎渶灏忓搴?(鍍忕礌)
+    int stop_line_max_height_;          // 鍋滆溅绾挎渶澶ч珮搴?(鍍忕礌)
+    int stop_line_min_area_;            // 鍋滆溅绾挎渶灏忛潰绉?(鍍忕礌虏)
 
-    double align_speed_;
-    double align_angle_threshold_;
-    double align_stop_time_;
-    double desired_angle_deg_;
+    double align_speed_;                // 瀵归綈鏃舵棆杞€熷害涓婇檺
+    double align_angle_threshold_;      // 瀵归綈瑙掑害闃堝€?(搴?
+    double align_stop_time_;            // 鍋滆溅鍚庣瓑寰呮椂闂?(s)
+    double desired_angle_deg_;          // 鏈熸湜瑙掑害 (0掳 琛ㄧず姘村钩)
 
-    double final_speed_;
-    double final_distance_;
+    double final_speed_;                // 鐩磋蛋閫熷害 (m/s)
+    double final_distance_;             // 鐩磋蛋璺濈 (m)
 
-    bool show_debug_;
+    bool show_debug_;                   // 鏄惁鏄剧ず璋冭瘯绐楀彛
 
-    // ========== 运行时变量 ==========
+    // ========== 杩愯鏃跺彉閲?==========
     double last_pos_error_;
     double filtered_pos_error_;
     int last_right_x_;
@@ -128,41 +129,37 @@ private:
     ros::Time stage_start_time_;
     ros::Time forward_start_time_;
 
+    // 棰勬祴涓庡閿欏彉閲?
     int predicted_right_x_;
     int lost_line_count_;
     double last_angular_;
     ros::Time last_line_time_;
 
+    // 鏃堕棿鎺у埗
     ros::Time start_moving_time_;
-    double stop_line_ignore_time_ = 10.0;
+    double stop_line_ignore_time_ = 10.0;  // 鍓?0绉掑拷鐣ュ仠杞︾嚎
 
-    // ===== 修改 ===== 左转预处理变量
-    bool need_left_turn_;
-    ros::Time left_turn_start_time_;
-    const double left_turn_duration_ = 0.7;   // 0.6rad/s * 0.7s ≈ 24°
-    const double left_turn_angular_ = 0.6;
-
-    // ========== 参数加载 ==========
+    // ========== 鍙傛暟鍔犺浇 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
         pnh.param("target_right_x", target_right_x_, 145);
 
-        pnh.param("base_speed", base_speed_, 0.30);
-        pnh.param("curve_speed", curve_speed_, 0.24);
+        pnh.param("base_speed", base_speed_, 0.34);
+        pnh.param("curve_speed", curve_speed_, 0.27);
         pnh.param("search_speed", search_speed_, 0.12);
         pnh.param("lost_line_speed", lost_line_speed_, 0.14);
         pnh.param("startup_speed", startup_speed_, 0.45);
 
-        pnh.param("kp_pos", kp_pos_, 0.0040);
-        pnh.param("kd_pos", kd_pos_, 0.0020);
-        pnh.param("kp_angle", kp_angle_, 0.30);
+        pnh.param("kp_pos", kp_pos_, 0.0055);
+        pnh.param("kd_pos", kd_pos_, 0.0018);
+        pnh.param("kp_angle", kp_angle_, 0.40);
 
         pnh.param("curve_threshold", curve_threshold_, 35.0);
         pnh.param("curve_offset", curve_offset_, 15.0);
-        pnh.param("curve_gain", curve_gain_, 1.0);
+        pnh.param("curve_gain", curve_gain_, 1.2);
 
-        pnh.param("max_angular", max_angular_, 0.45);
-        pnh.param("error_filter_alpha", error_filter_alpha_, 0.18);
+        pnh.param("max_angular", max_angular_, 0.55);
+        pnh.param("error_filter_alpha", error_filter_alpha_, 0.22);
 
         pnh.param("startup_time", startup_time_, 2.8);
 
@@ -173,18 +170,16 @@ private:
 
         pnh.param("align_speed", align_speed_, 0.18);
         pnh.param("align_angle_threshold", align_angle_threshold_, 1.0);
-        // ===== 修改 ===== 缩短等待时间至0.5秒
-        pnh.param("align_stop_time", align_stop_time_, 0.5);
-        // ===== 修改 ===== 目标角度改为-5°（左转5°）
-        pnh.param("desired_angle_deg", desired_angle_deg_, -5.0);
+        pnh.param("align_stop_time", align_stop_time_, 0.2);
+        pnh.param("desired_angle_deg", desired_angle_deg_, 0.0);
 
         pnh.param("final_speed", final_speed_, 0.20);
-        pnh.param("final_distance", final_distance_, 0.60);
+        pnh.param("final_distance", final_distance_, 0.70);
 
         pnh.param("show_debug", show_debug_, true);
     }
 
-    // ========== 图像回调 ==========
+    // ========== 鍥惧儚鍥炶皟 ==========
     void imageCallback(const sensor_msgs::ImageConstPtr& msg)
     {
         cv::Mat frame;
@@ -206,6 +201,7 @@ private:
         const int h = frame.rows;
         const int w = frame.cols;
 
+        // ROI 鎵╁ぇ鑷?45% 楂樺害锛屼究浜庣湅鍒版洿澶氱嚎
         cv::Mat roi = frame(
             cv::Range(static_cast<int>(h * 0.45), h),
             cv::Range(0, w));
@@ -244,6 +240,7 @@ private:
         }
     }
 
+        // 瑙掗€熷害浣庨€氭护娉紙骞虫粦杈撳嚭锛屽噺灏戞姈鍔級
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
         last_angular_ = twist.angular.z;
 
@@ -255,7 +252,7 @@ private:
         }
     }
 
-    // ========== 状态机处理函数 ==========
+    // ========== 鐘舵€佹満澶勭悊鍑芥暟 ==========
     void handleStartup(geometry_msgs::Twist& twist)
     {
         const double elapsed = (ros::Time::now() - start_time_).toSec();
@@ -265,7 +262,8 @@ private:
             twist.angular.z = 0.0;
             return;
         }
-        start_moving_time_ = ros::Time::now();
+
+        start_moving_time_ = ros::Time::now();  // 璁板綍寮€濮嬬Щ鍔ㄦ椂闂?
         enterStage(SEARCH_RIGHT_LINE, "ENTER SEARCH MODE");
         twist.linear.x = 0.0;
         twist.angular.z = 0.0;
@@ -310,6 +308,7 @@ private:
                       const LineInfo& right_line,
                       const StopLineInfo& stop_line)
     {
+        // 鍓?0绉掑拷鐣ュ仠杞︾嚎妫€娴?
         double elapsed_since_move = (ros::Time::now() - start_moving_time_).toSec();
         bool ignore_stop_line = (elapsed_since_move < stop_line_ignore_time_);
 
@@ -322,14 +321,12 @@ private:
             return;
         }
 
-        // ===== 修改 ===== 丢线处理：左转25°后再搜索
+        // 闀挎椂闂翠涪绾?鈫?鎼滅储
         if(lost_line_count_ > 10)
         {
-            need_left_turn_ = true;
-            left_turn_start_time_ = ros::Time::now();
-            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, LEFT TURN 25° THEN SEARCH");
-            twist.linear.x = 0.0;
-            twist.angular.z = 0.0;
+            enterStage(SEARCH_RIGHT_LINE, "LINE LOST, SEARCHING");
+            twist.linear.x = search_speed_;
+            twist.angular.z = -0.2;
             return;
         }
 
@@ -355,6 +352,7 @@ private:
         const double target = target_right_x_ - (in_curve ? curve_offset_ : 0.0);
         const double pos_error = target - current_x;
 
+        // 浣庨€氭护娉?
         filtered_pos_error_ =
             (1.0 - error_filter_alpha_) * filtered_pos_error_ +
             error_filter_alpha_ * pos_error;
@@ -400,12 +398,12 @@ private:
 
     void handleAlign(geometry_msgs::Twist& twist, const StopLineInfo& stop_line)
     {
-        twist.linear.x = 0.0;
+        twist.linear.x = 0.0;   // 鍘熷湴瀵归綈
 
         if(!stop_line.found)
         {
             twist.angular.z = -0.12;
-            if((ros::Time::now() - stage_start_time_).toSec() > 3.0)
+            if((ros::Time::now() - stage_start_time_).toSec() > 2.5)
             {
                 enterStage(GO_FORWARD, "ALIGN LINE LOST, FORCE GO");
             }
@@ -418,6 +416,7 @@ private:
         double angle_error = stop_line.angle_deg - desired_angle_deg_;
         double angular_cmd = clamp(angle_error * 0.035, -0.18, 0.18);
 
+        // 鍔犲叆姝诲尯锛岄槻姝㈠皬瑙掑害闇囪崱
         if(std::fabs(angle_error) < 0.2)
         {
             angular_cmd = 0.0;
@@ -425,6 +424,7 @@ private:
 
         twist.angular.z = angular_cmd;
 
+        // 瀵归綈纭锛氳搴﹀皬浜?0.5掳 骞朵繚鎸?0.15 绉?
         static ros::Time align_ok_time;
         if(std::fabs(angle_error) < 0.5)
         {
@@ -434,13 +434,14 @@ private:
                 enterStage(GO_FORWARD, "ALIGN OK");
                 align_ok_time = ros::Time(0);
             }
-            twist.angular.z = 0.0;
+            twist.angular.z = 0.0;  // 绛夊緟鏈熼棿鍋滄杞姩
         }
         else
         {
-            align_ok_time = ros::Time(0);
+            align_ok_time = ros::Time(0); // 閲嶇疆
         }
 
+        // 瓒呮椂淇濇姢
         if((ros::Time::now() - stage_start_time_).toSec() > 4.5)
         {
             enterStage(GO_FORWARD, "ALIGN TIMEOUT");
@@ -465,31 +466,51 @@ private:
         twist.angular.z = 0.0;
     }
 
-    // ========== 图像处理（保持不变） ==========
+    // ========== 鍥惧儚澶勭悊 ==========
     cv::Mat extractWhiteMask(const cv::Mat& roi)
     {
         cv::Mat blur;
-        cv::GaussianBlur(roi, blur, cv::Size(5,5),0);
+        cv::GaussianBlur(roi, blur, cv::Size(5, 5), 0);
+
         cv::Mat hsv;
         cv::cvtColor(blur, hsv, cv::COLOR_BGR2HSV);
+
         cv::Mat mask;
-        cv::inRange(hsv, cv::Scalar(0,0,200), cv::Scalar(180,45,255), mask);
+        cv::inRange(
+            hsv,
+            cv::Scalar(0, 0, 200),
+            cv::Scalar(180, 45, 255),
+            mask);
 
         cv::Mat kernel = cv::Mat::ones(5,5, CV_8U);
         cv::morphologyEx(mask, mask, cv::MORPH_OPEN, kernel);
         cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
         cv::medianBlur(mask, mask, 5);
-        cv::GaussianBlur(mask, mask, cv::Size(5,5), 0);
+        cv::GaussianBlur(mask, mask, cv::Size(5, 5), 0);
 
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-        cv::Mat clean = cv::Mat::zeros(mask.size(), CV_8UC1);
+        std::vector<std::vector<cv::Point> > contours;
+        cv::findContours(
+            mask,
+            contours,
+            cv::RETR_EXTERNAL,
+            cv::CHAIN_APPROX_SIMPLE);
+
+        cv::Mat clean_mask = cv::Mat::zeros(mask.size(), CV_8UC1);
+
         for(const auto& cnt : contours)
         {
             if(cv::contourArea(cnt) > 260.0)
-                cv::drawContours(clean, std::vector<std::vector<cv::Point>>{cnt}, -1, cv::Scalar(255), -1);
+            {
+                cv::drawContours(
+                    clean_mask,
+                    std::vector<std::vector<cv::Point> >{cnt},
+                    -1,
+                    cv::Scalar(255),
+                    -1);
+            }
         }
-        return clean;
+
+        return clean_mask;
     }
 
     LineInfo findRightLine(const cv::Mat& mask)
@@ -532,14 +553,16 @@ private:
         const double vx = info.fit_line[0];
         const double vy = info.fit_line[1];
         info.found = true;
-        info.x = static_cast<int>(x_sum/x_count);
-        info.angle_deg = rad2deg(std::atan2(vx,vy));
+        info.x = static_cast<int>(x_sum / x_count);
+        info.angle_deg = rad2deg(std::atan2(vx, vy));
+
         if(info.found)
         {
-            predicted_right_x_ = 0.7*predicted_right_x_ + 0.3*info.x;
+            predicted_right_x_ = 0.7 * predicted_right_x_ + 0.3 * info.x;
             lost_line_count_ = 0;
             last_line_time_ = ros::Time::now();
         }
+
         return info;
     }
 
@@ -548,24 +571,45 @@ private:
         StopLineInfo info;
         const int h = mask.rows;
         const int w = mask.cols;
-        cv::Mat bottom = mask(cv::Range(static_cast<int>(h*0.65), h), cv::Range(0,w));
-        std::vector<std::vector<cv::Point>> contours;
-        cv::findContours(bottom.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+        // 鍙叧娉ㄥ簳閮ㄥ尯鍩燂紙鍋滆溅绾块€氬父鍦ㄥ簳閮級
+        cv::Mat bottom_roi = mask(
+            cv::Range(static_cast<int>(h * 0.65), h),
+            cv::Range(0, w));
+
+        std::vector<std::vector<cv::Point> > contours;
+        cv::findContours(
+            bottom_roi.clone(),
+            contours,
+            cv::RETR_EXTERNAL,
+            cv::CHAIN_APPROX_SIMPLE);
+
         double max_area = 0;
         int best_idx = -1;
         for(size_t i = 0; i < contours.size(); ++i)
         {
             double area = cv::contourArea(contours[i]);
             if(area < stop_line_min_area_) continue;
-            cv::Rect rect = cv::boundingRect(contours[i]);
-            if(rect.width < rect.height*4) continue;
+
+            cv::Rect rect = cv::boundingRect(cnt);
+
+            // 鍑犱綍绾︽潫锛氬 > 4*楂橈紙鐪熸鐨勫仠杞︾嚎寰堟墎锛?
+            if(rect.width < rect.height * 4) continue;
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
             if(contours[i].size() >= 5)
             {
                 cv::Vec4f line;
-                cv::fitLine(contours[i], line, cv::DIST_L2, 0, 0.01, 0.01);
-                if(std::fabs(rad2deg(std::atan2(line[1], line[0]))) > 15.0) continue;
+                cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
+                double angle = rad2deg(std::atan2(line[1], line[0]));
+                // 蹇呴』鎺ヨ繎姘村钩锛埪?5掳鍐咃級
+                if(std::fabs(angle) > 15.0) continue;
+            }
+
+            if(area > max_area)
+            {
+                max_area = area;
+                best_idx = i;
             }
             if(area > max_area) { max_area = area; best_idx = i; }
         }
@@ -580,6 +624,8 @@ private:
             info.angle_deg = rad2deg(std::atan2(line[1], line[0]));
             info.center_x = rect.x + rect.width/2;
         }
+
+        // 鍚庡锛氬ぇ鍖哄煙鐧借壊妫€娴?
         if(!info.found && cross_area_threshold_ > 0)
         {
             if(cv::countNonZero(mask) > cross_area_threshold_)
@@ -593,9 +639,12 @@ private:
         return info;
     }
 
-    // ========== 调试显示（保持不变） ==========
-    void showDebug(const cv::Mat& mask, const LineInfo& right_line,
-                   const StopLineInfo& stop_line, const geometry_msgs::Twist& twist)
+    // ========== 璋冭瘯鏄剧ず ==========
+    void showDebug(
+        const cv::Mat& mask,
+        const LineInfo& right_line,
+        const StopLineInfo& stop_line,
+        const geometry_msgs::Twist& twist)
     {
         cv::Mat debug;
         cv::cvtColor(mask, debug, cv::COLOR_GRAY2BGR);
@@ -644,14 +693,17 @@ private:
         cv::putText(img, text, cv::Point(x,y), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0,255,0),2);
     }
 
-    // ========== 辅助函数 ==========
+    // ========== 杈呭姪鍑芥暟 ==========
     void enterStage(Stage stage, const char* message)
-    {
-        stage_ = stage;
-        stage_start_time_ = ros::Time::now();
-        if(stage == GO_FORWARD) forward_start_time_ = ros::Time::now();
-        ROS_INFO("%s", message);
+{
+    stage_ = stage;
+    stage_start_time_ = ros::Time::now();
+    // 杩涘叆鐩磋蛋闃舵鏃讹紝鍚屾椂澶嶄綅璁℃椂鍣?
+    if (stage == GO_FORWARD) {
+        forward_start_time_ = ros::Time::now();
     }
+    ROS_INFO("%s", message);
+}
 
     void resetPid()
     {
