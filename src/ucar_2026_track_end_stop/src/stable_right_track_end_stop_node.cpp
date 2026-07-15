@@ -64,7 +64,10 @@ private:
     StartupForward,
     SearchRightLine,
     Follow,
+    CornerForward20cm,
+    CornerTurnRight,
     EndDetected,
+    ParkingAlignLeft,
     Forward50cm,
     FinalStop,
     Finish
@@ -96,6 +99,17 @@ private:
     double best_y_ratio = 0.0;
   };
 
+  struct CornerResult
+  {
+    bool detected = false;
+    double near_x = -1.0;
+    double far_x = -1.0;
+    double far_shift = 0.0;
+    int near_rows = 0;
+    int far_rows = 0;
+    int right_branch_rows = 0;
+  };
+
   void loadParams()
   {
     private_nh_.param<std::string>("image_topic", image_topic_, "/usb_cam/image_raw");
@@ -108,40 +122,51 @@ private:
     private_nh_.param("startup_distance_m", startup_distance_m_, 1.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("target_right_x", target_right_x_, 200);
+    // The original right-edge follower keeps the right boundary about 200 px
+    // to the right of the image centre: 320 + 200 = 520.
+    private_nh_.param("target_right_x", target_right_x_, 520);
     private_nh_.param("base_speed", base_speed_, 0.32);
     private_nh_.param("curve_speed", curve_speed_, 0.28);
-    private_nh_.param("search_speed", search_speed_, 0.10);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.20);
+    private_nh_.param("search_speed", search_speed_, 0.08);
+    private_nh_.param("search_angular_speed", search_angular_speed_, -0.12);
     private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.14);
     private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.22);
-    private_nh_.param("kp", kp_, 0.0030);
-    private_nh_.param("kd", kd_, 0.00045);
-    private_nh_.param("error_alpha", error_alpha_, 0.18);
+    private_nh_.param("kp", kp_, 0.0032);
+    private_nh_.param("kd", kd_, 0.00060);
+    private_nh_.param("error_alpha", error_alpha_, 0.35);
     private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
     private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.0);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.32);
+    private_nh_.param("max_angular_speed", max_angular_speed_, 0.38);
     private_nh_.param("max_tracking_speed", max_tracking_speed_, 0.20);
     private_nh_.param("min_tracking_speed", min_tracking_speed_, 0.08);
-    private_nh_.param("angular_alpha", angular_alpha_, 0.82);
+    private_nh_.param("angular_alpha", angular_alpha_, 0.72);
     private_nh_.param("lost_grace_time", lost_grace_time_, 0.30);
     private_nh_.param("lost_timeout", lost_timeout_, 0.90);
 
-    private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
-    private_nh_.param("white_s_max", white_s_max_, 45);
-    private_nh_.param("white_v_min", white_v_min_, 200);
+    private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.50);
+    private_nh_.param("white_s_max", white_s_max_, 85);
+    private_nh_.param("white_v_min", white_v_min_, 155);
     private_nh_.param("gray_white_threshold", gray_white_threshold_, 175);
     private_nh_.param("min_white_mask_ratio", min_white_mask_ratio_, 0.002);
     private_nh_.param("max_white_mask_ratio", max_white_mask_ratio_, 0.32);
     private_nh_.param("adaptive_threshold_delta", adaptive_threshold_delta_, 28);
     private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
-    private_nh_.param("min_component_area", min_component_area_, 260.0);
+    private_nh_.param("min_component_area", min_component_area_, 80.0);
     private_nh_.param("robust_min_component_area", robust_min_component_area_, 80.0);
     private_nh_.param("max_component_area_ratio", max_component_area_ratio_, 0.70);
     private_nh_.param("min_line_width_px", min_line_width_px_, 5);
     private_nh_.param("max_line_segment_width_px", max_line_segment_width_px_, 90);
     private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 90.0);
+
+    private_nh_.param("required_right_corners", required_right_corners_, 2);
+    private_nh_.param("corner_confirm_frames", corner_confirm_frames_, 5);
+    private_nh_.param("corner_min_tracking_age", corner_min_tracking_age_, 0.55);
+    private_nh_.param("corner_right_shift_px", corner_right_shift_px_, 55.0);
+    private_nh_.param("corner_forward_distance_m", corner_forward_distance_m_, 0.20);
+    private_nh_.param("corner_forward_speed", corner_forward_speed_, 0.16);
+    private_nh_.param("corner_turn_angle_deg", corner_turn_angle_deg_, 45.0);
+    private_nh_.param("corner_turn_angular_speed", corner_turn_angular_speed_, 0.32);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 1.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.78);
@@ -150,6 +175,8 @@ private:
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
     private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
+    private_nh_.param("end_align_left_angle_deg", end_align_left_angle_deg_, 10.0);
+    private_nh_.param("end_align_left_angular_speed", end_align_left_angular_speed_, 0.50);
 
     // Match the shortened, precise final approach used by the left/right nodes.
     end_forward_distance_m_ = std::max(0.0, end_forward_distance_m_ - 0.05);
@@ -182,6 +209,8 @@ private:
                         cv::Range(0, frame.cols));
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
+    CornerResult corner_result = detectRightCorner(mask);
+    last_corner_result_ = corner_result;
     FollowResult follow;
     geometry_msgs::Twist cmd;
 
@@ -235,12 +264,33 @@ private:
         break;
 
       case State::Follow:
+      {
         follow = computeFollow(mask, now);
-        // Count the end-detection delay from the moment tracking is acquired,
-        // not from node startup.  Otherwise a wide patch seen immediately
-        // after the startup run can be mistaken for the end marker.
-        if (end_result.detected &&
-            (now - state_start_time_).toSec() >= end_enable_delay_)
+        const double tracking_age = (now - state_start_time_).toSec();
+        const bool corner_enabled = corner_count_ < required_right_corners_ &&
+                                    tracking_age >= corner_min_tracking_age_;
+        if (corner_enabled && follow.found && corner_result.detected)
+          ++corner_candidate_frames_;
+        else
+          corner_candidate_frames_ = 0;
+
+        if (corner_enabled &&
+            corner_candidate_frames_ >= std::max(1, corner_confirm_frames_))
+        {
+          ++corner_count_;
+          corner_candidate_frames_ = 0;
+          state_ = State::CornerForward20cm;
+          state_start_time_ = now;
+          setStatus("stable_right_corner_forward");
+          cmd.linear.x = corner_forward_speed_;
+          publishCmd(cmd);
+          ROS_INFO("right corner %d/%d confirmed: near=%.1f far=%.1f shift=%.1f; forward %.2f m before turn",
+                   corner_count_, required_right_corners_, corner_result.near_x,
+                   corner_result.far_x, corner_result.far_shift,
+                   corner_forward_distance_m_);
+        }
+        else if (corner_count_ >= required_right_corners_ &&
+                 end_result.detected && tracking_age >= end_enable_delay_)
         {
           ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
                    end_result.best_width_ratio, end_result.best_y_ratio);
@@ -253,18 +303,92 @@ private:
           publishFollowCommand(follow, now);
         }
         break;
+      }
+
+      case State::CornerForward20cm:
+      {
+        const double forward_duration = corner_forward_distance_m_ /
+                                        std::max(corner_forward_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < forward_duration)
+        {
+          setStatus("stable_right_corner_forward");
+          cmd.linear.x = corner_forward_speed_;
+          cmd.angular.z = 0.0;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::CornerTurnRight;
+          state_start_time_ = now;
+          hardStop();
+          ROS_INFO("right corner %d/%d: turning right %.1f deg at %.2f rad/s",
+                   corner_count_, required_right_corners_, corner_turn_angle_deg_,
+                   corner_turn_angular_speed_);
+        }
+        break;
+      }
+
+      case State::CornerTurnRight:
+      {
+        const double turn_duration = (corner_turn_angle_deg_ * M_PI / 180.0) /
+                                     std::max(std::fabs(corner_turn_angular_speed_), 1e-6);
+        if ((now - state_start_time_).toSec() < turn_duration)
+        {
+          setStatus("stable_right_corner_turn_right");
+          cmd.angular.z = -std::fabs(corner_turn_angular_speed_);
+          publishCmd(cmd);
+        }
+        else
+        {
+          last_right_x_ = -1;
+          last_error_ = 0.0;
+          filtered_error_ = 0.0;
+          filtered_angular_ = 0.0;
+          last_pid_time_ = 0.0;
+          last_valid_angular_ = 0.0;
+          last_detection_time_ = now;
+          corner_candidate_frames_ = 0;
+          state_ = State::SearchRightLine;
+          state_start_time_ = now;
+          hardStop();
+          ROS_INFO("right corner %d/%d complete; reacquiring right boundary",
+                   corner_count_, required_right_corners_);
+        }
+        break;
+      }
 
       case State::EndDetected:
         setStatus("stable_right_end_detected");
         hardStop();
         if ((now - state_start_time_).toSec() >= end_stop_hold_)
         {
+          state_ = State::ParkingAlignLeft;
+          state_start_time_ = now;
+          ROS_INFO("parking: aligning left %.1f deg at %.2f rad/s",
+                   end_align_left_angle_deg_, end_align_left_angular_speed_);
+        }
+        break;
+
+      case State::ParkingAlignLeft:
+      {
+        const double align_duration = (end_align_left_angle_deg_ * M_PI / 180.0) /
+                                      std::max(std::fabs(end_align_left_angular_speed_), 1e-6);
+        if ((now - state_start_time_).toSec() < align_duration)
+        {
+          setStatus("stable_right_parking_align_left");
+          cmd.angular.z = std::fabs(end_align_left_angular_speed_);
+          publishCmd(cmd);
+        }
+        else
+        {
           state_ = State::Forward50cm;
           state_start_time_ = now;
-          ROS_INFO("driving straight forward %.2f m at %.2f m/s after end detection",
+          hardStop();
+          ROS_INFO("parking: driving forward %.2f m at %.2f m/s",
                    end_forward_distance_m_, end_forward_speed_);
         }
         break;
+      }
 
       case State::Forward50cm:
       {
@@ -380,7 +504,9 @@ private:
     if (!result.found)
       return result;
 
-    result.error = static_cast<double>(target_right_x_ - result.right_x);
+    // Reuse the original right-edge convention: measured boundary position
+    // minus its desired position (image centre + right-edge offset).
+    result.error = static_cast<double>(result.right_x - target_right_x_);
     filtered_error_ = (1.0 - error_alpha_) * filtered_error_ + error_alpha_ * result.error;
     const double now_sec = now.toSec();
     const double dt = last_pid_time_ > 0.0 ? std::max(1e-3, now_sec - last_pid_time_) : 0.0;
@@ -388,9 +514,7 @@ private:
     const double d_error = dt > 0.0 ? clampDouble((filtered_error_ - last_error_) / dt, -100.0, 100.0) : 0.0;
     last_error_ = filtered_error_;
 
-    // This chassis uses positive angular.z for a left turn.  With the tracked
-    // line error defined as target_x - measured_x, the steering command must
-    // use the opposite sign; the old sign steered left at the first right bend.
+    // This is the steering sign used by the original right-line node.
     double angular = -(kp_ * filtered_error_ + kd_ * d_error);
     double linear = std::min(base_speed_, max_tracking_speed_);
     if (std::fabs(filtered_error_) > curve_error_threshold_)
@@ -469,6 +593,73 @@ private:
     if (last_right_x_ >= 0)
       right_x = clampDouble(right_x, last_right_x_ - max_target_jump_px_, last_right_x_ + max_target_jump_px_);
     return clampInt(static_cast<int>(std::round(right_x)), 0, mask.cols - 1);
+  }
+
+  CornerResult detectRightCorner(const cv::Mat& mask) const
+  {
+    CornerResult result;
+    const std::vector<double> near_ratios = {0.95, 0.87, 0.79, 0.71};
+    const std::vector<double> far_ratios = {0.62, 0.52, 0.42, 0.32, 0.22, 0.12};
+    std::vector<double> near_points;
+    std::vector<double> far_points;
+
+    for (double ratio : near_ratios)
+    {
+      const int y = clampInt(static_cast<int>(mask.rows * ratio), 0, mask.rows - 1);
+      std::vector<Segment> segments = findSegments(mask.row(y));
+      segments.erase(std::remove_if(segments.begin(), segments.end(), [this, &mask](const Segment& segment) {
+                       return segment.width > max_line_segment_width_px_ ||
+                              segment.center < mask.cols * 0.50;
+                     }), segments.end());
+      if (!segments.empty())
+        near_points.push_back(segments.back().center);
+    }
+
+    result.near_rows = static_cast<int>(near_points.size());
+    if (result.near_rows < 2)
+      return result;
+
+    std::sort(near_points.begin(), near_points.end());
+    result.near_x = near_points[near_points.size() / 2];
+
+    for (double ratio : far_ratios)
+    {
+      const int y = clampInt(static_cast<int>(mask.rows * ratio), 0, mask.rows - 1);
+      const std::vector<Segment> all_segments = findSegments(mask.row(y));
+      bool right_branch_in_row = false;
+      double rightmost_narrow = -1.0;
+
+      for (const Segment& segment : all_segments)
+      {
+        if (segment.center >= result.near_x + corner_right_shift_px_ ||
+            (segment.right >= mask.cols - 6 && segment.center > result.near_x + 20.0))
+          right_branch_in_row = true;
+
+        if (segment.width <= max_line_segment_width_px_ &&
+            segment.center >= mask.cols * 0.45)
+          rightmost_narrow = std::max(rightmost_narrow, segment.center);
+      }
+
+      if (right_branch_in_row)
+        ++result.right_branch_rows;
+      if (rightmost_narrow >= 0.0)
+        far_points.push_back(rightmost_narrow);
+    }
+
+    result.far_rows = static_cast<int>(far_points.size());
+    if (!far_points.empty())
+    {
+      std::sort(far_points.begin(), far_points.end());
+      result.far_x = far_points[far_points.size() / 2];
+      result.far_shift = result.far_x - result.near_x;
+    }
+
+    const bool bends_to_right = result.right_branch_rows >= 2 &&
+                                result.far_shift >= corner_right_shift_px_ * 0.55;
+    const bool exits_right_view = result.near_x >= mask.cols * 0.72 &&
+                                  result.far_rows <= 1;
+    result.detected = bends_to_right || exits_right_view;
+    return result;
   }
 
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
@@ -663,6 +854,17 @@ private:
     if (follow.found)
       cv::circle(debug, cv::Point(follow.right_x, roi_y0 + (kImageRows - roi_y0) / 2), 6, cv::Scalar(0, 0, 255), -1);
 
+    if (last_corner_result_.near_x >= 0.0)
+      cv::circle(debug,
+                 cv::Point(static_cast<int>(last_corner_result_.near_x),
+                           roi_y0 + static_cast<int>((kImageRows - roi_y0) * 0.82)),
+                 5, cv::Scalar(255, 0, 255), -1);
+    if (last_corner_result_.far_x >= 0.0)
+      cv::circle(debug,
+                 cv::Point(static_cast<int>(last_corner_result_.far_x),
+                           roi_y0 + static_cast<int>((kImageRows - roi_y0) * 0.37)),
+                 5, cv::Scalar(0, 140, 255), -1);
+
     const int end_y0 = clampInt(static_cast<int>(kImageRows * end_roi_y_start_ratio_), 0, kImageRows - 1);
     cv::rectangle(debug, cv::Rect(0, end_y0, kImageCols, kImageRows - end_y0),
                   end_result.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 220, 255), 1);
@@ -680,6 +882,16 @@ private:
           << follow.filtered_error << " rows=" << follow.valid_rows
           << " mask=" << last_mask_mode_ << " end_w=" << std::setprecision(2) << end_result.best_width_ratio;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
+
+    std::ostringstream line3;
+    line3 << "corners=" << corner_count_ << "/" << required_right_corners_
+          << " cand=" << corner_candidate_frames_
+          << " near=" << std::fixed << std::setprecision(0) << last_corner_result_.near_x
+          << " far=" << last_corner_result_.far_x
+          << " shift=" << last_corner_result_.far_shift
+          << " branch_rows=" << last_corner_result_.right_branch_rows;
+    cv::putText(debug, line3.str(), cv::Point(10, 240), cv::FONT_HERSHEY_SIMPLEX,
+                0.50, cv::Scalar(255, 0, 255), 2);
 
     try
     {
@@ -707,6 +919,13 @@ private:
        << " mask_ratio=" << last_mask_ratio_
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
+       << " corners=" << corner_count_ << "/" << required_right_corners_
+       << " corner_candidate_frames=" << corner_candidate_frames_
+       << " corner_detected=" << boolText(last_corner_result_.detected)
+       << " corner_near_x=" << last_corner_result_.near_x
+       << " corner_far_x=" << last_corner_result_.far_x
+       << " corner_shift=" << last_corner_result_.far_shift
+       << " corner_branch_rows=" << last_corner_result_.right_branch_rows
        << " end_detected=" << boolText(end_result.detected)
        << " end_width_ratio=" << end_result.best_width_ratio
        << " end_y_ratio=" << end_result.best_y_ratio;
@@ -746,40 +965,49 @@ private:
   double startup_distance_m_ = 1.0;
   double startup_speed_ = 0.45;
 
-  int target_right_x_ = 200;
+  int target_right_x_ = 520;
   double base_speed_ = 0.32;
   double curve_speed_ = 0.28;
-  double search_speed_ = 0.10;
-  double search_angular_speed_ = -0.20;
+  double search_speed_ = 0.08;
+  double search_angular_speed_ = -0.12;
   double lost_linear_speed_ = 0.14;
   double lost_angular_speed_ = -0.22;
-  double kp_ = 0.0030;
-  double kd_ = 0.00045;
-  double error_alpha_ = 0.18;
+  double kp_ = 0.0032;
+  double kd_ = 0.00060;
+  double error_alpha_ = 0.35;
   double curve_error_threshold_ = 38.0;
   double curve_angular_gain_ = 1.0;
-  double max_angular_speed_ = 0.32;
+  double max_angular_speed_ = 0.38;
   double max_tracking_speed_ = 0.20;
   double min_tracking_speed_ = 0.08;
-  double angular_alpha_ = 0.82;
+  double angular_alpha_ = 0.72;
   double lost_grace_time_ = 0.30;
   double lost_timeout_ = 0.90;
 
-  double roi_y_start_ratio_ = 0.60;
-  int white_s_max_ = 45;
-  int white_v_min_ = 200;
+  double roi_y_start_ratio_ = 0.50;
+  int white_s_max_ = 85;
+  int white_v_min_ = 155;
   int gray_white_threshold_ = 175;
   double min_white_mask_ratio_ = 0.002;
   double max_white_mask_ratio_ = 0.32;
   int adaptive_threshold_delta_ = 28;
   int morph_kernel_size_ = 5;
-  double min_component_area_ = 260.0;
+  double min_component_area_ = 80.0;
   double robust_min_component_area_ = 80.0;
   double max_component_area_ratio_ = 0.70;
   int min_line_width_px_ = 5;
   int max_line_segment_width_px_ = 90;
   int min_segment_gap_px_ = 10;
   double max_target_jump_px_ = 90.0;
+
+  int required_right_corners_ = 2;
+  int corner_confirm_frames_ = 5;
+  double corner_min_tracking_age_ = 0.55;
+  double corner_right_shift_px_ = 55.0;
+  double corner_forward_distance_m_ = 0.20;
+  double corner_forward_speed_ = 0.16;
+  double corner_turn_angle_deg_ = 45.0;
+  double corner_turn_angular_speed_ = 0.32;
 
   double end_enable_delay_ = 1.0;
   double end_roi_y_start_ratio_ = 0.78;
@@ -788,6 +1016,8 @@ private:
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.65;
   double end_forward_speed_ = 0.17;
+  double end_align_left_angle_deg_ = 10.0;
+  double end_align_left_angular_speed_ = 0.50;
 
   State state_ = State::Idle;
   ros::Time start_time_;
@@ -805,6 +1035,9 @@ private:
   double last_angular_ = 0.0;
   double last_mask_ratio_ = 0.0;
   std::string last_mask_mode_ = "normal";
+  int corner_count_ = 0;
+  int corner_candidate_frames_ = 0;
+  CornerResult last_corner_result_;
 };
 
 int main(int argc, char** argv)
