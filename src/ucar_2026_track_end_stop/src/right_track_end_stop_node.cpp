@@ -160,6 +160,12 @@ private:
     private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
     private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
 
+    // Keep the existing launch/YAML values compatible while shortening only the
+    // two requested straight segments by 5 cm.
+    startup_forward_duration_ = std::max(
+        0.0, startup_forward_duration_ - 0.05 / std::max(startup_forward_speed_, 1e-6));
+    end_forward_distance_m_ = std::max(0.0, end_forward_distance_m_ - 0.05);
+
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
   }

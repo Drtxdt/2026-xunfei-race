@@ -160,6 +160,12 @@ private:
     private_nh_.param("end_turn_right_angle_deg", end_turn_right_angle_deg_, 10.0);
     private_nh_.param("end_turn_right_angular_speed", end_turn_right_angular_speed_, 0.50);
 
+    // Keep the existing launch/YAML values compatible while shortening only the
+    // two requested straight segments by 5 cm.
+    startup_forward_duration_ = std::max(
+        0.0, startup_forward_duration_ - 0.05 / std::max(startup_forward_speed_, 1e-6));
+    end_forward_distance_m_ = std::max(0.0, end_forward_distance_m_ - 0.05);
+
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
   }
@@ -427,7 +433,7 @@ private:
     if (elapsed < end_enable_delay_)
       return result;
 
-    // Segment-based horizontal line detection — matches Python
+    // Segment-based horizontal line detection 鈥?matches Python
     // detect_horizontal_line in line_follow_straight_right.py.
     // Scan the bottom region; return on the FIRST row whose single
     // continuous white segment covers >= end_min_width_ratio_ of the
