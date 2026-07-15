@@ -212,10 +212,14 @@ private:
         if (!follow.found)
         {
           setStatus("stable_right_search");
-          cmd.linear.x = std::min(search_speed_, 0.05);
+          // Keep the car moving while looking for the right-hand line.  The
+          // previous 0.05 m/s cap was too small to overcome the chassis dead
+          // zone, so the node appeared to stop as soon as startup finished.
+          cmd.linear.x = std::max(0.0, search_speed_);
           cmd.angular.z = last_right_x_ >= 0
                               ? recoveryAngular()
-                              : clampDouble(search_angular_speed_, -0.10, 0.10);
+                              : clampDouble(search_angular_speed_,
+                                            -max_angular_speed_, max_angular_speed_);
           publishCmd(cmd);
         }
         else
@@ -231,7 +235,11 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask, now);
-        if (end_result.detected)
+        // Count the end-detection delay from the moment tracking is acquired,
+        // not from node startup.  Otherwise a wide patch seen immediately
+        // after the startup run can be mistaken for the end marker.
+        if (end_result.detected &&
+            (now - state_start_time_).toSec() >= end_enable_delay_)
         {
           ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
                    end_result.best_width_ratio, end_result.best_y_ratio);
@@ -575,8 +583,20 @@ private:
       }
       else
       {
-        setStatus("stable_right_lost_stop");
-        hardStop();
+        // Do not latch in Follow with a zero command forever.  Clear the stale
+        // position lock and return to active search so a newly visible line
+        // can be acquired anywhere in the image.
+        setStatus("stable_right_reacquire");
+        last_right_x_ = -1;
+        filtered_error_ = 0.0;
+        filtered_angular_ = 0.0;
+        last_pid_time_ = 0.0;
+        state_ = State::SearchRightLine;
+        state_start_time_ = now;
+        cmd.linear.x = std::max(0.0, search_speed_);
+        cmd.angular.z = clampDouble(search_angular_speed_,
+                                    -max_angular_speed_, max_angular_speed_);
+        publishCmd(cmd);
         return;
       }
       publishCmd(cmd);
