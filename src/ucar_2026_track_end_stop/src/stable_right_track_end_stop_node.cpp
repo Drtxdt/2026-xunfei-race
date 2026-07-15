@@ -104,7 +104,7 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_time", startup_time_, 2.8);
+    private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
     private_nh_.param("target_right_x", target_right_x_, 200);
@@ -582,7 +582,7 @@ if (filtered_error_ < -15.0)
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_time_ = 2.8;
+  double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
   int target_right_x_ = 200;
