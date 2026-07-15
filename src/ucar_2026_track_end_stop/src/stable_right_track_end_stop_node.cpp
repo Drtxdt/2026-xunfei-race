@@ -112,18 +112,18 @@ private:
     private_nh_.param("base_speed", base_speed_, 0.32);
     private_nh_.param("curve_speed", curve_speed_, 0.28);
     private_nh_.param("search_speed", search_speed_, 0.10);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.26);
+    private_nh_.param("search_angular_speed", search_angular_speed_, -0.20);
     private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.14);
     private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.22);
-    private_nh_.param("kp", kp_, 0.0052);
-    private_nh_.param("kd", kd_, 0.0018);
-    private_nh_.param("error_alpha", error_alpha_, 0.22);
+    private_nh_.param("kp", kp_, 0.0030);
+    private_nh_.param("kd", kd_, 0.00045);
+    private_nh_.param("error_alpha", error_alpha_, 0.18);
     private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
-    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.18);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.55);
-    private_nh_.param("max_tracking_speed", max_tracking_speed_, 0.24);
+    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.0);
+    private_nh_.param("max_angular_speed", max_angular_speed_, 0.32);
+    private_nh_.param("max_tracking_speed", max_tracking_speed_, 0.20);
     private_nh_.param("min_tracking_speed", min_tracking_speed_, 0.08);
-    private_nh_.param("angular_alpha", angular_alpha_, 0.70);
+    private_nh_.param("angular_alpha", angular_alpha_, 0.82);
     private_nh_.param("lost_grace_time", lost_grace_time_, 0.30);
     private_nh_.param("lost_timeout", lost_timeout_, 0.90);
 
@@ -143,9 +143,10 @@ private:
     private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 90.0);
 
-    private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
-    private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
-    private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
+    private_nh_.param("end_enable_delay", end_enable_delay_, 1.0);
+    private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.78);
+    private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.28);
+    private_nh_.param("end_min_rows", end_min_rows_, 3);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
     private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
@@ -387,7 +388,10 @@ private:
     const double d_error = dt > 0.0 ? clampDouble((filtered_error_ - last_error_) / dt, -100.0, 100.0) : 0.0;
     last_error_ = filtered_error_;
 
-    double angular = kp_ * filtered_error_ + kd_ * d_error;
+    // This chassis uses positive angular.z for a left turn.  With the tracked
+    // line error defined as target_x - measured_x, the steering command must
+    // use the opposite sign; the old sign steered left at the first right bend.
+    double angular = -(kp_ * filtered_error_ + kd_ * d_error);
     double linear = std::min(base_speed_, max_tracking_speed_);
     if (std::fabs(filtered_error_) > curve_error_threshold_)
     {
@@ -474,27 +478,36 @@ private:
       return result;
 
     const int y0 = clampInt(static_cast<int>(mask.rows * end_roiYInMask()), 0, mask.rows - 1);
-    const int bottom_height = mask.rows - y0;
     const int min_segment_width = static_cast<int>(mask.cols * end_min_width_ratio_);
-    const int min_r = static_cast<int>(bottom_height * 0.45);
+    int consecutive_marker_rows = 0;
 
     for (int y = mask.rows - 1; y >= y0; --y)
     {
-      const int r = y - y0;
-      if (r <= min_r)
-        continue;
-
       std::vector<Segment> segments = findSegments(mask.row(y));
+      bool marker_row = false;
       for (const Segment& segment : segments)
       {
+        const double width_ratio = static_cast<double>(segment.width) /
+                                   static_cast<double>(mask.cols);
+        if (width_ratio > result.best_width_ratio)
+        {
+          result.best_width_ratio = width_ratio;
+          result.best_y_ratio = roi_y_start_ratio_ + (1.0 - roi_y_start_ratio_) *
+                                (static_cast<double>(y) /
+                                 std::max(1.0, static_cast<double>(mask.rows)));
+        }
         if (segment.width >= min_segment_width)
         {
-          result.detected = true;
-          result.best_width_ratio = static_cast<double>(segment.width) / static_cast<double>(mask.cols);
-          result.best_y_ratio = (roi_y_start_ratio_ + (1.0 - roi_y_start_ratio_) *
-                                  (static_cast<double>(y) / std::max(1.0, static_cast<double>(mask.rows))));
-          return result;
+          marker_row = true;
+          break;
         }
+      }
+
+      consecutive_marker_rows = marker_row ? consecutive_marker_rows + 1 : 0;
+      if (consecutive_marker_rows >= std::max(1, end_min_rows_))
+      {
+        result.detected = true;
+        return result;
       }
     }
     return result;
@@ -560,7 +573,7 @@ private:
   {
     if (std::fabs(last_valid_angular_) >= 0.03)
       return clampDouble(last_valid_angular_ * 0.65, -0.14, 0.14);
-    return last_error_ >= 0.0 ? 0.08 : -0.08;
+    return last_error_ >= 0.0 ? -0.08 : 0.08;
   }
 
   void publishFollowCommand(const FollowResult& follow, const ros::Time& now)
@@ -737,18 +750,18 @@ private:
   double base_speed_ = 0.32;
   double curve_speed_ = 0.28;
   double search_speed_ = 0.10;
-  double search_angular_speed_ = -0.26;
+  double search_angular_speed_ = -0.20;
   double lost_linear_speed_ = 0.14;
   double lost_angular_speed_ = -0.22;
-  double kp_ = 0.0052;
-  double kd_ = 0.0018;
-  double error_alpha_ = 0.22;
+  double kp_ = 0.0030;
+  double kd_ = 0.00045;
+  double error_alpha_ = 0.18;
   double curve_error_threshold_ = 38.0;
-  double curve_angular_gain_ = 1.18;
-  double max_angular_speed_ = 0.55;
-  double max_tracking_speed_ = 0.24;
+  double curve_angular_gain_ = 1.0;
+  double max_angular_speed_ = 0.32;
+  double max_tracking_speed_ = 0.20;
   double min_tracking_speed_ = 0.08;
-  double angular_alpha_ = 0.70;
+  double angular_alpha_ = 0.82;
   double lost_grace_time_ = 0.30;
   double lost_timeout_ = 0.90;
 
@@ -768,9 +781,10 @@ private:
   int min_segment_gap_px_ = 10;
   double max_target_jump_px_ = 90.0;
 
-  double end_enable_delay_ = 3.0;
-  double end_roi_y_start_ratio_ = 0.87;
-  double end_min_width_ratio_ = 0.45;
+  double end_enable_delay_ = 1.0;
+  double end_roi_y_start_ratio_ = 0.78;
+  double end_min_width_ratio_ = 0.28;
+  int end_min_rows_ = 3;
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.65;
   double end_forward_speed_ = 0.17;
