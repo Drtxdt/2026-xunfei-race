@@ -1,0 +1,4 @@
+# map_goal_picker 参数配置
+# pgm地图文件的绝对路径（用于日志确认，可选）
+# 建议使用 launch 文件中的 $(find ucar_nav)/maps/xxx.pgm 来动态解析路径
+pgm_path: "/home/robot/ucar/src/ucar_nav/maps/521.pgm"

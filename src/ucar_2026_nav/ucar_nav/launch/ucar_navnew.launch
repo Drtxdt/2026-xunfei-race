@@ -1,0 +1,78 @@
+
+<launch>
+
+   
+  <!-- <include file="$(find ucar_controller)/launch/base_driver.launch" > </include> -->
+
+  <!-- <include file="$(find ydlidar)/launch/ydlidar.launch" > </include> -->
+
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/map3.yaml" output="screen">
+  <!-- <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/0508_test.yaml" output="screen"> -->
+
+   <param name="frame_id" value="map" />
+  </node> 
+  
+
+  <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni.launch" > </include>
+
+  <node pkg="jie_ware" type="costmap_cleaner" name="costmap_cleaner" />
+  <!--<node pkg="jie_ware" type="lidar_filter_node" name="lidar_filter_node" />-->
+  
+  
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+    <param name="base_local_planner" value="my_planner/MyPlanner"/>
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/costmap_common_params.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/costmap_common_params.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/global_planner_params.yaml" command="load" />
+    
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/local_costmap_params.yaml" command="load" />
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/global_costmap_params.yaml" command="load" />
+
+    <param name="controller_frequency" value="10"/>
+  </node>
+
+</launch>
+<!--
+<launch>
+  
+  <include file="$(find ucar_controller)/launch/base_driver.launch" />
+
+   
+  <include file="$(find ydlidar)/launch/ydlidar.launch" />
+
+  
+  <node name="map_server" pkg="map_server" type="map_server" args="$(find ucar_nav)/maps/map1.yaml" output="screen">
+    <param name="frame_id" value="map" />
+  </node> 
+
+  
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_localization" output="screen">
+    <param name="use_sim_time" value="false"/>
+    <rosparam command="load" file="$(find ucar_nav)/launch/config/ekf_utf8.yaml" />
+  </node>
+
+  
+  <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni.launch" >
+    <remap from="odom" to="/odometry/filtered" />
+  </include>
+
+  
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <param name="base_global_planner" value="global_planner/GlobalPlanner"/>
+    <param name="base_local_planner" value="my_planner/MyPlanner"/>
+    <remap from="odom" to="/odometry/filtered"/>
+
+    
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/costmap_common_params.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/costmap_common_params.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/global_planner_params.yaml" command="load" />
+    
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/local_costmap_params.yaml" command="load" />
+    <rosparam file="$(find ucar_nav)/launch/config/move_base/global_costmap_params.yaml" command="load" />
+
+    <param name="controller_frequency" value="10"/>
+  </node>
+
+</launch>
+-->

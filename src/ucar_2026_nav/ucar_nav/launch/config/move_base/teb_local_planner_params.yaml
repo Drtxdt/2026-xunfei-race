@@ -1,0 +1,319 @@
+TebLocalPlannerROS:
+ odom_topic: odom
+ map_frame: /map
+ # Trajectory
+  
+ teb_autosize: True          # 是否自动调整 elastic band 的节点数量：在急弯处自动加密节点（更精确），在直道上自动稀疏节点（减少计算量）
+ dt_ref: 0.30 #0.3           # 相邻节点之间的参考时间间隔：理想情况下，每两个路径点之间应该花多少时间：dt_ref 越小，轨迹节点越密集，优化精度越高，但计算量越大
+ dt_hysteresis: 0.1          # 相邻节点之间的参考时间滞后阈值
+
+ # elastic band 的节点数量限制
+ min_samples: 3              # 即使路径很短，也至少保留 3 个节点（起点、中间、终点）
+ max_samples: 500            # 防止节点爆炸导致优化器无法收敛，500 是一个很宽松的上限
+ global_plan_overwrite_orientation: True #True 时，TEB 会基于全局路径的几何形状重新计算每个点的朝向（前视方向）
+ allow_init_with_backwards_motion: False # 允许起始点可以倒车
+ force_reinit_new_goal_dist: 1.0         # 新目标与旧目标的距离超过此阈值时，强制完全重新初始化
+ max_global_plan_lookahead_dist: 2.0     #3.0 只截取全局路径中"当前位置前方"的一段来优化。值越小，计算越快，但容易陷入局部最优。值越大，TEB 看得越远，可以提前规避远处的障碍物，但优化变量更多、计算更慢
+ global_plan_viapoint_sep: -1 #当前没启用  # 是否从全局路径中抽取全局规划途经点来约束TEB，>0 时，TEB 会在全局路径上按此间距采样 via points，并在优化中加入"轨迹应尽量经过这些点"的约束
+ global_plan_prune_distance: 0.6 #1.0    # 从全局路径中删除已经走过的点。0.6m 意味着已经过的、距离当前位姿小于 0.6m 的全局路径点会被剪掉。防止TEB为了"回头贴全局路径"而产生不必要的绕圈
+ exact_arc_length: False                 # False：用欧几里得距离近似  True：用圆弧积分计算真实弧长（考虑朝向变化
+ feasibility_check_no_poses: 4 #！3 #5   # 优化完成后，检查轨迹上多少个位姿的可行性。值越大检查越严格，但可能因微小碰撞 footprint 而误报失败
+ publish_feedback: False #调试信息发布 设为 True 可在 RViz 中可视化 TEB 的内部轨迹（话题如 /teb_feedback），用于调参观察
+    
+ # Robot运动学约束
+         
+ max_vel_x: 0.8 #！1.2 #0.4
+ max_vel_x_backwards: 0.7 #！0.5 #0.2
+ max_vel_y: 0.8 #0.1
+ max_vel_theta: 2.0 #@1.5 #！1 #0.3
+ acc_lim_x: 0.5
+ acc_lim_y: 0.5 #0.2
+ acc_lim_theta: 1.3 #@1.0 #！0.3 #0.5
+ min_turning_radius: 0.1 #!0.0 # omni-drive robot (can turn on place!)
+
+ footprint_model: # teb碰撞检测模型：线型。还有点和多边形
+  type: "line" #point
+  line_start: [0.13, 0.0]  # 一条长 0.26m 的线段，中点在 (0, 0)
+  line_end: [-0.13, 0.0]
+  # 独立用于障碍物距离计算的，和代价地图的运动学模型用于膨胀半径计算的模型不一样。两者应保持一致
+
+ # GoalTolerance 目标容忍度
+    
+ xy_goal_tolerance: 0.15 #@0.1 #0.2
+ yaw_goal_tolerance: 0.1 #@0.05 #0.1
+ free_goal_vel: False    # 到达终点时是否允许有残余速度，不允许是因为终点有任务
+ complete_global_plan: True # True：即使局部优化看到前方有捷径可以直达终点，也必须沿着全局路径的 shape 走。False：TEB 可以抄近路直达终点
+    
+ # Obstacles 障碍物处理
+    
+ min_obstacle_dist: 0.15 #0.25   # 机器人与任何障碍物的期望最小距离。安全泡距离，teb尽量优化距离障碍物的距离
+ inflation_dist: 0.18 #0.6       # 它会对距离[min_obstacle_dist, inflation_dist]内的障碍物施加衰减惩罚
+ include_costmap_obstacles: True # True 时，TEB 会把 costmap 中的 occupied cells 转换为点/多边形障碍
+ costmap_obstacles_behind_robot_dist: 1.0 # 机器人后方多远的障碍物会被考虑
+ obstacle_poses_affected: 15     # 每个障碍物最多影响轨迹上的多少个位姿节点。值越大优化越精确但越慢；值越小越快但可能出现"某些位姿突然靠近障碍"的情况
+ costmap_converter_plugin: "" # 代价地图转换插件，costmap 是栅格形式，TEB 需要把栅格障碍转换为几何图元（点/线/多边形)才能进行距离计算
+ # 可以加载 costmap_converter::CostmapToPolygonsDBSMCCH 等插件，occupied cells 聚类为凸多边形，大幅减少障碍物数量
+ 
+ 
+ costmap_converter_spin_thread: True # 是否在独立线程中运行代价地图转换
+ costmap_converter_rate: 5           # 转换频率
+
+ # Optimization 优化器参数
+    
+ no_inner_iterations: 5 #减小可以增加性能 # 内迭代太少：轨迹没有收敛到局部最优就开始下一轮外迭代
+ no_outer_iterations: 4 #减小可以增加性能 # 障碍物关联没有更新，可能优化出的轨迹撞上了"旧关联"没覆盖的新障
+ optimization_activate: True # 是否启用优化
+ optimization_verbose: False # 是否打印优化器的详细信息
+ penalty_epsilon: 0.1 # 约束惩罚的松弛量，0.1是一个合理的值
+ obstacle_cost_exponent: 2 #4  # 障碍物惩罚的指数= 1：线性惩罚，距离障碍越近惩罚线性增加2：二次惩罚，贴近障碍时"急剧变贵"，让优化器更保守4（你注释掉的值）：极度保守，稍微靠近障碍就付出巨大代价
+ 
+ ### 当某个约束被违反时，我愿意付出多少代价来纠正它
+        # 如果机器人实际运动中频繁超速（可以在 /cmd_vel 中观测），应提高对应权重（如 weight_max_vel_x 提到 5~10）
+        # 如果机器人加速太猛导致打滑，提高 weight_acc_lim_x
+
+ weight_max_vel_x: 2
+ weight_max_vel_y: 2
+ weight_max_vel_theta: 1
+ weight_acc_lim_x: 1
+ weight_acc_lim_y: 1
+ weight_acc_lim_theta: 1
+ ###
+
+ weight_kinematics_nh: 50 # 惩罚侧向滑动 #要全向移动就1，不想侧滑就1000,如果比赛中需要大量侧向微调（如窄道对齐货架），应降到 10~100
+ weight_kinematics_forward_drive: 100 #1  # 惩罚后退运动 # 与 allow_init_with_backwards_motion = False 的配合
+ weight_kinematics_turning_radius: 1 # 惩罚小于 min_turning_radius 的转弯 如果机器人频繁原地打转，可以提到 10~100
+ weight_optimaltime: 1 # must be > 0 # 惩罚总耗时 1为强制轨迹尽快完成
+ weight_shortest_path: 0 # 惩罚路径几何长度 # 0 表示完全不关心路径长短，只关心时间最优。这在比赛中通常是对的
+ weight_obstacle: 100 # 障碍物距离惩罚的总权重。100 是一个很高的值，说明安全是最高优先级
+ weight_inflation: 0.0 # 0.2 在 min_obstacle_dist 和 inflation_dist 之间的区域，除了基础障碍惩罚外，再叠加一层 0.2 权重的衰减惩罚，现在膨胀层完全不惩罚
+ weight_dynamic_obstacle: 10 # 如果 TEB 接收到动态障碍物信息（如通过 /teb_obstacles 话题），这些碍使用独立的权重 10（比静态障碍 100 低，但仍然显著）
+ weight_dynamic_obstacle_inflation: 0.2 # 动态障碍物的膨胀权重
+ weight_viapoint: 1 # 途经点跟踪权重。当前未启用（global_plan_viapoint_sep = -1），所以此参数无效
+ weight_adapt_factor: 2
+
+ # Homotopy Class Planner 同伦类规划是 TEB 的高级特性，用于探索不同拓扑结构的路径（如"从障碍左侧绕" vs "从障碍右侧绕"）。
+ # 未启用
+ enable_homotopy_class_planning: False 
+ enable_multithreading: True
+ max_number_classes: 1
+ selection_cost_hysteresis: 1.0
+ selection_prefer_initial_plan: 0.9
+ selection_obst_cost_scale: 1.0
+ selection_alternative_time_cost: False
+ 
+ roadmap_graph_no_samples: 15
+ roadmap_graph_area_width: 5
+ roadmap_graph_area_length_scale: 1.0
+ h_signature_prescaler: 0.5
+ h_signature_threshold: 0.1
+ obstacle_heading_threshold: 0.45
+ switching_blocking_period: 0.0
+ viapoints_all_candidates: True
+ delete_detours_backwards: True
+ max_ratio_detours_duration_best_duration: 3.0
+ visualize_hc_graph: False
+ visualize_with_time_as_z_axis_scale: False
+
+# Recovery
+ 
+ shrink_horizon_backup: True
+ shrink_horizon_min_duration: 10
+ oscillation_recovery: True
+ oscillation_v_eps: 0.1
+ oscillation_omega_eps: 0.1
+ oscillation_recovery_min_duration: 10
+ oscillation_filter_duration: 10
+
+# 5.20调参
+# feasibility_check_no_poses: 3        # 原 8，降到 3~5
+# penalty_epsilon: 0.2
+# 增大前瞻距离：高速必须看得更远 max_global_plan_lookahead_dist: 2.5  # 原 1.5，至少 = max_vel_x * 1.0
+# 加密轨迹节点，转弯更平滑 dt_ref: 0.25
+# weight_obstacle: 50
+
+# 新：
+# complete_global_plan: False          # 原 True。允许 TEB 在局部绕开全局路径的硬折线
+# feasibility_check_no_poses: 3        # 原 8，降到 3~5
+# penalty_epsilon: 0.2
+# max_global_plan_lookahead_dist: 2.5  # 原 1.5，必须看到转弯后的路径
+# weight_kinematics_forward_drive: 10   # 轻微偏好前进，但不绝对禁止
+# weight_kinematics_nh: 10              # 允许侧移辅助过弯（至少 10~50）
+# max_vel_y: 1.0                      # 原 0.2，最大侧向速度，根据比赛环境调整
+
+# # 建议改成 polygon，使用实际 footprint
+# footprint_model:
+#  type: "polygon"
+#  vertices: [[0.171, 0.128], [0.171, -0.128], [-0.171, -0.128], [-0.171, 0.128]]
+#  vertices: [[0.10, 0.08], [0.10, -0.08], [-0.10, -0.08], [-0.10, 0.08]]
+
+# 可以适当降低local和global的inflation_radius，为0.08～0.05把碰撞检测交给controller
+
+# 把 TEB 的安全距离也调小
+# min_obstacle_dist: 0.12      # 原 0.15，前提是你的定位精度足够高
+# inflation_dist: 0.25         # 必须 > min_obstacle_dist，保持衰减区
+
+
+# # local_costmap_params.yaml
+# inflation_radius: 0.01
+
+# 推荐方案 1：mppi_local_planner（ROS1 移植版）
+#   ─────────────────────────────────────────────
+
+#   • 仓库：Forrest-Z/mppi_local_planner
+#   • 特点：
+#     • 这是 Nav2 MPPI Controller 的 ROS1 移植，基于 Eigen，不依赖 xtensor
+#     • 实现了 nav_core::BaseLocalPlanner 接口，可以直接替换 TEB，接入你的 move_base
+#     • 支持 Differential / Omnidirectional / Ackermann 三种运动模型
+#     • 支持 动态重配置（dynamic_reconfigure）
+#     • 使用 Plugin-Based Critic Functions（路径跟踪、障碍物避让、速度约束、平滑性等都是可插拔
+#       分项）
+#     • 采样 + Softmax 权重平均的 MPC 框架，天然适合全向轮底盘的高速避障
+#   接入你的项目只需：
+#   <!-- move_base 中修改局部规划器 -->
+#   <param name="base_local_planner" value="mppi_local_planner/MPPIControllerROS"/>
+
+
+# 问题 1：机器人在走廊/窄道中左右振荡
+#   ───────────────────────────────────
+
+#   表现：沿墙走时车头不断左右摇摆，速度上不去，甚至在窄道卡死。
+
+#   根本原因：
+#   • max_global_plan_lookahead_dist = 1.5 太短，配合 max_vel_x = 2.5，机器人以高速运行时每步
+#     规划 1.5m，相当于只看眼前，无法平滑预判走廊走向
+#   • weight_optimaltime = 1 与 weight_obstacle = 100 严重失衡，TEB 为了"不碰墙"宁愿剧烈转向
+#   • dt_ref = 0.35 导致节点稀疏，优化出的轨迹曲率变化突兀
+#   调参策略：
+#   max_global_plan_lookahead_dist: 2.5        # 高速必须看更远，至少 = max_vel_x * 1.0
+#   dt_ref: 0.25                              # 节点加密，转弯更平滑
+#   weight_optimaltime: 2                     # 提高时间权重，减少过度保守的绕行
+#   weight_obstacle: 50                       # 适当降低（如果场地静态且定位准）
+#   acc_lim_x: 1.0                            # 提高加速度，减少因加速慢导致的"迟疑-急转"
+
+
+#   问题 2：高速前进时撞墙/刮擦障碍物
+#   ─────────────────────────────────
+
+#   表现：直线跑很快，但前方突然出现障碍或转弯时反应不过来，直接撞上。
+
+#   根本原因：
+#   • max_global_plan_lookahead_dist = 1.5 对于 2.5m/s 的速度意味着只有 0.6 秒 的反应时间，加
+#     底盘执行延迟和雷达数据延迟，根本刹不住
+#   • acc_lim_x = 0.5 制动加速度太小，刹车距离 $s = v^2 / (2a) = 2.5^2 / (2*0.5) = 6.25m$，远
+#     前瞻距离
+#   • min_obstacle_dist = 0.15 太激进，没有给定位误差留余量
+#   调参策略：
+#   max_global_plan_lookahead_dist: 3.0        # 必须远大于刹车距离需求
+#   acc_lim_x: 1.5                             # 提高减速度，缩短刹车距离
+#   min_obstacle_dist: 0.25                    # 留出定位误差余量（AMCL 可能有几厘米漂移）
+#   inflation_dist: 0.40                       # 必须明显大于 min_obstacle_dist
+#   feasibility_check_no_poses: 12             # 增加检查位姿数，防止"漏检"碰撞
+
+#   物理验算：
+#   • 原配置刹车距离：2.5^2 / (2*0.5) = 6.25m
+#   • 建议配置刹车距离：2.5^2 / (2*1.5) = 2.08m，配合 lookahead = 3.0m 才安全
+
+
+# 问题 3：规划失败，move_base 进入 Recovery 行为
+#   ──────────────────────────────────────────────
+
+#   表现：TebLocalPlannerROS 频繁报告 Failed to find valid trajectory，机器人开始清除代价地图
+#   、原地旋转。
+
+#   根本原因：
+#   • no_inner_iterations = 5 / no_outer_iterations = 4 不够，复杂环境下轨迹未收敛
+#   • obstacle_poses_affected = 15 太少，某些轨迹点没有被障碍物约束覆盖
+#   • feasibility_check_no_poses = 8 太严格，优化后微小碰撞 footprint 被判定为不可行
+#   • penalty_epsilon = 0.1 太小，约束过于 rigid，优化器难以找到可行解
+#   调参策略：
+#   no_inner_iterations: 8                     # 提高收敛精度
+#   no_outer_iterations: 5                     # 增加障碍关联更新次数
+#   obstacle_poses_affected: 25                # 让更多轨迹点关联到障碍物
+#   penalty_epsilon: 0.2                       # 放宽约束松弛量
+#   shrink_horizon_backup: True                # 已启用，保持。失败时自动缩短前瞻距离
+#   shrink_horizon_min_duration: 5             # 更快恢复正常前瞻距离
+
+# 问题 4：到达终点后在目标附近来回打转，无法报告到达
+#   ──────────────────────────────────────────────────
+
+#   表现：已经到目标点了，但一直左右调整方向，无法触发 Goal Reached。
+
+#   根本原因：
+#   • weight_kinematics_forward_drive = 1000 强烈禁止后退，导致机器人调整姿态时只能"前进-旋转-
+#     进"，无法原地或侧移精调
+#   • yaw_goal_tolerance = 0.1（约 5.7°）比较严格，而 xy_goal_tolerance = 0.15 相对宽松，造成"
+#     位了但角度差一点点"的拉锯
+#   • weight_kinematics_nh = 1000 禁止侧移，麦克纳姆轮失去全向调整优势
+#   调参策略：
+#   weight_kinematics_forward_drive: 1         # 终点附近允许后退微调
+#   weight_kinematics_nh: 10                   # 允许侧移辅助对准（至少终点阶段）
+#   yaw_goal_tolerance: 0.15                   # 放宽角度容差（或配合更精确的全局规划）
+#   free_goal_vel: False                       # 保持 False，确保停车
+#   complete_global_plan: False                # 允许抄近路到达终点，减少无谓绕行
+
+#   进阶方案：在 process.py 中，接近终点时（如 < 0.3m）主动 cancel move_base goal，切换到自己
+#   的 PID 精调逻辑（你代码里已经有类似 adjust_distance_to_back_1m() 的做法）。
+
+# 问题 5：明明是全向轮，TEB 却只用"前进+旋转"，运动效率低
+#   ───────────────────────────────────────────────────────
+
+#   表现：在空旷场地对齐目标时，不直接侧移，而是走弧形绕过去。
+
+#   根本原因：
+#   weight_kinematics_nh: 1000                 # 强烈惩罚非完整约束违反 = 禁止侧移
+#   weight_kinematics_forward_drive: 1000      # 强烈禁止后退
+#   TEB 被配置得像一个差速底盘。
+
+#   调参策略：
+#   weight_kinematics_nh: 1                    # 允许全向移动（麦克纳姆轮物理上就是全向的）
+#   weight_kinematics_forward_drive: 10        # 轻微偏好前进，但不禁止后退
+#   max_vel_y: 0.4                             # 提高侧移速度上限
+#   acc_lim_y: 0.3                             # 侧移加速度限制
+
+#   风险提示：侧移时麦克纳姆轮的辊子（roller）容易打滑，导致里程计漂移。如果你的底盘侧移控制不
+#   精确（编码器积分误差大），不要完全放开 nh，建议 10~50 而非 1。
+
+
+# 问题 6：通过门洞/狭窄通道时被卡住或拒绝通过
+#   ───────────────────────────────────────────
+
+#   表现：门前明明够宽，TEB 规划失败或反复试探不前进。
+
+#   根本原因：
+#   • footprint_model 是 line（线段），但实际机器人宽度（0.256m，从 footprint [[0.171, -0.128]
+#     .] 算出）加上 min_obstacle_dist = 0.15 后，等效宽度 = 0.256 + 2*0.15 = 0.556m。如果门洞
+#     有 0.7m，余量很小
+#   • inflation_dist = 0.18 只比 min_obstacle_dist 大 0.03m，衰减区太短，导致 TEB 对门洞边缘的
+#     罚下降过快，优化器认为"稍微蹭一下代价不高"
+#   • 代价地图的膨胀层（inflation_radius = 0.1 在 local_costmap）与 TEB 的 min_obstacle_dist
+#     加，进一步压缩了可行区域
+#   调参策略：
+#   # TEB 侧
+#   min_obstacle_dist: 0.12                    # 窄道适当降低（前提：定位精度高）
+#   inflation_dist: 0.30                       # 保持足够衰减区
+#   obstacle_cost_exponent: 4                  # 接近障碍时代价急剧上升（窄道更保守）
+
+#   # Costmap 侧（local_costmap_params.yaml）
+#   inflation_radius: 0.05                     # 降低局部代价地图膨胀，把安全距离控制权交给 TE
+#   B
+
+#   更优方案：把 footprint_model 从 line 换成 polygon，用精确 footprint：
+#   footprint_model:
+#     type: "polygon"
+#     vertices: [[0.171, 0.128], [0.171, -0.128], [-0.171, -0.128], [-0.171, 0.128]]
+
+# 问题 7：轨迹频繁跳变，机器人运动不平滑
+#   ──────────────────────────────────────
+
+#   表现：每帧 /cmd_vel 的方向/速度突变，机器人一顿一顿。
+
+#   根本原因：
+#   • force_reinit_new_goal_dist = 1.0 太敏感，全局路径微小更新导致 TEB 频繁重初始化
+#   • global_plan_overwrite_orientation = True 与全局规划器方向不兼容，每次重新计算方向导致 TE
+#     初始 guess 突变
+#   • dt_ref 大导致节点稀疏，优化出的轨迹帧间差异大
+#   调参策略：
+#   force_reinit_new_goal_dist: 2.0            # 只有目标明显变化时才重初始化
+#   dt_ref: 0.2                                # 加密节点
+#   global_plan_overwrite_orientation: False    # 如果全局规划器方向已正确，不要覆盖
+#   publish_feedback: True                     # 开启调试，RViz 中观察轨迹是否跳变

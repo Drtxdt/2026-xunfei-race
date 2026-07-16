@@ -1,0 +1,14 @@
+<launch>
+  <!-- vision_triggered_navigator 启动文件 -->
+
+  <!-- 加载参数 -->
+  <rosparam file="$(find vision_triggered_navigator)/config/vision_triggered_navigator.yaml" command="load" ns="vision_triggered_navigator" />
+
+  <!-- 启动导航节点 -->
+  <node pkg="vision_triggered_navigator" type="vision_triggered_navigator.py" name="vision_triggered_navigator" output="screen">
+    <!-- 示例：命令行覆盖触发模式或目标点
+         roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_mode:=vision
+    -->
+  </node>
+
+</launch>

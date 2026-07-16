@@ -1,0 +1,40 @@
+<launch>
+  <node pkg="ucar_controller" name="sensor_tf_server" type="sensor_tf_server.py" output="screen" >
+    <!-- 注意 launch文件中value只能给具体数值 不要给表达式 -->
+    <param name="~camera_pose_x"   value="0.15"/>
+    <param name="~camera_pose_y"   value="0.0"/>
+    <param name="~camera_pose_z"   value="0.15"/>
+    <param name="~camera_euler_r"  value="-2.007126944"/>
+    <param name="~camera_euler_p"  value=" 0.0"/>
+    <param name="~camera_euler_y"  value="-1.570795"/>
+    
+    <param name="~lidar_pose_x"   value="-0.11"/>
+    <param name="~lidar_pose_y"   value="0.0"/>
+    <param name="~lidar_pose_z"   value="0.165"/>
+    <param name="~lidar_euler_r"  value="0.0"/>
+    <param name="~lidar_euler_p"  value="0.0"/>
+    <param name="~lidar_euler_y"  value="-0.07"/>
+
+    <param name="~imu_pose_x"   value=" 0.05"/>
+    <param name="~imu_pose_y"   value="-0.05"/>
+    <param name="~imu_pose_z"   value=" 0.05"/>
+    <param name="~imu_euler_r"  value=" 0"/>
+    <param name="~imu_euler_p"  value=" 0.0"/>
+    <param name="~imu_euler_y"  value=" 0.0"/>
+
+    <param name="~camera_frame"  value="camera_frame"/>
+    <param name="~lidar_frame"   value="laser_frame"/>
+    <param name="~imu_frame"     value="imu_frame"/>
+    
+    <param name="~base_frame"    value="base_footprint"/>
+    <!-- tf_rate 是指tf的发布频率 -->
+    <param name="~tf_rate"       value="30"/>
+  </node>
+</launch> 
+
+<!--camera_pose_x/y/z	相机在base_footprint中的三维坐标（米）	(0.15, 0.0, 0.15)-->
+<!--camera_euler_r/p/y	相机的欧拉角（弧度），分别对应Roll/Pitch/Yaw	(-2.007, 0.0, -1.57)-->
+<!--lidar_pose_x/y/z	激光雷达在base_footprint中的三维坐标	(-0.11, 0.0, 0.165)-->
+<!--lidar_euler_r/p/y	激光雷达的欧拉角	(0.0, 0.0, -0.07)-->
+<!--imu_pose_x/y/z	IMU在base_footprint中的三维坐标	(0.05, -0.05, 0.05)-->
+<!--imu_euler_r/p/y	IMU的欧拉角	(0, 0, 0)-->

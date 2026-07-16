@@ -1,0 +1,55 @@
+<launch>
+    <arg name="scan_topic" default="scan" />
+
+    <node pkg="gmapping" type="slam_gmapping" name="slam_gmapping" output="screen" clear_params="true">
+        <param name="odom_frame" value="odom"/>
+        <param name="map_update_interval" value="2.0"/>
+        <param name="maxRange" value="5.0"/>
+        <param name="maxUrange" value="4.5"/>
+        <param name="sigma" value="0.05"/>
+        <param name="kernelSize" value="1"/>
+        <param name="lstep" value="0.05"/>
+        <param name="astep" value="0.05"/>
+        <param name="iterations" value="10"/>
+        <param name="lsigma" value="0.075"/>
+        <param name="ogain" value="3.0"/>
+        <param name="lskip" value="1"/>
+        <param name="srr" value="0.01"/>
+        <param name="srt" value="0.02"/>
+        <param name="str" value="0.01"/>
+        <param name="stt" value="0.02"/>
+        <param name="linearUpdate" value="0.2"/>
+        <param name="angularUpdate" value="0.336"/>
+        <param name="temporalUpdate" value="-1.0"/>
+        <param name="resampleThreshold" value="0.5"/>
+        <param name="particles" value="120"/>
+        <param name="xmin" value="-2.0"/>
+        <param name="ymin" value="-2.0"/>
+        <param name="xmax" value="2.0"/>
+        <param name="ymax" value="2.0"/>
+        <param name="delta" value="0.03"/>
+        <param name="llsamplerange" value="0.01"/>
+        <param name="llsamplestep" value="0.01"/>
+        <param name="lasamplerange" value="0.005"/>
+        <param name="lasamplestep" value="0.005"/>
+        <remap from="scan" to="$(arg scan_topic)"/>
+    </node>
+</launch>
+
+<!-- 可调：lskip ： 1：扫一条线跳过下一个扫描点，减少运算量-->
+<!-- 可调：throttle_scans ： x：每x帧处理一次数据-->
+<!-- 地图更新间隔（秒） map_update_interval：3.0或者2.0-->
+<!-- 放宽 scan matching 的搜索范围/容忍度：
+    <param name="lstep" value="0.1"/>      <0.05 → 0.1，线性搜索步长变大，搜索范围变宽>
+    <param name="astep" value="0.1"/>      <角度搜索步长变大>
+    <param name="iterations" value="10"/>  <5 → 10，给更多迭代机会收敛>
+    <param name="kernelSize" value="2"/>   <1 → 2，似然场核变大，对偏移更宽容>
+-->
+
+<!-- 可调：让 gmapping 更不信任里程计
+    <param name="srr" value="0.05"/>
+    <param name="srt" value="0.1"/>
+    <param name="str" value="0.05"/>
+    <param name="stt" value="0.1"/>
+-->
+<!-- iterations = 5：可以适当提高 -->

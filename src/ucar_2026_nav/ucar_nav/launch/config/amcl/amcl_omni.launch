@@ -1,0 +1,80 @@
+<launch>
+<node pkg="amcl" type="amcl" name="amcl">
+  <!-- Publish scans from best pose at a max of 10 Hz -->
+  <param name="odom_model_type" value="omni"/>
+  <param name="odom_alpha5" value="0.1"/>
+
+  <!-- AMCL 发布的 map → odom TF 的 有效期（time offset） -->
+  <!--1.2 秒是一个很大的值。这意味着即使 AMCL 因为某些原因 1 秒内没输出新结果，ROS 的 TF 系统仍然认为旧的 map → odom 变换有效-->
+  <param name="transform_tolerance" value="1.2" /><!--1.5-->
+  <param name="gui_publish_rate" value="10.0"/>
+  <param name="laser_max_beams" value="50"/>
+  <param name="use_map_topic" value="false"/>  
+  <!-- //当设置为true时，AMCL将会订阅map话题，而不是调用服务返回地图。也就是说，当设置为true时，有另外一个节点实时的发布map话题，也就是机器人在实时的进行地图构建，并供给amcl话题使用；当设置为false时，通过map server，也就是调用已经构建完成的地图。在navigation 1.4.2中新加入的参数。 -->
+  <param name="first_map_only" value="true"/>  
+    <!-- //当设置为true时，AMCL将仅仅使用订阅的第一个地图，而不是每次接收到新的时更新为一个新的地图，在navigation 1.4.2中新加入的参数。 -->
+
+
+  <param name="min_particles" value="500"/> <!-- 粒子集合大小的上下界 -->
+  <param name="max_particles" value="2000"/> 
+  <param name="kld_err" value="0.05"/>    <!-- 允许的 KL 散度误差上界： 值越小，要求的粒子数越多，计算越慢但越精确；值越大，粒子数越少，计算越快但可能丢定位-->
+  <param name="kld_z" value="0.99"/> <!--  KLD 检验的 置信度参数：如果你把它改成 0.9，粒子数会显著下降，计算变快，但“赌错”的概率从 1% 上升到 10%-->
+  
+  
+  <!-- 里程计运动模型 ： 给定上一时刻到当前时刻的相对位姿变化 $(\delta_{rot1}, \delta_{trans}, \delta_{rot2})$（omni 模型还会考虑侧移），对每个粒子加上服从特定分布的
+  噪声来模拟真实运动的随机性-->
+  <param name="odom_alpha1" value="0.1"/>  <!-- 旋转引起的平移噪声 -->
+  <param name="odom_alpha2" value="0.1"/>  <!-- 平移引起的旋转噪声 -->
+  <param name="odom_alpha3" value="0.1"/>  <!-- 平移方向的噪声-->
+  <param name="odom_alpha4" value="0.1"/>  <!-- 旋转方向的噪声 -->
+  <param name="odom_alpha5" value="0.05"/> <!-- 全向轮特有：侧向滑动噪声 -->
+
+
+  <!-- 激光观测模型：粒子权重怎么算 -->
+  <!---beam 模型：逐射线（ray-by-ray）建模。对每一束激光，考虑四种情况的概率混合：
+    • hit：正常击中障碍物（高斯分布）
+    • short：意外提前击中（指数分布，如动态障碍物、人的腿）
+    • max：未击中（最大量程值，如望向开阔空间）
+    • random：完全随机噪声（均匀分布）
+    • likelihood_field 模型：把激光端点投影到地图，计算与最近障碍物的距离，用高斯衰减打分。计算更快，但对长走廊等对称环境容易歧义
+  -->
+  <param name="laser_z_hit" value="0.5"/>  <!-- 50% 的情况下激光正常打到地图上的障碍物 -->
+  <param name="laser_z_short" value="0.05"/>  <!-- 5% 的情况下激光被意外遮挡（比如场地里有人走过） -->
+  <param name="laser_z_max" value="0.05"/>  <!--  5% 的情况下激光没返回（超出量程）-->
+  <param name="laser_z_rand" value="0.5"/>  <!-- 50% 的情况下是随机噪声 -->
+  <!--  配置 hit:rand = 1:1，short:max 很小，说明认为环境基本是静态的，随机噪声和命中各占一半。这在结构化
+    境中是合理的 -->
+
+
+  <param name="laser_sigma_hit" value="0.2"/>  <!-- hit 情况下高斯分布的标准差:  值越小，对定位精度要求越苛刻，粒子权重差异越明显，重采样越激进；值越大，观测越“宽容”，粒子权重差异小，收敛变慢但更鲁棒-->  <!--  -->
+  <param name="laser_lambda_short" value="0.1"/> <!-- -->
+  <!-- <param name="laser_model_type" value="likelihood_field"/> -->
+  <param name="laser_model_type" value="beam"/> <!-- 表示“意外障碍物离机器人有多近”。$\lambda$ 越大，short 成分随距离衰减越快，意味着意外障碍物通常很近 --> 
+  <param name="laser_likelihood_max_dist" value="2.0"/> <!-- likelihood_field 模型，这个参数实际上不起作用 -->
+  
+  
+  
+  <!-- 更新触发与重采样策略 -->
+  <param name="update_min_d" value="0.2"/> <!-- 移动超过 0.2 米才更新 -->
+  <param name="update_min_a" value="0.5"/> <!-- 旋转超过 0.5 弧度才更新 -->
+  <param name="odom_frame_id" value="odom"/>
+  <param name="resample_interval" value="1"/> <!-- 每经过多少次观测更新，执行一次重采样 -->
+
+
+  <!-- 完全关闭了自适应重采样恢复机制 -->
+  <param name="recovery_alpha_slow" value="0.0"/>
+  <param name="recovery_alpha_fast" value="0.0"/>
+  <!-- <param name="odom_frame_id" value="odom"/>   -->
+  <!-- //里程计默认使用的坐标系 -->
+  <!-- <param name="base_frame_id" value="base_link"/>   -->
+  <!-- //用作机器人的基坐标系 -->
+  <!-- <param name="global_frame_id" value="map"/>   -->
+  <!-- //由定位系统发布的坐标系名称 -->
+  <!-- <param name="tf_broadcast" value="false"/>   -->
+  <!-- //设置为false阻止amcl发布全局坐标系和里程计坐标系之间的tf变换 -->
+</node>
+</launch>
+
+
+<!-- laser_max_beams:需要测试：90束每4度   180 束：每 2° 一束，CPU 占用可能翻倍 先从 60~90 试起（laser_max_beams = 60 或 90）。-->
+<!-- 粒子数保持，如果cpu占用过高，可以适当减少-->

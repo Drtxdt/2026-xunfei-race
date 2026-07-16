@@ -1,0 +1,14 @@
+# simple_navigator 目标点参数
+# 当参数服务器中不存在 /map_goal_picker/goal_* 时，使用以下默认值
+# 用户可手动修改，或在运行 map_goal_picker 后由参数服务器自动覆盖
+# x   = -1.3359 y   = -0.4059  yaw = 0.0112 rad 二维码区起始点 右垂直
+# x   = -1.4643  y   = -0.1390  yaw = 1.5834 rad 二维码区中间点，上垂直
+# x   = -1.8086  y   = -0.4469  yaw = -3.1147 rad  终点，左垂直
+
+goal_x: -1.3359 
+goal_y: -0.4059
+goal_yaw: 0.0112
+
+# 可选：导航参数
+move_base_server: "/move_base"
+map_frame: "map"
