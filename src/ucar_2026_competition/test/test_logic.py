@@ -4,9 +4,11 @@ import unittest
 
 from ucar_2026_competition.logic import (
     ConsecutiveTargetFilter,
+    DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
     normalize_category,
+    normalize_angle,
     parse_category,
     qr_values_from_payload,
     stage_sequence,
@@ -15,6 +17,23 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_normalize_angle(self):
+        self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)
+        self.assertAlmostEqual(normalize_angle(-0.25), -0.25)
+
+    def test_yaw_accumulator_crosses_pi_wrap(self):
+        tracker = DirectedYawAccumulator(direction=1.0)
+        tracker.reset(3.10)
+        self.assertAlmostEqual(tracker.update(-3.10), 0.08318530717958605)
+        self.assertGreater(tracker.update(-2.90), 0.28)
+
+    def test_yaw_accumulator_ignores_reverse_jitter(self):
+        tracker = DirectedYawAccumulator(direction=1.0)
+        tracker.reset(0.0)
+        self.assertAlmostEqual(tracker.update(0.2), 0.2)
+        self.assertAlmostEqual(tracker.update(0.19), 0.2)
+        self.assertAlmostEqual(tracker.update(0.21), 0.21)
+
     def test_voice_category(self):
         self.assertEqual(parse_category("小飞小飞，请取得食品类"), "food")
         self.assertEqual(parse_category("取得食品"), "food")

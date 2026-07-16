@@ -1,6 +1,7 @@
-"""ROS-independent parsing and protocol helpers."""
+"""ROS-independent parsing, protocol, and motion helpers."""
 
 import json
+import math
 
 
 CATEGORY_LABELS = {
@@ -36,6 +37,40 @@ TRACK_CONFIG = {
         "stable_right_finish",
     ),
 }
+
+
+def normalize_angle(angle):
+    """Normalize an angle to [-pi, pi)."""
+    return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+class DirectedYawAccumulator:
+    """Accumulate odometry yaw progress while handling the +/-pi wrap."""
+
+    def __init__(self, direction=1.0):
+        self.direction = 1.0 if float(direction) >= 0.0 else -1.0
+        self.start_yaw = None
+        self.last_yaw = None
+        self.progress = 0.0
+
+    def reset(self, yaw):
+        self.start_yaw = float(yaw)
+        self.last_yaw = float(yaw)
+        self.progress = 0.0
+
+    def update(self, yaw):
+        yaw = float(yaw)
+        if self.last_yaw is None:
+            self.reset(yaw)
+            return self.progress
+        self.last_yaw = yaw
+        # Measure net rotation from this step's starting yaw. Keeping the
+        # maximum suppresses small reverse jitter without counting the same
+        # forward arc twice after the chassis recovers from that jitter.
+        net_progress = normalize_angle(yaw - self.start_yaw) * self.direction
+        if net_progress > self.progress:
+            self.progress = net_progress
+        return self.progress
 
 
 def stage_sequence(mode):

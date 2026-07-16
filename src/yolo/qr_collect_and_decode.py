@@ -29,8 +29,10 @@ except Exception:
 
 try:
     from pyzbar import pyzbar
+    from pyzbar.pyzbar import ZBarSymbol
 except Exception:
     pyzbar = None
+    ZBarSymbol = None
 
 
 OFFLINE_ITEMS = {
@@ -56,7 +58,11 @@ class QRCollectAndDecode:
         self.save_count = 0
         self.last_publish_text = ""
         self.last_publish_time = 0.0
+        self.last_decode_time = 0.0
         self.url_cache = {}
+        self.decode_interval = max(0.0, float(args.decode_interval))
+        self.decode_scales = self.parse_decode_scales(args.decode_scales)
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         self.pub = rospy.Publisher(args.pub_topic, String, queue_size=10)
         self.sub = rospy.Subscriber(args.topic, Image, self.image_cb, queue_size=1)
@@ -64,6 +70,25 @@ class QRCollectAndDecode:
         rospy.loginfo("QR image topic: %s", args.topic)
         rospy.loginfo("QR images save to: %s", self.out_dir)
         rospy.loginfo("QR result topic: %s", args.pub_topic)
+        rospy.loginfo(
+            "QR decode interval: %.3fs, enhanced scales: %s",
+            self.decode_interval,
+            ",".join("{:.2f}".format(value) for value in self.decode_scales),
+        )
+
+    @staticmethod
+    def parse_decode_scales(value):
+        scales = []
+        for token in str(value or "").split(','):
+            try:
+                scale = float(token.strip())
+            except (TypeError, ValueError):
+                continue
+            if scale >= 1.0 and scale not in scales:
+                scales.append(scale)
+        if 1.0 not in scales:
+            scales.insert(0, 1.0)
+        return sorted(scales)
 
     def image_cb(self, msg):
         try:
@@ -72,6 +97,9 @@ class QRCollectAndDecode:
                 img = cv2.flip(img, 1)
 
             now = time.time()
+            if now - self.last_decode_time < self.decode_interval:
+                return
+            self.last_decode_time = now
             decoded_items = self.decode_qr(img)
 
             if decoded_items:
@@ -119,30 +147,57 @@ class QRCollectAndDecode:
     def decode_qr(self, img):
         texts = []
 
-        # Method 1: OpenCV detectAndDecodeMulti
+        # Fast path: retain the original OpenCV + pyzbar behavior on the
+        # unmodified frame. Enhanced variants run only if this finds nothing.
+        self.decode_opencv(img, texts)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        self.decode_pyzbar(gray, texts)
+        if texts:
+            return texts
+
+        # Slow path for small/distant QR codes. CLAHE improves uneven light;
+        # mild unsharp masking restores edges before cubic upscaling.
+        enhanced = self.clahe.apply(gray)
+        blurred = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
+        sharpened = cv2.addWeighted(enhanced, 1.6, blurred, -0.6, 0)
+        for scale in self.decode_scales:
+            if scale == 1.0:
+                candidate = sharpened
+            else:
+                candidate = cv2.resize(
+                    sharpened,
+                    None,
+                    fx=scale,
+                    fy=scale,
+                    interpolation=cv2.INTER_CUBIC,
+                )
+            self.decode_opencv(candidate, texts)
+            self.decode_pyzbar(candidate, texts)
+        return texts
+
+    def decode_opencv(self, image, texts):
         if self.detector is not None:
             try:
-                ok, decoded_info, points, straight_qrcode = self.detector.detectAndDecodeMulti(img)
+                ok, decoded_info, points, straight_qrcode = self.detector.detectAndDecodeMulti(image)
                 if ok and decoded_info:
                     for s in decoded_info:
-                        if s and s.strip() and s not in texts:
-                            texts.append(s.strip())
+                        normalized = str(s or '').strip()
+                        if normalized and normalized not in texts:
+                            texts.append(normalized)
             except Exception:
                 pass
 
-        # Method 2: pyzbar fallback, often better for tilted QR codes
+    def decode_pyzbar(self, gray, texts):
         if pyzbar is not None:
             try:
-                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-                codes = pyzbar.decode(gray)
+                kwargs = {"symbols": [ZBarSymbol.QRCODE]} if ZBarSymbol is not None else {}
+                codes = pyzbar.decode(gray, **kwargs)
                 for code in codes:
                     s = code.data.decode('utf-8', errors='ignore').strip()
                     if s and s not in texts:
                         texts.append(s)
             except Exception:
                 pass
-
-        return texts
 
     def is_url(self, text):
         return text.startswith('http://') or text.startswith('https://')
@@ -237,6 +292,10 @@ def main():
     parser.add_argument('--interval', type=float, default=0.5, help='save interval when --save-all enabled')
     parser.add_argument('--repeat-period', type=float, default=2.0, help='republish same QR result after seconds')
     parser.add_argument('--timeout', type=float, default=3.0, help='HTTP timeout seconds')
+    parser.add_argument('--decode-interval', type=float, default=0.10,
+                        help='minimum seconds between decode attempts')
+    parser.add_argument('--decode-scales', default='1.0,1.5,2.0',
+                        help='comma-separated enhanced decode scales')
     parser.add_argument('--flip', action='store_true', help='horizontal flip image before decode')
     parser.add_argument('--offline-fallback', action='store_true', help='use local QR result if URL fetch fails')
     parser.add_argument('--offline-mode', choices=['off', 'fallback', 'force'], default=None,

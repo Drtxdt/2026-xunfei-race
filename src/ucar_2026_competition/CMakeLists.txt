@@ -6,6 +6,7 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib_msgs
   geometry_msgs
   move_base_msgs
+  nav_msgs
   rospy
   std_msgs
   std_srvs

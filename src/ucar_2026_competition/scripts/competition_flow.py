@@ -25,6 +25,7 @@ from move_base_msgs.msg import (
     MoveBaseActionResult,
     MoveBaseGoal,
 )
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger, TriggerResponse
 from ucar_2026_competition_speech.srv import Announce
@@ -32,6 +33,7 @@ from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
     ConsecutiveTargetFilter,
+    DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
     normalize_category,
@@ -106,6 +108,8 @@ class CompetitionFlow:
         self.qr_navigation_watching = False
         self.qr_navigation_goal_id = ""
         self.qr_navigation_result = None
+        self.qr_odom_yaw = None
+        self.qr_odom_received_at = 0.0
         self.ocr_target = None
         self.ocr_filter = ConsecutiveTargetFilter(
             rospy.get_param("~ocr_required_consecutive", 3)
@@ -118,6 +122,12 @@ class CompetitionFlow:
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
         rospy.Subscriber("/question", String, self._question_cb, queue_size=5)
         rospy.Subscriber("/qr_code_data", String, self._qr_cb, queue_size=20)
+        rospy.Subscriber(
+            rospy.get_param("~qr_odom_topic", "/odom"),
+            Odometry,
+            self._qr_odom_cb,
+            queue_size=10,
+        )
         rospy.Subscriber(
             "/move_base/goal", MoveBaseActionGoal, self._qr_move_base_goal_cb, queue_size=5
         )
@@ -274,9 +284,20 @@ class CompetitionFlow:
         except Exception:
             return
         for key, result in qr_values_from_payload(payload):
-            if key not in self.qr_items:
-                self.qr_items[key] = result
-                rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+            with self.lock:
+                if key not in self.qr_items:
+                    self.qr_items[key] = result
+                    rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+
+    def _qr_odom_cb(self, msg):
+        q = msg.pose.pose.orientation
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            1.0 - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+        with self.lock:
+            self.qr_odom_yaw = yaw
+            self.qr_odom_received_at = time.monotonic()
 
     def _qr_move_base_goal_cb(self, msg):
         with self.lock:
@@ -418,8 +439,12 @@ class CompetitionFlow:
                 raise StageError("stage timed out after {:.1f}s".format(timeout))
             rospy.sleep(0.1)
 
-    def navigate(self, x, y, yaw, stage):
-        timeout = float(rospy.get_param("~move_base_timeout_sec", 90.0))
+    def navigate(self, x, y, yaw, stage, timeout_sec=None, status_state="navigating"):
+        timeout = float(
+            timeout_sec
+            if timeout_sec is not None
+            else rospy.get_param("~move_base_timeout_sec", 90.0)
+        )
         if not self.move_base.wait_for_server(rospy.Duration(min(timeout, 30.0))):
             raise StageError("move_base action server unavailable")
         goal = MoveBaseGoal()
@@ -429,7 +454,11 @@ class CompetitionFlow:
         goal.target_pose.pose.position.y = float(y)
         goal.target_pose.pose.orientation.z = math.sin(float(yaw) / 2.0)
         goal.target_pose.pose.orientation.w = math.cos(float(yaw) / 2.0)
-        self.publish_status(stage, "navigating", "goal x={:.3f} y={:.3f} yaw={:.3f}".format(x, y, yaw))
+        self.publish_status(
+            stage,
+            status_state,
+            "goal x={:.3f} y={:.3f} yaw={:.3f}".format(x, y, yaw),
+        )
         self.move_base.send_goal(goal)
         deadline = time.time() + timeout
         while time.time() < deadline and not rospy.is_shutdown():
@@ -510,6 +539,126 @@ class CompetitionFlow:
             "simple_navigator reached the configured QR-area waypoint",
         )
 
+    def _qr_count(self):
+        with self.lock:
+            return len(self.qr_items)
+
+    def _check_qr_decoder(self):
+        proc = self.children.get("qr_decoder")
+        if proc and proc.poll() is not None:
+            raise StageError(
+                "QR decoder exited unexpectedly with code {}".format(proc.returncode)
+            )
+
+    def _fresh_qr_odom_yaw(self, stale_sec):
+        with self.lock:
+            yaw = self.qr_odom_yaw
+            received_at = self.qr_odom_received_at
+        if yaw is None or time.monotonic() - received_at > stale_sec:
+            raise StageError(
+                "QR scan odometry is missing or stale for more than {:.2f}s".format(
+                    stale_sec
+                )
+            )
+        return yaw
+
+    def _wait_for_qr_odom(self, wait_sec, stale_sec):
+        deadline = time.monotonic() + wait_sec
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            with self.lock:
+                received_at = self.qr_odom_received_at
+                yaw = self.qr_odom_yaw
+            if yaw is not None and time.monotonic() - received_at <= stale_sec:
+                return yaw
+            rospy.sleep(0.05)
+        raise StageError("QR scan did not receive fresh odometry within {:.1f}s".format(wait_sec))
+
+    def _settle_for_qr(self, duration, expected_count, scan_deadline, stale_sec):
+        self.safe_stop()
+        settle_deadline = min(scan_deadline, time.monotonic() + duration)
+        while time.monotonic() < settle_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            self._fresh_qr_odom_yaw(stale_sec)
+            if self._qr_count() >= expected_count:
+                return True
+            rospy.sleep(0.05)
+        return self._qr_count() >= expected_count
+
+    def scan_qr_at_current_pose(self, status_state):
+        """Rotate one odometry-closed-loop revolution with stable decode pauses."""
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.20)))
+        step_angle = abs(
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
+        )
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
+        scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
+        stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
+        odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
+        step_margin = float(
+            rospy.get_param("~qr_scan_step_timeout_margin_sec", 2.0)
+        )
+        if speed <= 0.0 or step_angle <= 0.0 or stale_sec <= 0.0:
+            raise StageError("QR scan motion parameters must be positive")
+
+        total_steps = int(math.ceil((2.0 * math.pi) / step_angle))
+        scan_deadline = time.monotonic() + scan_timeout
+        self.publish_status(
+            "task1",
+            status_state,
+            "step scan start: count={}/{} steps={}".format(
+                self._qr_count(), expected_count, total_steps
+            ),
+        )
+        self._wait_for_qr_odom(odom_wait_sec, stale_sec)
+        if self._settle_for_qr(settle_sec, expected_count, scan_deadline, stale_sec):
+            return True
+
+        twist = Twist()
+        twist.angular.z = speed
+        tracker = DirectedYawAccumulator(direction=1.0)
+        for _ in range(total_steps):
+            if self._qr_count() >= expected_count:
+                self.safe_stop()
+                return True
+            if time.monotonic() >= scan_deadline:
+                self.safe_stop()
+                return False
+
+            tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
+            step_deadline = time.monotonic() + step_angle / speed + step_margin
+            while tracker.progress < step_angle and not rospy.is_shutdown():
+                self.check_abort()
+                self._check_qr_decoder()
+                if self._qr_count() >= expected_count:
+                    self.safe_stop()
+                    return True
+                if time.monotonic() >= scan_deadline:
+                    self.safe_stop()
+                    return False
+                if time.monotonic() >= step_deadline:
+                    raise StageError(
+                        "QR scan failed to rotate {:.1f} degrees before step timeout".format(
+                            math.degrees(step_angle)
+                        )
+                    )
+                yaw = self._fresh_qr_odom_yaw(stale_sec)
+                if tracker.update(yaw) >= step_angle:
+                    break
+                self.cmd_pub.publish(twist)
+                rospy.sleep(0.05)
+
+            if self._settle_for_qr(
+                settle_sec, expected_count, scan_deadline, stale_sec
+            ):
+                return True
+
+        self.safe_stop()
+        return self._qr_count() >= expected_count
+
     # ------------------------------ stages ------------------------------
     def task1(self):
         with self.lock:
@@ -529,32 +678,57 @@ class CompetitionFlow:
         category_name = CATEGORY_LABELS[self.category][0]
         instruction = "请取得{}类产品，仿真环境也统一取得{}类产品".format(category_name, category_name)
         self.navigate_to_qr_area()
+        # The configured simple_navigator goal has completed, but explicitly
+        # revoke all navigation authority before this node can rotate the base.
+        self.safe_stop(cancel_navigation=True)
 
-        self.publish_status("task1", "scanning_qr", "rotating until three unique QR items")
-        self.qr_items.clear()
-        self.qr_collecting = True
-        speed = abs(float(rospy.get_param("~qr_rotation_speed", 0.25)))
-        timeout = float(rospy.get_param("~qr_scan_timeout_sec", 45.0))
-        twist = Twist()
-        twist.angular.z = speed
-        deadline = time.time() + timeout
+        with self.lock:
+            self.qr_items.clear()
         try:
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
-            while len(self.qr_items) < int(rospy.get_param("~qr_expected_count", 3)):
-                self.check_abort()
-                qr_process = self.children.get("qr_decoder")
-                if qr_process and qr_process.poll() is not None:
-                    raise StageError("QR decoder exited unexpectedly with code {}".format(qr_process.returncode))
-                if time.time() >= deadline:
-                    raise StageError("QR scan timeout: got {} unique item(s)".format(len(self.qr_items)))
-                self.cmd_pub.publish(twist)
-                rospy.sleep(0.05)
+            self.qr_collecting = True
+            completed = self.scan_qr_at_current_pose("scanning_qr_primary")
+
+            if not completed and bool_param("~qr_fallback_enabled", True):
+                self.qr_collecting = False
+                self.safe_stop(cancel_navigation=True)
+                fallback = rospy.get_param(
+                    "~qr_fallback_goal",
+                    {"x": -1.4643, "y": -0.1390, "yaw": 1.5834},
+                )
+                self.navigate(
+                    fallback["x"],
+                    fallback["y"],
+                    fallback.get("yaw", 1.5834),
+                    "task1",
+                    timeout_sec=float(
+                        rospy.get_param("~qr_fallback_navigation_timeout_sec", 45.0)
+                    ),
+                    status_state="qr_repositioning",
+                )
+                self.safe_stop(cancel_navigation=True)
+                self.qr_collecting = True
+                completed = self.scan_qr_at_current_pose("scanning_qr_fallback")
+
+            expected_count = int(rospy.get_param("~qr_expected_count", 3))
+            if not completed or self._qr_count() < expected_count:
+                raise StageError(
+                    "QR scan exhausted two poses: got {}/{} unique item(s)".format(
+                        self._qr_count(), expected_count
+                    )
+                )
+            self.publish_status(
+                "task1",
+                "qr_scan_completed",
+                "collected {} unique QR items".format(self._qr_count()),
+            )
         finally:
             self.qr_collecting = False
             self.stop_child("qr_decoder")
-            self.safe_stop()
+            self.safe_stop(cancel_navigation=True)
 
-        items = list(self.qr_items.values())[:3]
+        with self.lock:
+            items = list(self.qr_items.values())[:3]
         service = rospy.get_param("~llm_service", "/smart_factory_llm/reason_pickup_order")
         self.publish_status("task1", "reasoning", "calling Spark X2")
         try:
