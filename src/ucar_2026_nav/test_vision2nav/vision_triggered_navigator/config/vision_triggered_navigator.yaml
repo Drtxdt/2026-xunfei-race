@@ -84,11 +84,13 @@ patrol_points:
     rotations:
       - {direction: "left", duration: 4.5}
 
-  - x: 2.3471
-    y: -1.6090
-    yaw: -0.8607
+  # Food workshop sign: calibrated from a stable AMCL pose with repeated OCR hits.
+  - x: 1.9523
+    y: -1.4811
+    yaw: -0.0050
     rotations:
-      - {direction: "left", duration: 4.5}
+      - {direction: "right", duration: 1.0}
+      - {direction: "left", duration: 2.0}
 
   - x: 1.2641
     y: -1.6452
