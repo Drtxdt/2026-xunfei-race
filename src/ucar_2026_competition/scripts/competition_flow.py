@@ -60,6 +60,7 @@ class CompetitionFlow:
         self.resume_event = threading.Event()
         self.children = {}
         self.lock = threading.RLock()
+        self.voice_transition_lock = threading.Lock()
 
         self.status_pub = rospy.Publisher(
             rospy.get_param("~status_topic", "/competition/status"),
@@ -80,6 +81,12 @@ class CompetitionFlow:
         self.vision_pub = rospy.Publisher("/vision/detected", Bool, queue_size=5)
 
         self.wakeup_received = False
+        self.voice_prompt_started = False
+        self.voice_listening = False
+        self.voice_command_acknowledged = False
+        self.voice_command_ack_in_progress = False
+        self.voice_handshake_error = ""
+        self.voice_wakeup_generation = 0
         self.question = ""
         self.category = normalize_category(rospy.get_param("~target_category", ""))
         self.task1_result = {
@@ -124,13 +131,123 @@ class CompetitionFlow:
 
     # ------------------------------ callbacks ------------------------------
     def _wakeup_cb(self, _msg):
-        self.wakeup_received = True
+        with self.lock:
+            if self.voice_command_acknowledged or self.voice_command_ack_in_progress:
+                return
+            self.wakeup_received = True
+            self.voice_prompt_started = True
+            self.voice_wakeup_generation += 1
+            generation = self.voice_wakeup_generation
+        threading.Thread(
+            target=self._prompt_and_start_listening,
+            args=(generation,),
+            name="voice-wakeup-handshake",
+            daemon=True,
+        ).start()
 
     def _question_cb(self, msg):
-        self.question = msg.data.strip()
-        parsed = parse_category(self.question)
-        if parsed:
-            self.category = parsed
+        question = msg.data.strip()
+        parsed = parse_category(question)
+        with self.lock:
+            if not self.voice_listening or self.voice_command_ack_in_progress:
+                rospy.logwarn("ignoring /question outside active voice window: %s", question)
+                return
+            if not parsed:
+                rospy.logwarn("ignoring voice text without a target category: %s", question)
+                self.publish_status(
+                    "task1", "listening_command", "ignored non-command speech: {}".format(question)
+                )
+                return
+            self.question = question
+            self.voice_listening = False
+            self.voice_command_ack_in_progress = True
+        threading.Thread(
+            target=self._finish_voice_command,
+            args=(parsed, question),
+            name="voice-command-handshake",
+            daemon=True,
+        ).start()
+
+    def _voice_control(self, param_name, default_service):
+        service = rospy.get_param(param_name, default_service)
+        try:
+            rospy.wait_for_service(service, timeout=5.0)
+            response = rospy.ServiceProxy(service, Trigger)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError("voice control service failed: {}".format(exc))
+        if not response.success:
+            raise StageError("voice control rejected: {}".format(response.message))
+
+    def _start_voice_listening(self):
+        self._voice_control(
+            "~voice_start_listening_service",
+            "/speech_command_node/start_listening",
+        )
+
+    def _stop_voice_listening(self):
+        self._voice_control(
+            "~voice_stop_listening_service",
+            "/speech_command_node/stop_listening",
+        )
+
+    def _set_voice_handshake_error(self, exc):
+        with self.lock:
+            self.voice_handshake_error = str(exc)
+            self.voice_listening = False
+            self.voice_command_ack_in_progress = False
+        rospy.logerr("voice handshake failed: %s", exc)
+
+    def _prompt_and_start_listening(self, generation):
+        try:
+            with self.voice_transition_lock:
+                with self.lock:
+                    if generation != self.voice_wakeup_generation or self.voice_command_acknowledged:
+                        return
+                    was_listening = self.voice_listening
+                    self.voice_listening = False
+                if was_listening:
+                    self._stop_voice_listening()
+
+                reply = rospy.get_param("~voice_wakeup_reply", "我在").strip() or "我在"
+                self.publish_status("task1", "wakeup_ack", "replying and preparing ASR")
+                self.announce("custom", text=reply)
+
+                with self.lock:
+                    if generation != self.voice_wakeup_generation or self.voice_command_acknowledged:
+                        return
+                self._start_voice_listening()
+                with self.lock:
+                    self.voice_listening = True
+                self.publish_status(
+                    "task1", "listening_command", "waiting for 取得食品/日用品/电子产品"
+                )
+        except Exception as exc:
+            self._set_voice_handshake_error(exc)
+
+    def _finish_voice_command(self, parsed, question):
+        try:
+            with self.voice_transition_lock:
+                self._stop_voice_listening()
+                reply = rospy.get_param("~voice_command_reply", "好的").strip() or "好的"
+                self.publish_status(
+                    "task1", "command_ack", "category={} reply={}".format(parsed, reply)
+                )
+                self.announce("custom", text=reply)
+                with self.lock:
+                    self.category = parsed
+                    self.voice_command_acknowledged = True
+                    self.voice_command_ack_in_progress = False
+                self.publish_status(
+                    "task1", "voice_ready", "voice command accepted; navigation may start"
+                )
+        except Exception as exc:
+            self._set_voice_handshake_error(exc)
+
+    def _voice_command_ready(self):
+        with self.lock:
+            if self.voice_handshake_error:
+                raise StageError(self.voice_handshake_error)
+            return self.wakeup_received and self.voice_command_acknowledged and self.category
 
     def _qr_cb(self, msg):
         if not self.qr_collecting:
@@ -310,8 +427,19 @@ class CompetitionFlow:
 
     # ------------------------------ stages ------------------------------
     def task1(self):
-        self.publish_status("task1", "waiting_voice", "waiting for /wakeup and category on /question")
-        self.wait_loop(0, lambda: self.wakeup_received and self.category)
+        with self.lock:
+            if self.voice_handshake_error and not self.voice_command_acknowledged:
+                self.wakeup_received = False
+                self.voice_prompt_started = False
+                self.voice_listening = False
+                self.voice_command_ack_in_progress = False
+                self.voice_handshake_error = ""
+        self.publish_status(
+            "task1",
+            "waiting_voice",
+            "say 小飞小飞, wait for 我在, then say 取得食品/日用品/电子产品",
+        )
+        self.wait_loop(0, self._voice_command_ready)
 
         category_name = CATEGORY_LABELS[self.category][0]
         instruction = "请取得{}类产品，仿真环境也统一取得{}类产品".format(category_name, category_name)

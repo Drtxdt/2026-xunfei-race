@@ -309,7 +309,63 @@ source /opt/ros/noetic/setup.bash
 /home/ucar/ucar_ws/devel/lib/speech_command/voice_speak_node
 ```
 
-### 10.3 中文显示成 Unicode
+### 10.3 任务1能启动，但“小飞小飞”没有反应
+
+先检查 `task1.launch` 的终端日志。以下信息表示旧 ASR 运行环境或资源失效：
+
+```text
+package 'speech_command' not found
+aiui.cfg 读取错误
+globalAgent未创建
+IllegalApiKeyError
+build grammar error, errcode = 11212
+```
+
+仓库提供了实体车恢复脚本。它会备份旧语音源码和配置，从车上的原厂备份恢复在线 AIUI 凭据，关闭已过期的离线试用语法，并恢复硬件唤醒后的 AIUI 会话切换：
+
+```bash
+cd ~/2026-xunfei-race
+bash debug/repair_speech_command_asr.sh
+```
+
+修复后重新启动：
+
+```bash
+cd ~/2026-xunfei-race
+source /opt/ros/noetic/setup.bash
+source devel/setup.bash
+roslaunch ucar_2026_competition task1.launch
+```
+
+正常日志应包含：
+
+```text
+EVENT_STATE:READY
+请使用唤醒词唤醒
+EVENT_STATE:WORKING
+```
+
+任务1采用两段式语音握手：
+
+```text
+用户：小飞小飞
+小车：我在
+用户：取得食品（也可说取得日用品、取得电子产品）
+小车：好的
+小车：开始导航
+```
+
+AIUI 只在“我在”播放完毕后开启，并在“好的”播放前关闭，避免小车把自己的播报识别成用户指令。旧 AIUI 云语义链路不再承担固定命令识别：语音节点将麦克风 PCM 发布到 `/speech_command_node/audio_pcm`，`fixed_command_iat.py` 使用讯飞流式听写识别三类命令。一次空 VAD 结束后会自动建立下一轮听写，不会锁死；在收到有效“取得xx”前再次说“小飞小飞”，小车会再次回复“我在”并重置听写会话。
+
+也可分别监视：
+
+```bash
+rostopic echo /wakeup
+rostopic echo /question
+rostopic echo /competition/iat_text
+```
+
+### 10.4 中文显示成 Unicode
 
 例如：
 
@@ -323,7 +379,7 @@ source /opt/ros/noetic/setup.bash
 任务完成
 ```
 
-### 10.4 播报语速偏快
+### 10.5 播报语速偏快
 
 已验证旧 TTS 的合适语速为 `speed = 60`。如果需要重新应用补丁：
 
@@ -357,4 +413,3 @@ TTS_SPEED=70 ./debug/patch_speech_command_offline_tts.sh
 4. /competition_speech/announce 五类 event 均返回 success: True。
 5. wait: true 时返回 message: completed。
 ```
-

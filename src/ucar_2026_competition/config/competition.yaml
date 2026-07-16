@@ -8,6 +8,13 @@ qr_scan_timeout_sec: 45.0
 qr_expected_count: 3
 move_base_timeout_sec: 90.0
 
+# 任务1语音握手：先播完“我在”才开启AIUI，收到有效类别后先关闭AIUI、播“好的”，再导航。
+voice_wakeup_reply: "我在"
+voice_command_reply: "好的"
+voice_retry_reply: "请再说一次"
+voice_start_listening_service: /speech_command_node/start_listening
+voice_stop_listening_service: /speech_command_node/stop_listening
+
 # OCR 连续命中次数。PPOCR 自身输出结构化 JSON，总控只对当前目标类别触发导航。
 ocr_required_consecutive: 3
 factory_navigation_timeout_sec: 420.0

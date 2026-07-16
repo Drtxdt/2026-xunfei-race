@@ -17,8 +17,11 @@ from ucar_2026_competition.logic import (
 class CompetitionLogicTest(unittest.TestCase):
     def test_voice_category(self):
         self.assertEqual(parse_category("小飞小飞，请取得食品类"), "food")
+        self.assertEqual(parse_category("取得食品"), "food")
         self.assertEqual(parse_category("请取得日用品类"), "daily")
+        self.assertEqual(parse_category("取得日用品"), "daily")
         self.assertEqual(parse_category("请取得电子产品类"), "electronics")
+        self.assertEqual(parse_category("取得电子产品"), "electronics")
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")

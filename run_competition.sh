@@ -7,6 +7,8 @@ ROS_SETUP="/opt/ros/noetic/setup.bash"
 CURRENT_SETUP="$ROOT/devel/setup.bash"
 SPEECH_BIN="$ROBOT_WS/devel/lib/speech_command/speech_command_node"
 TTS_BIN="$ROBOT_WS/devel/lib/speech_command/voice_speak_node"
+SPEECH_PACKAGE="$ROBOT_WS/src/speech_command"
+IAT_CREDENTIALS="${IAT_CREDENTIALS_FILE:-/home/ucar/.config/ucar_2026/iat_credentials.json}"
 DEBUG=false
 
 usage() {
@@ -29,11 +31,26 @@ done
 [[ -f "$ROBOT_WS/devel/setup.bash" ]] || { echo "Missing speech workspace setup." >&2; exit 1; }
 [[ -x "$SPEECH_BIN" ]] || { echo "Missing executable: $SPEECH_BIN" >&2; exit 1; }
 [[ -x "$TTS_BIN" ]] || { echo "Missing executable: $TTS_BIN" >&2; exit 1; }
+[[ -f "$SPEECH_PACKAGE/package.xml" ]] || { echo "Missing ROS package: $SPEECH_PACKAGE" >&2; exit 1; }
+[[ -r "$IAT_CREDENTIALS" ]] || {
+  echo "Missing IAT credentials: $IAT_CREDENTIALS" >&2
+  echo "Run: bash $ROOT/debug/repair_speech_command_asr.sh" >&2
+  exit 1
+}
+python3 -c 'import websocket' 2>/dev/null || {
+  echo "Missing Python websocket-client module required by fixed command IAT." >&2
+  exit 1
+}
 [[ -n "${XF_SPARK_API_PASSWORD:-}" ]] || { echo "XF_SPARK_API_PASSWORD is not set." >&2; exit 1; }
 [[ -n "${SIM_BRIDGE_HOST:-}" ]] || { echo "SIM_BRIDGE_HOST is not set." >&2; exit 1; }
 
 source "$ROS_SETUP"
 source "$CURRENT_SETUP"
+
+# The legacy voice binaries resolve aiui.cfg and SDK resources with
+# ros::package::getPath("speech_command").  Expose only that package; sourcing
+# the complete legacy workspace would reintroduce its duplicate ROS packages.
+VOICE_ROS_PACKAGE_PATH="$SPEECH_PACKAGE${ROS_PACKAGE_PATH:+:$ROS_PACKAGE_PATH}"
 
 LOG_DIR="$ROOT/logs/competition_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$LOG_DIR"
@@ -60,9 +77,11 @@ for _ in $(seq 1 50); do
 done
 rosparam list >/dev/null 2>&1 || { echo "ROS master did not become ready." >&2; exit 1; }
 
-"$SPEECH_BIN" >"$LOG_DIR/speech_command.log" 2>&1 &
+ROS_PACKAGE_PATH="$VOICE_ROS_PACKAGE_PATH" "$SPEECH_BIN" >"$LOG_DIR/speech_command.log" 2>&1 &
 PIDS+=("$!")
-"$TTS_BIN" >"$LOG_DIR/voice_speak.log" 2>&1 &
+ROS_PACKAGE_PATH="$VOICE_ROS_PACKAGE_PATH" "$TTS_BIN" >"$LOG_DIR/voice_speak.log" 2>&1 &
+PIDS+=("$!")
+rosrun ucar_2026_competition fixed_command_iat.py >"$LOG_DIR/fixed_command_iat.log" 2>&1 &
 PIDS+=("$!")
 
 TRAFFIC_CONFIGURED=false

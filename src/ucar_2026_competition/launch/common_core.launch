@@ -28,6 +28,8 @@
       <param name="start_asr" value="true" />
       <param name="start_tts" value="false" />
     </node>
+    <node pkg="ucar_2026_competition" type="fixed_command_iat.py"
+          name="competition_fixed_command_iat" output="screen" required="true" />
   </group>
 
   <group if="$(arg start_tts)">
