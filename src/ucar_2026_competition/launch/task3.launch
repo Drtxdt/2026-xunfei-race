@@ -1,0 +1,20 @@
+<launch>
+  <arg name="target_category" default="" />
+  <arg name="start_external_voice" default="true" />
+  <arg name="sim_item" default="" />
+  <arg name="sim_workshop" default="" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
+  <arg name="sim_bridge_port" default="26003" />
+  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
+    <arg name="start_speech" value="true" />
+    <arg name="start_tts" value="$(arg start_external_voice)" />
+  </include>
+  <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
+    <arg name="start_stage" value="task3" />
+    <arg name="target_category" value="$(arg target_category)" />
+    <arg name="sim_item" value="$(arg sim_item)" />
+    <arg name="sim_workshop" value="$(arg sim_workshop)" />
+    <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+    <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+  </include>
+</launch>

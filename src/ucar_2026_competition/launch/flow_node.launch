@@ -1,0 +1,37 @@
+<launch>
+  <arg name="start_stage" default="full" />
+  <arg name="debug" default="false" />
+  <arg name="target_category" default="" />
+  <arg name="target_item" default="" />
+  <arg name="target_workshop" default="" />
+  <arg name="sim_item" default="" />
+  <arg name="sim_workshop" default="" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
+  <arg name="sim_bridge_port" default="26003" />
+  <arg name="traffic_pose_configured" default="false" />
+  <arg name="traffic_x" default="0.0" />
+  <arg name="traffic_y" default="0.0" />
+  <arg name="traffic_yaw" default="0.0" />
+  <arg name="traffic_decision" default="" />
+  <arg name="navigator_publish_initial_pose" default="false" />
+
+  <node pkg="ucar_2026_competition" type="competition_flow.py"
+        name="competition_flow" output="screen" required="true">
+    <rosparam command="load" file="$(find ucar_2026_competition)/config/competition.yaml" />
+    <param name="start_stage" value="$(arg start_stage)" />
+    <param name="debug" value="$(arg debug)" />
+    <param name="target_category" value="$(arg target_category)" />
+    <param name="target_item" value="$(arg target_item)" />
+    <param name="target_workshop" value="$(arg target_workshop)" />
+    <param name="sim_item" value="$(arg sim_item)" />
+    <param name="sim_workshop" value="$(arg sim_workshop)" />
+    <param name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+    <param name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+    <param name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
+    <param name="traffic_x" value="$(arg traffic_x)" />
+    <param name="traffic_y" value="$(arg traffic_y)" />
+    <param name="traffic_yaw" value="$(arg traffic_yaw)" />
+    <param name="traffic_decision" value="$(arg traffic_decision)" />
+    <param name="navigator_publish_initial_pose" value="$(arg navigator_publish_initial_pose)" />
+  </node>
+</launch>

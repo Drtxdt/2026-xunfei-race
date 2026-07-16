@@ -10,6 +10,7 @@
   <arg name="flip" default="false" />
   <arg name="chars_per_second" default="2.0" />
   <arg name="required" default="false" />
+  <arg name="enable_speech" default="true" />
 
   <group if="$(arg start_camera)">
     <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
@@ -37,6 +38,7 @@
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="model_path" value="$(arg model_path)" />
     <param name="flip" value="$(arg flip)" />
+    <param name="enable_speech" value="$(arg enable_speech)" />
   </node>
 
   <group if="$(arg start_viewer)">

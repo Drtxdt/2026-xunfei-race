@@ -1,0 +1,47 @@
+<launch>
+  <arg name="start_nav" default="false" />
+  <arg name="start_camera" default="false" />
+  <arg name="start_speech" default="true" />
+  <arg name="start_asr" default="false" />
+  <arg name="start_tts" default="false" />
+  <arg name="start_llm" default="false" />
+  <arg name="start_rviz" default="false" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+
+  <group if="$(arg start_nav)">
+    <include file="$(find ucar_nav)/launch/ucar_amcl_nav.launch">
+      <arg name="start_rviz" value="$(arg start_rviz)" />
+    </include>
+  </group>
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <group if="$(arg start_speech)">
+    <include file="$(find ucar_2026_competition_speech)/launch/competition_speech.launch" />
+  </group>
+
+  <group if="$(arg start_asr)">
+    <node pkg="ucar_2026_competition" type="external_voice_nodes.py"
+          name="competition_external_asr" output="screen" required="true">
+      <param name="start_asr" value="true" />
+      <param name="start_tts" value="false" />
+    </node>
+    <node pkg="ucar_2026_competition" type="fixed_command_iat.py"
+          name="competition_fixed_command_iat" output="screen" required="true" />
+  </group>
+
+  <group if="$(arg start_tts)">
+    <node pkg="ucar_2026_competition" type="external_voice_nodes.py"
+          name="competition_external_tts" output="screen" required="true">
+      <param name="start_asr" value="false" />
+      <param name="start_tts" value="true" />
+    </node>
+  </group>
+
+  <group if="$(arg start_llm)">
+    <include file="$(find ucar_2026_smart_factory_llm)/launch/reason_pickup.launch" />
+  </group>
+
+</launch>

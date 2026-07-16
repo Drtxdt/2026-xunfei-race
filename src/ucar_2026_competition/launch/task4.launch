@@ -1,0 +1,23 @@
+<launch>
+  <arg name="debug" default="false" />
+  <arg name="start_external_voice" default="true" />
+  <arg name="traffic_pose_configured" default="false" />
+  <arg name="traffic_x" default="0.0" />
+  <arg name="traffic_y" default="0.0" />
+  <arg name="traffic_yaw" default="0.0" />
+  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
+    <arg name="start_nav" value="true" />
+    <arg name="start_camera" value="true" />
+    <arg name="start_speech" value="true" />
+    <arg name="start_tts" value="$(arg start_external_voice)" />
+    <arg name="start_rviz" value="$(arg debug)" />
+  </include>
+  <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
+    <arg name="start_stage" value="task4" />
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
+    <arg name="traffic_x" value="$(arg traffic_x)" />
+    <arg name="traffic_y" value="$(arg traffic_y)" />
+    <arg name="traffic_yaw" value="$(arg traffic_yaw)" />
+  </include>
+</launch>

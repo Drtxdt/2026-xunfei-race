@@ -1,0 +1,17 @@
+<launch>
+  <arg name="debug" default="false" />
+  <arg name="start_external_voice" default="true" />
+  <arg name="traffic_decision" default="" />
+  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
+    <arg name="start_nav" value="true" />
+    <arg name="start_camera" value="true" />
+    <arg name="start_speech" value="true" />
+    <arg name="start_tts" value="$(arg start_external_voice)" />
+    <arg name="start_rviz" value="$(arg debug)" />
+  </include>
+  <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
+    <arg name="start_stage" value="task5" />
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="traffic_decision" value="$(arg traffic_decision)" />
+  </include>
+</launch>

@@ -1,5 +1,7 @@
 <launch>
 
+  <arg name="start_rviz" default="true" />
+
   <!-- Run the map server -->
    
   <include file="$(find ucar_controller)/launch/base_driver.launch" > </include> <!-- 导入其他launch：底层驱动包 -->
@@ -63,8 +65,10 @@
 
 
   <!-- rosparam command="load" file="$(find ucar_nav)/launch/config/move_base/my_navigation.yaml"/ -->
-  <node pkg="rviz" type="rviz" name="rviz" required="true"
-      args="-d $(find ucar_nav)/launch/config/rviz/tebrviz.rviz"/>
+  <group if="$(arg start_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+        args="-d $(find ucar_nav)/launch/config/rviz/tebrviz.rviz"/>
+  </group>
 
 
 </launch>

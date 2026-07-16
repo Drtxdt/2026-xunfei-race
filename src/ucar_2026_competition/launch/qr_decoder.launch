@@ -1,0 +1,8 @@
+<launch>
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="decode_interval" default="0.10" />
+  <arg name="decode_scales" default="1.0,1.5,2.0" />
+  <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode"
+        output="screen" required="true"
+        args="--topic $(arg camera_topic) --pub-topic /qr_code_data --fetch --offline-mode off --decode-interval $(arg decode_interval) --decode-scales $(arg decode_scales)" />
+</launch>

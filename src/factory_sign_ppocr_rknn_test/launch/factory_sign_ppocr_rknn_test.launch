@@ -19,6 +19,8 @@
   <arg name="debug_view" default="debug" />
   <arg name="config_file" default="$(find factory_sign_ppocr_rknn_test)/config/factory_sign_ppocr_rknn.yaml" />
   <arg name="speech_mode" default="service" />
+  <arg name="enable_speech" default="true" />
+  <arg name="result_topic" default="/factory_sign_ppocr_rknn_test/result" />
   <arg name="required" default="false" />
   <arg name="chars_per_second" default="3.0" />
 
@@ -54,6 +56,8 @@
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
+    <param name="enable_speech" value="$(arg enable_speech)" />
+    <param name="result_topic" value="$(arg result_topic)" />
   </node>
 
   <group if="$(arg start_viewer)">

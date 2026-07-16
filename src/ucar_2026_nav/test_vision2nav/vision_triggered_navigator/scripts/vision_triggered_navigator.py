@@ -11,7 +11,7 @@ import sys
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 def euler_to_quaternion(yaw):
@@ -62,6 +62,10 @@ class VisionTriggeredNavigator(object):
         # 触发模式："keyboard" 或 "vision"
         self.trigger_mode = rospy.get_param("~trigger_mode", "keyboard")
         self.vision_topic = rospy.get_param("~vision_topic", "/vision/detected")
+        self.status_topic = rospy.get_param(
+            "~status_topic", "/vision_triggered_navigator/status")
+        self.navigate_to_end_after_trigger = rospy.get_param(
+            "~navigate_to_end_after_trigger", True)
 
         # move_base 与 costmap
         self.move_base_server = rospy.get_param("~move_base_server", "/move_base")
@@ -85,6 +89,8 @@ class VisionTriggeredNavigator(object):
         # ---------- ROS 通信 ----------
         self.tf_listener = tf.TransformListener()
         self.cmd_vel_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
+        self.status_pub = rospy.Publisher(
+            self.status_topic, String, queue_size=10, latch=True)
 
         self.costmap = None
         rospy.Subscriber(self.costmap_topic, OccupancyGrid, self._costmap_cb)
@@ -111,6 +117,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_x = None
         self.current_goal_y = None
         self.current_goal_infeasible = False
+        self._publish_status("ready")
 
     # ------------------------------------------------------------------
     # 回调与工具函数
@@ -119,11 +126,16 @@ class VisionTriggeredNavigator(object):
         """保存最新 costmap"""
         self.costmap = msg
 
+    def _publish_status(self, status):
+        """发布简洁、稳定的流程状态，供比赛总控监听。"""
+        self.status_pub.publish(String(data=status))
+
     def _vision_cb(self, msg):
         """视觉触发回调"""
         if msg.data and not self.triggered:
             rospy.loginfo("[vision_triggered_navigator] 收到视觉触发信号，打断当前导航.")
             self.triggered = True
+            self._publish_status("triggered")
             self.cancel_goal()
 
     def publish_initial_pose_to_amcl(self):
@@ -436,6 +448,7 @@ class VisionTriggeredNavigator(object):
     # ------------------------------------------------------------------
     def run(self):
         rospy.loginfo("[vision_triggered_navigator] 节点启动，开始三阶段导航.")
+        self._publish_status("patrolling")
 
         # 步骤 0：给 AMCL 发送初始位姿
         self.publish_initial_pose_to_amcl()
@@ -452,6 +465,10 @@ class VisionTriggeredNavigator(object):
 
             if state == "PATROL":
                 if patrol_idx >= len(self.patrol_points):
+                    if not self.navigate_to_end_after_trigger:
+                        rospy.logerr("[vision_triggered_navigator] 巡航点全部完成但未识别到目标厂牌.")
+                        self._publish_status("failed")
+                        break
                     rospy.loginfo("[vision_triggered_navigator] 巡航点全部完成，进入结束点阶段.")
                     state = "END"
                     continue
@@ -497,27 +514,42 @@ class VisionTriggeredNavigator(object):
 
             elif state == "VISION":
                 rospy.loginfo("[vision_triggered_navigator] === 视觉触发阶段 ===")
+                self._publish_status("approaching")
                 goal = self.compute_vision_goal()
                 if goal is not None:
                     gx, gy, gyaw = goal
-                    self.send_goal(gx, gy, gyaw)
+                    result = self.send_goal(gx, gy, gyaw)
+                    if result != actionlib.GoalStatus.SUCCEEDED:
+                        self._publish_status("failed")
+                        break
                 else:
-                    rospy.logerr("[vision_triggered_navigator] 视觉目标计算失败，直接进入结束点阶段.")
-                state = "END"
+                    rospy.logerr("[vision_triggered_navigator] 视觉目标计算失败.")
+                    self._publish_status("failed")
+                    break
+                if self.navigate_to_end_after_trigger:
+                    state = "END"
+                else:
+                    self._publish_status("arrived")
+                    rospy.loginfo("[vision_triggered_navigator] 已抵达厂牌，按配置不前往结束点.")
+                    break
 
             elif state == "END":
                 rospy.loginfo("[vision_triggered_navigator] === 结束点阶段 ===")
                 x = self.end_goal["x"]
                 y = self.end_goal["y"]
                 yaw = self.end_goal["yaw"]
-                self.send_goal(x, y, yaw)
-                rospy.loginfo("[vision_triggered_navigator] 全部流程结束.")
+                result = self.send_goal(x, y, yaw)
+                if result == actionlib.GoalStatus.SUCCEEDED:
+                    self._publish_status("completed")
+                    rospy.loginfo("[vision_triggered_navigator] 全部流程结束.")
+                else:
+                    self._publish_status("failed")
                 break
 
             else:
                 break
 
-        rospy.spin()
+        self.cmd_vel_pub.publish(Twist())
 
 
 def main():

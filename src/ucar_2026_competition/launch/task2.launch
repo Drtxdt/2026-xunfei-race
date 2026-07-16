@@ -1,0 +1,23 @@
+<launch>
+  <arg name="debug" default="false" />
+  <arg name="start_external_voice" default="true" />
+  <arg name="target_category" default="" />
+  <arg name="target_item" default="" />
+  <arg name="target_workshop" default="" />
+  <arg name="navigator_publish_initial_pose" default="true" />
+  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
+    <arg name="start_nav" value="true" />
+    <arg name="start_camera" value="true" />
+    <arg name="start_speech" value="true" />
+    <arg name="start_tts" value="$(arg start_external_voice)" />
+    <arg name="start_rviz" value="$(arg debug)" />
+  </include>
+  <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
+    <arg name="start_stage" value="task2" />
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="target_category" value="$(arg target_category)" />
+    <arg name="target_item" value="$(arg target_item)" />
+    <arg name="target_workshop" value="$(arg target_workshop)" />
+    <arg name="navigator_publish_initial_pose" value="$(arg navigator_publish_initial_pose)" />
+  </include>
+</launch>
