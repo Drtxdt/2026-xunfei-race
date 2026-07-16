@@ -4,7 +4,9 @@ namespace ucarController
 {
     baseBringup::baseBringup() : x_(0), y_(0), th_(0)
     {
-        ros::NodeHandle pravite_nh("~");
+        ros::NodeHandle pravite_nh("~"); // 私有命名空间，用于获取参数
+        // param: 参数名称（字符串)、输出变量（引用传递）、默认值（可选）
+        //先尝试从参数服务器查找 /节点名/base_shape_b 参数。如果找到，将参数值赋给 base_shape_b_。如果没找到，就使用默认值 0.0 赋给 base_shape_b_
         pravite_nh.param("provide_odom_tf", provide_odom_tf_, true);
         pravite_nh.param("vel_topic", vel_topic_, std::string("/cmd_vel")); /// smooth_cmd_vel
 
@@ -22,7 +24,7 @@ namespace ucarController
         pravite_nh.param("base_frame", base_frame_, std::string("base_footprint"));
         pravite_nh.param("odom_frame", odom_frame_, std::string("odom"));
 
-        pravite_nh.param("encode_resolution", encode_resolution_, 270); //
+        pravite_nh.param("encode_resolution", encode_resolution_, 270); // 编码器分辨率为270个脉冲每圈
         pravite_nh.param("wheel_radius", wheel_radius_, 0.04657);       //   m
         pravite_nh.param("period", period_, 50.0);                      // ms
         pravite_nh.param("base_shape_a", base_shape_a_, 0.2169);        //   m
@@ -30,6 +32,7 @@ namespace ucarController
 
         pravite_nh.param("linear_speed_max", linear_speed_max_, 3.0);    //   m/s
         pravite_nh.param("angular_speed_max", angular_speed_max_, 3.14); // rad/s
+        // setParam: 向参数服务器写入指定名称的参数值。路径为 /节点名/linear_speed_max
         pravite_nh.setParam("linear_speed_max", linear_speed_max_);
         pravite_nh.setParam("angular_speed_max", angular_speed_max_);
 
@@ -55,7 +58,7 @@ namespace ucarController
         led_green_value_ = 0;
         led_blue_value_ = 0;
 
-        getMileage();
+        getMileage(); // 获取累积里程值
 
         odom_pub_ = nh_.advertise<nav_msgs::Odometry>(odom_topic_.c_str(), 10);
         battery_pub_ = nh_.advertise<sensor_msgs::BatteryState>(battery_topic_.c_str(), 10);
@@ -72,13 +75,13 @@ namespace ucarController
 
         try
         {
-            serial_.setPort(port_);
-            serial_.setBaudrate(baud_);
-            serial_.setFlowcontrol(serial::flowcontrol_none);
-            serial_.setParity(serial::parity_none); // default is parity_none
-            serial_.setStopbits(serial::stopbits_one);
-            serial_.setBytesize(serial::eightbits);
-            serial::Timeout time_out = serial::Timeout::simpleTimeout(serial_timeout_);
+            serial_.setPort(port_);     // 1. 设置串口设备路径，例如 "/dev/base_serial_port"
+            serial_.setBaudrate(baud_); // 2. 设置波特率，例如 115200
+            serial_.setFlowcontrol(serial::flowcontrol_none);  // 3. 关闭硬件流控（RTS/CTS）
+            serial_.setParity(serial::parity_none);     // 4. 关闭校验位（无校验）
+            serial_.setStopbits(serial::stopbits_one);  // 5. 设置停止位为 1 位
+            serial_.setBytesize(serial::eightbits);     // 6. 设置数据位为 8 位
+            serial::Timeout time_out = serial::Timeout::simpleTimeout(serial_timeout_); // 7. 设置串口读写超时（单位 ms）
             serial_.setTimeout(time_out);
             serial_.open();
         }
@@ -103,10 +106,10 @@ namespace ucarController
         writeThread_ = new boost::thread(boost::bind(&baseBringup::writeLoop, this));
         processThread_ = new boost::thread(boost::bind(&baseBringup::processLoop, this));
 
-        ros::AsyncSpinner spinner(2);
-        spinner.start();
+        ros::AsyncSpinner spinner(2); // 创建两个线程并行执行ros回调队列中的任务
+        spinner.start(); // 调用后，那 2 个后台线程开始运转，随时准备从 ROS 回调队列中取出消息并执行对应的回调函数。
         ROS_INFO("ucarController Ready!");
-        ros::waitForShutdown();
+        ros::waitForShutdown(); // 阻塞主线程，让节点一直运行，直到：收到 Ctrl+C（SIGINT)或其他节点调用了 ros::shutdown()
     }
 
     void baseBringup::setSerial()
@@ -209,6 +212,7 @@ namespace ucarController
                 {
                     lock.lock();
                     double dt = (ros::Time::now() - last_cmd_time_).toSec();
+                    // 如果距离上次收到速度指令的时间超过 cmd_dt_threshold_，则认为是速度指令丢失，将速度指令设为 0
                     if (dt > cmd_dt_threshold_)
                     {
                         linear_x = 0;
@@ -237,6 +241,7 @@ namespace ucarController
                     ROS_ERROR("base_driver-writeLoop: controll_type_ error!");
                     break;
                 }
+                // 限制速度范围
                 if (linear_x > linear_speed_max_)
                     linear_x = linear_speed_max_;
                 else if (linear_x < -linear_speed_max_)
@@ -252,16 +257,19 @@ namespace ucarController
                 else if (angular_z < -angular_speed_max_)
                     angular_z = -angular_speed_max_;
 
+                // 运动学逆解（速度 → 四轮轮速）
                 double vw1 = linear_x - linear_y - angular_z * (base_shape_a_ + base_shape_b_);
                 double vw2 = linear_x + linear_y + angular_z * (base_shape_a_ + base_shape_b_);
                 double vw3 = linear_x - linear_y + angular_z * (base_shape_a_ + base_shape_b_);
                 double vw4 = linear_x + linear_y - angular_z * (base_shape_a_ + base_shape_b_);
                 lock.lock();
-                pack_write_.write_tmp[0] = 0x63;
-                pack_write_.write_tmp[1] = 0x75;
-                pack_write_.pack.ver = 0;  // 0x00  version
+                pack_write_.write_tmp[0] = 0x63; // 'c'
+                pack_write_.write_tmp[1] = 0x75; // 'u'
+                pack_write_.pack.ver = 0;  //  协议版本 0x00  version
                 pack_write_.pack.len = 11; // motor + led
                 // pack_write_.pack.sn_num  = write_sn_++;
+                // 把轮速（m/s）换算成一个控制周期内的编码器脉冲数，MCU 直接根据这个脉冲数去驱动电机
+                // 脉冲数 = 速度(m/s) × 周期(s) × 编码器分辨率(脉冲/圈) / (2π × 轮半径)
                 pack_write_.pack.data.pluse_w1 = -period_ / 1000.0 * vw1 * (encode_resolution_ / (2.0 * Pi * wheel_radius_));
                 pack_write_.pack.data.pluse_w2 = period_ / 1000.0 * vw2 * (encode_resolution_ / (2.0 * Pi * wheel_radius_));
                 pack_write_.pack.data.pluse_w3 = -period_ / 1000.0 * vw4 * (encode_resolution_ / (2.0 * Pi * wheel_radius_));
@@ -319,8 +327,8 @@ namespace ucarController
                 }
                 }
                 lock.lock();
-                setWriteCS(WRITE_MSG_LONGTH);
-                size_t pack_write_s = serial_.write(pack_write_.write_tmp, WRITE_MSG_LONGTH);
+                setWriteCS(WRITE_MSG_LONGTH); // // 计算累加和校验，填入包尾
+                size_t pack_write_s = serial_.write(pack_write_.write_tmp, WRITE_MSG_LONGTH); // 把整个包（16 字节）通过串口发送给底盘 MCU
                 lock.unlock();
                 if (debug_log_)
                 {
@@ -462,8 +470,8 @@ namespace ucarController
     void baseBringup::processLoop()
     {
         ROS_INFO("baseBringup::processLoop: start");
-        uint8_t check_head_last[1] = {0xFF};
-        uint8_t check_head_current[1] = {0xFF};
+        uint8_t check_head_last[1] = {0xFF};     // 上一个读到的字节
+        uint8_t check_head_current[1] = {0xFF};  // 当前读到的字节
         while (ros::ok())
         {
             if (!serial_.isOpen())
@@ -475,35 +483,40 @@ namespace ucarController
                 int head_type = 0;
                 while (ros::ok())
                 {
-                    size_t head_s = serial_.read(check_head_current, 1);
+                    size_t head_s = serial_.read(check_head_current, 1);  // 每次读 1 个字节
                     if (check_head_last[0] == 0x63 && check_head_current[0] == 0x76)
                     {
+                        // 匹配到底盘帧头 "cu" (0x63 0x76)
                         boost::unique_lock<boost::recursive_mutex> lock(Control_mutex_);
                         pack_read_.read_msg.head[0] = check_head_last[0];
                         pack_read_.read_msg.head[1] = check_head_current[0];
                         check_head_last[0] = 0xFF;
                         lock.unlock();
                         head_type = 1; // base
-                        break;
+                        break; 
                     }
                     else if (check_head_last[0] == 0xfc && (check_head_current[0] == 0x40 || check_head_current[0] == 0x41 || head_type == TYPE_INSGPS ||
                                                             check_head_current[0] == TYPE_GROUND || check_head_current[0] == 0x50))
                     {
+                        // 匹配到 IMU 帧头 (0xfc + 类型字节)
                         boost::unique_lock<boost::recursive_mutex> lock(Control_mutex_);
                         if (check_head_current[0] == 0x40)
                         {
+                            // IMU 原始数据帧
                             imu_frame_.frame.header.header_start = 0xfc;
                             imu_frame_.frame.header.data_type = 0x40;
                             head_type = 0x40;
                         }
                         else if (check_head_current[0] == 0x41)
                         {
+                            // AHRS 姿态数据帧
                             ahrs_frame_.frame.header.header_start = 0xfc;
                             ahrs_frame_.frame.header.data_type = 0x41;
                             head_type = 0x41;
                         }
                         else if (check_head_current[0] == TYPE_GROUND)
                         {
+                            // 其他 IMU 相关帧 / 地面帧
                             head_type = TYPE_GROUND;
                         }
                         else if (check_head_current[0] == 0x50)
@@ -522,6 +535,7 @@ namespace ucarController
                 }
                 if (head_type == 1)
                 {
+                    // 底盘数据（head_type == 1）
                     size_t res = serial_.read(pack_read_.read_msg.read_msg, READ_DATA_LONGTH);
                     if (debug_log_)
                     {
@@ -546,6 +560,7 @@ namespace ucarController
                         read_first_ = true;
                     }
                 }
+                // 0x40 IMU 原始数据帧 0x41 AHRS 姿态数据帧 0x50 无效数据帧 0x51 其他 IMU 相关帧 0x52 其他 IMU 相关帧
                 else if (head_type == 0x40 || head_type == 0x41 || head_type == TYPE_GROUND || head_type == 0x50 || head_type == TYPE_INSGPS)
                 {
                     processIMU(head_type);
@@ -582,6 +597,7 @@ namespace ucarController
         {
             std::cout << "check_len: " << std::dec << (int)check_len[0] << std::endl;
         }
+        // 长度不匹配直接丢弃，说明帧头匹配到了假帧。
         if (head_type == TYPE_IMU && check_len[0] != IMU_LEN)
         {
             ROS_WARN("head_len error (imu)");
@@ -599,6 +615,7 @@ namespace ucarController
         }
         else if (head_type == TYPE_GROUND || head_type == 0x50) // 无效数据，防止记录失败
         {
+            // TYPE_GROUND 和 0x50 是填充/无效帧，没有实际传感器数据，但保留了序列号机制用于统计丢包。代码读取序列号做丢包检测后，直接跳过剩余字节。
             uint8_t ground_sn[1];
             size_t ground_sn_s = serial_.read(ground_sn, 1);
             if (++read_sn_ != ground_sn[0])
@@ -628,13 +645,13 @@ namespace ucarController
         }
         // read head sn
         uint8_t check_sn[1] = {0xff};
-        size_t sn_s = serial_.read(check_sn, 1);
+        size_t sn_s = serial_.read(check_sn, 1);           // 序列号
         uint8_t head_crc8[1] = {0xff};
-        size_t crc8_s = serial_.read(head_crc8, 1);
+        size_t crc8_s = serial_.read(head_crc8, 1);        // 帧头 CRC8
         uint8_t head_crc16_H[1] = {0xff};
         uint8_t head_crc16_L[1] = {0xff};
-        size_t crc16_H_s = serial_.read(head_crc16_H, 1);
-        size_t crc16_L_s = serial_.read(head_crc16_L, 1);
+        size_t crc16_H_s = serial_.read(head_crc16_H, 1);  // 数据域 CRC16 高字节
+        size_t crc16_L_s = serial_.read(head_crc16_L, 1);  // 数据域 CRC16 低字节
         if (debug_log_)
         {
             std::cout << "check_sn: " << std::hex << (int)check_sn[0] << std::dec << std::endl;
@@ -650,12 +667,14 @@ namespace ucarController
             imu_frame_.frame.header.header_crc8 = head_crc8[0];
             imu_frame_.frame.header.header_crc16_h = head_crc16_H[0];
             imu_frame_.frame.header.header_crc16_l = head_crc16_L[0];
+            // CRC8 失败说明帧头损坏，直接丢弃。
             uint8_t CRC8 = CRC8_Table(imu_frame_.read_buf.frame_header, 4);
             if (CRC8 != imu_frame_.frame.header.header_crc8)
             {
                 ROS_WARN("header_crc8 error");
                 return;
             }
+            // checkSN() 统计丢包数 sn_lost_，用于诊断通信质量。
             if (!imu_frist_sn_)
             {
                 read_sn_ = imu_frame_.frame.header.serial_num - 1;
@@ -707,12 +726,15 @@ namespace ucarController
 
             baseBringup::checkSN(TYPE_INSGPS);
         }
+        //  3：读数据域并校验 CRC16 + 帧尾
         if (head_type == TYPE_IMU)
         {
             uint16_t head_crc16_l = imu_frame_.frame.header.header_crc16_l;
             uint16_t head_crc16_h = imu_frame_.frame.header.header_crc16_h;
             uint16_t head_crc16 = head_crc16_l + (head_crc16_h << 8);
+            // 读取 IMU_LEN + 1 字节（数据域 + 帧尾）
             size_t data_s = serial_.read(imu_frame_.read_buf.read_msg, (IMU_LEN + 1)); // 48+1
+            // 用查表法计算 CRC16，与帧头中携带的 CRC16 对比
             uint16_t CRC16 = CRC16_Table(imu_frame_.frame.data.data_buff, IMU_LEN);
             if (debug_log_)
             {
@@ -781,7 +803,7 @@ namespace ucarController
         }
 
         // publish magyaw topic
-        if (head_type == TYPE_AHRS)
+        if (head_type == TYPE_AHRS) // AHRS（Attitude and Heading Reference System）姿态航向参考系统
         {
             // publish imu topic
             sensor_msgs::Imu imu_data;
@@ -791,6 +813,7 @@ namespace ucarController
                                       ahrs_frame_.frame.data.data_pack.Qx,
                                       ahrs_frame_.frame.data.data_pack.Qy,
                                       ahrs_frame_.frame.data.data_pack.Qz);
+            //q_r 和 q_rr 是固定的旋转补偿矩阵，目的是把 IMU 模块自身的坐标系（可能与机器人 base 坐标系不一致）对齐到 ROS 标准坐标系
             Eigen::Quaterniond q_r =
                 Eigen::AngleAxisd(3.14159, Eigen::Vector3d::UnitZ()) *
                 Eigen::AngleAxisd(3.14159, Eigen::Vector3d::UnitY()) *
@@ -930,6 +953,7 @@ namespace ucarController
 
     void baseBringup::setWriteCS(int len)
     {
+        // 对 write_tmp[0] 到 write_tmp[len-2] 求累加和，放到最后一个字节作为校验和
         uint8_t ck = 0x00;
         boost::unique_lock<boost::recursive_mutex> lock(Control_mutex_);
         for (size_t i = 0; i < len - 1; i++)
@@ -1056,47 +1080,58 @@ namespace ucarController
     void baseBringup::processOdometry()
     {
         boost::unique_lock<boost::recursive_mutex> lock(Control_mutex_);
+        // 1：计算时间间隔
         current_time_ = ros::Time::now();
         double dt = (current_time_ - last_time_).toSec();
         last_time_ = current_time_;
         lock.unlock();
+
+        // 2：脉冲 → 四轮线速度
         double vw1, vw2, vw3, vw4;
         vw1 = -pack_read_.pack.data.pluse_w1 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_ / 1000.0);
         vw2 = pack_read_.pack.data.pluse_w2 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_ / 1000.0);
         vw4 = -pack_read_.pack.data.pluse_w3 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_ / 1000.0);
         vw3 = pack_read_.pack.data.pluse_w4 * 2 * Pi * wheel_radius_ / (encode_resolution_ * period_ / 1000.0);
 
+        // 3：正运动学（四轮速度 → 机器人速度）
         double Vx, Vy, Vth;
         Vx = (vw1 + vw2 + vw3 + vw4) / 4;
         // cout << "VX="<< Vx <<endl;
         Vy = 0.975 * (-vw1 + vw2 - vw3 + vw4) / 4;
         Vth = (-vw1 + vw2 + vw3 - vw4) / (4 * (base_shape_a_ + base_shape_b_));
 
+        // 4：速度积分求位姿增量
         double delta_x = (Vx * cos(th_) - Vy * sin(th_)) * dt;
         double delta_y = (Vx * sin(th_) + Vy * cos(th_)) * dt;
         double delta_th = Vth * dt;
         lock.lock();
+
+        // 累加到全局位姿变量中。x_、y_、th_ 就是机器人当前在 odom 坐标系下的位置和朝向。
         x_ += delta_x;
         y_ += delta_y;
         th_ += delta_th;
         lock.unlock();
+
+        // 5：填充并发布 Odometry 消息
         nav_msgs::Odometry odom_tmp;
         odom_tmp.header.stamp = ros::Time::now();
         odom_tmp.header.frame_id = odom_frame_.c_str();
         odom_tmp.child_frame_id = base_frame_.c_str();
+        // pose 部分填入当前位姿（位置 + 四元数姿态）。
         odom_tmp.pose.pose.position.x = x_;
         odom_tmp.pose.pose.position.y = y_;
         odom_tmp.pose.pose.position.z = 0.0;
         geometry_msgs::Quaternion odom_quat = tf::createQuaternionMsgFromYaw(th_);
         odom_tmp.pose.pose.orientation = odom_quat;
-        if (!Vx || !Vy || !Vth)
+        if (!Vx || !Vy || !Vth)  // // 如果速度为 0（静止状态）
         {
-            odom_tmp.pose.covariance = ODOM_POSE_COVARIANCE;
+            odom_tmp.pose.covariance = ODOM_POSE_COVARIANCE; // 常规精度
         }
         else
         {
-            odom_tmp.pose.covariance = ODOM_POSE_COVARIANCE2;
+            odom_tmp.pose.covariance = ODOM_POSE_COVARIANCE2; // 高精度
         }
+        // twist 部分填入当前速度（机器人坐标系下）。
         odom_tmp.twist.twist.linear.x = Vx;
         odom_tmp.twist.twist.linear.y = Vy;
         odom_tmp.twist.twist.linear.z = 0.0;
@@ -1105,11 +1140,11 @@ namespace ucarController
         odom_tmp.twist.twist.angular.z = Vth;
         if (!Vx || !Vy || !Vth)
         {
-            odom_tmp.twist.covariance = ODOM_TWIST_COVARIANCE;
+            odom_tmp.twist.covariance = ODOM_TWIST_COVARIANCE; // 常规精度
         }
         else
         {
-            odom_tmp.twist.covariance = ODOM_TWIST_COVARIANCE2;
+            odom_tmp.twist.covariance = ODOM_TWIST_COVARIANCE2; // 高精度 
         }
         odom_pub_.publish(odom_tmp);
 
@@ -1139,11 +1174,11 @@ namespace ucarController
 
     bool baseBringup::getMileage()
     {
-        std::fstream fin;
-        std::fstream fin_b;
-        std::string str_in;
-        std::string str_in_b;
-        std::stringstream ss;
+        std::fstream fin;      // 主文件输入流
+        std::fstream fin_b;    // 备份文件输入流
+        std::string str_in;    // 主文件读到的字符串
+        std::string str_in_b;  // 备份文件读到的字符串
+        std::stringstream ss;  // 用于字符串转 double
         ros::NodeHandle pravite_nh("~");
 
         fin.open(Mileage_file_name_.c_str()); // Mileage_backup_file_name_
@@ -1151,10 +1186,11 @@ namespace ucarController
         if (fin.fail() && fin_b.fail())
         {
             ROS_ERROR("open Mileage files error, will creat a new file! \n");
-            Mileage_sum_ = 0.0;
+            Mileage_sum_ = 0.0; // 里程清零
             pravite_nh.setParam("Mileage_sum", Mileage_sum_);
             return false;
         }
+        // 3. 分别读取两个文件的第一行内容
         if (!fin.fail())
         {
             fin >> str_in;
@@ -1165,6 +1201,7 @@ namespace ucarController
             fin_b >> str_in_b;
             fin_b.close();
         }
+        // 4. 优先使用主文件的里程值
         if (str_in != "")
         {
             ss << str_in;
@@ -1179,6 +1216,7 @@ namespace ucarController
             ss.clear();
             pravite_nh.setParam("Mileage_sum", Mileage_sum_);
         }
+        // 6. 两个文件都为空（存在但无内容）
         else
         {
             ROS_ERROR("Mileage_files empty. \n");

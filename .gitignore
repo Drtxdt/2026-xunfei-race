@@ -18,3 +18,4 @@ install/
 logs/
 msc
 src/pctest
+src/ucar_controller/log_info/

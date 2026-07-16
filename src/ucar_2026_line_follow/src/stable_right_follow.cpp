@@ -139,6 +139,11 @@ private:
     ros::Time start_moving_time_;
     double stop_line_ignore_time_ = 10.0;  // 鍓?0绉掑拷鐣ュ仠杞︾嚎
 
+    bool need_left_turn_;
+    ros::Time left_turn_start_time_;
+    const double left_turn_duration_ = 0.7;
+    const double left_turn_angular_ = 0.6;
+
     // ========== 鍙傛暟鍔犺浇 ==========
     void loadParams(ros::NodeHandle& pnh)
     {
@@ -238,7 +243,6 @@ private:
             twist.angular.z = 0.0;
             break;
         }
-    }
 
         // 瑙掗€熷害浣庨€氭护娉紙骞虫粦杈撳嚭锛屽噺灏戞姈鍔級
         twist.angular.z = 0.7 * last_angular_ + 0.3 * twist.angular.z;
@@ -409,8 +413,6 @@ private:
             }
             return;
         }
-        return clean;
-    }
 
         // ===== 修改 ===== 使用 desired_angle_deg_，实现左转5°对齐
         double angle_error = stop_line.angle_deg - desired_angle_deg_;
@@ -588,7 +590,8 @@ private:
         int best_idx = -1;
         for(size_t i = 0; i < contours.size(); ++i)
         {
-            double area = cv::contourArea(contours[i]);
+            const auto& cnt = contours[i];
+            double area = cv::contourArea(cnt);
             if(area < stop_line_min_area_) continue;
 
             cv::Rect rect = cv::boundingRect(cnt);
@@ -597,7 +600,7 @@ private:
             if(rect.width < rect.height * 4) continue;
             if(rect.height > stop_line_max_height_) continue;
             if(rect.width < stop_line_min_width_) continue;
-            if(contours[i].size() >= 5)
+            if(cnt.size() >= 5)
             {
                 cv::Vec4f line;
                 cv::fitLine(cnt, line, cv::DIST_L2, 0, 0.01, 0.01);
@@ -611,7 +614,6 @@ private:
                 max_area = area;
                 best_idx = i;
             }
-            if(area > max_area) { max_area = area; best_idx = i; }
         }
         if(best_idx >= 0)
         {
