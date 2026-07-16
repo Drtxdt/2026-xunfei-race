@@ -1,0 +1,9 @@
+<launch>
+  <!-- map_goal_picker 启动文件 -->
+
+  <!-- 推荐：通过 $(find) 动态解析 pgm 路径，避免硬编码绝对路径 -->
+  <node pkg="map_goal_picker" type="map_goal_picker" name="map_goal_picker" output="screen">
+    <param name="pgm_path" value="$(find ucar_nav)/maps/521.pgm" />
+  </node>
+
+</launch>

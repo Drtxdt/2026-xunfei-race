@@ -1,0 +1,21 @@
+<launch>
+  <!-- 
+    仅加载地图 + 启动rviz + 接收目标点
+    不启动任何导航节点（move_base/amcl等）
+  -->
+
+  <!-- 1. 加载地图（pgm + yaml） -->
+  <arg name="map_yaml" default="$(find ucar_nav)/maps/521.yaml" />
+  <node name="map_server" pkg="map_server" type="map_server" args="$(arg map_yaml)" output="screen">
+    <param name="frame_id" value="map" />
+  </node>
+
+  <!-- 2. 启动 rviz（自动加载项目根目录的 rviz1.rviz） -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find map_goal_picker)/../../rviz1.rviz" />
+
+  <!-- 3. 启动目标点接收节点 -->
+  <node pkg="map_goal_picker" type="map_goal_picker" name="map_goal_picker" output="screen">
+    <param name="pgm_path" value="$(find ucar_nav)/maps/521.pgm" />
+  </node>
+
+</launch>

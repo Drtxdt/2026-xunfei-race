@@ -1,0 +1,74 @@
+<launch>
+<node pkg="amcl" type="amcl" name="amcl">
+
+  <!-- ========== 坐标系与TF ========== -->
+  <param name="odom_frame_id" value="odom"/>
+  <param name="base_frame_id" value="base_link"/>
+  <param name="global_frame_id" value="map"/>
+  
+  <!-- A55算力有限，transform_tolerance不要设太大，否则TF延迟会掩盖定位卡顿 -->
+  <param name="transform_tolerance" value="0.5"/>
+  
+  <!-- 降低粒子云发布频率，减少rviz渲染和CPU开销 -->
+  <param name="gui_publish_rate" value="10.0"/>
+
+
+  <!-- ========== 里程计运动模型 ========== -->
+  <param name="odom_model_type" value="omni"/>
+  
+  <!-- 全向轮底盘里程计一般，噪声参数适当放大，让AMCL别太信任odom -->
+  <param name="odom_alpha1" value="0.2"/>  <!-- 旋转引起的平移噪声 -->
+  <param name="odom_alpha2" value="0.2"/>  <!-- 平移引起的旋转噪声 -->
+  <param name="odom_alpha3" value="0.2"/>  <!-- 平移方向噪声 -->
+  <param name="odom_alpha4" value="0.2"/>  <!-- 旋转方向噪声 -->
+  <param name="odom_alpha5" value="0.15"/> <!-- 全向轮侧滑噪声（重点） -->
+
+
+  <!-- ========== 激光模型：likelihood_field（A55算力优化核心） ========== -->
+  <param name="laser_model_type" value="likelihood_field"/>
+  
+  <!-- 每4度取一束，G4 360°雷达共90束。算力和特征的折中 -->
+  <param name="laser_max_beams" value="90"/>
+  
+  <!-- 室内静态环境，正常hit占绝对主导，大幅削弱随机噪声权重 -->
+  <param name="laser_z_hit" value="0.95"/>   <!-- 95% 正常击中 -->
+  <param name="laser_z_short" value="0.02"/> <!-- 2% 意外遮挡 -->
+  <param name="laser_z_max" value="0.02"/>   <!-- 2% 超出量程 -->
+  <param name="laser_z_rand" value="0.01"/>  <!-- 1% 纯随机噪声 -->
+  
+  <!-- hit容忍度收紧到8cm，配合0.03m分辨率地图，收敛更尖锐 -->
+  <param name="laser_sigma_hit" value="0.08"/>
+  
+  <!-- likelihood_field模型有效参数：端点离障碍物超过2m就不给分了 -->
+  <param name="laser_likelihood_max_dist" value="2.0"/>
+
+
+  <!-- ========== 粒子滤波（KLD自适应） ========== -->
+  <!-- A55上2000粒子吃力，压到1500上限，300下限，减轻CPU峰值压力 -->
+  <param name="min_particles" value="500"/>
+  <param name="max_particles" value="2000"/>
+  <param name="kld_err" value="0.05"/>
+  <param name="kld_z" value="0.99"/>
+
+
+  <!-- ========== 更新触发与重采样 ========== -->
+  <!-- 走15cm或转11.5°就更新一次。比原来灵敏，但又不像0.1rad那样吃算力 -->
+  <param name="update_min_d" value="0.15"/>
+  <param name="update_min_a" value="0.2"/>
+  
+  <!-- 每2次观测更新重采样一次，保留粒子多样性，防止过早聚集 -->
+  <param name="resample_interval" value="2"/>
+
+
+  <!-- ========== 定位恢复机制（必须打开） ========== -->
+  <!-- 丢失定位后自动撒随机粒子尝试恢复，避免只能手动给初始位姿 -->
+  <param name="recovery_alpha_slow" value="0.001"/>
+  <param name="recovery_alpha_fast" value="0.1"/>
+
+
+  <!-- ========== 地图相关 ========== -->
+  <param name="use_map_topic" value="false"/>
+  <param name="first_map_only" value="true"/>
+
+</node>
+</launch>

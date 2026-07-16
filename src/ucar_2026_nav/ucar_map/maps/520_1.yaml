@@ -1,0 +1,7 @@
+image: 520_1.pgm
+resolution: 0.030000
+origin: [-23.430000, -20.550000, 0.000000]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+

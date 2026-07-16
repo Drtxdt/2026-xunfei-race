@@ -18,8 +18,8 @@ local_costmap:
   
   obstacle_layer:
     enabled: true
-    obstacle_range: 5.0       # 5米内的障碍物会被放入代价地图中
-    raytrace_range: 5.0       # 射线追踪范围：机器人会用射线追踪算法清除5米范围内的障碍物（当障碍物移开后）
+    obstacle_range: 7.0       # 5米内的障碍物会被放入代价地图中
+    raytrace_range: 7.0       # 射线追踪范围：机器人会用射线追踪算法清除5米范围内的障碍物（当障碍物移开后）
     track_unknown_space: true # 是否追踪未知区域（未探测过的区域）
     combination_method: 1     # 多个传感器数据的融合方法（1=取最大值）
     observation_sources: laser_scan_sensor
@@ -31,5 +31,5 @@ local_costmap:
       }    
   
   inflation_layer:                    
-    inflation_radius: 0.1 #！0.05 #0.8
+    inflation_radius: 0.12 #！0.05 #0.8
     cost_scaling_factor: 10.0

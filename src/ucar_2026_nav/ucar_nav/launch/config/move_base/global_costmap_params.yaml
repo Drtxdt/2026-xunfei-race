@@ -24,7 +24,7 @@ global_costmap:
     subscribe_to_updates: true
 
   inflation_layer:                    # 膨胀层参数
-    inflation_radius: 0.55
+    inflation_radius: 0.50
     cost_scaling_factor: 10.0
 
   # obstacle_layer:

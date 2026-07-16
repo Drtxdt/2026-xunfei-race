@@ -1,0 +1,103 @@
+# vision_triggered_navigator 参数配置
+# 触发模式：keyboard（键盘回车测试） / vision（视觉话题）
+trigger_mode: "keyboard"
+vision_topic: "/vision/detected"
+
+# 参考坐标系
+# map_frame: AMCL / move_base 使用 "map"
+# base_frame: base_driver.launch + driver_params_ucarV2.yaml 使用 "base_link"
+# camera_frame: tf_server.launch 使用 "camera_frame"；sensor_tf_server.py 默认是 "cam"
+map_frame: "map"
+base_frame: "base_link"
+camera_frame: "camera_frame"
+
+# 视觉触发长方形围墙 4 个角点（手标有误差，程序内部取 min/max 包围盒）
+vision_rect_corners:
+  - [-2.2311, -1.2505]
+  - [ 2.8000, -1.1940]
+  - [-2.2197, -3.2746]
+  - [ 2.7739, -3.2186]
+
+# 安全偏移距离：墙交点沿内法向回退的距离（米）
+vision_offset: 0.4
+
+# costmap 可行性判断
+costmap_topic: "/move_base/local_costmap/costmap"
+cost_threshold: 50          # 代价 >= 阈值认为不可行
+feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频率
+
+# 自转参数
+rotation_speed: 0.5   # rad/s，左转为正，所有巡航点共用
+cmd_vel_topic: "/cmd_vel"
+
+# 结束点
+end_goal:
+  x: 0.3195
+  y: -3.2703
+  yaw: -1.5596
+
+# 初始位姿（发布给 AMCL 的 /initialpose）
+publish_initial_pose: true
+initial_pose:
+  x: 0.0
+  y: 0.0
+  yaw: 0.0
+
+# 巡航点（9 个点）
+patrol_points:
+  - x: -1.6499
+    y: -1.7735
+    yaw: 1.0417
+    rotations:
+      - {direction: "left", duration: 4.5}
+
+  - x: -1.6613
+    y: -2.2796
+    yaw: -3.1404
+    rotations:
+      - {direction: "right", duration: 3.0}
+      - {direction: "left", duration: 3.5}
+
+  - x: -1.6846
+    y: -2.7856
+    yaw: -3.1176
+    rotations:
+      - {direction: "left", duration: 4.5}
+
+  - x: -0.6965
+    y: -2.8239
+    yaw: -1.5594
+    rotations:
+      - {direction: "right", duration: 3.0}
+      - {direction: "left", duration: 3.0}
+
+  - x: 1.2660
+    y: -2.8863
+    yaw: -1.5443
+    rotations:
+      - {direction: "right", duration: 3.0}
+      - {direction: "left", duration: 3.0}
+
+  - x: 2.3356
+    y: -2.7417
+    yaw: -2.1786
+    rotations:
+      - {direction: "left", duration: 4.5}
+
+  - x: 2.3471
+    y: -1.6090
+    yaw: -0.8607
+    rotations:
+      - {direction: "left", duration: 4.5}
+
+  - x: 1.2641
+    y: -1.6452
+    yaw: 0.8530
+    rotations:
+      - {direction: "left", duration: 4.0}
+
+  - x: 0.3011
+    y: -1.6319
+    yaw: 0.8913
+    rotations:
+      - {direction: "left", duration: 4.0}

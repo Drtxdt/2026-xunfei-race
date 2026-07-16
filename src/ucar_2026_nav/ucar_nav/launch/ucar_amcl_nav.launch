@@ -25,7 +25,7 @@
   </node> -->
 
   <!-- 导入其他launch：定位导航包 -->
-  <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni.launch" > </include>
+  <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni2.launch" > </include>
 
   <!-- 启动ros节点 ： 路径规划节点，局部加全局 -->
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">

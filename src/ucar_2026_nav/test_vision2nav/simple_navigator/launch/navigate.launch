@@ -1,0 +1,14 @@
+<launch>
+  <!-- simple_navigator 启动文件 -->
+
+  <!-- 加载参数（默认目标点，可被参数服务器覆盖） -->
+  <rosparam file="$(find simple_navigator)/config/navigation_goal.yaml" command="load" ns="simple_navigator" />
+
+  <!-- 启动导航节点 -->
+  <node pkg="simple_navigator" type="simple_navigator.py" name="simple_navigator" output="screen">
+    <!-- 可通过命令行覆盖参数，例如：
+         roslaunch simple_navigator navigate.launch goal_x:=2.0 goal_y:=3.0 goal_yaw:=1.57
+    -->
+  </node>
+
+</launch>

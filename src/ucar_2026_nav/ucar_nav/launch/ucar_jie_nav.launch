@@ -15,17 +15,23 @@
   </node> 
   
 
-  <!-- <node pkg="jie_ware" type="costmap_cleaner" name="costmap_cleaner" />
-  <node pkg="jie_ware" type="lidar_filter_node" name="lidar_filter_node" />
-    <node pkg="jie_ware" type="lidar_loc" name="lidar_loc" >
-    <param name="base_frame" value="base_link" />
-    <param name="odom_frame" value="odom" />
+  <!-- 激光雷达定位（替代 AMCL） -->
+  <node pkg="jie_ware" type="lidar_loc" name="lidar_loc" output="screen">
+    <param name="base_frame"  value="base_link" />
+    <param name="odom_frame"  value="odom" />
     <param name="laser_frame" value="laser_frame" />
     <param name="laser_topic" value="scan" />
-  </node> -->
 
-  <!-- 导入其他launch：定位导航包 -->
-  <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni.launch" > </include>
+    <param name="enable_filter" value="false" />
+    <param name="filter_alpha"  value="0.3" />
+    <param name="tf_rate"       value="10" />
+  </node>
+
+  <!-- 可选：代价地图清除，减少定位漂移导致的鬼影障碍物 -->
+  <node pkg="jie_ware" type="costmap_cleaner" name="costmap_cleaner" />
+
+  <!-- 删除或注释掉原来的 AMCL -->
+  <!-- <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni.launch" > </include> -->
 
   <!-- 启动ros节点 ： 路径规划节点，局部加全局 -->
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">

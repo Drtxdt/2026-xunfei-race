@@ -11,21 +11,3 @@
 
 footprint: [[0.171, -0.128], [0.171, 0.128],[-0.171, 0.128], [-0.171, -0.128]]
 # footprint: [[0.12, -0.10], [0.12, 0.10],[-0.12, 0.10], [-0.12, -0.10]]
-obstacle_layer:
-  enabled: true
-  obstacle_range: 5.0       # 5米内的障碍物会被放入代价地图中
-  raytrace_range: 5.0       # 射线追踪范围：机器人会用射线追踪算法清除5米范围内的障碍物（当障碍物移开后）
-  track_unknown_space: true # 是否追踪未知区域（未探测过的区域）
-  combination_method: 1     # 多个传感器数据的融合方法（1=取最大值）
-  
-  #observation_sources: scan
-  #scan:
-    #data_type: LaserScan
-    #topic: scan_filtered
-  observation_sources: laser_scan_sensor
-  laser_scan_sensor: {
-    data_type: LaserScan,
-    topic: /scan, 
-    marking: true, 
-    clearing: true
-    }
