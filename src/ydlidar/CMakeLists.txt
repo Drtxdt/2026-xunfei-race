@@ -45,8 +45,9 @@ install(TARGETS ydlidar_node ydlidar_client
 )
 
 
-install(DIRECTORY launch sdk
+install(DIRECTORY launch startup sdk
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   USE_SOURCE_PERMISSIONS
 )
+
 
