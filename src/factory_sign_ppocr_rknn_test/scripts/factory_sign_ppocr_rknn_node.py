@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 import time
@@ -543,6 +544,9 @@ class FactorySignPPOCRRknnNode:
         self.speech_topic = rospy.get_param("~speech_topic", "/speak")
         self.fallback_to_topic = ros_bool(rospy.get_param("~fallback_to_speech_topic", True), True)
         self.speech_wait = ros_bool(rospy.get_param("~speech_wait", False), False)
+        self.enable_speech = ros_bool(rospy.get_param("~enable_speech", True), True)
+        self.result_topic = rospy.get_param(
+            "~result_topic", "/factory_sign_ppocr_rknn_test/result")
 
         self.latest_image = None
         self.last_result = RecognitionResult()
@@ -553,6 +557,8 @@ class FactorySignPPOCRRknnNode:
         self.last_debug_publish_at = 0.0
 
         self.speak_pub = rospy.Publisher(self.speech_topic, String, queue_size=1)
+        self.result_pub = rospy.Publisher(
+            self.result_topic, String, queue_size=10, latch=True)
         self.debug_pub = rospy.Publisher(self.debug_image_topic, Image, queue_size=1)
         self.preprocess_pub = rospy.Publisher(self.preprocess_topic, Image, queue_size=1)
         self.image_sub = rospy.Subscriber(self.image_topic, Image, self._image_cb, queue_size=1, buff_size=2 ** 24)
@@ -635,7 +641,16 @@ class FactorySignPPOCRRknnNode:
         confirmed = result.category
         self.last_result = result
         self.last_confirmed = confirmed
-        spoken = self._maybe_speak(confirmed) if confirmed else False
+        spoken = self._maybe_speak(confirmed) if confirmed and self.enable_speech else False
+        self.result_pub.publish(self.String(data=json.dumps({
+            "category": confirmed or "",
+            "workshop": CATEGORY_NAMES.get(confirmed, ""),
+            "confidence": float(result.confidence),
+            "raw_text": result.raw_text,
+            "match_debug": result.match_debug,
+            "error": result.error,
+            "stamp": time.time(),
+        }, ensure_ascii=False)))
         self.rospy.loginfo(
             "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
             result.raw_text,

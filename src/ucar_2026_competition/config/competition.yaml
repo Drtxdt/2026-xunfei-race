@@ -1,0 +1,28 @@
+# 任务1：沿用现有二维码区导航点。
+qr_goal:
+  x: 1.00
+  y: 0.51
+  yaw: 3.141592653589793
+qr_rotation_speed: 0.25
+qr_scan_timeout_sec: 45.0
+qr_expected_count: 3
+move_base_timeout_sec: 90.0
+
+# OCR 连续命中次数。PPOCR 自身输出结构化 JSON，总控只对当前目标类别触发导航。
+ocr_required_consecutive: 3
+factory_navigation_timeout_sec: 420.0
+
+# 仿真独立 ROS Master，通过 TCP 协同。
+sim_bridge_port: 26003
+sim_timeout_sec: 900.0
+
+# 交通灯坐标必须经实车标定后显式设置。未设置时流程安全暂停。
+traffic_pose_configured: false
+traffic_x: 0.0
+traffic_y: 0.0
+traffic_yaw: 0.0
+traffic_timeout_sec: 180.0
+
+track_timeout_sec: 420.0
+status_topic: /competition/status
+task1_result_topic: /competition/task1_result

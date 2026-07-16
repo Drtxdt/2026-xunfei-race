@@ -24,7 +24,7 @@ roslaunch ucar_2026_line_follow right_line_follow_cpp.launch
 roslaunch ucar_2026_line_follow straight_right_cpp.launch
 
 #===============
-# 以下为改进版
+# 以下为改进版，以这个为准
 # c++左侧巡线
 roslaunch ucar_2026_track_end_stop track_end_stop.launch
 # c++右侧巡线
@@ -41,7 +41,7 @@ roslaunch ucar_2026_track_end_stop stable_right_track_end_stop.launch
 roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
 
 #================
-# 真 OCR 推荐使用这个
+# 真 OCR 推荐使用这个 厂牌测试 以这个为准
  roslaunch factory_sign_ppocr_rknn_test factory_sign_ppocr_rknn_test.launch recognition_mode:=ppocr_rknn_system
 
 

@@ -1,6 +1,12 @@
 <launch>
   <!-- vision_triggered_navigator 启动文件 -->
 
+  <arg name="trigger_mode" default="keyboard" />
+  <arg name="vision_topic" default="/vision/detected" />
+  <arg name="status_topic" default="/vision_triggered_navigator/status" />
+  <arg name="publish_initial_pose" default="true" />
+  <arg name="navigate_to_end_after_trigger" default="true" />
+
   <!-- 加载参数 -->
   <rosparam file="$(find vision_triggered_navigator)/config/vision_triggered_navigator.yaml" command="load" ns="vision_triggered_navigator" />
 
@@ -9,6 +15,11 @@
     <!-- 示例：命令行覆盖触发模式或目标点
          roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_mode:=vision
     -->
+    <param name="trigger_mode" value="$(arg trigger_mode)" />
+    <param name="vision_topic" value="$(arg vision_topic)" />
+    <param name="status_topic" value="$(arg status_topic)" />
+    <param name="publish_initial_pose" value="$(arg publish_initial_pose)" />
+    <param name="navigate_to_end_after_trigger" value="$(arg navigate_to_end_after_trigger)" />
   </node>
 
 </launch>

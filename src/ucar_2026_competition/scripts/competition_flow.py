@@ -1,0 +1,628 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Competition state machine for the five smart-factory subtasks."""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import signal
+import socket
+import subprocess
+import threading
+import time
+import uuid
+from collections import OrderedDict
+
+import actionlib
+import rospy
+from actionlib_msgs.msg import GoalStatus
+from geometry_msgs.msg import Twist
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger, TriggerResponse
+from ucar_2026_competition_speech.srv import Announce
+from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
+from ucar_2026_competition.logic import (
+    CATEGORY_LABELS,
+    ConsecutiveTargetFilter,
+    JsonLineBuffer,
+    TRACK_CONFIG,
+    normalize_category,
+    parse_category,
+    qr_values_from_payload,
+    stage_sequence,
+    traffic_decision_from_payload,
+)
+
+
+class StageError(RuntimeError):
+    pass
+
+
+class Aborted(RuntimeError):
+    pass
+
+
+def bool_param(name, default=False):
+    value = rospy.get_param(name, default)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(value)
+
+
+class CompetitionFlow:
+    def __init__(self):
+        self.mode = rospy.get_param("~start_stage", "full").strip().lower()
+        self.debug = bool_param("~debug", False)
+        self.aborted = threading.Event()
+        self.resume_event = threading.Event()
+        self.children = {}
+        self.lock = threading.RLock()
+
+        self.status_pub = rospy.Publisher(
+            rospy.get_param("~status_topic", "/competition/status"),
+            String,
+            queue_size=20,
+            latch=True,
+        )
+        self.result_pub = rospy.Publisher(
+            rospy.get_param("~task1_result_topic", "/competition/task1_result"),
+            String,
+            queue_size=5,
+            latch=True,
+        )
+        self.traffic_pub = rospy.Publisher(
+            "/competition/traffic_decision", String, queue_size=5, latch=True
+        )
+        self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=2)
+        self.vision_pub = rospy.Publisher("/vision/detected", Bool, queue_size=5)
+
+        self.wakeup_received = False
+        self.question = ""
+        self.category = normalize_category(rospy.get_param("~target_category", ""))
+        self.task1_result = {
+            "pickup_item": rospy.get_param("~target_item", "").strip(),
+            "pickup_workshop": rospy.get_param("~target_workshop", "").strip(),
+            "sim_item": rospy.get_param("~sim_item", "").strip(),
+            "sim_workshop": rospy.get_param("~sim_workshop", "").strip(),
+        }
+
+        self.qr_items = OrderedDict()
+        self.qr_collecting = False
+        self.ocr_target = None
+        self.ocr_filter = ConsecutiveTargetFilter(
+            rospy.get_param("~ocr_required_consecutive", 3)
+        )
+        self.navigator_status = ""
+        self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
+        self.red_announced = False
+        self.track_status = {}
+
+        rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
+        rospy.Subscriber("/question", String, self._question_cb, queue_size=5)
+        rospy.Subscriber("/qr_code_data", String, self._qr_cb, queue_size=20)
+        rospy.Subscriber(
+            "/factory_sign_ppocr_rknn_test/result", String, self._ocr_cb, queue_size=20
+        )
+        rospy.Subscriber(
+            "/vision_triggered_navigator/status", String, self._navigator_cb, queue_size=20
+        )
+        rospy.Subscriber(
+            "/traffic_light_rknn_test/detections", String, self._traffic_cb, queue_size=20
+        )
+        for _, topic, _ in TRACK_CONFIG.values():
+            rospy.Subscriber(topic, String, self._track_cb, callback_args=topic, queue_size=10)
+
+        rospy.Service("/competition/resume", Trigger, self._resume_cb)
+        rospy.Service("/competition/abort", Trigger, self._abort_cb)
+        rospy.on_shutdown(self.shutdown)
+
+        self.move_base = actionlib.SimpleActionClient("/move_base", MoveBaseAction)
+        self.publish_status("startup", "ready", "competition controller ready")
+
+    # ------------------------------ callbacks ------------------------------
+    def _wakeup_cb(self, _msg):
+        self.wakeup_received = True
+
+    def _question_cb(self, msg):
+        self.question = msg.data.strip()
+        parsed = parse_category(self.question)
+        if parsed:
+            self.category = parsed
+
+    def _qr_cb(self, msg):
+        if not self.qr_collecting:
+            return
+        try:
+            payload = json.loads(msg.data)
+        except Exception:
+            return
+        for key, result in qr_values_from_payload(payload):
+            if key not in self.qr_items:
+                self.qr_items[key] = result
+                rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+
+    def _ocr_cb(self, msg):
+        if not self.ocr_target:
+            return
+        try:
+            payload = json.loads(msg.data)
+            category = normalize_category(payload.get("category"))
+        except Exception:
+            self.ocr_filter.reset()
+            return
+        if self.ocr_filter.push(self.ocr_target, category):
+            # Keep publishing after confirmation so a navigator that has just
+            # finished initialization cannot miss the one-shot trigger.
+            self.vision_pub.publish(Bool(data=True))
+
+    def _navigator_cb(self, msg):
+        self.navigator_status = msg.data.strip().lower()
+
+    def _traffic_cb(self, msg):
+        try:
+            decision = traffic_decision_from_payload(json.loads(msg.data))
+            if decision:
+                self.traffic_decision = decision
+        except Exception:
+            return
+
+    def _track_cb(self, msg, topic):
+        self.track_status[topic] = msg.data.strip().lower()
+
+    def _resume_cb(self, _req):
+        if self.aborted.is_set():
+            return TriggerResponse(False, "competition already aborted")
+        self.resume_event.set()
+        return TriggerResponse(True, "competition resume requested")
+
+    def _abort_cb(self, _req):
+        self.aborted.set()
+        self.resume_event.set()
+        self.safe_stop(cancel_navigation=True)
+        self.stop_all_children()
+        return TriggerResponse(True, "competition aborted and vehicle stopped")
+
+    # ------------------------------ infrastructure ------------------------------
+    def publish_status(self, stage, state, message="", error=""):
+        payload = {
+            "stage": stage,
+            "state": state,
+            "message": message,
+            "error": error,
+            "stamp": time.time(),
+        }
+        self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
+        rospy.loginfo("competition %s/%s: %s", stage, state, message or error)
+
+    def check_abort(self):
+        if self.aborted.is_set() or rospy.is_shutdown():
+            raise Aborted("competition aborted")
+
+    def pause_and_retry(self, stage, error):
+        self.safe_stop(cancel_navigation=True)
+        self.publish_status(stage, "paused", "call /competition/resume after fixing it", str(error))
+        self.resume_event.clear()
+        while not rospy.is_shutdown() and not self.resume_event.wait(0.2):
+            self.check_abort()
+        self.check_abort()
+        self.publish_status(stage, "resuming", "retrying current stage")
+
+    def run_stage(self, stage, function):
+        while not rospy.is_shutdown():
+            self.check_abort()
+            try:
+                return function()
+            except StageError as exc:
+                self.stop_all_children()
+                self.pause_and_retry(stage, exc)
+
+    def safe_stop(self, cancel_navigation=False):
+        if cancel_navigation:
+            try:
+                self.move_base.cancel_all_goals()
+            except Exception:
+                pass
+        for _ in range(3):
+            self.cmd_pub.publish(Twist())
+            rospy.sleep(0.03)
+
+    def start_child(self, key, package, launch_file, args=None):
+        self.stop_child(key)
+        command = ["roslaunch", package, launch_file]
+        for name, value in (args or {}).items():
+            command.append("{}:={}".format(name, str(value).lower() if isinstance(value, bool) else value))
+        rospy.loginfo("starting child: %s", " ".join(command))
+        self.children[key] = subprocess.Popen(command, start_new_session=True)
+        return self.children[key]
+
+    def stop_child(self, key):
+        proc = self.children.pop(key, None)
+        if proc is None or proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+            proc.wait(timeout=5.0)
+        except Exception:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2.0)
+            except Exception:
+                proc.kill()
+
+    def stop_all_children(self):
+        for key in list(self.children):
+            self.stop_child(key)
+
+    def wait_loop(self, timeout, predicate, child_key=None):
+        deadline = time.time() + timeout if timeout > 0 else None
+        while not rospy.is_shutdown():
+            self.check_abort()
+            result = predicate()
+            if result:
+                return result
+            if child_key and child_key in self.children:
+                code = self.children[child_key].poll()
+                if code is not None:
+                    raise StageError("{} exited unexpectedly with code {}".format(child_key, code))
+            if deadline and time.time() >= deadline:
+                raise StageError("stage timed out after {:.1f}s".format(timeout))
+            rospy.sleep(0.1)
+
+    def navigate(self, x, y, yaw, stage):
+        timeout = float(rospy.get_param("~move_base_timeout_sec", 90.0))
+        if not self.move_base.wait_for_server(rospy.Duration(min(timeout, 30.0))):
+            raise StageError("move_base action server unavailable")
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = "map"
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose.position.x = float(x)
+        goal.target_pose.pose.position.y = float(y)
+        goal.target_pose.pose.orientation.z = math.sin(float(yaw) / 2.0)
+        goal.target_pose.pose.orientation.w = math.cos(float(yaw) / 2.0)
+        self.publish_status(stage, "navigating", "goal x={:.3f} y={:.3f} yaw={:.3f}".format(x, y, yaw))
+        self.move_base.send_goal(goal)
+        deadline = time.time() + timeout
+        while time.time() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            state = self.move_base.get_state()
+            if state not in (GoalStatus.PENDING, GoalStatus.ACTIVE):
+                if state == GoalStatus.SUCCEEDED:
+                    return
+                raise StageError("move_base failed with state {}".format(state))
+            rospy.sleep(0.1)
+        self.move_base.cancel_goal()
+        raise StageError("move_base goal timed out")
+
+    def announce(self, event, item="", workshop="", decision="", text=""):
+        service = rospy.get_param("~announce_service", "/competition_speech/announce")
+        try:
+            rospy.wait_for_service(service, timeout=5.0)
+            response = rospy.ServiceProxy(service, Announce)(
+                event, item, workshop, decision, text, True
+            )
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError("speech service failed: {}".format(exc))
+        if not response.success:
+            raise StageError("speech rejected: {}".format(response.message))
+
+    # ------------------------------ stages ------------------------------
+    def task1(self):
+        self.publish_status("task1", "waiting_voice", "waiting for /wakeup and category on /question")
+        self.wait_loop(0, lambda: self.wakeup_received and self.category)
+
+        category_name = CATEGORY_LABELS[self.category][0]
+        instruction = "请取得{}类产品，仿真环境也统一取得{}类产品".format(category_name, category_name)
+        goal = rospy.get_param("~qr_goal", {"x": 1.0, "y": 0.51, "yaw": math.pi})
+        if bool_param("~navigate_to_qr", True):
+            self.navigate(goal["x"], goal["y"], goal.get("yaw", math.pi), "task1")
+
+        self.publish_status("task1", "scanning_qr", "rotating until three unique QR items")
+        self.qr_items.clear()
+        self.qr_collecting = True
+        speed = abs(float(rospy.get_param("~qr_rotation_speed", 0.25)))
+        timeout = float(rospy.get_param("~qr_scan_timeout_sec", 45.0))
+        twist = Twist()
+        twist.angular.z = speed
+        deadline = time.time() + timeout
+        try:
+            self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
+            while len(self.qr_items) < int(rospy.get_param("~qr_expected_count", 3)):
+                self.check_abort()
+                qr_process = self.children.get("qr_decoder")
+                if qr_process and qr_process.poll() is not None:
+                    raise StageError("QR decoder exited unexpectedly with code {}".format(qr_process.returncode))
+                if time.time() >= deadline:
+                    raise StageError("QR scan timeout: got {} unique item(s)".format(len(self.qr_items)))
+                self.cmd_pub.publish(twist)
+                rospy.sleep(0.05)
+        finally:
+            self.qr_collecting = False
+            self.stop_child("qr_decoder")
+            self.safe_stop()
+
+        items = list(self.qr_items.values())[:3]
+        service = rospy.get_param("~llm_service", "/smart_factory_llm/reason_pickup_order")
+        self.publish_status("task1", "reasoning", "calling Spark X2")
+        try:
+            rospy.wait_for_service(service, timeout=15.0)
+            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
+                items[0], items[1], items[2], instruction
+            )
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError("LLM service failed: {}".format(exc))
+        if not result.success:
+            raise StageError("LLM reasoning failed: {}".format(result.error_message))
+        if normalize_category(result.pickup_major) != self.category:
+            raise StageError("LLM physical category does not match voice category")
+        if normalize_category(result.sim_major) != self.category:
+            raise StageError("LLM simulation category does not match voice category")
+
+        self.task1_result = {
+            "qr_items": items,
+            "category": self.category,
+            "category_name": category_name,
+            "pickup_item": result.pickup_item,
+            "pickup_major": result.pickup_major,
+            "pickup_workshop": result.pickup_workshop,
+            "sim_item": result.sim_item,
+            "sim_major": result.sim_major,
+            "sim_workshop": result.sim_workshop,
+            "announcement": result.announcement_full,
+        }
+        self.result_pub.publish(String(data=json.dumps(self.task1_result, ensure_ascii=False)))
+        self.announce("task1", text=result.announcement_full)
+        self.publish_status("task1", "completed", "voice, QR and reasoning completed")
+
+    def task2(self):
+        if not self.category:
+            raise StageError("task2 target_category is missing")
+        item = self.task1_result.get("pickup_item")
+        workshop = self.task1_result.get("pickup_workshop") or CATEGORY_LABELS[self.category][1]
+        if not item:
+            raise StageError("task2 target_item is missing")
+
+        self.ocr_target = self.category
+        self.ocr_filter.reset()
+        self.navigator_status = ""
+        self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
+        try:
+            self.start_child(
+                "factory_navigator",
+                "vision_triggered_navigator",
+                "vision_triggered_navigator.launch",
+                {
+                    "trigger_mode": "vision",
+                    "vision_topic": "/vision/detected",
+                    "publish_initial_pose": bool_param("~navigator_publish_initial_pose", False),
+                    "navigate_to_end_after_trigger": False,
+                },
+            )
+            self.start_child(
+                "factory_ocr",
+                "factory_sign_ppocr_rknn_test",
+                "factory_sign_ppocr_rknn_test.launch",
+                {
+                    "start_camera": False,
+                    "start_competition_speech": False,
+                    "start_viewer": self.debug,
+                    "recognition_mode": "ppocr_rknn_system",
+                    "enable_speech": False,
+                    "required": True,
+                },
+            )
+            timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                self.check_abort()
+                if self.navigator_status == "arrived":
+                    break
+                if self.navigator_status == "failed":
+                    raise StageError("factory navigation failed")
+                for key in ("factory_navigator", "factory_ocr"):
+                    proc = self.children.get(key)
+                    if proc and proc.poll() is not None:
+                        raise StageError("{} exited unexpectedly with code {}".format(key, proc.returncode))
+                rospy.sleep(0.1)
+            else:
+                raise StageError("factory navigation timed out after {:.1f}s".format(timeout))
+        finally:
+            self.ocr_target = None
+            self.stop_child("factory_ocr")
+            self.stop_child("factory_navigator")
+            self.safe_stop(cancel_navigation=True)
+        self.announce("task2", item=item, workshop=workshop)
+        self.publish_status("task2", "completed", "target factory reached")
+
+    def task3(self):
+        if not self.category:
+            raise StageError("task3 target_category is missing")
+        host = rospy.get_param("~sim_bridge_host", "").strip()
+        port = int(rospy.get_param("~sim_bridge_port", 26003))
+        if not host:
+            raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
+        timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
+        self.publish_status("task3", "connecting", "connecting to {}:{}".format(host, port))
+        try:
+            sock = socket.create_connection((host, port), timeout=10.0)
+            sock.settimeout(1.0)
+        except OSError as exc:
+            raise StageError("simulation bridge connection failed: {}".format(exc))
+        request_id = str(uuid.uuid4())
+        deadline = time.time() + timeout
+        result_text = ""
+        done_received = False
+        done_received_at = 0.0
+        try:
+            request = {"command": "start", "target": self.category, "request_id": request_id}
+            sock.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+            self.publish_status("task3", "running", "simulation task started")
+            decoder = JsonLineBuffer()
+            while time.time() < deadline:
+                self.check_abort()
+                if done_received and time.time() - done_received_at > 3.0:
+                    raise StageError("simulation reported done without a success result")
+                try:
+                    chunk = sock.recv(4096)
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    raise StageError("simulation bridge disconnected: {}".format(exc))
+                if not chunk:
+                    raise StageError("simulation bridge disconnected")
+                for event in decoder.feed(chunk):
+                    event_type = event.get("type")
+                    value = event.get("data")
+                    if event_type == "state":
+                        state_text = str(value or "")
+                        self.publish_status("task3", "running", state_text)
+                        if state_text.startswith("FAILED:"):
+                            raise StageError(state_text)
+                    elif event_type == "result":
+                        result_text = str(value or "")
+                        if result_text.startswith("FAILED:"):
+                            raise StageError(result_text)
+                    elif event_type == "done" and bool(value):
+                        done_received = True
+                        done_received_at = time.time()
+                    elif event_type == "error":
+                        raise StageError(str(value or "simulation bridge error"))
+                if done_received and result_text.startswith("SUCCESS:"):
+                    break
+            else:
+                raise StageError("simulation task timed out")
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if not result_text.startswith("SUCCESS:"):
+            raise StageError("simulation completed without a success result")
+        item = self.task1_result.get("sim_item") or self.task1_result.get("pickup_item")
+        workshop = self.task1_result.get("sim_workshop") or CATEGORY_LABELS[self.category][1]
+        if not item:
+            raise StageError("task3 sim_item is missing")
+        self.announce("task3", item=item, workshop=workshop)
+        self.publish_status("task3", "completed", result_text)
+
+    def task4(self):
+        configured = bool_param("~traffic_pose_configured", False)
+        if not configured:
+            raise StageError(
+                "traffic pose is not configured; set ~traffic_x/~traffic_y/~traffic_yaw and ~traffic_pose_configured=true"
+            )
+        self.navigate(
+            float(rospy.get_param("~traffic_x")),
+            float(rospy.get_param("~traffic_y")),
+            float(rospy.get_param("~traffic_yaw")),
+            "task4",
+        )
+        self.safe_stop(cancel_navigation=True)
+        self.traffic_decision = ""
+        self.red_announced = False
+        self.publish_status("task4", "detecting", "waiting for traffic-light consensus")
+        try:
+            self.start_child(
+                "traffic_light",
+                "ucar_2026_traffic_light_rknn_test",
+                "traffic_light_rknn_x11_speak_test.launch",
+                {
+                    "start_camera": False,
+                    "start_tts": False,
+                    "start_competition_speech": False,
+                    "start_viewer": self.debug,
+                    "enable_speech": False,
+                    "required": True,
+                },
+            )
+            deadline = time.time() + float(rospy.get_param("~traffic_timeout_sec", 180.0))
+            while time.time() < deadline:
+                self.check_abort()
+                if self.traffic_decision == "stop":
+                    self.safe_stop()
+                    if not self.red_announced:
+                        self.announce("task4", decision="stop")
+                        self.red_announced = True
+                        self.publish_status("task4", "red_wait", "red light: holding stop")
+                    self.traffic_decision = ""
+                elif self.traffic_decision in ("left", "right", "straight"):
+                    decision = self.traffic_decision
+                    self.announce("task4", decision=decision)
+                    self.traffic_pub.publish(String(data=decision))
+                    self.publish_status("task4", "completed", "decision={}".format(decision))
+                    self.traffic_decision = decision
+                    return
+                proc = self.children.get("traffic_light")
+                if proc and proc.poll() is not None:
+                    raise StageError("traffic-light detector exited unexpectedly")
+                rospy.sleep(0.1)
+            raise StageError("traffic-light recognition timed out")
+        finally:
+            self.stop_child("traffic_light")
+            self.safe_stop(cancel_navigation=True)
+
+    def task5(self):
+        decision = self.traffic_decision or rospy.get_param("~traffic_decision", "").strip().lower()
+        if decision not in TRACK_CONFIG:
+            raise StageError("task5 traffic_decision must be left/right/straight")
+        launch_file, status_topic, finish_value = TRACK_CONFIG[decision]
+        self.safe_stop(cancel_navigation=True)
+        self.track_status[status_topic] = ""
+        self.publish_status("task5", "line_following", "launching {}".format(launch_file))
+        try:
+            self.start_child(
+                "line_follow",
+                "ucar_2026_track_end_stop",
+                launch_file,
+                {"start_driver": False, "start_camera": False, "start_viewer": self.debug},
+            )
+            timeout = float(rospy.get_param("~track_timeout_sec", 420.0))
+            self.wait_loop(
+                timeout,
+                lambda: self.track_status.get(status_topic) == finish_value,
+                child_key="line_follow",
+            )
+        finally:
+            self.stop_child("line_follow")
+            self.safe_stop(cancel_navigation=True)
+        self.announce("task5")
+        self.publish_status("task5", "completed", "competition completed")
+
+    def run(self):
+        try:
+            handlers = {
+                "task1": self.task1,
+                "task2": self.task2,
+                "task3": self.task3,
+                "task4": self.task4,
+                "task5": self.task5,
+            }
+            for stage in stage_sequence(self.mode):
+                self.run_stage(stage, handlers[stage])
+            self.publish_status("competition", "completed", "requested flow completed")
+        except Aborted as exc:
+            self.publish_status("competition", "aborted", error=str(exc))
+        except Exception as exc:
+            rospy.logerr("unhandled competition error: %s", exc)
+            self.safe_stop(cancel_navigation=True)
+            self.publish_status("competition", "failed", error=str(exc))
+        finally:
+            self.shutdown()
+
+    def shutdown(self):
+        self.stop_all_children()
+        try:
+            self.safe_stop(cancel_navigation=True)
+        except Exception:
+            pass
+
+
+def main():
+    rospy.init_node("competition_flow")
+    CompetitionFlow().run()
+
+
+if __name__ == "__main__":
+    main()

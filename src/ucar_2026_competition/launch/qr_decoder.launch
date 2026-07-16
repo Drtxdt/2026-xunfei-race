@@ -1,0 +1,6 @@
+<launch>
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <node pkg="yolo" type="qr_collect_and_decode.py" name="qr_collect_and_decode"
+        output="screen" required="true"
+        args="--topic $(arg camera_topic) --pub-topic /qr_code_data --fetch --offline-mode off" />
+</launch>
