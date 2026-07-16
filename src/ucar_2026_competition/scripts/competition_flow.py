@@ -19,7 +19,12 @@ import actionlib
 import rospy
 from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Twist
-from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from move_base_msgs.msg import (
+    MoveBaseAction,
+    MoveBaseActionGoal,
+    MoveBaseActionResult,
+    MoveBaseGoal,
+)
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger, TriggerResponse
 from ucar_2026_competition_speech.srv import Announce
@@ -98,6 +103,9 @@ class CompetitionFlow:
 
         self.qr_items = OrderedDict()
         self.qr_collecting = False
+        self.qr_navigation_watching = False
+        self.qr_navigation_goal_id = ""
+        self.qr_navigation_result = None
         self.ocr_target = None
         self.ocr_filter = ConsecutiveTargetFilter(
             rospy.get_param("~ocr_required_consecutive", 3)
@@ -110,6 +118,15 @@ class CompetitionFlow:
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
         rospy.Subscriber("/question", String, self._question_cb, queue_size=5)
         rospy.Subscriber("/qr_code_data", String, self._qr_cb, queue_size=20)
+        rospy.Subscriber(
+            "/move_base/goal", MoveBaseActionGoal, self._qr_move_base_goal_cb, queue_size=5
+        )
+        rospy.Subscriber(
+            "/move_base/result",
+            MoveBaseActionResult,
+            self._qr_move_base_result_cb,
+            queue_size=5,
+        )
         rospy.Subscriber(
             "/factory_sign_ppocr_rknn_test/result", String, self._ocr_cb, queue_size=20
         )
@@ -260,6 +277,19 @@ class CompetitionFlow:
             if key not in self.qr_items:
                 self.qr_items[key] = result
                 rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+
+    def _qr_move_base_goal_cb(self, msg):
+        with self.lock:
+            if self.qr_navigation_watching:
+                self.qr_navigation_goal_id = msg.goal_id.id
+
+    def _qr_move_base_result_cb(self, msg):
+        with self.lock:
+            if not self.qr_navigation_watching or not self.qr_navigation_goal_id:
+                return
+            if msg.status.goal_id.id != self.qr_navigation_goal_id:
+                return
+            self.qr_navigation_result = msg.status.status
 
     def _ocr_cb(self, msg):
         if not self.ocr_target:
@@ -425,6 +455,61 @@ class CompetitionFlow:
         if not response.success:
             raise StageError("speech rejected: {}".format(response.message))
 
+    def navigate_to_qr_area(self):
+        """Run the untouched simple_navigator and observe its move_base result."""
+        timeout = float(rospy.get_param("~qr_navigation_timeout_sec", 120.0))
+        self.safe_stop(cancel_navigation=True)
+        with self.lock:
+            self.qr_navigation_watching = True
+            self.qr_navigation_goal_id = ""
+            self.qr_navigation_result = None
+        self.publish_status(
+            "task1",
+            "navigating",
+            "running roslaunch simple_navigator navigate.launch",
+        )
+        try:
+            self.start_child("qr_navigator", "simple_navigator", "navigate.launch")
+            deadline = time.time() + timeout
+            child_exited_at = None
+            while not rospy.is_shutdown():
+                self.check_abort()
+                with self.lock:
+                    result = self.qr_navigation_result
+                if result is not None:
+                    if result == GoalStatus.SUCCEEDED:
+                        break
+                    raise StageError(
+                        "simple_navigator move_base result state={}".format(result)
+                    )
+
+                proc = self.children.get("qr_navigator")
+                if proc and proc.poll() is not None:
+                    if child_exited_at is None:
+                        child_exited_at = time.time()
+                    elif time.time() - child_exited_at >= 1.0:
+                        raise StageError(
+                            "simple_navigator exited without a move_base result (code {})".format(
+                                proc.returncode
+                            )
+                        )
+                if time.time() >= deadline:
+                    raise StageError(
+                        "simple_navigator timed out after {:.1f}s".format(timeout)
+                    )
+                rospy.sleep(0.1)
+        finally:
+            with self.lock:
+                self.qr_navigation_watching = False
+            self.stop_child("qr_navigator")
+            self.safe_stop(cancel_navigation=True)
+
+        self.publish_status(
+            "task1",
+            "qr_area_arrived",
+            "simple_navigator reached the configured QR-area waypoint",
+        )
+
     # ------------------------------ stages ------------------------------
     def task1(self):
         with self.lock:
@@ -443,9 +528,7 @@ class CompetitionFlow:
 
         category_name = CATEGORY_LABELS[self.category][0]
         instruction = "请取得{}类产品，仿真环境也统一取得{}类产品".format(category_name, category_name)
-        goal = rospy.get_param("~qr_goal", {"x": 1.0, "y": 0.51, "yaw": math.pi})
-        if bool_param("~navigate_to_qr", True):
-            self.navigate(goal["x"], goal["y"], goal.get("yaw", math.pi), "task1")
+        self.navigate_to_qr_area()
 
         self.publish_status("task1", "scanning_qr", "rotating until three unique QR items")
         self.qr_items.clear()

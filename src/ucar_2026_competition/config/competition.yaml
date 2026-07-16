@@ -1,8 +1,7 @@
-# 任务1：沿用现有二维码区导航点。
-qr_goal:
-  x: 1.00
-  y: 0.51
-  yaw: 3.141592653589793
+# 任务1：先运行团队已有的 simple_navigator/navigate.launch。
+# 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
+# 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
+qr_navigation_timeout_sec: 120.0
 qr_rotation_speed: 0.25
 qr_scan_timeout_sec: 45.0
 qr_expected_count: 3
