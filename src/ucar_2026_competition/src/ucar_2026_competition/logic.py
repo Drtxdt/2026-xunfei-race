@@ -129,6 +129,26 @@ class TemporalTargetFilter:
         return len(self.hit_times) >= self.required
 
 
+TRIGGER_ACK_STATES = frozenset((
+    "triggered",
+    "target_locked",
+    "target_centering",
+    "centered",
+    "parking_approaching",
+    "parking_verifying",
+    "arrived",
+))
+
+
+def trigger_delivery_state(service_accepted, navigator_status, elapsed, timeout_sec):
+    """Classify a reliable target-trigger handshake without depending on ROS."""
+    if bool(service_accepted) and str(navigator_status or "").strip().lower() in TRIGGER_ACK_STATES:
+        return "acknowledged"
+    if float(elapsed) >= max(0.0, float(timeout_sec)):
+        return "failed"
+    return "pending"
+
+
 def parse_category(text):
     compact = "".join(str(text or "").split()).lower()
     if "日用品" in compact or "daily" in compact:

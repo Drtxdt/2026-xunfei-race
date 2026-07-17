@@ -26,7 +26,7 @@ from move_base_msgs.msg import (
     MoveBaseGoal,
 )
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool, String
+from std_msgs.msg import String
 from std_srvs.srv import Trigger, TriggerResponse
 from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
@@ -41,6 +41,7 @@ from ucar_2026_competition.logic import (
     qr_values_from_payload,
     stage_sequence,
     traffic_decision_from_payload,
+    trigger_delivery_state,
 )
 
 
@@ -85,7 +86,6 @@ class CompetitionFlow:
             "/competition/traffic_decision", String, queue_size=5, latch=True
         )
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=2)
-        self.vision_pub = rospy.Publisher("/vision/detected", Bool, queue_size=5)
         self.vision_target_pub = rospy.Publisher(
             "/vision/target", String, queue_size=10)
 
@@ -118,9 +118,14 @@ class CompetitionFlow:
             rospy.get_param("~ocr_required_hits", 2),
             rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
-        self.vision_trigger_until = 0.0
         self.vision_trigger_latched = False
-        self.ocr_trigger_hold_sec = float(rospy.get_param("~ocr_trigger_hold_sec", 1.0))
+        self.trigger_request_pending = False
+        self.trigger_request_started_at = 0.0
+        self.trigger_service_accepted = False
+        self.trigger_acknowledged = False
+        self.trigger_service_name = rospy.get_param(
+            "~target_trigger_service", "/vision_triggered_navigator/trigger_target")
+        self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
         self.navigator_status = ""
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
@@ -158,8 +163,6 @@ class CompetitionFlow:
 
         rospy.Service("/competition/resume", Trigger, self._resume_cb)
         rospy.Service("/competition/abort", Trigger, self._abort_cb)
-        self.vision_trigger_timer = rospy.Timer(
-            rospy.Duration(0.1), self._vision_trigger_timer_cb)
         rospy.on_shutdown(self.shutdown)
 
         self.move_base = actionlib.SimpleActionClient("/move_base", MoveBaseAction)
@@ -346,22 +349,70 @@ class CompetitionFlow:
         if (confirmed and category == self.ocr_target and payload.get("target_bbox") and
                 not self.vision_trigger_latched):
             self.vision_trigger_latched = True
-            self.vision_trigger_until = time.monotonic() + self.ocr_trigger_hold_sec
+            self.trigger_request_pending = True
+            self.trigger_request_started_at = time.monotonic()
+            self.trigger_service_accepted = False
+            self.trigger_acknowledged = False
+            self.publish_status(
+                "task2", "trigger_pending",
+                "OCR target confirmed; requesting navigator acknowledgement")
             rospy.loginfo(
                 "task2 OCR target confirmed: target=%s hits=%d/%d; "
-                "trigger latched for %.1fs (will not retrigger)",
+                "reliable trigger pending (will not retrigger)",
                 self.ocr_target,
                 self.ocr_filter.hit_count,
                 self.ocr_filter.required,
-                self.ocr_trigger_hold_sec,
             )
-
-    def _vision_trigger_timer_cb(self, _event):
-        if time.monotonic() < self.vision_trigger_until:
-            self.vision_pub.publish(Bool(data=True))
 
     def _navigator_cb(self, msg):
         self.navigator_status = msg.data.strip().lower()
+
+    def _deliver_target_trigger(self):
+        """Deliver one OCR lock through a synchronous service and wait for status ACK."""
+        if not self.trigger_request_pending or self.trigger_acknowledged:
+            return
+        elapsed = time.monotonic() - self.trigger_request_started_at
+        delivery_state = trigger_delivery_state(
+            self.trigger_service_accepted,
+            self.navigator_status,
+            elapsed,
+            self.trigger_ack_timeout,
+        )
+        if delivery_state == "acknowledged":
+            self.trigger_acknowledged = True
+            self.trigger_request_pending = False
+            self.publish_status(
+                "task2", "trigger_acknowledged",
+                "navigator accepted and acknowledged the OCR target")
+            rospy.loginfo(
+                "task2 trigger acknowledged by navigator status=%s",
+                self.navigator_status)
+            return
+
+        if delivery_state == "failed":
+            self.publish_status(
+                "task2", "trigger_delivery_failed", "",
+                "navigator did not acknowledge target within {:.1f}s".format(
+                    self.trigger_ack_timeout))
+            raise StageError(
+                "trigger_delivery_failed: no navigator acknowledgement within {:.1f}s".format(
+                    self.trigger_ack_timeout))
+
+        if self.trigger_service_accepted:
+            return
+        try:
+            rospy.wait_for_service(self.trigger_service_name, timeout=0.15)
+            response = rospy.ServiceProxy(self.trigger_service_name, Trigger)()
+            if not response.success:
+                rospy.logwarn_throttle(
+                    0.5, "target trigger service rejected request: %s", response.message)
+                return
+            self.trigger_service_accepted = True
+            rospy.loginfo("task2 target trigger service accepted: %s", response.message)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logwarn_throttle(
+                0.5, "waiting for reliable target trigger service %s: %s",
+                self.trigger_service_name, str(exc))
 
     def _traffic_cb(self, msg):
         try:
@@ -807,8 +858,11 @@ class CompetitionFlow:
         self.ocr_target = self.category
         self.ocr_filter.reset()
         self.ocr_last_message_at = 0.0
-        self.vision_trigger_until = 0.0
         self.vision_trigger_latched = False
+        self.trigger_request_pending = False
+        self.trigger_request_started_at = 0.0
+        self.trigger_service_accepted = False
+        self.trigger_acknowledged = False
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
@@ -846,6 +900,7 @@ class CompetitionFlow:
                     "trigger_mode": "vision",
                     "vision_topic": "/vision/detected",
                     "target_topic": "/vision/target",
+                    "trigger_service": self.trigger_service_name,
                     "publish_initial_pose": bool_param("~navigator_publish_initial_pose", False),
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
@@ -860,6 +915,10 @@ class CompetitionFlow:
                     "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
                     "parking_goal_offset": rospy.get_param(
                         "~parking_goal_offset", 0.25),
+                    "parking_normal_offset": rospy.get_param(
+                        "~parking_normal_offset", 0.0),
+                    "parking_tangent_offset": rospy.get_param(
+                        "~parking_tangent_offset", 0.0),
                     "parking_box_width": rospy.get_param("~parking_box_width", 0.50),
                     "parking_box_depth": rospy.get_param("~parking_box_depth", 0.50),
                     "parking_xy_tolerance": rospy.get_param(
@@ -894,6 +953,7 @@ class CompetitionFlow:
             deadline = time.time() + timeout
             while time.time() < deadline:
                 self.check_abort()
+                self._deliver_target_trigger()
                 if self.navigator_status == "arrived":
                     break
                 if center_only and self.navigator_status == "centered":
@@ -913,8 +973,10 @@ class CompetitionFlow:
                 raise StageError("factory navigation timed out after {:.1f}s".format(timeout))
         finally:
             self.ocr_target = None
-            self.vision_trigger_until = 0.0
             self.vision_trigger_latched = False
+            self.trigger_request_pending = False
+            self.trigger_service_accepted = False
+            self.trigger_acknowledged = False
             self.stop_child("factory_ocr")
             self.stop_child("factory_navigator")
             self.safe_stop(cancel_navigation=True)

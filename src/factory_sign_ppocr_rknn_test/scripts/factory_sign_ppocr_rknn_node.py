@@ -346,14 +346,20 @@ class RknnRuntime:
         return rknn
 
     def infer(self, image, data_format: str = "nhwc"):
+        if self.rknn is None:
+            raise RuntimeError("RKNN runtime has already been released")
         try:
             return self.rknn.inference(inputs=[image], data_format=[data_format])
         except TypeError:
             return self.rknn.inference(inputs=[image])
 
     def release(self) -> None:
+        rknn = self.rknn
+        self.rknn = None
+        if rknn is None:
+            return
         try:
-            self.rknn.release()
+            rknn.release()
         except Exception:
             pass
 
@@ -682,6 +688,9 @@ class PPOCRRknnRecognizer:
         return crops
 
     def release(self) -> None:
+        if getattr(self, "_released", False):
+            return
+        self._released = True
         self.rec.release()
         if self.det is not None:
             self.det.release()
@@ -740,6 +749,8 @@ class FactorySignPPOCRRknnNode:
         self.last_roi_box = (0, 0, 0, 0)
         self.last_ocr_scale_factor = 1.0
         self.last_debug_publish_at = 0.0
+        self.shutdown_requested = False
+        self.resources_released = False
 
         self.speak_pub = rospy.Publisher(self.speech_topic, String, queue_size=1)
         self.result_pub = rospy.Publisher(
@@ -820,11 +831,16 @@ class FactorySignPPOCRRknnNode:
 
     def run(self) -> None:
         rate = self.rospy.Rate(self.inference_rate)
-        while not self.rospy.is_shutdown():
-            if self.latest_image is not None and self.latest_image_seq != self.processed_image_seq:
-                self.processed_image_seq = self.latest_image_seq
-                self._process_once(self.latest_image.copy())
-            rate.sleep()
+        try:
+            while not self.rospy.is_shutdown() and not self.shutdown_requested:
+                if self.latest_image is not None and self.latest_image_seq != self.processed_image_seq:
+                    self.processed_image_seq = self.latest_image_seq
+                    self._process_once(self.latest_image.copy())
+                rate.sleep()
+        finally:
+            # This runs only after an in-flight synchronous RKNN inference has
+            # returned, so shutdown can never release the runtime underneath it.
+            self._release_resources()
 
     def _process_once(self, frame) -> None:
         view_scale = self.view_scales[self.view_index % len(self.view_scales)]
@@ -1033,6 +1049,16 @@ class FactorySignPPOCRRknnNode:
             self.rospy.logwarn_throttle(2.0, "debug_show_image failed: %s", exc)
 
     def _on_shutdown(self) -> None:
+        self.shutdown_requested = True
+        try:
+            self.image_sub.unregister()
+        except Exception:
+            pass
+
+    def _release_resources(self) -> None:
+        if self.resources_released:
+            return
+        self.resources_released = True
         try:
             self.recognizer.release()
         except Exception:

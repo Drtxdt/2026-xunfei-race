@@ -2,6 +2,7 @@
 # 触发模式：keyboard（键盘回车测试） / vision（视觉话题）
 trigger_mode: "keyboard"
 vision_topic: "/vision/detected"
+trigger_service: "/vision_triggered_navigator/trigger_target"
 
 # 参考坐标系
 # map_frame: AMCL / move_base 使用 "map"
@@ -11,7 +12,8 @@ map_frame: "map"
 base_frame: "base_link"
 camera_frame: "camera_frame"
 
-# 视觉触发长方形围墙 4 个角点（手标有误差，程序内部取 min/max 包围盒）
+# 视觉区实测四角，顺序固定为：左上、右上、左下、右下。
+# 最终停泊直接使用四条真实墙段；min/max 包围盒仅过滤观察候选点。
 vision_rect_corners:
   - [-2.2311, -1.2505]
   - [ 2.8000, -1.1940]
@@ -83,6 +85,8 @@ validate_parking_box: false
 parking_box_width: 0.50
 parking_box_depth: 0.50
 parking_goal_offset: 0.4
+parking_normal_offset: 0.0
+parking_tangent_offset: 0.0
 parking_xy_tolerance: 0.04
 parking_yaw_tolerance: 0.06
 parking_validation_margin: 0.01

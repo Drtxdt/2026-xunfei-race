@@ -9,14 +9,68 @@ if SCRIPTS not in sys.path:
 
 from factory_sign_ppocr_rknn_node import (
     CTCLabelDecoder,
+    FactorySignPPOCRRknnNode,
     FactorySignKeywordClassifier,
     OCRText,
     PPOCRRknnRecognizer,
+    RknnRuntime,
     VoteWindow,
     map_box_to_frame,
     parse_view_scales,
     select_category_box,
 )
+
+
+class FakeRuntime:
+    def __init__(self):
+        self.release_calls = 0
+
+    def release(self):
+        self.release_calls += 1
+
+
+class FakeSubscription:
+    def __init__(self):
+        self.unregister_calls = 0
+
+    def unregister(self):
+        self.unregister_calls += 1
+
+
+def test_rknn_runtime_release_is_idempotent():
+    runtime = RknnRuntime.__new__(RknnRuntime)
+    fake = FakeRuntime()
+    runtime.rknn = fake
+    runtime.release()
+    runtime.release()
+    assert fake.release_calls == 1
+
+
+def test_recognizer_releases_detector_and_recognizer_once():
+    recognizer = PPOCRRknnRecognizer.__new__(PPOCRRknnRecognizer)
+    recognizer.rec = FakeRuntime()
+    recognizer.det = FakeRuntime()
+    recognizer.release()
+    recognizer.release()
+    assert recognizer.rec.release_calls == 1
+    assert recognizer.det.release_calls == 1
+
+
+def test_shutdown_waits_for_run_loop_before_releasing_runtime():
+    node = FactorySignPPOCRRknnNode.__new__(FactorySignPPOCRRknnNode)
+    node.shutdown_requested = False
+    node.resources_released = False
+    node.image_sub = FakeSubscription()
+    node.recognizer = FakeRuntime()
+
+    node._on_shutdown()
+    assert node.shutdown_requested
+    assert node.image_sub.unregister_calls == 1
+    assert node.recognizer.release_calls == 0
+
+    node._release_resources()
+    node._release_resources()
+    assert node.recognizer.release_calls == 1
 
 
 def test_keyword_classifier_maps_requested_categories():

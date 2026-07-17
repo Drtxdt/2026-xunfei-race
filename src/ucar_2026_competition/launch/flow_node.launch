@@ -35,6 +35,9 @@
   <arg name="parking_goal_offset" default="0.25" />
   <arg name="parking_xy_tolerance" default="0.04" />
   <arg name="parking_yaw_tolerance" default="0.06" />
+  <arg name="parking_normal_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.0" />
+  <arg name="trigger_ack_timeout_sec" default="2.0" />
 
   <node pkg="ucar_2026_competition" type="competition_flow.py"
         name="competition_flow" output="screen" required="true">
@@ -75,5 +78,8 @@
     <param name="parking_goal_offset" value="$(arg parking_goal_offset)" />
     <param name="parking_xy_tolerance" value="$(arg parking_xy_tolerance)" />
     <param name="parking_yaw_tolerance" value="$(arg parking_yaw_tolerance)" />
+    <param name="parking_normal_offset" value="$(arg parking_normal_offset)" />
+    <param name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
+    <param name="trigger_ack_timeout_sec" value="$(arg trigger_ack_timeout_sec)" />
   </node>
 </launch>

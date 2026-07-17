@@ -10,14 +10,82 @@ if SCRIPTS not in sys.path:
 
 from navigator_logic import (
     build_observation_candidates,
+    build_quadrilateral_walls,
     center_angular_command,
     center_step_angle,
     footprint_max_cost,
+    latch_trigger,
     normalize_angle,
+    parking_footprint_margins,
     parking_footprint_inside,
+    parking_goal_from_wall,
+    ray_segment_intersection,
     scan_dwell_deadline,
     split_scan_angle,
 )
+
+
+MEASURED_CORNERS = [
+    [-2.2311, -1.2505],
+    [2.8000, -1.1940],
+    [-2.2197, -3.2746],
+    [2.7739, -3.2186],
+]
+
+
+def test_one_shot_trigger_is_idempotent():
+    latched, accepted = latch_trigger(False)
+    assert latched and accepted
+    latched, accepted = latch_trigger(latched)
+    assert latched and not accepted
+
+
+def test_measured_quadrilateral_wall_normals_point_inward():
+    walls = build_quadrilateral_walls(MEASURED_CORNERS)
+    centroid = (
+        sum(point[0] for point in MEASURED_CORNERS) / 4.0,
+        sum(point[1] for point in MEASURED_CORNERS) / 4.0,
+    )
+    assert [wall[0] for wall in walls] == ["left", "right", "bottom", "top"]
+    for _name, start, end, normal in walls:
+        midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+        toward_center = (centroid[0] - midpoint[0], centroid[1] - midpoint[1])
+        assert math.isclose(math.hypot(*normal), 1.0, abs_tol=1e-9)
+        assert normal[0] * toward_center[0] + normal[1] * toward_center[1] > 0.0
+
+
+def test_rays_hit_each_skewed_wall_and_make_continuous_goals():
+    walls = build_quadrilateral_walls(MEASURED_CORNERS)
+    centroid = (
+        sum(point[0] for point in MEASURED_CORNERS) / 4.0,
+        sum(point[1] for point in MEASURED_CORNERS) / 4.0,
+    )
+    for _name, start, end, normal in walls:
+        midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+        direction = (midpoint[0] - centroid[0], midpoint[1] - centroid[1])
+        ray_t = ray_segment_intersection(centroid, direction, start, end)
+        assert ray_t is not None
+        intersection = (
+            centroid[0] + ray_t * direction[0],
+            centroid[1] + ray_t * direction[1],
+        )
+        assert math.isclose(intersection[0], midpoint[0], abs_tol=1e-8)
+        assert math.isclose(intersection[1], midpoint[1], abs_tol=1e-8)
+        gx, gy, yaw = parking_goal_from_wall(intersection, normal, 0.25)
+        normal_distance = (gx - intersection[0]) * normal[0] + (gy - intersection[1]) * normal[1]
+        assert math.isclose(normal_distance, 0.25, abs_tol=1e-9)
+        assert math.isclose(math.cos(yaw), -normal[0], abs_tol=1e-9)
+        assert math.isclose(math.sin(yaw), -normal[1], abs_tol=1e-9)
+
+
+def test_parking_goal_supports_independent_normal_and_tangent_calibration():
+    gx, gy, yaw = parking_goal_from_wall(
+        (0.0, 0.0), (1.0, 0.0), 0.25,
+        normal_offset=0.02, tangent_offset=0.03,
+    )
+    assert math.isclose(gx, 0.27)
+    assert math.isclose(gy, 0.03)
+    assert math.isclose(abs(yaw), math.pi)
 
 
 def test_candidates_stay_inside_wall_clearance_and_keep_primary():
@@ -64,6 +132,18 @@ def test_full_footprint_must_fit_inside_50cm_wall_box():
     assert not parking_footprint_inside(
         (0.25, 0.20, math.pi), (0.0, 0.0), (1.0, 0.0),
         0.50, 0.50, 0.171, 0.128, 0.01)
+
+    diagnostics = parking_footprint_margins(
+        (0.25, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0),
+        0.50, 0.50, 0.171, 0.128, 0.01)
+    assert diagnostics["inside"]
+    assert diagnostics["near_margin"] > 0.0
+    assert diagnostics["far_margin"] > 0.0
+    assert diagnostics["side_margin"] > 0.0
+    assert math.isclose(diagnostics["normal_error"], 0.0, abs_tol=1e-9)
+    assert math.isclose(diagnostics["tangent_error"], 0.0, abs_tol=1e-9)
+    assert len(diagnostics["corners"]) == 4
+    assert all("side_margin" in corner for corner in diagnostics["corners"])
 
 
 def test_tight_goal_tolerance_keeps_rotated_footprint_in_box():

@@ -7,8 +7,90 @@ from __future__ import division
 import math
 
 
+def latch_trigger(already_latched):
+    """Return ``(latched, accepted_now)`` for an idempotent one-shot trigger."""
+    if bool(already_latched):
+        return True, False
+    return True, True
+
+
 def normalize_angle(angle):
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def build_quadrilateral_walls(corners):
+    """Build measured wall segments with inward unit normals.
+
+    Corner order is ``top-left, top-right, bottom-left, bottom-right`` as used
+    by the existing YAML.  The arena centroid selects the inward side, so the
+    calculation remains correct when the mapped walls are slightly skewed.
+    """
+    if len(corners) != 4:
+        raise ValueError("vision_rect_corners must contain exactly four points")
+    points = [(float(point[0]), float(point[1])) for point in corners]
+    top_left, top_right, bottom_left, bottom_right = points
+    centroid = (
+        sum(point[0] for point in points) / 4.0,
+        sum(point[1] for point in points) / 4.0,
+    )
+    segments = [
+        ("left", top_left, bottom_left),
+        ("right", top_right, bottom_right),
+        ("bottom", bottom_left, bottom_right),
+        ("top", top_left, top_right),
+    ]
+    walls = []
+    for name, start, end in segments:
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= 1e-9:
+            raise ValueError("wall {} has zero length".format(name))
+        normal = (-dy / length, dx / length)
+        midpoint = ((start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5)
+        toward_center = (centroid[0] - midpoint[0], centroid[1] - midpoint[1])
+        if normal[0] * toward_center[0] + normal[1] * toward_center[1] < 0.0:
+            normal = (-normal[0], -normal[1])
+        walls.append((name, start, end, normal))
+    return walls
+
+
+def ray_segment_intersection(origin, direction, start, end):
+    """Return positive ray parameter ``t`` for a 2-D segment intersection."""
+    ox, oy = [float(value) for value in origin]
+    dx, dy = [float(value) for value in direction]
+    ax, ay = [float(value) for value in start]
+    bx, by = [float(value) for value in end]
+    vx = bx - ax
+    vy = by - ay
+    denominator = -vx * dy + vy * dx
+    if abs(denominator) < 1e-9:
+        return None
+    wx = ox - ax
+    wy = oy - ay
+    ray_t = (vx * wy - vy * wx) / denominator
+    segment_u = (-wx * dy + wy * dx) / denominator
+    if ray_t <= 1e-9 or segment_u < -1e-6 or segment_u > 1.0 + 1e-6:
+        return None
+    return ray_t
+
+
+def parking_goal_from_wall(wall_point, inward_normal, offset,
+                           normal_offset=0.0, tangent_offset=0.0):
+    """Return a continuous parking pose from a measured wall intersection."""
+    ix, iy = [float(value) for value in wall_point]
+    nx, ny = [float(value) for value in inward_normal]
+    length = math.hypot(nx, ny)
+    if length <= 1e-9:
+        raise ValueError("inward normal must be non-zero")
+    nx /= length
+    ny /= length
+    tx, ty = -ny, nx
+    normal_distance = float(offset) + float(normal_offset)
+    gx = ix + nx * normal_distance + tx * float(tangent_offset)
+    gy = iy + ny * normal_distance + ty * float(tangent_offset)
+    yaw = math.atan2(-ny, -nx)
+    return gx, gy, yaw
 
 
 def split_scan_angle(total_angle, step_angle):
@@ -75,11 +157,11 @@ def center_step_angle(error, tolerance, fine_threshold,
     return abs(float(coarse_step_angle))
 
 
-def parking_footprint_inside(pose, wall_point, inward_normal,
-                             box_width, box_depth,
-                             footprint_half_length, footprint_half_width,
-                             margin=0.0):
-    """Check a rectangular base footprint against a wall-aligned parking box.
+def parking_footprint_margins(pose, wall_point, inward_normal,
+                              box_width, box_depth,
+                              footprint_half_length, footprint_half_width,
+                              margin=0.0):
+    """Return wall-frame footprint coordinates and remaining box margins.
 
     ``wall_point`` is the middle of the box edge touching the wall.  Positive
     normal distance points into the arena; tangent distance is measured along
@@ -91,7 +173,7 @@ def parking_footprint_inside(pose, wall_point, inward_normal,
     nx, ny = [float(value) for value in inward_normal]
     normal_length = math.hypot(nx, ny)
     if normal_length <= 1e-9:
-        return False
+        return {"inside": False, "error": "zero inward normal", "corners": []}
     nx /= normal_length
     ny /= normal_length
     tx, ty = -ny, nx
@@ -102,10 +184,11 @@ def parking_footprint_inside(pose, wall_point, inward_normal,
     depth_min = max(0.0, float(margin))
     depth_max = abs(float(box_depth)) - max(0.0, float(margin))
     if width_limit <= 0.0 or depth_max <= depth_min:
-        return False
+        return {"inside": False, "error": "invalid box dimensions", "corners": []}
 
     cos_yaw = math.cos(yaw)
     sin_yaw = math.sin(yaw)
+    corners = []
     for local_x in (-half_length, half_length):
         for local_y in (-half_width, half_width):
             corner_x = px + local_x * cos_yaw - local_y * sin_yaw
@@ -114,11 +197,50 @@ def parking_footprint_inside(pose, wall_point, inward_normal,
             delta_y = corner_y - wy
             normal_distance = delta_x * nx + delta_y * ny
             tangent_distance = delta_x * tx + delta_y * ty
-            if normal_distance < depth_min or normal_distance > depth_max:
-                return False
-            if abs(tangent_distance) > width_limit:
-                return False
-    return True
+            corners.append({
+                "x": corner_x,
+                "y": corner_y,
+                "normal": normal_distance,
+                "tangent": tangent_distance,
+                "near_margin": normal_distance - depth_min,
+                "far_margin": depth_max - normal_distance,
+                "side_margin": width_limit - abs(tangent_distance),
+            })
+    normal_min = min(item["normal"] for item in corners)
+    normal_max = max(item["normal"] for item in corners)
+    tangent_min = min(item["tangent"] for item in corners)
+    tangent_max = max(item["tangent"] for item in corners)
+    tangent_abs_max = max(abs(item["tangent"]) for item in corners)
+    near_margin = normal_min - depth_min
+    far_margin = depth_max - normal_max
+    side_margin = width_limit - tangent_abs_max
+    normal_error = (normal_min + normal_max) * 0.5 - abs(float(box_depth)) * 0.5
+    tangent_error = (tangent_min + tangent_max) * 0.5
+    return {
+        "inside": near_margin >= 0.0 and far_margin >= 0.0 and side_margin >= 0.0,
+        "error": "",
+        "normal_min": normal_min,
+        "normal_max": normal_max,
+        "tangent_min": tangent_min,
+        "tangent_max": tangent_max,
+        "tangent_abs_max": tangent_abs_max,
+        "normal_error": normal_error,
+        "tangent_error": tangent_error,
+        "near_margin": near_margin,
+        "far_margin": far_margin,
+        "side_margin": side_margin,
+        "corners": corners,
+    }
+
+
+def parking_footprint_inside(pose, wall_point, inward_normal,
+                             box_width, box_depth,
+                             footprint_half_length, footprint_half_width,
+                             margin=0.0):
+    """Check a rectangular base footprint against a wall-aligned parking box."""
+    return bool(parking_footprint_margins(
+        pose, wall_point, inward_normal, box_width, box_depth,
+        footprint_half_length, footprint_half_width, margin).get("inside"))
 
 
 def footprint_max_cost(data, width, height, resolution, origin_x, origin_y,

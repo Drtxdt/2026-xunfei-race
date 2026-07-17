@@ -4,6 +4,7 @@
   <arg name="trigger_mode" default="keyboard" />
   <arg name="vision_topic" default="/vision/detected" />
   <arg name="status_topic" default="/vision_triggered_navigator/status" />
+  <arg name="trigger_service" default="/vision_triggered_navigator/trigger_target" />
   <arg name="publish_initial_pose" default="true" />
   <arg name="navigate_to_end_after_trigger" default="true" />
   <arg name="coverage_search_mode" default="false" />
@@ -28,6 +29,8 @@
   <arg name="parking_box_width" default="0.50" />
   <arg name="parking_box_depth" default="0.50" />
   <arg name="parking_goal_offset" default="0.4" />
+  <arg name="parking_normal_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.0" />
   <arg name="parking_xy_tolerance" default="0.04" />
   <arg name="parking_yaw_tolerance" default="0.06" />
 
@@ -42,6 +45,7 @@
     <param name="trigger_mode" value="$(arg trigger_mode)" />
     <param name="vision_topic" value="$(arg vision_topic)" />
     <param name="status_topic" value="$(arg status_topic)" />
+    <param name="trigger_service" value="$(arg trigger_service)" />
     <param name="publish_initial_pose" value="$(arg publish_initial_pose)" />
     <param name="navigate_to_end_after_trigger" value="$(arg navigate_to_end_after_trigger)" />
     <param name="coverage_search_mode" value="$(arg coverage_search_mode)" />
@@ -66,6 +70,8 @@
     <param name="parking_box_width" value="$(arg parking_box_width)" />
     <param name="parking_box_depth" value="$(arg parking_box_depth)" />
     <param name="parking_goal_offset" value="$(arg parking_goal_offset)" />
+    <param name="parking_normal_offset" value="$(arg parking_normal_offset)" />
+    <param name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
     <param name="parking_xy_tolerance" value="$(arg parking_xy_tolerance)" />
     <param name="parking_yaw_tolerance" value="$(arg parking_yaw_tolerance)" />
   </node>

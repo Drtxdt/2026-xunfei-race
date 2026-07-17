@@ -6,6 +6,9 @@
   <arg name="traffic_x" default="0.0" />
   <arg name="traffic_y" default="0.0" />
   <arg name="traffic_yaw" default="0.0" />
+  <arg name="parking_normal_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.0" />
+  <arg name="trigger_ack_timeout_sec" default="2.0" />
 
   <include file="$(find ucar_2026_competition)/launch/common_core.launch">
     <arg name="start_nav" value="true" />
@@ -24,5 +27,8 @@
     <arg name="traffic_x" value="$(arg traffic_x)" />
     <arg name="traffic_y" value="$(arg traffic_y)" />
     <arg name="traffic_yaw" value="$(arg traffic_yaw)" />
+    <arg name="parking_normal_offset" value="$(arg parking_normal_offset)" />
+    <arg name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
+    <arg name="trigger_ack_timeout_sec" value="$(arg trigger_ack_timeout_sec)" />
   </include>
 </launch>

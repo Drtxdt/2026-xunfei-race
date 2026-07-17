@@ -15,6 +15,7 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist, PoseWithCovarianceStamped
 from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger, TriggerResponse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -22,11 +23,14 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_observation_candidates,
-    center_angular_command,
+    build_quadrilateral_walls,
     center_step_angle,
     footprint_max_cost,
+    latch_trigger,
     normalize_angle,
-    parking_footprint_inside,
+    parking_footprint_margins,
+    parking_goal_from_wall,
+    ray_segment_intersection,
     scan_dwell_deadline,
     split_scan_angle,
 )
@@ -82,6 +86,8 @@ class VisionTriggeredNavigator(object):
         self.vision_topic = rospy.get_param("~vision_topic", "/vision/detected")
         self.status_topic = rospy.get_param(
             "~status_topic", "/vision_triggered_navigator/status")
+        self.trigger_service_name = rospy.get_param(
+            "~trigger_service", "/vision_triggered_navigator/trigger_target")
         self.navigate_to_end_after_trigger = rospy.get_param(
             "~navigate_to_end_after_trigger", True)
 
@@ -164,6 +170,10 @@ class VisionTriggeredNavigator(object):
         self.parking_box_depth = abs(float(rospy.get_param("~parking_box_depth", 0.50)))
         self.parking_goal_offset = abs(float(rospy.get_param(
             "~parking_goal_offset", self.vision_offset)))
+        self.parking_normal_offset = float(rospy.get_param(
+            "~parking_normal_offset", 0.0))
+        self.parking_tangent_offset = float(rospy.get_param(
+            "~parking_tangent_offset", 0.0))
         self.parking_xy_tolerance = abs(float(rospy.get_param(
             "~parking_xy_tolerance", 0.04)))
         self.parking_yaw_tolerance = abs(float(rospy.get_param(
@@ -215,16 +225,7 @@ class VisionTriggeredNavigator(object):
             rospy.Subscriber(self.target_topic, String, self._target_cb, queue_size=10)
 
         self.triggered = False
-        if self.trigger_mode == "vision":
-            rospy.Subscriber(self.vision_topic, Bool, self._vision_cb)
-            rospy.loginfo("[vision_triggered_navigator] 触发模式：视觉话题 <%s>", self.vision_topic)
-        elif self.trigger_mode == "keyboard":
-            t = threading.Thread(target=self._keyboard_thread)
-            t.daemon = True
-            t.start()
-            rospy.loginfo("[vision_triggered_navigator] 触发模式：键盘回车")
-        else:
-            rospy.logerr("[vision_triggered_navigator] 未知触发模式 '%s'，仅支持 keyboard/vision", self.trigger_mode)
+        self.trigger_lock = threading.Lock()
 
         # 连接 move_base action server
         self.move_base_client = actionlib.SimpleActionClient(self.move_base_server, MoveBaseAction)
@@ -240,10 +241,26 @@ class VisionTriggeredNavigator(object):
         self.current_goal_timed_out = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
+        self.parking_wall_name = None
         self._planner_client = None
         self._saved_planner_tolerances = None
         rospy.on_shutdown(self._restore_final_tolerances)
         self._publish_status("ready")
+        # 只有在 action client 和全部状态完成初始化后才接收触发，避免启动竞态。
+        self.trigger_service = rospy.Service(
+            self.trigger_service_name, Trigger, self._trigger_service_cb)
+        rospy.loginfo("[vision_triggered_navigator] 可靠触发服务已就绪: %s",
+                      self.trigger_service_name)
+        if self.trigger_mode == "vision":
+            rospy.Subscriber(self.vision_topic, Bool, self._vision_cb)
+            rospy.loginfo("[vision_triggered_navigator] 触发模式：视觉话题 <%s>", self.vision_topic)
+        elif self.trigger_mode == "keyboard":
+            t = threading.Thread(target=self._keyboard_thread)
+            t.daemon = True
+            t.start()
+            rospy.loginfo("[vision_triggered_navigator] 触发模式：键盘回车")
+        else:
+            rospy.logerr("[vision_triggered_navigator] 未知触发模式 '%s'，仅支持 keyboard/vision", self.trigger_mode)
 
     # ------------------------------------------------------------------
     # 回调与工具函数
@@ -261,13 +278,30 @@ class VisionTriggeredNavigator(object):
         """发布简洁、稳定的流程状态，供比赛总控监听。"""
         self.status_pub.publish(String(data=status))
 
+    def _accept_trigger(self, source):
+        """Idempotently latch a target trigger and cancel active navigation."""
+        with self.trigger_lock:
+            self.triggered, accepted = latch_trigger(self.triggered)
+            if not accepted:
+                rospy.loginfo("[vision_triggered_navigator] %s触发重复到达，保持已锁存状态.",
+                              source)
+                return False
+        rospy.loginfo("[vision_triggered_navigator] 收到%s触发，打断当前导航.", source)
+        self._publish_status("triggered")
+        self.cancel_goal()
+        return True
+
     def _vision_cb(self, msg):
         """视觉触发回调"""
-        if msg.data and not self.triggered:
-            rospy.loginfo("[vision_triggered_navigator] 收到视觉触发信号，打断当前导航.")
-            self.triggered = True
-            self._publish_status("triggered")
-            self.cancel_goal()
+        if msg.data:
+            self._accept_trigger("视觉话题")
+
+    def _trigger_service_cb(self, _request):
+        """Reliably acknowledge competition target lock requests."""
+        accepted = self._accept_trigger("目标服务")
+        if accepted:
+            return TriggerResponse(True, "target trigger accepted and latched")
+        return TriggerResponse(True, "target trigger was already latched")
 
     def _target_cb(self, msg):
         """保存当前目标厂牌在完整图像中的水平位置。"""
@@ -334,14 +368,12 @@ class VisionTriggeredNavigator(object):
             try:
                 input_func()
                 if not self.triggered:
-                    rospy.loginfo("[vision_triggered_navigator] 键盘触发，打断当前导航.")
-                    self.triggered = True
-                    self.cancel_goal()
+                    self._accept_trigger("键盘")
             except EOFError:
                 rospy.sleep(0.5)
 
     def _build_rect_bounds(self):
-        """从手标角点构建轴对齐包围盒与四堵墙"""
+        """Build a safety AABB plus the four measured, possibly skewed walls."""
         xs = [p[0] for p in self.vision_rect_corners] # 去四个角点的 x 坐标
         ys = [p[1] for p in self.vision_rect_corners] # 去四个角点的 y 坐标
         self.rect_x_min = min(xs)
@@ -349,13 +381,8 @@ class VisionTriggeredNavigator(object):
         self.rect_y_min = min(ys)
         self.rect_y_max = max(ys)
 
-        # 四堵墙：(起点，终点，向内法向量)
-        self.walls = [
-            ((self.rect_x_min, self.rect_y_min), (self.rect_x_min, self.rect_y_max), (1.0, 0.0)),   # 左
-            ((self.rect_x_max, self.rect_y_min), (self.rect_x_max, self.rect_y_max), (-1.0, 0.0)),  # 右
-            ((self.rect_x_min, self.rect_y_min), (self.rect_x_max, self.rect_y_min), (0.0, 1.0)),   # 下
-            ((self.rect_x_min, self.rect_y_max), (self.rect_x_max, self.rect_y_max), (0.0, -1.0)),  # 上
-        ]
+        # AABB只供覆盖观察候选过滤；最终停泊使用实测四边形墙段。
+        self.walls = build_quadrilateral_walls(self.vision_rect_corners)
 
     def _get_robot_pose(self, frame_id):
         """查询 map -> frame_id 的位姿，返回 (x, y, yaw)；失败返回 None"""
@@ -1038,7 +1065,7 @@ class VisionTriggeredNavigator(object):
         if pose is None:
             rospy.logerr("[vision_triggered_navigator] 无法获取最终位姿，停泊验证失败.")
             return False
-        valid = parking_footprint_inside(
+        diagnostics = parking_footprint_margins(
             pose,
             self.parking_wall_point,
             self.parking_inward_normal,
@@ -1048,11 +1075,32 @@ class VisionTriggeredNavigator(object):
             self.footprint_half_width,
             self.parking_validation_margin,
         )
+        valid = bool(diagnostics.get("inside"))
         rospy.loginfo(
-            "[vision_triggered_navigator] 停泊框验证 pose=(%.4f, %.4f, %.4f) "
-            "box=%.2fx%.2f full_footprint_inside=%s",
+            "[vision_triggered_navigator] 停泊框验证 wall=%s pose=(%.4f, %.4f, %.4f) "
+            "box=%.2fx%.2f normal=[%.3f,%.3f] tangent_abs=%.3f "
+            "error(normal=%+.3f tangent=%+.3f) "
+            "margins(near=%.3f far=%.3f side=%.3f) full_footprint_inside=%s",
+            self.parking_wall_name or "unknown",
             pose[0], pose[1], pose[2], self.parking_box_width,
-            self.parking_box_depth, valid)
+            self.parking_box_depth,
+            float(diagnostics.get("normal_min", float("nan"))),
+            float(diagnostics.get("normal_max", float("nan"))),
+            float(diagnostics.get("tangent_abs_max", float("nan"))),
+            float(diagnostics.get("normal_error", float("nan"))),
+            float(diagnostics.get("tangent_error", float("nan"))),
+            float(diagnostics.get("near_margin", float("nan"))),
+            float(diagnostics.get("far_margin", float("nan"))),
+            float(diagnostics.get("side_margin", float("nan"))),
+            valid)
+        for index, corner in enumerate(diagnostics.get("corners", []), 1):
+            rospy.loginfo(
+                "[vision_triggered_navigator] footprint corner%d map=(%.3f,%.3f) "
+                "normal=%.3f tangent=%.3f margins(near=%.3f far=%.3f side=%.3f)",
+                index, corner["x"], corner["y"],
+                corner["normal"], corner["tangent"],
+                corner["near_margin"], corner["far_margin"],
+                corner["side_margin"])
         return valid
 
     # ------------------------------------------------------------------
@@ -1060,8 +1108,8 @@ class VisionTriggeredNavigator(object):
     # ------------------------------------------------------------------
     def compute_vision_goal(self):
         """
-        根据 base_link 车头正方向射线与长方形围墙求交，
-        交点沿内法向回退 vision_offset，返回 (x, y, yaw)。
+        根据 base_link 车头正方向射线与实测四边形围墙求交，
+        沿墙法向和切向连续计算停车目标，返回 (x, y, yaw)。
         """
         pose = self._get_robot_pose(self.base_frame)
         if pose is None:
@@ -1079,13 +1127,15 @@ class VisionTriggeredNavigator(object):
         best_t = float('inf')
         best_normal = None
         best_point = None
+        best_wall_name = None
 
-        for a, b, normal in self.walls:
-            t = self._ray_segment_intersection((px, py), (dx, dy), a, b)
-            if t is not None and t > 1e-6 and t < best_t:
+        for wall_name, a, b, normal in self.walls:
+            t = ray_segment_intersection((px, py), (dx, dy), a, b)
+            if t is not None and t < best_t:
                 best_t = t
                 best_normal = normal
                 best_point = (px + t * dx, py + t * dy)
+                best_wall_name = wall_name
 
         if best_point is None:
             rospy.logerr("[vision_triggered_navigator] 射线与围墙无交点，无法计算视觉目标.")
@@ -1093,53 +1143,25 @@ class VisionTriggeredNavigator(object):
 
         ix, iy = best_point
         nx, ny = best_normal
-        offset = self.parking_goal_offset
-        gx = ix + nx * offset
-        gy = iy + ny * offset
-        # 车头垂直指向墙外（与内法向相反）
-        gyaw = math.atan2(-ny, -nx)
+        gx, gy, gyaw = parking_goal_from_wall(
+            best_point,
+            best_normal,
+            self.parking_goal_offset,
+            self.parking_normal_offset,
+            self.parking_tangent_offset,
+        )
 
-        rospy.loginfo("[vision_triggered_navigator] 墙交点 (%.4f, %.4f), 外法向 (%.2f, %.2f), "
-                      "目标点 (%.4f, %.4f, yaw=%.4f)",
-                      ix, iy, -nx, -ny, gx, gy, gyaw)
+        rospy.loginfo(
+            "[vision_triggered_navigator] 墙段=%s 交点=(%.4f,%.4f) "
+            "内法向=(%.4f,%.4f) normal_offset=%+.3f tangent_offset=%+.3f "
+            "目标点=(%.4f,%.4f,yaw=%.4f)",
+            best_wall_name, ix, iy, nx, ny,
+            self.parking_normal_offset, self.parking_tangent_offset,
+            gx, gy, gyaw)
         self.parking_wall_point = (ix, iy)
         self.parking_inward_normal = (nx, ny)
+        self.parking_wall_name = best_wall_name
         return gx, gy, gyaw
-
-    @staticmethod
-    def _ray_segment_intersection(origin, direction, a, b):
-        """
-        2D 射线与线段相交，返回射线参数 t；不相交返回 None。
-        origin: (x, y)
-        direction: (dx, dy)，无需单位化
-        a, b: 线段端点
-        """
-        ox, oy = origin
-        dx, dy = direction
-        ax, ay = a
-        bx, by = b
-
-        vx = bx - ax
-        vy = by - ay
-
-        denom = vx * (-dy) - vy * (-dx)  # = vx*(-dy) + vy*dx
-        # 等价于 cross(v, d_perp)
-        denom = -vx * dy + vy * dx
-        if abs(denom) < 1e-9:
-            return None
-
-        wx = ox - ax
-        wy = oy - ay
-
-        # t = cross(v, w) / denom
-        t = (vx * wy - vy * wx) / denom
-        # u = cross(w, d_perp) / denom, d_perp = (-dy, dx)
-        u = (wx * (-dy) - wy * (-dx)) / denom
-        u = (-wx * dy + wy * dx) / denom
-
-        if u < -1e-6 or u > 1.0 + 1e-6:
-            return None
-        return t
 
     # ------------------------------------------------------------------
     # 主循环

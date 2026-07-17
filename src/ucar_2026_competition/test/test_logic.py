@@ -20,6 +20,7 @@ from ucar_2026_competition.logic import (
     qr_values_from_payload,
     stage_sequence,
     traffic_decision_from_payload,
+    trigger_delivery_state,
 )
 
 
@@ -73,6 +74,18 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(target_filter.push("food", "food", now=12.0))
         self.assertFalse(target_filter.push("food", "daily", now=12.2))
         self.assertFalse(target_filter.push("food", "food", now=12.3))
+
+    def test_reliable_trigger_requires_service_and_status_ack(self):
+        self.assertEqual(trigger_delivery_state(False, "", 0.5, 2.0), "pending")
+        self.assertEqual(trigger_delivery_state(True, "searching", 1.9, 2.0), "pending")
+        self.assertEqual(
+            trigger_delivery_state(True, "target_locked", 1.9, 2.0),
+            "acknowledged",
+        )
+
+    def test_reliable_trigger_times_out_safely(self):
+        self.assertEqual(trigger_delivery_state(False, "", 2.0, 2.0), "failed")
+        self.assertEqual(trigger_delivery_state(True, "searching", 2.1, 2.0), "failed")
 
     def test_qr_values(self):
         payload = {"items": [

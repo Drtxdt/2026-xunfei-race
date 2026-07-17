@@ -31,7 +31,6 @@ voice_stop_listening_service: /speech_command_node/stop_listening
 # OCR时间窗证据。空白帧不清空，其他完整类别会清空当前目标证据。
 ocr_required_hits: 2
 ocr_evidence_window_sec: 1.5
-ocr_trigger_hold_sec: 1.0
 ocr_ready_timeout_sec: 12.0
 # 图像横向误差为正时的转向符号。首次低速居中测试必须确认方向。
 target_center_steering_sign: -1.0
@@ -49,6 +48,10 @@ parking_box_depth: 0.50
 parking_goal_offset: 0.25
 parking_xy_tolerance: 0.04
 parking_yaw_tolerance: 0.06
+parking_normal_offset: 0.0
+parking_tangent_offset: 0.0
+target_trigger_service: /vision_triggered_navigator/trigger_target
+trigger_ack_timeout_sec: 2.0
 # 任务2厂牌覆盖扫描：仅传给coverage_search_mode导航节点。
 coverage_scan_step_deg: 20.0
 coverage_scan_angular_speed: 0.35

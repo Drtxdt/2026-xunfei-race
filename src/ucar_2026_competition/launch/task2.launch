@@ -26,6 +26,9 @@
   <arg name="parking_goal_offset" default="0.25" />
   <arg name="parking_xy_tolerance" default="0.04" />
   <arg name="parking_yaw_tolerance" default="0.06" />
+  <arg name="parking_normal_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.0" />
+  <arg name="trigger_ack_timeout_sec" default="2.0" />
   <include file="$(find ucar_2026_competition)/launch/common_core.launch">
     <arg name="start_nav" value="true" />
     <arg name="start_camera" value="true" />
@@ -61,5 +64,8 @@
     <arg name="parking_goal_offset" value="$(arg parking_goal_offset)" />
     <arg name="parking_xy_tolerance" value="$(arg parking_xy_tolerance)" />
     <arg name="parking_yaw_tolerance" value="$(arg parking_yaw_tolerance)" />
+    <arg name="parking_normal_offset" value="$(arg parking_normal_offset)" />
+    <arg name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
+    <arg name="trigger_ack_timeout_sec" value="$(arg trigger_ack_timeout_sec)" />
   </include>
 </launch>
