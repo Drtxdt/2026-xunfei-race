@@ -273,6 +273,32 @@ def staging_motion_is_rotation_stall(distance_moved, yaw_accumulated,
             abs(float(yaw_accumulated)) > abs(float(maximum_yaw)))
 
 
+def coverage_timeout_decision(elapsed, window_progress,
+                              soft_timeout=25.0, hard_timeout=40.0,
+                              minimum_progress=0.03):
+    """Decide whether an exact coverage goal should continue or stop.
+
+    The soft deadline may be crossed only while the base is still making
+    measurable progress.  Once extended, the hard deadline remains absolute.
+    """
+    elapsed = max(0.0, float(elapsed))
+    soft_timeout = max(0.0, float(soft_timeout))
+    hard_timeout = max(soft_timeout, float(hard_timeout))
+    if elapsed >= hard_timeout:
+        return "hard_timeout"
+    if elapsed < soft_timeout:
+        return "continue"
+    if float(window_progress) >= abs(float(minimum_progress)):
+        return "extend"
+    return "soft_timeout"
+
+
+def target_sample_is_fresh(target_error, received_at, now, timeout):
+    """Return whether an OCR target box can safely start recentering."""
+    return (target_error is not None and
+            sensor_is_fresh(received_at, now, timeout))
+
+
 def wall_normal_distance(pose, wall_point, inward_normal):
     """Return base-centre distance from a wall along its inward normal."""
     x, y = float(pose[0]), float(pose[1])

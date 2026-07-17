@@ -24,6 +24,7 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
+    coverage_timeout_decision,
     docking_command,
     docking_pose_errors,
     docking_within_tolerance,
@@ -45,6 +46,7 @@ from navigator_logic import (
     split_scan_angle,
     staging_pose_reached,
     staging_motion_is_rotation_stall,
+    target_sample_is_fresh,
     wall_fit_matches_expected,
     wall_frame_docking_command,
     wall_normal_distance,
@@ -109,7 +111,17 @@ class VisionTriggeredNavigator(object):
         # 任务2专用的覆盖优先模式。默认关闭，保证原独立导航行为不变。
         self.coverage_search_mode = rospy.get_param("~coverage_search_mode", False)
         self.target_topic = rospy.get_param("~target_topic", "/vision/target")
-        self.coverage_goal_timeout = rospy.get_param("~coverage_goal_timeout_sec", 25.0)
+        legacy_coverage_timeout = float(rospy.get_param(
+            "~coverage_goal_timeout_sec", 25.0))
+        self.coverage_goal_soft_timeout = max(0.1, float(rospy.get_param(
+            "~coverage_goal_soft_timeout_sec", legacy_coverage_timeout)))
+        self.coverage_goal_hard_timeout = max(
+            self.coverage_goal_soft_timeout,
+            float(rospy.get_param("~coverage_goal_hard_timeout_sec", 40.0)))
+        self.coverage_goal_progress_window = max(0.5, float(rospy.get_param(
+            "~coverage_goal_progress_window_sec", 5.0)))
+        self.coverage_goal_min_progress = max(0.0, float(rospy.get_param(
+            "~coverage_goal_min_progress", 0.03)))
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
@@ -224,6 +236,8 @@ class VisionTriggeredNavigator(object):
             "~parking_recenter_tolerance", 0.04)))
         self.parking_recenter_timeout = max(1.0, float(rospy.get_param(
             "~parking_recenter_timeout_sec", 8.0)))
+        self.parking_recenter_initial_wait = max(0.0, float(rospy.get_param(
+            "~parking_recenter_initial_wait_sec", 1.0)))
         self.parking_wall_fit_half_angle = math.radians(abs(float(rospy.get_param(
             "~parking_wall_fit_half_angle_deg", 35.0))))
         self.parking_wall_fit_min_points = max(2, int(rospy.get_param(
@@ -648,17 +662,74 @@ class VisionTriggeredNavigator(object):
             timer = rospy.Timer(period, self._check_current_goal_cb)
 
         started = rospy.get_time()
+        progress_samples = []
+        last_progress_check = 0.0
+        last_progress_log = 0.0
+        latest_distance = float("nan")
+        latest_yaw_error = float("nan")
+        window_progress = 0.0
+        coverage_extended = False
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             state = self.move_base_client.get_state()
             if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
                 break
             if self.coverage_search_mode and not self.triggered:
-                if rospy.get_time() - started >= self.coverage_goal_timeout:
+                now = rospy.get_time()
+                elapsed = now - started
+                if now - last_progress_check >= 0.25:
+                    last_progress_check = now
+                    pose = self._get_robot_pose(self.base_frame)
+                    if pose is not None:
+                        latest_distance = math.hypot(x - pose[0], y - pose[1])
+                        latest_yaw_error = abs(normalize_angle(yaw - pose[2]))
+                        progress_samples.append((now, latest_distance))
+                        cutoff = now - self.coverage_goal_progress_window
+                        progress_samples = [
+                            item for item in progress_samples if item[0] >= cutoff]
+                        if progress_samples:
+                            window_progress = max(
+                                0.0, progress_samples[0][1] - latest_distance)
+                    if now - last_progress_log >= 2.0:
+                        last_progress_log = now
+                        rospy.loginfo(
+                            "[vision_triggered_navigator] 覆盖目标进度 elapsed=%.1fs distance=%.3fm yaw_error=%.3frad window_progress=%.3fm extended=%s",
+                            elapsed, latest_distance, latest_yaw_error,
+                            window_progress, coverage_extended)
+
+                if coverage_extended:
+                    decision = coverage_timeout_decision(
+                        elapsed, self.coverage_goal_min_progress,
+                        self.coverage_goal_soft_timeout,
+                        self.coverage_goal_hard_timeout,
+                        self.coverage_goal_min_progress)
+                    if decision != "hard_timeout":
+                        rate.sleep()
+                        continue
+                else:
+                    decision = coverage_timeout_decision(
+                        elapsed, window_progress,
+                        self.coverage_goal_soft_timeout,
+                        self.coverage_goal_hard_timeout,
+                        self.coverage_goal_min_progress)
+                    if decision == "extend":
+                        coverage_extended = True
+                        self._publish_status("coverage_goal_extended")
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 覆盖目标达到软时限%.1fs，但最近%.1fs仍前进%.3fm，延长至硬时限%.1fs.",
+                            self.coverage_goal_soft_timeout,
+                            self.coverage_goal_progress_window,
+                            window_progress,
+                            self.coverage_goal_hard_timeout)
+                        rate.sleep()
+                        continue
+                if decision in ("soft_timeout", "hard_timeout"):
                     self.current_goal_timed_out = True
                     rospy.logwarn(
-                        "[vision_triggered_navigator] 精确观察点(%.4f, %.4f, %.4f)导航超过%.1fs，取消并进入下一原始锚点.",
-                        x, y, yaw, self.coverage_goal_timeout)
+                        "[vision_triggered_navigator] 精确观察点(%.4f, %.4f, %.4f)%s: elapsed=%.1fs distance=%.3fm window_progress=%.3fm，取消并进入下一原始锚点.",
+                        x, y, yaw,
+                        "达到硬时限" if decision == "hard_timeout" else "软时限无有效进展",
+                        elapsed, latest_distance, window_progress)
                     self.cancel_goal()
                     break
             rate.sleep()
@@ -987,6 +1058,21 @@ class VisionTriggeredNavigator(object):
         self.cmd_vel_pub.publish(Twist())
         self._publish_status(status)
         rospy.logerr("[vision_triggered_navigator] %s", message)
+        return False
+
+    def _wait_for_initial_recenter_target(self):
+        """Wait briefly for a *new* close-range OCR box before recentering."""
+        previous_stamp = self.target_payload_at
+        deadline = rospy.get_time() + self.parking_recenter_initial_wait
+        rate = rospy.Rate(20)
+        while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            self.cmd_vel_pub.publish(Twist())
+            if (self.target_payload_at > previous_stamp and
+                    target_sample_is_fresh(
+                        self.target_error, self.target_payload_at,
+                        rospy.get_time(), self.target_bbox_stale)):
+                return True
+            rate.sleep()
         return False
 
     def _center_visual_target(self, tolerance=None, timeout=None,
@@ -1736,21 +1822,30 @@ class VisionTriggeredNavigator(object):
                     self._publish_status("parking_staging_failed")
                     self._hold_stopped(self.arrival_hold_sec)
                     break
-                if not self._center_visual_target(
-                        tolerance=self.parking_recenter_tolerance,
-                        timeout=self.parking_recenter_timeout,
-                        state="parking_recenter",
-                        failure_state="parking_recenter_failed"):
-                    self._hold_stopped(self.arrival_hold_sec)
-                    break
-                # Close-range OCR gives a more accurate sign tangent than the
-                # original long-range ray. Recompute before locking odom.
-                goal = self.compute_vision_goal()
-                if goal is None:
-                    self._publish_status("parking_recenter_failed")
-                    self._hold_stopped(self.arrival_hold_sec)
-                    break
-                gx, gy, gyaw = goal
+                self._publish_status("parking_recenter")
+                if self._wait_for_initial_recenter_target():
+                    # Once corrective motion begins, losing the target remains
+                    # a hard failure because the original ray is no longer
+                    # guaranteed to match the changed heading.
+                    if not self._center_visual_target(
+                            tolerance=self.parking_recenter_tolerance,
+                            timeout=self.parking_recenter_timeout,
+                            state="parking_recenter",
+                            failure_state="parking_recenter_failed"):
+                        self._hold_stopped(self.arrival_hold_sec)
+                        break
+                    # A completed close-range recenter may refine the tangent.
+                    goal = self.compute_vision_goal()
+                    if goal is None:
+                        self._publish_status("parking_recenter_failed")
+                        self._hold_stopped(self.arrival_hold_sec)
+                        break
+                    gx, gy, gyaw = goal
+                else:
+                    self._publish_status("parking_recenter_skipped")
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] 预停后%.1fs内无新OCR目标框；保留首次锁定的墙段/切向目标，继续实墙停泊.",
+                        self.parking_recenter_initial_wait)
                 self._publish_status("parking_wall_aligning")
                 if not self._run_parking_docking((gx, gy, gyaw)):
                     self._publish_status(self.parking_failure_status)

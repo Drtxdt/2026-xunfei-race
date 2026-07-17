@@ -158,6 +158,12 @@ def trigger_delivery_state(service_accepted, navigator_status, elapsed, timeout_
     return "pending"
 
 
+def task2_announcement_required(navigator_status, already_completed):
+    """Allow the official task2 speech exactly once, and only after arrival."""
+    return (str(navigator_status or "").strip().lower() == "arrived" and
+            not bool(already_completed))
+
+
 def parse_category(text):
     compact = "".join(str(text or "").split()).lower()
     if "日用品" in compact or "daily" in compact:

@@ -31,7 +31,11 @@ feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频�
 # 任务2覆盖优先模式（launch默认关闭，只有比赛任务2显式开启）。
 coverage_search_mode: false
 target_topic: "/vision/target"
-coverage_goal_timeout_sec: 25.0
+# 精确锚点先执行25秒软时限；仍在有效接近时最多延长到40秒。
+coverage_goal_soft_timeout_sec: 25.0
+coverage_goal_hard_timeout_sec: 40.0
+coverage_goal_progress_window_sec: 5.0
+coverage_goal_min_progress: 0.03
 max_coverage_anchors: 0
 center_only: false
 coverage_scan_settle_sec: 0.35
@@ -99,6 +103,7 @@ scan_stale_sec: 0.5
 scan_front_half_angle_deg: 15.0
 parking_recenter_tolerance: 0.04
 parking_recenter_timeout_sec: 8.0
+parking_recenter_initial_wait_sec: 1.0
 parking_wall_fit_half_angle_deg: 35.0
 parking_wall_fit_min_points: 12
 parking_wall_fit_min_span: 0.25

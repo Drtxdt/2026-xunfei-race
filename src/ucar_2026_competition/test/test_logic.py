@@ -23,6 +23,7 @@ from ucar_2026_competition.logic import (
     qr_values_from_payload,
     stage_sequence,
     traffic_decision_from_payload,
+    task2_announcement_required,
     trigger_delivery_state,
 )
 
@@ -130,6 +131,11 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(base_is_stopped(0.02, 0.0, 0.0))
         self.assertFalse(base_is_stopped(0.0, 0.0, 0.03))
 
+    def test_task2_announcement_is_allowed_once_and_only_after_arrival(self):
+        self.assertFalse(task2_announcement_required("parking_verifying", False))
+        self.assertTrue(task2_announcement_required("arrived", False))
+        self.assertFalse(task2_announcement_required("arrived", True))
+
     def test_task1_task2_launch_preserves_localization(self):
         launch_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "launch", "task1_task2.launch"))
@@ -141,6 +147,12 @@ class CompetitionLogicTest(unittest.TestCase):
                 for item in flow_include.findall("arg")}
         self.assertEqual(args["start_stage"], "task1_task2")
         self.assertEqual(args["navigator_publish_initial_pose"], "false")
+        self.assertEqual(args["parking_recenter_initial_wait_sec"],
+                         "$(arg parking_recenter_initial_wait_sec)")
+        self.assertEqual(args["coverage_goal_soft_timeout_sec"],
+                         "$(arg coverage_goal_soft_timeout_sec)")
+        self.assertEqual(args["coverage_goal_hard_timeout_sec"],
+                         "$(arg coverage_goal_hard_timeout_sec)")
 
 
 if __name__ == "__main__":

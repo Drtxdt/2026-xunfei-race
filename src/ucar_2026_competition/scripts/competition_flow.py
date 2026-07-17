@@ -42,6 +42,7 @@ from ucar_2026_competition.logic import (
     qr_values_from_payload,
     stage_sequence,
     traffic_decision_from_payload,
+    task2_announcement_required,
     trigger_delivery_state,
 )
 
@@ -129,6 +130,7 @@ class CompetitionFlow:
             "~target_trigger_service", "/vision_triggered_navigator/trigger_target")
         self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
         self.navigator_status = ""
+        self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
         self.track_status = {}
@@ -992,6 +994,8 @@ class CompetitionFlow:
                         "~parking_recenter_tolerance", 0.04),
                     "parking_recenter_timeout_sec": rospy.get_param(
                         "~parking_recenter_timeout_sec", 8.0),
+                    "parking_recenter_initial_wait_sec": rospy.get_param(
+                        "~parking_recenter_initial_wait_sec", 1.0),
                     "parking_wall_fit_half_angle_deg": rospy.get_param(
                         "~parking_wall_fit_half_angle_deg", 35.0),
                     "parking_wall_fit_min_points": rospy.get_param(
@@ -1034,6 +1038,14 @@ class CompetitionFlow:
                         "~coverage_scan_max_dwell_sec", 2.0),
                     "coverage_scan_pose_timeout_sec": rospy.get_param(
                         "~coverage_scan_pose_timeout_sec", 0.5),
+                    "coverage_goal_soft_timeout_sec": rospy.get_param(
+                        "~coverage_goal_soft_timeout_sec", 25.0),
+                    "coverage_goal_hard_timeout_sec": rospy.get_param(
+                        "~coverage_goal_hard_timeout_sec", 40.0),
+                    "coverage_goal_progress_window_sec": rospy.get_param(
+                        "~coverage_goal_progress_window_sec", 5.0),
+                    "coverage_goal_min_progress": rospy.get_param(
+                        "~coverage_goal_min_progress", 0.03),
                 },
             )
             timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))
@@ -1072,7 +1084,21 @@ class CompetitionFlow:
         if center_only:
             self.publish_status("task2", "center_test_completed", "target centering test completed")
             return
-        self.announce("task2", item=item, workshop=workshop)
+        self.safe_stop(cancel_navigation=True)
+        announcement_required = task2_announcement_required(
+            self.navigator_status, self.task2_announcement_completed)
+        if not self.task2_announcement_completed and not announcement_required:
+            raise StageError(
+                "refusing task2 announcement before confirmed arrived state")
+        if announcement_required:
+            self.publish_status(
+                "task2", "announcing",
+                "announcing completed physical warehouse delivery")
+            self.announce("task2", item=item, workshop=workshop)
+            self.task2_announcement_completed = True
+            self.publish_status(
+                "task2", "announcement_completed",
+                "task2 announcement service completed")
         self.publish_status("task2", "completed", "target factory reached")
 
     def task3(self):

@@ -15,6 +15,7 @@ from navigator_logic import (
     build_quadrilateral_walls,
     center_angular_command,
     center_step_angle,
+    coverage_timeout_decision,
     costmap_value_at,
     docking_command,
     docking_pose_errors,
@@ -34,6 +35,7 @@ from navigator_logic import (
     sensor_is_fresh,
     staging_pose_reached,
     staging_motion_is_rotation_stall,
+    target_sample_is_fresh,
     should_skip_coverage_anchor,
     split_scan_angle,
     wall_normal_distance,
@@ -148,6 +150,20 @@ def test_only_known_lethal_cost_skips_a_coverage_anchor():
     assert not should_skip_coverage_anchor(True, 252, 253)
     assert should_skip_coverage_anchor(True, 253, 253)
     assert should_skip_coverage_anchor(True, 254, 253)
+
+
+def test_coverage_goal_soft_timeout_extends_only_with_recent_progress():
+    assert coverage_timeout_decision(24.9, 0.0, 25.0, 40.0, 0.03) == "continue"
+    assert coverage_timeout_decision(25.0, 0.029, 25.0, 40.0, 0.03) == "soft_timeout"
+    assert coverage_timeout_decision(25.0, 0.03, 25.0, 40.0, 0.03) == "extend"
+    assert coverage_timeout_decision(39.9, 0.10, 25.0, 40.0, 0.03) == "extend"
+    assert coverage_timeout_decision(40.0, 1.0, 25.0, 40.0, 0.03) == "hard_timeout"
+
+
+def test_recenter_requires_a_fresh_target_sample_before_motion():
+    assert target_sample_is_fresh(-0.02, 9.6, 10.0, 0.8)
+    assert not target_sample_is_fresh(None, 9.9, 10.0, 0.8)
+    assert not target_sample_is_fresh(-0.02, 9.0, 10.0, 0.8)
 
 
 def test_cost_query_uses_coordinates_already_transformed_to_costmap_frame():
