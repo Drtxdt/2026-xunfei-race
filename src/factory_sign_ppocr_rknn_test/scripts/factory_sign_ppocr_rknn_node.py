@@ -11,20 +11,19 @@ import re
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
 from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 
 CATEGORY_NAMES = {
     "food": "食品加工车间",
     "daily": "日用品加工车间",
-    "electronic": "电子产品生产车间",
+    "electronic": "电子产品加工车间",
 }
 
 SPEECH_TEXTS = {
     "food": "识别到食品加工车间",
     "daily": "识别到日用品加工车间",
-    "electronic": "识别到电子产品生产车间",
+    "electronic": "识别到电子产品加工车间",
 }
 
 
@@ -75,6 +74,39 @@ def maybe_flip_frame(frame, flip_horizontal: bool):
     return frame[:, ::-1].copy()
 
 
+def normalize_ocr_target(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if text in ("electronic", "electronics", "电子", "电子产品"):
+        return "electronic"
+    if text in ("daily", "日用", "日用品"):
+        return "daily"
+    if text in ("food", "食品"):
+        return "food"
+    return ""
+
+
+def parse_view_scales(value, fallback: float = 0.8) -> List[float]:
+    if isinstance(value, (list, tuple)):
+        raw = value
+    else:
+        raw = re.split(r"[,;\s]+", str(value or "").strip())
+    scales = []
+    for item in raw:
+        try:
+            scale = min(1.0, max(0.1, float(item)))
+        except (TypeError, ValueError):
+            continue
+        if scale not in scales:
+            scales.append(scale)
+    return scales or [min(1.0, max(0.1, float(fallback)))]
+
+
+def map_box_to_frame(box, roi_box, scale_factor: float = 1.0):
+    x0, y0, _x1, _y1 = roi_box
+    factor = max(1e-6, float(scale_factor))
+    return [[float(point[0]) / factor + x0, float(point[1]) / factor + y0] for point in box]
+
+
 @dataclass
 class OCRText:
     text: str
@@ -93,76 +125,74 @@ class RecognitionResult:
     elapsed_ms: int = 0
     det_ms: int = 0
     rec_ms: int = 0
+    category_score: float = 0.0
+    evidence: str = ""
+    view_scale: float = 1.0
+    candidate_count: int = 0
+
+
+@dataclass
+class OCRCandidate:
+    crop: object
+    box: List[List[float]]
+    det_score: float = 0.0
+    center_score: float = 0.0
+    sign_score: float = 0.0
+    rank_score: float = 0.0
+    height: float = 0.0
 
 
 class FactorySignKeywordClassifier:
-    TARGETS: Dict[str, str] = {
-        "food": "食品加工",
-        "daily": "日用品加工",
-        "electronic": "电子产品生产",
-    }
+    """Strict factory-sign classifier; generic wall text is never evidence."""
+
     FEATURES: Dict[str, Tuple[Tuple[str, float], ...]] = {
-        "food": (("food", 4.0), ("食品", 4.0), ("食", 2.5)),
-        "daily": (("daily", 4.0), ("日用品", 6.0), ("日用", 5.0), ("用品", 4.4), ("日", 2.2), ("用", 1.9)),
+        "food": (("食品", 1.0), ("food", 1.0)),
+        "daily": (("日用品", 1.0), ("日用", 0.92), ("用品", 0.88), ("daily", 1.0)),
         "electronic": (
-            ("electronic", 4.0),
-            ("电子产品", 5.0),
-            ("电子", 4.2),
-            ("电", 2.6),
-            ("生产", 2.4),
-            ("产品", 1.8),
-            ("产", 1.4),
+            ("电子产品", 1.0),
+            ("electronics", 1.0),
+            ("electronic", 1.0),
+            ("电子", 0.90),
         ),
     }
-    NON_DISCRIMINATIVE = ("车间", "车", "间", "加工")
-    MIN_SCORE = 1.6
-    MIN_MARGIN = 0.45
-    FUZZY_MIN_RATIO = 0.52
 
     def classify(self, text: str) -> Optional[str]:
         category, _score, _debug = self.classify_texts([OCRText(text=text or "", score=1.0)])
         return category
 
     def classify_texts(self, texts: Sequence[OCRText]) -> Tuple[Optional[str], float, str]:
-        scores = {category: 0.0 for category in self.TARGETS}
-        evidence: Dict[str, List[str]] = {category: [] for category in self.TARGETS}
+        category, score, _evidence, debug = self.classify_evidence(texts)
+        return category, score, debug
+
+    def classify_evidence(self, texts: Sequence[OCRText]) -> Tuple[Optional[str], float, str, str]:
+        scores = {category: 0.0 for category in self.FEATURES}
+        hits: Dict[str, List[str]] = {category: [] for category in self.FEATURES}
         for item in texts:
             text = self._normalize(item.text)
             if not text:
                 continue
-            weight = max(0.05, min(1.0, float(item.score or 0.0)))
-            for category in self.TARGETS:
-                value, hits = self._score_one(text, category)
-                if value > 0:
-                    scores[category] += value * weight
-                    evidence[category].extend(hits)
+            confidence = max(0.0, min(1.0, float(item.score or 0.0)))
+            for category, tokens in self.FEATURES.items():
+                for token, strength in tokens:
+                    if token in text:
+                        value = strength * max(0.5, confidence)
+                        if value > scores[category]:
+                            scores[category] = value
+                        hits[category].append(token)
+                        break
 
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best_category, best_score = ranked[0]
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
-        debug = ",".join("{}:{:.2f}[{}]".format(k, scores[k], "|".join(evidence[k][:4])) for k in ("food", "daily", "electronic"))
-        if best_score < self.MIN_SCORE or best_score - second_score < self.MIN_MARGIN:
-            return None, best_score, debug
-        return best_category, best_score, debug
-
-    def _score_one(self, text: str, category: str) -> Tuple[float, List[str]]:
-        score = 0.0
-        hits: List[str] = []
-        stripped = text
-        for token in self.NON_DISCRIMINATIVE:
-            stripped = stripped.replace(token, "")
-        for token, value in self.FEATURES[category]:
-            if token in stripped:
-                score += value
-                hits.append(token)
-        if len(stripped) >= 2:
-            target = self.TARGETS[category]
-            ratio = SequenceMatcher(None, stripped, target).ratio()
-            if ratio >= self.FUZZY_MIN_RATIO:
-                fuzzy_score = 2.2 * ratio
-                score += fuzzy_score
-                hits.append("fuzzy{:.2f}".format(ratio))
-        return score, hits
+        debug = ",".join(
+            "{}:{:.2f}[{}]".format(k, scores[k], "|".join(hits[k][:3]))
+            for k in ("food", "daily", "electronic")
+        )
+        # A frame containing two complete, competing categories is ambiguous.
+        if best_score <= 0.0 or second_score > 0.0:
+            return None, best_score, "", debug
+        evidence = hits[best_category][0] if hits[best_category] else ""
+        return best_category, best_score, evidence, debug
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -300,6 +330,12 @@ class PPOCRRknnRecognizer:
         rec_resize_mode: str,
         max_rec_crops: int,
         use_global_rec_candidates: bool,
+        box_padding_x: float = 0.15,
+        box_padding_y: float = 0.35,
+        global_fallback_crops: int = 1,
+        small_crop_retry: bool = True,
+        small_crop_max_height: int = 20,
+        target_category: str = "",
         logger=None,
     ) -> None:
         self.logger = logger
@@ -317,6 +353,13 @@ class PPOCRRknnRecognizer:
             self.rec_resize_mode = "stretch"
         self.max_rec_crops = max(1, int(max_rec_crops or 6))
         self.use_global_rec_candidates = bool(use_global_rec_candidates)
+        self.box_padding_x = max(0.0, float(box_padding_x))
+        self.box_padding_y = max(0.0, float(box_padding_y))
+        self.global_fallback_crops = max(0, int(global_fallback_crops))
+        self.small_crop_retry = bool(small_crop_retry)
+        self.small_crop_max_height = max(1, int(small_crop_max_height))
+        self.target_category = normalize_ocr_target(target_category)
+        self.classifier = FactorySignKeywordClassifier()
         self.decoder = CTCLabelDecoder(keys_path)
         self.rec = RknnRuntime(rec_model_path, logger=logger)
         self.det = None
@@ -330,21 +373,34 @@ class PPOCRRknnRecognizer:
         rec_ms = 0
         try:
             if self.mode == "ppocr_rknn_system" and self.det is not None:
-                boxes, det_ms = self._detect_boxes(image)
-                crops = []
-                if self.use_global_rec_candidates:
-                    crops.extend(self._global_rec_crops(image))
-                crops.extend(self._crop_boxes(image, boxes))
-                crops = crops[: self.max_rec_crops]
+                detections, det_ms = self._detect_boxes(image)
+                candidates = self._rank_candidates(image, detections)[: self.max_rec_crops]
+                if not candidates and self.use_global_rec_candidates:
+                    candidates = self._fallback_candidates(image)
             else:
                 h, w = image.shape[:2]
                 boxes = [[[0.0, 0.0], [float(w), 0.0], [float(w), float(h)], [0.0, float(h)]]]
-                crops = self._global_rec_crops(image) if self.use_global_rec_candidates else [(image, boxes[0])]
-            for crop, box in crops:
-                text, score, one_rec_ms = self._recognize_crop(crop)
+                raw_crops = self._global_rec_crops(image) if self.use_global_rec_candidates else [(image, boxes[0])]
+                candidates = [OCRCandidate(crop=crop, box=box, height=float(crop.shape[0])) for crop, box in raw_crops[: self.max_rec_crops]]
+            for candidate in candidates:
+                text, score, one_rec_ms = self._recognize_crop(candidate.crop)
                 rec_ms += one_rec_ms
                 if text and score >= self.min_score:
-                    texts.append(OCRText(text=text, score=score, box=box))
+                    texts.append(OCRText(text=text, score=score, box=candidate.box))
+                    category, _score, _evidence, _debug = self.classifier.classify_evidence(texts)
+                    if category and (not self.target_category or category == self.target_category):
+                        break
+            if (
+                self.small_crop_retry
+                and candidates
+                and candidates[0].height <= self.small_crop_max_height
+                and not self._has_target_evidence(texts)
+            ):
+                retry_crop = self._enhance_small_crop(candidates[0].crop)
+                text, score, one_rec_ms = self._recognize_crop(retry_crop)
+                rec_ms += one_rec_ms
+                if text and score >= self.min_score:
+                    texts.append(OCRText(text=text, score=score, box=candidates[0].box))
             raw_text = " ".join(item.text for item in texts)
             return RecognitionResult(
                 raw_text=raw_text,
@@ -353,6 +409,7 @@ class PPOCRRknnRecognizer:
                 elapsed_ms=int((time.time() - started) * 1000),
                 det_ms=det_ms,
                 rec_ms=rec_ms,
+                candidate_count=len(candidates),
             )
         except Exception as exc:
             return RecognitionResult(
@@ -361,6 +418,28 @@ class PPOCRRknnRecognizer:
                 det_ms=det_ms,
                 rec_ms=rec_ms,
             )
+
+    def _has_target_evidence(self, texts: Sequence[OCRText]) -> bool:
+        category, _score, _evidence, _debug = self.classifier.classify_evidence(texts)
+        return bool(category and (not self.target_category or category == self.target_category))
+
+    def _fallback_candidates(self, image) -> List[OCRCandidate]:
+        if self.global_fallback_crops <= 0:
+            return []
+        return [
+            OCRCandidate(crop=crop, box=box, height=float(crop.shape[0]))
+            for crop, box in self._global_rec_crops(image)[: self.global_fallback_crops]
+        ]
+
+    @staticmethod
+    def _enhance_small_crop(crop):
+        import cv2
+
+        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY) if crop.ndim == 3 else crop
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+        blurred = cv2.GaussianBlur(clahe, (0, 0), 1.0)
+        sharpened = cv2.addWeighted(clahe, 1.5, blurred, -0.5, 0)
+        return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)
 
     def _recognize_crop(self, crop) -> Tuple[str, float, int]:
         import cv2
@@ -453,7 +532,7 @@ class PPOCRRknnRecognizer:
             pred = pred / 255.0
         bitmap = (pred > self.det_binary_thresh).astype("uint8") * 255
         contours, _ = cv2.findContours(bitmap, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        boxes = []
+        detections = []
         for contour in contours:
             if cv2.contourArea(contour) < 16:
                 continue
@@ -467,9 +546,8 @@ class PPOCRRknnRecognizer:
             points[:, 0] *= float(w) / float(self.det_input_size)
             points[:, 1] *= float(h) / float(self.det_input_size)
             box = self._order_points_clockwise(points).tolist()
-            boxes.append(box)
-        boxes.sort(key=lambda b: (min(p[1] for p in b), min(p[0] for p in b)))
-        return boxes[: self.max_rec_crops], det_ms
+            detections.append((box, score))
+        return detections, det_ms
 
     @staticmethod
     def _order_points_clockwise(points):
@@ -479,6 +557,64 @@ class PPOCRRknnRecognizer:
         s = pts.sum(axis=1)
         diff = np.diff(pts, axis=1).reshape(-1)
         return np.array([pts[np.argmin(s)], pts[np.argmin(diff)], pts[np.argmax(s)], pts[np.argmax(diff)]], dtype="float32")
+
+    @staticmethod
+    def _expanded_box(box, image_width: int, image_height: int, padding_x: float, padding_y: float):
+        import numpy as np
+
+        pts = np.asarray(box, dtype="float32")
+        span_x = float(np.ptp(pts[:, 0]))
+        span_y = float(np.ptp(pts[:, 1]))
+        x0 = max(0.0, float(pts[:, 0].min()) - span_x * padding_x)
+        x1 = min(float(image_width - 1), float(pts[:, 0].max()) + span_x * padding_x)
+        y0 = max(0.0, float(pts[:, 1].min()) - span_y * padding_y)
+        y1 = min(float(image_height - 1), float(pts[:, 1].max()) + span_y * padding_y)
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+    @staticmethod
+    def _candidate_scores(image, box, det_score: float) -> Tuple[float, float, float, float]:
+        import cv2
+        import numpy as np
+
+        h, w = image.shape[:2]
+        pts = np.asarray(box, dtype="float32")
+        cx, cy = pts.mean(axis=0)
+        dx = (float(cx) - 0.5 * w) / max(1.0, 0.5 * w)
+        dy = (float(cy) - 0.5 * h) / max(1.0, 0.5 * h)
+        center_score = max(0.0, 1.0 - min(1.0, (dx * dx + dy * dy) ** 0.5))
+        x0, x1 = max(0, int(pts[:, 0].min())), min(w, int(pts[:, 0].max()) + 1)
+        y0, y1 = max(0, int(pts[:, 1].min())), min(h, int(pts[:, 1].max()) + 1)
+        sign_score = 0.0
+        if x1 > x0 and y1 > y0:
+            patch = image[y0:y1, x0:x1]
+            gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY) if patch.ndim == 3 else patch
+            white_ratio = float(np.mean(gray >= 180))
+            dark_ratio = float(np.mean(gray <= 90))
+            sign_score = min(1.0, 0.7 * white_ratio + 0.3 * min(1.0, dark_ratio / 0.15))
+        rank_score = 0.65 * float(det_score) + 0.20 * center_score + 0.15 * sign_score
+        return rank_score, center_score, sign_score, float(max(0.0, np.ptp(pts[:, 1])))
+
+    def _rank_candidates(self, image, detections) -> List[OCRCandidate]:
+        candidates = []
+        h, w = image.shape[:2]
+        for box, det_score in detections:
+            rank_score, center_score, sign_score, original_height = self._candidate_scores(image, box, det_score)
+            expanded = self._expanded_box(box, w, h, self.box_padding_x, self.box_padding_y)
+            crop_items = self._crop_boxes(image, [expanded])
+            if not crop_items:
+                continue
+            crop, mapped_box = crop_items[0]
+            candidates.append(OCRCandidate(
+                crop=crop,
+                box=mapped_box,
+                det_score=float(det_score),
+                center_score=center_score,
+                sign_score=sign_score,
+                rank_score=rank_score,
+                height=original_height,
+            ))
+        candidates.sort(key=lambda item: item.rank_score, reverse=True)
+        return candidates
 
     def _crop_boxes(self, image, boxes: Sequence[Sequence[Sequence[float]]]):
         import cv2
@@ -524,8 +660,10 @@ class FactorySignPPOCRRknnNode:
         self.flip_image = ros_bool(rospy.get_param("~flip", True), True)
         self.inference_rate = float(rospy.get_param("~inference_rate", 5.0))
         self.roi_scale = float(rospy.get_param("~roi_scale", 0.8))
+        self.view_scales = parse_view_scales(rospy.get_param("~view_scales", "0.55,0.75,0.95"), self.roi_scale)
+        self.view_index = 0
         self.resize_scale = float(rospy.get_param("~resize_scale", 1.0))
-        self.use_sharpen = ros_bool(rospy.get_param("~use_sharpen", True), True)
+        self.use_sharpen = ros_bool(rospy.get_param("~use_sharpen", False), False)
         self.use_adaptive_threshold = ros_bool(rospy.get_param("~use_adaptive_threshold", False), False)
         self.debug_show_image = ros_bool(rospy.get_param("~debug_show_image", False), False)
         self.publish_debug_image = ros_bool(rospy.get_param("~publish_debug_image", True), True)
@@ -549,11 +687,14 @@ class FactorySignPPOCRRknnNode:
             "~result_topic", "/factory_sign_ppocr_rknn_test/result")
 
         self.latest_image = None
+        self.latest_image_seq = 0
+        self.processed_image_seq = -1
         self.last_result = RecognitionResult()
         self.last_confirmed = None
         self.last_spoken_category = None
         self.last_spoken_at_by_category: Dict[str, float] = {}
         self.last_roi_box = (0, 0, 0, 0)
+        self.last_ocr_scale_factor = 1.0
         self.last_debug_publish_at = 0.0
 
         self.speak_pub = rospy.Publisher(self.speech_topic, String, queue_size=1)
@@ -598,8 +739,14 @@ class FactorySignPPOCRRknnNode:
             rec_image_height=int(self.rospy.get_param("~rec_image_height", 48)),
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
             rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
-            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 8)),
+            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 3)),
             use_global_rec_candidates=ros_bool(self.rospy.get_param("~use_global_rec_candidates", True), True),
+            box_padding_x=float(self.rospy.get_param("~box_padding_x", 0.15)),
+            box_padding_y=float(self.rospy.get_param("~box_padding_y", 0.35)),
+            global_fallback_crops=int(self.rospy.get_param("~global_fallback_crops", 1)),
+            small_crop_retry=ros_bool(self.rospy.get_param("~small_crop_retry", True), True),
+            small_crop_max_height=int(self.rospy.get_param("~small_crop_max_height", 20)),
+            target_category=self.rospy.get_param("~target_category", ""),
             logger=self.rospy,
         )
 
@@ -622,6 +769,7 @@ class FactorySignPPOCRRknnNode:
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, "bgr8")
             self.latest_image = maybe_flip_frame(frame, self.flip_image)
+            self.latest_image_seq += 1
             self._publish_live_debug(self.latest_image)
         except Exception as exc:
             self.rospy.logwarn_throttle(2.0, "cv_bridge conversion failed: %s", exc)
@@ -629,15 +777,19 @@ class FactorySignPPOCRRknnNode:
     def run(self) -> None:
         rate = self.rospy.Rate(self.inference_rate)
         while not self.rospy.is_shutdown():
-            if self.latest_image is not None:
+            if self.latest_image is not None and self.latest_image_seq != self.processed_image_seq:
+                self.processed_image_seq = self.latest_image_seq
                 self._process_once(self.latest_image.copy())
             rate.sleep()
 
     def _process_once(self, frame) -> None:
-        ocr_image, debug_preprocess = self._make_ocr_image(frame)
+        view_scale = self.view_scales[self.view_index % len(self.view_scales)]
+        self.view_index += 1
+        ocr_image, debug_preprocess = self._make_ocr_image(frame, view_scale)
         result = self.recognizer.recognize(ocr_image)
-        result.category, category_score, match_debug = self.classifier.classify_texts(result.texts)
-        result.match_debug = "score={:.2f} {}".format(category_score, match_debug)
+        result.category, result.category_score, result.evidence, match_debug = self.classifier.classify_evidence(result.texts)
+        result.view_scale = view_scale
+        result.match_debug = "score={:.2f} evidence={} {}".format(result.category_score, result.evidence or "-", match_debug)
         confirmed = result.category
         self.last_result = result
         self.last_confirmed = confirmed
@@ -652,10 +804,13 @@ class FactorySignPPOCRRknnNode:
             "stamp": time.time(),
         }, ensure_ascii=False)))
         self.rospy.loginfo(
-            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
+            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f evidence=%s view=%.2f candidates=%d match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
             result.raw_text,
             result.category,
             result.confidence,
+            result.evidence,
+            result.view_scale,
+            result.candidate_count,
             result.match_debug,
             self._texts_debug(result.texts),
             confirmed,
@@ -669,20 +824,22 @@ class FactorySignPPOCRRknnNode:
         if self.debug_show_image:
             self._show_debug(debug_preprocess)
 
-    def _make_ocr_image(self, frame):
+    def _make_ocr_image(self, frame, view_scale=None):
         import cv2
         import numpy as np
 
         h, w = frame.shape[:2]
-        scale = min(max(float(self.roi_scale), 0.1), 1.0)
+        scale = min(max(float(self.roi_scale if view_scale is None else view_scale), 0.1), 1.0)
         roi_w = int(w * scale)
         roi_h = int(h * scale)
         x0 = max(0, (w - roi_w) // 2)
         y0 = max(0, (h - roi_h) // 2)
         self.last_roi_box = (x0, y0, x0 + roi_w, y0 + roi_h)
         roi = frame[y0 : y0 + roi_h, x0 : x0 + roi_w]
+        self.last_ocr_scale_factor = 1.0
         if self.resize_scale and self.resize_scale > 1.0:
             roi = cv2.resize(roi, None, fx=self.resize_scale, fy=self.resize_scale, interpolation=cv2.INTER_CUBIC)
+            self.last_ocr_scale_factor = self.resize_scale
         if self.use_sharpen:
             kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
             roi = cv2.filter2D(roi, -1, kernel)
@@ -729,13 +886,16 @@ class FactorySignPPOCRRknnNode:
         cv2.rectangle(out, (x1, y1), (x2, y2), (0, 255, 255), 2)
         for item in self.last_result.texts:
             if len(item.box) == 4:
-                pts = [(int(p[0] + x1), int(p[1] + y1)) for p in item.box]
+                pts = [
+                    (int(p[0]), int(p[1]))
+                    for p in map_box_to_frame(item.box, self.last_roi_box, self.last_ocr_scale_factor)
+                ]
                 for idx in range(4):
                     cv2.line(out, pts[idx], pts[(idx + 1) % 4], (0, 255, 0), 2)
         lines = [
             "source=ppocr_rknn_{}".format(self.recognizer.mode),
             "category={} confirmed={} conf={:.2f}".format(self.last_result.category, self.last_confirmed, self.last_result.confidence),
-            "decision=immediate cooldown={:.1f}s".format(self.cooldown_sec),
+            "view={:.2f} candidates={} evidence={}".format(self.last_result.view_scale, self.last_result.candidate_count, self._ascii_preview(self.last_result.evidence)),
             "time={}ms det={} rec={} spoken={}".format(self.last_result.elapsed_ms, self.last_result.det_ms, self.last_result.rec_ms, spoken),
         ]
         if self.last_result.raw_text:

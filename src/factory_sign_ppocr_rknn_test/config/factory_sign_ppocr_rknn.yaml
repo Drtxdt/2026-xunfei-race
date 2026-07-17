@@ -19,13 +19,20 @@ det_input_size: 480
 rec_image_height: 48
 rec_image_width: 320
 rec_resize_mode: stretch      # stretch matches rknn_model_zoo PPOCR-Rec demo; pad keeps aspect ratio
-max_rec_crops: 8
+max_rec_crops: 3
 use_global_rec_candidates: true
+global_fallback_crops: 1
+box_padding_x: 0.15
+box_padding_y: 0.35
+small_crop_retry: true
+small_crop_max_height: 20
+target_category: ""
 
 # Image preprocessing
 roi_scale: 0.80
+view_scales: "0.55,0.75,0.95"
 resize_scale: 1.0
-use_sharpen: true
+use_sharpen: false
 use_adaptive_threshold: false
 
 # Recognition stability. Decisions are immediate; cooldown prevents repeated speech.

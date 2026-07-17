@@ -67,8 +67,13 @@ def main() -> int:
         rec_image_height=48,
         rec_image_width=320,
         rec_resize_mode=args.rec_resize_mode,
-        max_rec_crops=8,
+        max_rec_crops=3,
         use_global_rec_candidates=not args.no_global_rec_candidates,
+        box_padding_x=0.15,
+        box_padding_y=0.35,
+        global_fallback_crops=1,
+        small_crop_retry=True,
+        small_crop_max_height=20,
     )
     try:
         result = recognizer.recognize(roi)

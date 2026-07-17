@@ -10,10 +10,17 @@
   <arg name="rec_model_path" default="" />
   <arg name="keys_path" default="" />
   <arg name="roi_scale" default="0.80" />
+  <arg name="view_scales" default="0.55,0.75,0.95" />
   <arg name="resize_scale" default="1.0" />
   <arg name="rec_resize_mode" default="stretch" />
-  <arg name="max_rec_crops" default="8" />
+  <arg name="max_rec_crops" default="3" />
   <arg name="use_global_rec_candidates" default="true" />
+  <arg name="global_fallback_crops" default="1" />
+  <arg name="box_padding_x" default="0.15" />
+  <arg name="box_padding_y" default="0.35" />
+  <arg name="small_crop_retry" default="true" />
+  <arg name="small_crop_max_height" default="20" />
+  <arg name="target_category" default="" />
   <arg name="debug_image_topic" default="/factory_sign_ppocr_rknn_test/debug_image" />
   <arg name="debug_preprocess_topic" default="/factory_sign_ppocr_rknn_test/preprocess_image" />
   <arg name="debug_view" default="debug" />
@@ -49,10 +56,17 @@
     <param name="rec_model_path" value="$(arg rec_model_path)" />
     <param name="keys_path" value="$(arg keys_path)" />
     <param name="roi_scale" value="$(arg roi_scale)" />
+    <param name="view_scales" value="$(arg view_scales)" />
     <param name="resize_scale" value="$(arg resize_scale)" />
     <param name="rec_resize_mode" value="$(arg rec_resize_mode)" />
     <param name="max_rec_crops" value="$(arg max_rec_crops)" />
     <param name="use_global_rec_candidates" value="$(arg use_global_rec_candidates)" />
+    <param name="global_fallback_crops" value="$(arg global_fallback_crops)" />
+    <param name="box_padding_x" value="$(arg box_padding_x)" />
+    <param name="box_padding_y" value="$(arg box_padding_y)" />
+    <param name="small_crop_retry" value="$(arg small_crop_retry)" />
+    <param name="small_crop_max_height" value="$(arg small_crop_max_height)" />
+    <param name="target_category" value="$(arg target_category)" />
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="debug_preprocess_topic" value="$(arg debug_preprocess_topic)" />
     <param name="speech_mode" value="$(arg speech_mode)" />
