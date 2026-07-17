@@ -25,14 +25,16 @@ from move_base_msgs.msg import (
     MoveBaseActionResult,
     MoveBaseGoal,
 )
-from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger, TriggerResponse
+from nav_msgs.msg import OccupancyGrid, Odometry
+from sensor_msgs.msg import LaserScan
+from std_msgs.msg import String
+from std_srvs.srv import Empty, Trigger, TriggerResponse
 from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
-    ConsecutiveTargetFilter,
+    base_is_stopped,
+    TemporalTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
@@ -41,6 +43,8 @@ from ucar_2026_competition.logic import (
     qr_values_from_payload,
     stage_sequence,
     traffic_decision_from_payload,
+    task2_announcement_required,
+    trigger_delivery_state,
 )
 
 
@@ -85,7 +89,8 @@ class CompetitionFlow:
             "/competition/traffic_decision", String, queue_size=5, latch=True
         )
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=2)
-        self.vision_pub = rospy.Publisher("/vision/detected", Bool, queue_size=5)
+        self.vision_target_pub = rospy.Publisher(
+            "/vision/target", String, queue_size=10)
 
         self.wakeup_received = False
         self.voice_prompt_started = False
@@ -110,11 +115,25 @@ class CompetitionFlow:
         self.qr_navigation_result = None
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
+        self.base_twist = None
+        self.handoff_scan_received_at = 0.0
+        self.handoff_costmap_received_at = 0.0
         self.ocr_target = None
-        self.ocr_filter = ConsecutiveTargetFilter(
-            rospy.get_param("~ocr_required_consecutive", 3)
+        self.ocr_last_message_at = 0.0
+        self.ocr_filter = TemporalTargetFilter(
+            rospy.get_param("~ocr_required_hits", 2),
+            rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
+        self.vision_trigger_latched = False
+        self.trigger_request_pending = False
+        self.trigger_request_started_at = 0.0
+        self.trigger_service_accepted = False
+        self.trigger_acknowledged = False
+        self.trigger_service_name = rospy.get_param(
+            "~target_trigger_service", "/vision_triggered_navigator/trigger_target")
+        self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
         self.navigator_status = ""
+        self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
         self.track_status = {}
@@ -128,6 +147,11 @@ class CompetitionFlow:
             self._qr_odom_cb,
             queue_size=10,
         )
+        rospy.Subscriber(
+            "/scan", LaserScan, self._handoff_scan_cb, queue_size=1)
+        rospy.Subscriber(
+            "/move_base/local_costmap/costmap", OccupancyGrid,
+            self._handoff_costmap_cb, queue_size=1)
         rospy.Subscriber(
             "/move_base/goal", MoveBaseActionGoal, self._qr_move_base_goal_cb, queue_size=5
         )
@@ -298,6 +322,19 @@ class CompetitionFlow:
         with self.lock:
             self.qr_odom_yaw = yaw
             self.qr_odom_received_at = time.monotonic()
+            self.base_twist = (
+                float(msg.twist.twist.linear.x),
+                float(msg.twist.twist.linear.y),
+                float(msg.twist.twist.angular.z),
+            )
+
+    def _handoff_scan_cb(self, _msg):
+        with self.lock:
+            self.handoff_scan_received_at = time.monotonic()
+
+    def _handoff_costmap_cb(self, _msg):
+        with self.lock:
+            self.handoff_costmap_received_at = time.monotonic()
 
     def _qr_move_base_goal_cb(self, msg):
         with self.lock:
@@ -319,15 +356,91 @@ class CompetitionFlow:
             payload = json.loads(msg.data)
             category = normalize_category(payload.get("category"))
         except Exception:
-            self.ocr_filter.reset()
             return
-        if self.ocr_filter.push(self.ocr_target, category):
-            # Keep publishing after confirmation so a navigator that has just
-            # finished initialization cannot miss the one-shot trigger.
-            self.vision_pub.publish(Bool(data=True))
+        self.ocr_last_message_at = time.monotonic()
+        if category == self.ocr_target and payload.get("target_bbox"):
+            self.vision_target_pub.publish(msg)
+        confirmed = self.ocr_filter.push(
+            self.ocr_target, category, time.monotonic())
+        rospy.loginfo_throttle(
+            0.5,
+            "task2 OCR filter: target=%s observed=%s hits=%d/%d bbox=%s",
+            self.ocr_target,
+            category or "none",
+            self.ocr_filter.hit_count,
+            self.ocr_filter.required,
+            bool(payload.get("target_bbox")),
+        )
+        if (confirmed and category == self.ocr_target and payload.get("target_bbox") and
+                not self.vision_trigger_latched):
+            self.vision_trigger_latched = True
+            self.trigger_request_pending = True
+            self.trigger_request_started_at = time.monotonic()
+            self.trigger_service_accepted = False
+            self.trigger_acknowledged = False
+            self.publish_status(
+                "task2", "trigger_pending",
+                "OCR target confirmed; requesting navigator acknowledgement")
+            rospy.loginfo(
+                "task2 OCR target confirmed: target=%s hits=%d/%d; "
+                "reliable trigger pending (will not retrigger)",
+                self.ocr_target,
+                self.ocr_filter.hit_count,
+                self.ocr_filter.required,
+            )
 
     def _navigator_cb(self, msg):
-        self.navigator_status = msg.data.strip().lower()
+        status = msg.data.strip().lower()
+        if status != self.navigator_status:
+            rospy.loginfo("task2 navigator status: %s", status)
+        self.navigator_status = status
+
+    def _deliver_target_trigger(self):
+        """Deliver one OCR lock through a synchronous service and wait for status ACK."""
+        if not self.trigger_request_pending or self.trigger_acknowledged:
+            return
+        elapsed = time.monotonic() - self.trigger_request_started_at
+        delivery_state = trigger_delivery_state(
+            self.trigger_service_accepted,
+            self.navigator_status,
+            elapsed,
+            self.trigger_ack_timeout,
+        )
+        if delivery_state == "acknowledged":
+            self.trigger_acknowledged = True
+            self.trigger_request_pending = False
+            self.publish_status(
+                "task2", "trigger_acknowledged",
+                "navigator accepted and acknowledged the OCR target")
+            rospy.loginfo(
+                "task2 trigger acknowledged by navigator status=%s",
+                self.navigator_status)
+            return
+
+        if delivery_state == "failed":
+            self.publish_status(
+                "task2", "trigger_delivery_failed", "",
+                "navigator did not acknowledge target within {:.1f}s".format(
+                    self.trigger_ack_timeout))
+            raise StageError(
+                "trigger_delivery_failed: no navigator acknowledgement within {:.1f}s".format(
+                    self.trigger_ack_timeout))
+
+        if self.trigger_service_accepted:
+            return
+        try:
+            rospy.wait_for_service(self.trigger_service_name, timeout=0.15)
+            response = rospy.ServiceProxy(self.trigger_service_name, Trigger)()
+            if not response.success:
+                rospy.logwarn_throttle(
+                    0.5, "target trigger service rejected request: %s", response.message)
+                return
+            self.trigger_service_accepted = True
+            rospy.loginfo("task2 target trigger service accepted: %s", response.message)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logwarn_throttle(
+                0.5, "waiting for reliable target trigger service %s: %s",
+                self.trigger_service_name, str(exc))
 
     def _traffic_cb(self, msg):
         try:
@@ -396,6 +509,69 @@ class CompetitionFlow:
         for _ in range(3):
             self.cmd_pub.publish(Twist())
             rospy.sleep(0.03)
+
+    def task1_task2_handoff(self):
+        """Keep localization alive while proving all motion authority is idle."""
+        self.publish_status(
+            "task1", "task2_handoff",
+            "cancelling navigation and waiting for a stationary base")
+        self.safe_stop(cancel_navigation=True)
+        timeout = float(rospy.get_param("~task1_task2_handoff_timeout_sec", 5.0))
+        stable_required = float(rospy.get_param(
+            "~task1_task2_handoff_stable_sec", 0.5))
+        deadline = time.monotonic() + timeout
+        stable_since = None
+        stationary_ready = False
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self.safe_stop(cancel_navigation=True)
+            state = self.move_base.get_state()
+            with self.lock:
+                twist = self.base_twist
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            idle = state not in (GoalStatus.PENDING, GoalStatus.ACTIVE)
+            stopped = (twist is not None and odom_age <= 0.5 and
+                       base_is_stopped(*twist))
+            if idle and stopped:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= stable_required:
+                    stationary_ready = True
+                    break
+            else:
+                stable_since = None
+            rospy.sleep(0.05)
+        if not stationary_ready:
+            raise StageError(
+                "task1->task2 handoff did not reach {:.1f}s stationary idle state".format(
+                    stable_required))
+
+        self.publish_status(
+            "task1", "task2_costmap_refreshing",
+            "clearing QR-scan obstacle history before task2 coverage navigation")
+        try:
+            rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
+            rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError(
+                "task1->task2 costmap refresh failed: {}".format(exc))
+        cleared_at = time.monotonic()
+        refresh_deadline = cleared_at + 2.0
+        while time.monotonic() < refresh_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                scan_fresh = self.handoff_scan_received_at > cleared_at
+                costmap_fresh = self.handoff_costmap_received_at > cleared_at
+            if scan_fresh and costmap_fresh:
+                break
+            rospy.sleep(0.05)
+        else:
+            raise StageError(
+                "task1->task2 costmap refresh produced no fresh scan/costmap snapshot")
+        self.safe_stop(cancel_navigation=True)
+        self.publish_status(
+            "task1", "task2_handoff_ready",
+            "move_base idle; fresh costmap; preserving AMCL state")
 
     def start_child(self, key, package, launch_file, args=None):
         self.stop_child(key)
@@ -768,23 +944,19 @@ class CompetitionFlow:
         workshop = self.task1_result.get("pickup_workshop") or CATEGORY_LABELS[self.category][1]
         if not item:
             raise StageError("task2 target_item is missing")
+        center_only = bool_param("~task2_center_only", False)
 
         self.ocr_target = self.category
         self.ocr_filter.reset()
+        self.ocr_last_message_at = 0.0
+        self.vision_trigger_latched = False
+        self.trigger_request_pending = False
+        self.trigger_request_started_at = 0.0
+        self.trigger_service_accepted = False
+        self.trigger_acknowledged = False
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
-            self.start_child(
-                "factory_navigator",
-                "vision_triggered_navigator",
-                "vision_triggered_navigator.launch",
-                {
-                    "trigger_mode": "vision",
-                    "vision_topic": "/vision/detected",
-                    "publish_initial_pose": bool_param("~navigator_publish_initial_pose", False),
-                    "navigate_to_end_after_trigger": False,
-                },
-            )
             self.start_child(
                 "factory_ocr",
                 "factory_sign_ppocr_rknn_test",
@@ -794,18 +966,158 @@ class CompetitionFlow:
                     "start_competition_speech": False,
                     "start_viewer": self.debug,
                     "recognition_mode": "ppocr_rknn_system",
+                    "target_category": self.category,
                     "enable_speech": False,
                     "required": True,
+                },
+            )
+            self.publish_status("task2", "waiting_ocr", "waiting for first OCR result before motion")
+            ocr_ready_deadline = time.time() + float(
+                rospy.get_param("~ocr_ready_timeout_sec", 12.0))
+            while time.time() < ocr_ready_deadline and not self.ocr_last_message_at:
+                self.check_abort()
+                proc = self.children.get("factory_ocr")
+                if proc and proc.poll() is not None:
+                    raise StageError(
+                        "factory_ocr exited before ready with code {}".format(proc.returncode))
+                rospy.sleep(0.1)
+            if not self.ocr_last_message_at:
+                raise StageError("factory OCR produced no result before motion timeout")
+            self.start_child(
+                "factory_navigator",
+                "vision_triggered_navigator",
+                "vision_triggered_navigator.launch",
+                {
+                    "trigger_mode": "vision",
+                    "vision_topic": "/vision/detected",
+                    "target_topic": "/vision/target",
+                    "trigger_service": self.trigger_service_name,
+                    "publish_initial_pose": (
+                        False if self.mode == "task1_task2" else
+                        bool_param("~navigator_publish_initial_pose", False)),
+                    "navigate_to_end_after_trigger": False,
+                    "coverage_search_mode": True,
+                    "target_center_steering_sign": rospy.get_param(
+                        "~target_center_steering_sign", -1.0),
+                    "camera_boresight_yaw_offset": rospy.get_param(
+                        "~camera_boresight_yaw_offset", 0.0),
+                    "center_only": center_only,
+                    "validate_parking_box": not center_only,
+                    "max_coverage_anchors": int(rospy.get_param(
+                        "~max_coverage_anchors", 0)),
+                    "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
+                    "parking_goal_offset": rospy.get_param(
+                        "~parking_goal_offset", 0.26),
+                    "parking_staging_offset": rospy.get_param(
+                        "~parking_staging_offset", 0.55),
+                    "parking_staging_timeout_sec": rospy.get_param(
+                        "~parking_staging_timeout_sec", 20.0),
+                    "parking_staging_position_tolerance": rospy.get_param(
+                        "~parking_staging_position_tolerance", 0.10),
+                    "parking_staging_yaw_tolerance": rospy.get_param(
+                        "~parking_staging_yaw_tolerance", 0.10),
+                    "parking_docking_timeout_sec": rospy.get_param(
+                        "~parking_docking_timeout_sec", 15.0),
+                    "parking_dock_max_x": rospy.get_param(
+                        "~parking_dock_max_x", 0.10),
+                    "parking_dock_max_y": rospy.get_param(
+                        "~parking_dock_max_y", 0.06),
+                    "parking_dock_max_yaw": rospy.get_param(
+                        "~parking_dock_max_yaw", 0.15),
+                    "parking_dock_min_yaw": rospy.get_param(
+                        "~parking_dock_min_yaw", 0.15),
+                    "parking_dock_normal_tolerance": rospy.get_param(
+                        "~parking_dock_normal_tolerance", 0.015),
+                    "parking_dock_tangent_tolerance": rospy.get_param(
+                        "~parking_dock_tangent_tolerance", 0.02),
+                    "parking_dock_yaw_tolerance": rospy.get_param(
+                        "~parking_dock_yaw_tolerance", 0.035),
+                    "parking_min_wall_distance": rospy.get_param(
+                        "~parking_min_wall_distance", 0.19),
+                    "parking_lidar_stop_distance": rospy.get_param(
+                        "~parking_lidar_stop_distance", 0.15),
+                    "parking_recenter_tolerance": rospy.get_param(
+                        "~parking_recenter_tolerance", 0.04),
+                    "parking_recenter_timeout_sec": rospy.get_param(
+                        "~parking_recenter_timeout_sec", 8.0),
+                    "parking_recenter_initial_wait_sec": rospy.get_param(
+                        "~parking_recenter_initial_wait_sec", 1.0),
+                    "parking_wall_fit_half_angle_deg": rospy.get_param(
+                        "~parking_wall_fit_half_angle_deg", 35.0),
+                    "parking_wall_fit_min_points": rospy.get_param(
+                        "~parking_wall_fit_min_points", 12),
+                    "parking_wall_fit_min_span": rospy.get_param(
+                        "~parking_wall_fit_min_span", 0.25),
+                    "parking_wall_fit_near_min_span": rospy.get_param(
+                        "~parking_wall_fit_near_min_span", 0.18),
+                    "parking_wall_fit_max_distance_jump": rospy.get_param(
+                        "~parking_wall_fit_max_distance_jump", 0.05),
+                    "parking_wall_fit_max_normal_jump_deg": rospy.get_param(
+                        "~parking_wall_fit_max_normal_jump_deg", 8.0),
+                    "parking_wall_fit_max_residual": rospy.get_param(
+                        "~parking_wall_fit_max_residual", 0.015),
+                    "parking_wall_fit_max_normal_error_deg": rospy.get_param(
+                        "~parking_wall_fit_max_normal_error_deg", 20.0),
+                    "parking_normal_offset": rospy.get_param(
+                        "~parking_normal_offset", 0.0),
+                    "parking_tangent_offset": rospy.get_param(
+                        "~parking_tangent_offset", 0.0),
+                    "parking_box_width": rospy.get_param("~parking_box_width", 0.50),
+                    "parking_box_depth": rospy.get_param("~parking_box_depth", 0.50),
+                    "parking_xy_tolerance": rospy.get_param(
+                        "~parking_xy_tolerance", 0.04),
+                    "parking_yaw_tolerance": rospy.get_param(
+                        "~parking_yaw_tolerance", 0.06),
+                    "target_center_coarse_step_deg": rospy.get_param(
+                        "~target_center_coarse_step_deg", 4.0),
+                    "target_center_fine_step_deg": rospy.get_param(
+                        "~target_center_fine_step_deg", 2.0),
+                    "target_center_start_speed": rospy.get_param(
+                        "~target_center_start_speed", 0.20),
+                    "target_center_step_max_speed": rospy.get_param(
+                        "~target_center_max_speed", 0.35),
+                    "target_center_timeout_sec": rospy.get_param(
+                        "~target_center_timeout_sec", 12.0),
+                    "coverage_scan_step_deg": rospy.get_param(
+                        "~coverage_scan_step_deg", 20.0),
+                    "coverage_scan_angular_speed": rospy.get_param(
+                        "~coverage_scan_angular_speed", 0.35),
+                    "coverage_scan_dwell_sec": rospy.get_param(
+                        "~coverage_scan_dwell_sec", 0.65),
+                    "coverage_candidate_hold_sec": rospy.get_param(
+                        "~coverage_candidate_hold_sec", 1.2),
+                    "coverage_scan_max_dwell_sec": rospy.get_param(
+                        "~coverage_scan_max_dwell_sec", 2.0),
+                    "coverage_scan_pose_timeout_sec": rospy.get_param(
+                        "~coverage_scan_pose_timeout_sec", 0.5),
+                    "coverage_goal_soft_timeout_sec": rospy.get_param(
+                        "~coverage_goal_soft_timeout_sec", 25.0),
+                    "coverage_goal_hard_timeout_sec": rospy.get_param(
+                        "~coverage_goal_hard_timeout_sec", 40.0),
+                    "coverage_goal_progress_window_sec": rospy.get_param(
+                        "~coverage_goal_progress_window_sec", 5.0),
+                    "coverage_goal_min_progress": rospy.get_param(
+                        "~coverage_goal_min_progress", 0.03),
                 },
             )
             timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))
             deadline = time.time() + timeout
             while time.time() < deadline:
                 self.check_abort()
+                self._deliver_target_trigger()
                 if self.navigator_status == "arrived":
+                    break
+                if center_only and self.navigator_status == "centered":
                     break
                 if self.navigator_status == "failed":
                     raise StageError("factory navigation failed")
+                if self.navigator_status in (
+                        "centering_failed", "parking_staging_failed",
+                        "parking_recenter_failed", "parking_wall_fit_failed",
+                        "parking_docking_failed", "parking_validation_failed",
+                        "coverage_recovery_disable_failed"):
+                    raise StageError("factory navigation {}".format(
+                        self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):
                     proc = self.children.get(key)
                     if proc and proc.poll() is not None:
@@ -815,10 +1127,31 @@ class CompetitionFlow:
                 raise StageError("factory navigation timed out after {:.1f}s".format(timeout))
         finally:
             self.ocr_target = None
+            self.vision_trigger_latched = False
+            self.trigger_request_pending = False
+            self.trigger_service_accepted = False
+            self.trigger_acknowledged = False
             self.stop_child("factory_ocr")
             self.stop_child("factory_navigator")
             self.safe_stop(cancel_navigation=True)
-        self.announce("task2", item=item, workshop=workshop)
+        if center_only:
+            self.publish_status("task2", "center_test_completed", "target centering test completed")
+            return
+        self.safe_stop(cancel_navigation=True)
+        announcement_required = task2_announcement_required(
+            self.navigator_status, self.task2_announcement_completed)
+        if not self.task2_announcement_completed and not announcement_required:
+            raise StageError(
+                "refusing task2 announcement before confirmed arrived state")
+        if announcement_required:
+            self.publish_status(
+                "task2", "announcing",
+                "announcing completed physical warehouse delivery")
+            self.announce("task2", item=item, workshop=workshop)
+            self.task2_announcement_completed = True
+            self.publish_status(
+                "task2", "announcement_completed",
+                "task2 announcement service completed")
         self.publish_status("task2", "completed", "target factory reached")
 
     def task3(self):
@@ -984,8 +1317,12 @@ class CompetitionFlow:
                 "task4": self.task4,
                 "task5": self.task5,
             }
+            previous_stage = None
             for stage in stage_sequence(self.mode):
+                if previous_stage == "task1" and stage == "task2":
+                    self.run_stage("task1", self.task1_task2_handoff)
                 self.run_stage(stage, handlers[stage])
+                previous_stage = stage
             self.publish_status("competition", "completed", "requested flow completed")
         except Aborted as exc:
             self.publish_status("competition", "aborted", error=str(exc))

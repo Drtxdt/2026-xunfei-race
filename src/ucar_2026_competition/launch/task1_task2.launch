@@ -1,11 +1,6 @@
 <launch>
   <arg name="debug" default="false" />
-  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
-  <arg name="sim_bridge_port" default="26003" />
-  <arg name="traffic_pose_configured" default="false" />
-  <arg name="traffic_x" default="0.0" />
-  <arg name="traffic_y" default="0.0" />
-  <arg name="traffic_yaw" default="0.0" />
+  <arg name="start_external_voice" default="true" />
   <arg name="parking_normal_offset" default="0.0" />
   <arg name="parking_tangent_offset" default="0.0" />
   <arg name="parking_goal_offset" default="0.26" />
@@ -14,15 +9,7 @@
   <arg name="parking_staging_position_tolerance" default="0.10" />
   <arg name="parking_staging_yaw_tolerance" default="0.10" />
   <arg name="parking_docking_timeout_sec" default="15.0" />
-  <arg name="parking_dock_max_x" default="0.10" />
-  <arg name="parking_dock_max_y" default="0.06" />
-  <arg name="parking_dock_max_yaw" default="0.15" />
   <arg name="parking_dock_min_yaw" default="0.15" />
-  <arg name="parking_dock_normal_tolerance" default="0.015" />
-  <arg name="parking_dock_tangent_tolerance" default="0.02" />
-  <arg name="parking_dock_yaw_tolerance" default="0.035" />
-  <arg name="parking_min_wall_distance" default="0.19" />
-  <arg name="parking_lidar_stop_distance" default="0.15" />
   <arg name="parking_recenter_tolerance" default="0.04" />
   <arg name="parking_recenter_timeout_sec" default="8.0" />
   <arg name="parking_recenter_initial_wait_sec" default="1.0" />
@@ -38,25 +25,23 @@
   <arg name="parking_wall_fit_max_normal_jump_deg" default="8.0" />
   <arg name="parking_wall_fit_max_residual" default="0.015" />
   <arg name="parking_wall_fit_max_normal_error_deg" default="20.0" />
-  <arg name="trigger_ack_timeout_sec" default="2.0" />
 
+  <!-- Core processes live for both stages; no navigation/camera/voice restart. -->
   <include file="$(find ucar_2026_competition)/launch/common_core.launch">
     <arg name="start_nav" value="true" />
     <arg name="start_camera" value="true" />
     <arg name="start_speech" value="true" />
+    <arg name="start_asr" value="$(arg start_external_voice)" />
+    <arg name="start_tts" value="$(arg start_external_voice)" />
     <arg name="start_llm" value="true" />
     <arg name="start_rviz" value="$(arg debug)" />
   </include>
 
   <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
-    <arg name="start_stage" value="full" />
+    <arg name="start_stage" value="task1_task2" />
     <arg name="debug" value="$(arg debug)" />
-    <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
-    <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
-    <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
-    <arg name="traffic_x" value="$(arg traffic_x)" />
-    <arg name="traffic_y" value="$(arg traffic_y)" />
-    <arg name="traffic_yaw" value="$(arg traffic_yaw)" />
+    <!-- The flow also enforces false for this mode. -->
+    <arg name="navigator_publish_initial_pose" value="false" />
     <arg name="parking_normal_offset" value="$(arg parking_normal_offset)" />
     <arg name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
     <arg name="parking_goal_offset" value="$(arg parking_goal_offset)" />
@@ -65,15 +50,7 @@
     <arg name="parking_staging_position_tolerance" value="$(arg parking_staging_position_tolerance)" />
     <arg name="parking_staging_yaw_tolerance" value="$(arg parking_staging_yaw_tolerance)" />
     <arg name="parking_docking_timeout_sec" value="$(arg parking_docking_timeout_sec)" />
-    <arg name="parking_dock_max_x" value="$(arg parking_dock_max_x)" />
-    <arg name="parking_dock_max_y" value="$(arg parking_dock_max_y)" />
-    <arg name="parking_dock_max_yaw" value="$(arg parking_dock_max_yaw)" />
     <arg name="parking_dock_min_yaw" value="$(arg parking_dock_min_yaw)" />
-    <arg name="parking_dock_normal_tolerance" value="$(arg parking_dock_normal_tolerance)" />
-    <arg name="parking_dock_tangent_tolerance" value="$(arg parking_dock_tangent_tolerance)" />
-    <arg name="parking_dock_yaw_tolerance" value="$(arg parking_dock_yaw_tolerance)" />
-    <arg name="parking_min_wall_distance" value="$(arg parking_min_wall_distance)" />
-    <arg name="parking_lidar_stop_distance" value="$(arg parking_lidar_stop_distance)" />
     <arg name="parking_recenter_tolerance" value="$(arg parking_recenter_tolerance)" />
     <arg name="parking_recenter_timeout_sec" value="$(arg parking_recenter_timeout_sec)" />
     <arg name="parking_recenter_initial_wait_sec" value="$(arg parking_recenter_initial_wait_sec)" />
@@ -89,6 +66,5 @@
     <arg name="parking_wall_fit_max_normal_jump_deg" value="$(arg parking_wall_fit_max_normal_jump_deg)" />
     <arg name="parking_wall_fit_max_residual" value="$(arg parking_wall_fit_max_residual)" />
     <arg name="parking_wall_fit_max_normal_error_deg" value="$(arg parking_wall_fit_max_normal_error_deg)" />
-    <arg name="trigger_ack_timeout_sec" value="$(arg trigger_ack_timeout_sec)" />
   </include>
 </launch>

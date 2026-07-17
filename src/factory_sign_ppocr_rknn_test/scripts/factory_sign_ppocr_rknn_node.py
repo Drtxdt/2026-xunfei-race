@@ -204,6 +204,23 @@ class FactorySignKeywordClassifier:
         return text
 
 
+def select_category_box(texts: Sequence[OCRText], category: Optional[str], classifier):
+    """Pick the strongest OCR box that independently supports the chosen category."""
+    if not category:
+        return None
+    matches = []
+    for item in texts:
+        if len(item.box) != 4:
+            continue
+        observed, score, _evidence, _debug = classifier.classify_evidence([item])
+        if observed == category:
+            matches.append((float(score), float(item.score or 0.0), item))
+    if not matches:
+        return None
+    matches.sort(key=lambda value: (value[0], value[1]), reverse=True)
+    return matches[0][2]
+
+
 class VoteWindow:
     def __init__(self, size: int, min_count: int) -> None:
         self.size = max(1, int(size))
@@ -302,14 +319,20 @@ class RknnRuntime:
         return rknn
 
     def infer(self, image, data_format: str = "nhwc"):
+        if self.rknn is None:
+            raise RuntimeError("RKNN runtime has already been released")
         try:
             return self.rknn.inference(inputs=[image], data_format=[data_format])
         except TypeError:
             return self.rknn.inference(inputs=[image])
 
     def release(self) -> None:
+        rknn = self.rknn
+        self.rknn = None
+        if rknn is None:
+            return
         try:
-            self.rknn.release()
+            rknn.release()
         except Exception:
             pass
 
@@ -638,6 +661,9 @@ class PPOCRRknnRecognizer:
         return crops
 
     def release(self) -> None:
+        if getattr(self, "_released", False):
+            return
+        self._released = True
         self.rec.release()
         if self.det is not None:
             self.det.release()
@@ -696,6 +722,8 @@ class FactorySignPPOCRRknnNode:
         self.last_roi_box = (0, 0, 0, 0)
         self.last_ocr_scale_factor = 1.0
         self.last_debug_publish_at = 0.0
+        self.shutdown_requested = False
+        self.resources_released = False
 
         self.speak_pub = rospy.Publisher(self.speech_topic, String, queue_size=1)
         self.result_pub = rospy.Publisher(
@@ -794,12 +822,31 @@ class FactorySignPPOCRRknnNode:
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed and self.enable_speech else False
+        target_item = select_category_box(result.texts, confirmed, self.classifier)
+        target_box = []
+        target_center_x = None
+        target_center_y = None
+        if target_item is not None:
+            target_box = map_box_to_frame(
+                target_item.box, self.last_roi_box, self.last_ocr_scale_factor)
+            target_center_x = sum(point[0] for point in target_box) / len(target_box)
+            target_center_y = sum(point[1] for point in target_box) / len(target_box)
+        frame_height, frame_width = frame.shape[:2]
         self.result_pub.publish(self.String(data=json.dumps({
             "category": confirmed or "",
             "workshop": CATEGORY_NAMES.get(confirmed, ""),
             "confidence": float(result.confidence),
+            "category_score": float(result.category_score),
+            "evidence": result.evidence,
+            "view_scale": float(result.view_scale),
+            "candidate_count": int(result.candidate_count),
             "raw_text": result.raw_text,
             "match_debug": result.match_debug,
+            "target_bbox": target_box,
+            "target_center_x": target_center_x,
+            "target_center_y": target_center_y,
+            "image_width": int(frame_width),
+            "image_height": int(frame_height),
             "error": result.error,
             "stamp": time.time(),
         }, ensure_ascii=False)))
@@ -970,6 +1017,16 @@ class FactorySignPPOCRRknnNode:
             self.rospy.logwarn_throttle(2.0, "debug_show_image failed: %s", exc)
 
     def _on_shutdown(self) -> None:
+        self.shutdown_requested = True
+        try:
+            self.image_sub.unregister()
+        except Exception:
+            pass
+
+    def _release_resources(self) -> None:
+        if self.resources_released:
+            return
+        self.resources_released = True
         try:
             self.recognizer.release()
         except Exception:

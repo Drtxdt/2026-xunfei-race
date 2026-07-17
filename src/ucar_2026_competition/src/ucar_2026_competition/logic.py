@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 
 
 CATEGORY_LABELS = {
@@ -77,9 +78,18 @@ def stage_sequence(mode):
     normalized = str(mode or "").strip().lower()
     if normalized == "full":
         return ("task1", "task2", "task3", "task4", "task5")
+    if normalized == "task1_task2":
+        return ("task1", "task2")
     if normalized in ("task1", "task2", "task3", "task4", "task5"):
         return (normalized,)
     raise ValueError("unsupported start_stage: {}".format(mode))
+
+
+def base_is_stopped(linear_x, linear_y, angular_z,
+                    linear_tolerance=0.01, angular_tolerance=0.02):
+    return (math.hypot(float(linear_x), float(linear_y)) <=
+            abs(float(linear_tolerance)) and
+            abs(float(angular_z)) <= abs(float(angular_tolerance)))
 
 
 class ConsecutiveTargetFilter:
@@ -96,6 +106,62 @@ class ConsecutiveTargetFilter:
         else:
             self.hits = 0
         return self.hits >= self.required
+
+
+class TemporalTargetFilter:
+    """Confirm repeated target evidence within a time window; blanks do not erase it."""
+
+    def __init__(self, required=2, window_sec=1.5):
+        self.required = max(1, int(required))
+        self.window_sec = max(0.05, float(window_sec))
+        self.hit_times = []
+
+    @property
+    def hit_count(self):
+        return len(self.hit_times)
+
+    def reset(self):
+        self.hit_times = []
+
+    def push(self, target, observed, now=None):
+        now = time.monotonic() if now is None else float(now)
+        self.hit_times = [
+            stamp for stamp in self.hit_times
+            if now - stamp <= self.window_sec
+        ]
+        if observed is None or observed == "":
+            return len(self.hit_times) >= self.required
+        if not target or observed != target:
+            self.reset()
+            return False
+        self.hit_times.append(now)
+        return len(self.hit_times) >= self.required
+
+
+TRIGGER_ACK_STATES = frozenset((
+    "triggered",
+    "target_locked",
+    "target_centering",
+    "centered",
+    "parking_approaching",
+    "parking_verifying",
+    "arrived",
+))
+
+
+def trigger_delivery_state(service_accepted, navigator_status, elapsed, timeout_sec):
+    """Classify a reliable target-trigger handshake without depending on ROS."""
+    if bool(service_accepted) and str(navigator_status or "").strip().lower() in TRIGGER_ACK_STATES:
+        return "acknowledged"
+    if float(elapsed) >= max(0.0, float(timeout_sec)):
+        return "failed"
+    return "pending"
+
+
+def task2_announcement_required(navigator_status, already_completed):
+    """Allow the official task2 speech exactly once, and only after arrival."""
+    return (str(navigator_status or "").strip().lower() == "arrived" and
+            not bool(already_completed))
 
 
 def parse_category(text):
