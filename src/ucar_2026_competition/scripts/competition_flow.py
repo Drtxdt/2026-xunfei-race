@@ -32,6 +32,7 @@ from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
+    base_is_stopped,
     TemporalTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -112,6 +113,7 @@ class CompetitionFlow:
         self.qr_navigation_result = None
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
+        self.base_twist = None
         self.ocr_target = None
         self.ocr_last_message_at = 0.0
         self.ocr_filter = TemporalTargetFilter(
@@ -310,6 +312,11 @@ class CompetitionFlow:
         with self.lock:
             self.qr_odom_yaw = yaw
             self.qr_odom_received_at = time.monotonic()
+            self.base_twist = (
+                float(msg.twist.twist.linear.x),
+                float(msg.twist.twist.linear.y),
+                float(msg.twist.twist.angular.z),
+            )
 
     def _qr_move_base_goal_cb(self, msg):
         with self.lock:
@@ -481,6 +488,42 @@ class CompetitionFlow:
         for _ in range(3):
             self.cmd_pub.publish(Twist())
             rospy.sleep(0.03)
+
+    def task1_task2_handoff(self):
+        """Keep localization alive while proving all motion authority is idle."""
+        self.publish_status(
+            "task1", "task2_handoff",
+            "cancelling navigation and waiting for a stationary base")
+        self.safe_stop(cancel_navigation=True)
+        timeout = float(rospy.get_param("~task1_task2_handoff_timeout_sec", 5.0))
+        stable_required = float(rospy.get_param(
+            "~task1_task2_handoff_stable_sec", 0.5))
+        deadline = time.monotonic() + timeout
+        stable_since = None
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self.safe_stop(cancel_navigation=True)
+            state = self.move_base.get_state()
+            with self.lock:
+                twist = self.base_twist
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            idle = state not in (GoalStatus.PENDING, GoalStatus.ACTIVE)
+            stopped = (twist is not None and odom_age <= 0.5 and
+                       base_is_stopped(*twist))
+            if idle and stopped:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= stable_required:
+                    self.publish_status(
+                        "task1", "task2_handoff_ready",
+                        "move_base idle; odom stationary; preserving AMCL state")
+                    return
+            else:
+                stable_since = None
+            rospy.sleep(0.05)
+        raise StageError(
+            "task1->task2 handoff did not reach {:.1f}s stationary idle state".format(
+                stable_required))
 
     def start_child(self, key, package, launch_file, args=None):
         self.stop_child(key)
@@ -901,7 +944,9 @@ class CompetitionFlow:
                     "vision_topic": "/vision/detected",
                     "target_topic": "/vision/target",
                     "trigger_service": self.trigger_service_name,
-                    "publish_initial_pose": bool_param("~navigator_publish_initial_pose", False),
+                    "publish_initial_pose": (
+                        False if self.mode == "task1_task2" else
+                        bool_param("~navigator_publish_initial_pose", False)),
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
                     "target_center_steering_sign": rospy.get_param(
@@ -919,6 +964,10 @@ class CompetitionFlow:
                         "~parking_staging_offset", 0.55),
                     "parking_staging_timeout_sec": rospy.get_param(
                         "~parking_staging_timeout_sec", 20.0),
+                    "parking_staging_position_tolerance": rospy.get_param(
+                        "~parking_staging_position_tolerance", 0.10),
+                    "parking_staging_yaw_tolerance": rospy.get_param(
+                        "~parking_staging_yaw_tolerance", 0.10),
                     "parking_docking_timeout_sec": rospy.get_param(
                         "~parking_docking_timeout_sec", 15.0),
                     "parking_dock_max_x": rospy.get_param(
@@ -927,6 +976,8 @@ class CompetitionFlow:
                         "~parking_dock_max_y", 0.06),
                     "parking_dock_max_yaw": rospy.get_param(
                         "~parking_dock_max_yaw", 0.15),
+                    "parking_dock_min_yaw": rospy.get_param(
+                        "~parking_dock_min_yaw", 0.15),
                     "parking_dock_normal_tolerance": rospy.get_param(
                         "~parking_dock_normal_tolerance", 0.015),
                     "parking_dock_tangent_tolerance": rospy.get_param(
@@ -937,6 +988,20 @@ class CompetitionFlow:
                         "~parking_min_wall_distance", 0.19),
                     "parking_lidar_stop_distance": rospy.get_param(
                         "~parking_lidar_stop_distance", 0.15),
+                    "parking_recenter_tolerance": rospy.get_param(
+                        "~parking_recenter_tolerance", 0.04),
+                    "parking_recenter_timeout_sec": rospy.get_param(
+                        "~parking_recenter_timeout_sec", 8.0),
+                    "parking_wall_fit_half_angle_deg": rospy.get_param(
+                        "~parking_wall_fit_half_angle_deg", 35.0),
+                    "parking_wall_fit_min_points": rospy.get_param(
+                        "~parking_wall_fit_min_points", 12),
+                    "parking_wall_fit_min_span": rospy.get_param(
+                        "~parking_wall_fit_min_span", 0.25),
+                    "parking_wall_fit_max_residual": rospy.get_param(
+                        "~parking_wall_fit_max_residual", 0.015),
+                    "parking_wall_fit_max_normal_error_deg": rospy.get_param(
+                        "~parking_wall_fit_max_normal_error_deg", 20.0),
                     "parking_normal_offset": rospy.get_param(
                         "~parking_normal_offset", 0.0),
                     "parking_tangent_offset": rospy.get_param(
@@ -984,6 +1049,7 @@ class CompetitionFlow:
                     raise StageError("factory navigation failed")
                 if self.navigator_status in (
                         "centering_failed", "parking_staging_failed",
+                        "parking_recenter_failed", "parking_wall_fit_failed",
                         "parking_docking_failed", "parking_validation_failed"):
                     raise StageError("factory navigation {}".format(
                         self.navigator_status))
@@ -1172,8 +1238,12 @@ class CompetitionFlow:
                 "task4": self.task4,
                 "task5": self.task5,
             }
+            previous_stage = None
             for stage in stage_sequence(self.mode):
+                if previous_stage == "task1" and stage == "task2":
+                    self.run_stage("task1", self.task1_task2_handoff)
                 self.run_stage(stage, handlers[stage])
+                previous_stage = stage
             self.publish_status("competition", "completed", "requested flow completed")
         except Aborted as exc:
             self.publish_status("competition", "aborted", error=str(exc))

@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 
 PACKAGE_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if PACKAGE_SRC not in sys.path:
@@ -10,6 +11,7 @@ if PACKAGE_SRC not in sys.path:
 
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
+    base_is_stopped,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -120,7 +122,25 @@ class CompetitionLogicTest(unittest.TestCase):
 
     def test_state_machine_sequence(self):
         self.assertEqual(stage_sequence("full"), ("task1", "task2", "task3", "task4", "task5"))
+        self.assertEqual(stage_sequence("task1_task2"), ("task1", "task2"))
         self.assertEqual(stage_sequence("task4"), ("task4",))
+
+    def test_task_handoff_stationary_gate(self):
+        self.assertTrue(base_is_stopped(0.005, -0.005, 0.01))
+        self.assertFalse(base_is_stopped(0.02, 0.0, 0.0))
+        self.assertFalse(base_is_stopped(0.0, 0.0, 0.03))
+
+    def test_task1_task2_launch_preserves_localization(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "task1_task2.launch"))
+        root = ET.parse(launch_path).getroot()
+        flow_include = next(
+            item for item in root.findall("include")
+            if "flow_node.launch" in item.attrib.get("file", ""))
+        args = {item.attrib["name"]: item.attrib.get("value")
+                for item in flow_include.findall("arg")}
+        self.assertEqual(args["start_stage"], "task1_task2")
+        self.assertEqual(args["navigator_publish_initial_pose"], "false")
 
 
 if __name__ == "__main__":

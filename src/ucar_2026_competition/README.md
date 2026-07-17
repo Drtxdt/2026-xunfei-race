@@ -28,7 +28,13 @@ roslaunch ucar_2026_competition task4.launch traffic_pose_configured:=true traff
 roslaunch ucar_2026_competition task5.launch traffic_decision:=left
 ```
 
-任务2在 OCR 两次命中后通过同步服务请求导航锁存目标，并等待导航状态确认；2 秒内没有收到服务和状态双重确认时会停车并报告 `trigger_delivery_failed`。最终停车点由实测四边形墙段连续计算，不将场地吸附为 40 个固定格点。实车仅需在确实执行到 `parking_verifying` 后，根据余量日志分别调整 `parking_normal_offset` 或 `parking_tangent_offset`。
+任务1完成后直接联调任务2（复用同一导航栈、相机和AMCL，不重新发布初始位姿）：
+
+```bash
+roslaunch ucar_2026_competition task1_task2.launch debug:=true 2>&1 | tee task1_task2.log
+```
+
+任务2在 OCR 两次命中后通过同步服务请求导航锁存目标，并等待导航状态确认；2 秒内没有收到服务和状态双重确认时会停车并报告 `trigger_delivery_failed`。move_base只驶到距墙0.55m的预停点，近距OCR再次居中后，最后约30cm使用激光拟合的实际墙面控制距离和垂直度、使用odom控制厂牌切向位置。车辆不会将场地吸附为40个固定格点，只有完整footprint具有至少2cm框内余量才发布`arrived`。
 
 仿真电脑在 `fangzhen` 仓库根目录启动独立 ROS Master、Gazebo、任务3和 TCP 桥：
 

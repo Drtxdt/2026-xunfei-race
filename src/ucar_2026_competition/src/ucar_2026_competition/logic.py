@@ -78,9 +78,18 @@ def stage_sequence(mode):
     normalized = str(mode or "").strip().lower()
     if normalized == "full":
         return ("task1", "task2", "task3", "task4", "task5")
+    if normalized == "task1_task2":
+        return ("task1", "task2")
     if normalized in ("task1", "task2", "task3", "task4", "task5"):
         return (normalized,)
     raise ValueError("unsupported start_stage: {}".format(mode))
+
+
+def base_is_stopped(linear_x, linear_y, angular_z,
+                    linear_tolerance=0.01, angular_tolerance=0.02):
+    return (math.hypot(float(linear_x), float(linear_y)) <=
+            abs(float(linear_tolerance)) and
+            abs(float(angular_z)) <= abs(float(angular_tolerance)))
 
 
 class ConsecutiveTargetFilter:

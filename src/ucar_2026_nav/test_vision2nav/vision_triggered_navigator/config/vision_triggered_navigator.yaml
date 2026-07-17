@@ -76,7 +76,8 @@ parking_box_depth: 0.50
 parking_goal_offset: 0.22
 parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
-parking_staging_acceptance: 0.12
+parking_staging_position_tolerance: 0.10
+parking_staging_yaw_tolerance: 0.10
 parking_staging_watchdog_window_sec: 2.0
 parking_staging_min_progress: 0.03
 parking_staging_max_rotation_deg: 45.0
@@ -84,6 +85,7 @@ parking_docking_timeout_sec: 15.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
 parking_dock_max_yaw: 0.15
+parking_dock_min_yaw: 0.15
 parking_dock_normal_tolerance: 0.015
 parking_dock_tangent_tolerance: 0.02
 parking_dock_yaw_tolerance: 0.035
@@ -95,6 +97,13 @@ parking_lidar_forward_offset: 0.08
 scan_topic: /scan
 scan_stale_sec: 0.5
 scan_front_half_angle_deg: 15.0
+parking_recenter_tolerance: 0.04
+parking_recenter_timeout_sec: 8.0
+parking_wall_fit_half_angle_deg: 35.0
+parking_wall_fit_min_points: 12
+parking_wall_fit_min_span: 0.25
+parking_wall_fit_max_residual: 0.015
+parking_wall_fit_max_normal_error_deg: 20.0
 parking_normal_offset: 0.0
 parking_tangent_offset: 0.0
 parking_xy_tolerance: 0.04

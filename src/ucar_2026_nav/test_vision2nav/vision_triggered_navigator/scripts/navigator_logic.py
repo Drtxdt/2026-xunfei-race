@@ -139,6 +139,124 @@ def docking_command(errors, normal_tolerance, tangent_tolerance, yaw_tolerance,
     return command_x, command_y, command_yaw
 
 
+def wall_frame_docking_command(normal_error, tangent_error, yaw_error,
+                               normal_tolerance, tangent_tolerance,
+                               yaw_tolerance, max_x, max_y, max_yaw,
+                               min_yaw=0.15):
+    """Three-phase command for a mecanum base in a measured wall frame.
+
+    Rotation has priority, followed by tangent translation.  Forward motion
+    is permitted only after both are in tolerance, preventing diagonal entry.
+    """
+    normal_error = float(normal_error)
+    tangent_error = float(tangent_error)
+    yaw_error = float(yaw_error)
+    if abs(yaw_error) > abs(float(yaw_tolerance)):
+        return (0.0, 0.0, bounded_axis_command(
+            yaw_error, yaw_tolerance, 1.5, max_yaw, min_yaw))
+    if abs(tangent_error) > abs(float(tangent_tolerance)):
+        return (0.0, bounded_axis_command(
+            tangent_error, tangent_tolerance, 1.0, max_y, 0.025), 0.0)
+    return (bounded_axis_command(
+        normal_error, normal_tolerance, 0.8, max_x, 0.03), 0.0, 0.0)
+
+
+def staging_pose_reached(current_pose, goal_pose,
+                         position_tolerance=0.10, yaw_tolerance=0.10):
+    """Require both translation and heading before move_base handoff."""
+    distance = math.hypot(
+        float(goal_pose[0]) - float(current_pose[0]),
+        float(goal_pose[1]) - float(current_pose[1]))
+    yaw_error = abs(normalize_angle(
+        float(goal_pose[2]) - float(current_pose[2])))
+    return (distance <= abs(float(position_tolerance)) and
+            yaw_error <= abs(float(yaw_tolerance)))
+
+
+def fit_wall_line(points, min_points=12, min_span=0.25,
+                  max_residual=0.015):
+    """Robustly fit a front wall in base coordinates without numpy.
+
+    Pair hypotheses select the largest line-like support; PCA then refines the
+    winning inliers.  The returned normal points from the base toward the wall.
+    """
+    pts = [(float(x), float(y)) for x, y in points
+           if math.isfinite(float(x)) and math.isfinite(float(y))]
+    min_points = max(2, int(min_points))
+    if len(pts) < min_points:
+        return None
+    # Deterministic downsampling bounds pair hypotheses on the ARM computer.
+    if len(pts) > 80:
+        step = float(len(pts) - 1) / 79.0
+        pts = [pts[int(round(i * step))] for i in range(80)]
+    hypothesis_step = max(1, int(math.ceil(len(pts) / 24.0)))
+    hypothesis_indices = list(range(0, len(pts), hypothesis_step))
+    if hypothesis_indices[-1] != len(pts) - 1:
+        hypothesis_indices.append(len(pts) - 1)
+    threshold = max(1e-4, float(max_residual) * 1.5)
+    best = []
+    for index_i in range(len(hypothesis_indices) - 1):
+        i = hypothesis_indices[index_i]
+        ax, ay = pts[i]
+        for j in hypothesis_indices[index_i + 1:]:
+            bx, by = pts[j]
+            dx, dy = bx - ax, by - ay
+            length = math.hypot(dx, dy)
+            if length < float(min_span) * 0.5:
+                continue
+            nx, ny = -dy / length, dx / length
+            support = [p for p in pts
+                       if abs((p[0] - ax) * nx + (p[1] - ay) * ny) <= threshold]
+            support_projection = [
+                (p[0] - ax) * dx / length + (p[1] - ay) * dy / length
+                for p in support]
+            if (len(support) < min_points or
+                    max(support_projection) - min(support_projection) <
+                    abs(float(min_span))):
+                continue
+            if len(support) > len(best):
+                best = support
+    if len(best) < min_points:
+        return None
+
+    cx = sum(p[0] for p in best) / len(best)
+    cy = sum(p[1] for p in best) / len(best)
+    sxx = sum((p[0] - cx) ** 2 for p in best)
+    syy = sum((p[1] - cy) ** 2 for p in best)
+    sxy = sum((p[0] - cx) * (p[1] - cy) for p in best)
+    tangent_angle = 0.5 * math.atan2(2.0 * sxy, sxx - syy)
+    tx, ty = math.cos(tangent_angle), math.sin(tangent_angle)
+    nx, ny = -ty, tx
+    if nx * cx + ny * cy < 0.0:
+        nx, ny = -nx, -ny
+    residuals = [abs((p[0] - cx) * nx + (p[1] - cy) * ny)
+                 for p in best]
+    rms = math.sqrt(sum(value * value for value in residuals) / len(residuals))
+    projections = [(p[0] - cx) * tx + (p[1] - cy) * ty for p in best]
+    span = max(projections) - min(projections)
+    distance = cx * nx + cy * ny
+    if (span < abs(float(min_span)) or
+            rms > abs(float(max_residual)) or distance <= 0.0):
+        return None
+    return {
+        "distance": distance,
+        "normal_angle": math.atan2(ny, nx),
+        "normal": (nx, ny),
+        "span": span,
+        "residual": rms,
+        "inliers": len(best),
+    }
+
+
+def wall_fit_matches_expected(fit, expected_normal_angle,
+                              maximum_error=math.radians(20.0)):
+    if not fit:
+        return False
+    return abs(normalize_angle(
+        float(fit["normal_angle"]) - float(expected_normal_angle))) <= abs(
+            float(maximum_error))
+
+
 def docking_within_tolerance(errors, normal_tolerance,
                              tangent_tolerance, yaw_tolerance):
     forward, lateral, yaw_error = [abs(float(value)) for value in errors]

@@ -20,6 +20,7 @@ from navigator_logic import (
     docking_pose_errors,
     docking_within_tolerance,
     exact_observation_target,
+    fit_wall_line,
     footprint_max_cost,
     latch_trigger,
     lidar_base_wall_distance,
@@ -31,10 +32,13 @@ from navigator_logic import (
     ray_segment_intersection,
     scan_dwell_deadline,
     sensor_is_fresh,
+    staging_pose_reached,
     staging_motion_is_rotation_stall,
     should_skip_coverage_anchor,
     split_scan_angle,
     wall_normal_distance,
+    wall_fit_matches_expected,
+    wall_frame_docking_command,
 )
 
 
@@ -329,3 +333,69 @@ def test_logged_wall_solutions_make_safe_staging_and_22cm_final_goal(
     assert diagnostics["inside"]
     assert min(diagnostics["near_margin"], diagnostics["far_margin"],
                diagnostics["side_margin"]) >= 0.02
+
+
+def test_staging_requires_position_and_heading_together():
+    goal = (1.0, 2.0, 0.5)
+    assert staging_pose_reached((1.08, 2.0, 0.58), goal, 0.10, 0.10)
+    assert not staging_pose_reached((1.11, 2.0, 0.5), goal, 0.10, 0.10)
+    assert not staging_pose_reached((1.0, 2.0, 0.61), goal, 0.10, 0.10)
+
+
+def test_wall_frame_controller_honors_deadband_and_phase_order():
+    assert wall_frame_docking_command(
+        0.20, 0.10, 0.055, 0.015, 0.02, 0.035,
+        0.10, 0.06, 0.15, 0.15) == (0.0, 0.0, 0.15)
+    assert wall_frame_docking_command(
+        0.20, -0.10, 0.02, 0.015, 0.02, 0.035,
+        0.10, 0.06, 0.15, 0.15) == (0.0, -0.06, 0.0)
+    assert wall_frame_docking_command(
+        0.20, 0.01, 0.02, 0.015, 0.02, 0.035,
+        0.10, 0.06, 0.15, 0.15) == (0.10, 0.0, 0.0)
+
+
+def test_wall_fit_uses_long_wall_and_rejects_short_cone_cluster():
+    normal_angle = 0.05
+    nx, ny = math.cos(normal_angle), math.sin(normal_angle)
+    tx, ty = -ny, nx
+    points = []
+    for index in range(41):
+        along = -0.30 + index * 0.015
+        noise = ((index % 3) - 1) * 0.002
+        points.append((nx * (0.42 + noise) + tx * along,
+                       ny * (0.42 + noise) + ty * along))
+    # Dense but physically short clutter must not win as a wall.
+    points.extend((0.24, -0.02 + index * 0.004) for index in range(10))
+    fit = fit_wall_line(points, 12, 0.25, 0.015)
+    assert fit is not None
+    assert fit["inliers"] >= 35
+    assert math.isclose(fit["distance"], 0.42, abs_tol=0.005)
+    assert abs(normalize_angle(fit["normal_angle"] - normal_angle)) < 0.02
+    assert wall_fit_matches_expected(fit, 0.0, math.radians(20))
+    assert not wall_fit_matches_expected(fit, math.pi / 2.0, math.radians(20))
+
+
+@pytest.mark.parametrize("logged_yaw_error", [-1.690, -1.283, -0.341])
+def test_logged_bad_handoffs_are_rejected_before_direct_docking(logged_yaw_error):
+    assert not staging_pose_reached(
+        (0.0, 0.0, logged_yaw_error), (0.0, 0.0, 0.0), 0.10, 0.10)
+
+
+@pytest.mark.parametrize("label", ["food", "daily", "electronics"])
+def test_corrected_staging_pose_finishes_three_phase_docking_within_15s(label):
+    del label
+    normal_error, tangent_error, yaw_error = 0.33, 0.10, 0.10
+    dt = 0.05
+    elapsed = 0.0
+    while elapsed < 15.0 and not docking_within_tolerance(
+            (normal_error, tangent_error, yaw_error), 0.015, 0.02, 0.035):
+        command = wall_frame_docking_command(
+            normal_error, tangent_error, yaw_error,
+            0.015, 0.02, 0.035, 0.10, 0.06, 0.15, 0.15)
+        normal_error -= command[0] * dt
+        tangent_error -= command[1] * dt
+        yaw_error -= command[2] * dt
+        elapsed += dt
+    assert elapsed < 15.0
+    assert docking_within_tolerance(
+        (normal_error, tangent_error, yaw_error), 0.015, 0.02, 0.035)
