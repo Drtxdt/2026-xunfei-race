@@ -58,13 +58,37 @@ lethal_cost: 253
 # 目标厂牌居中。steering_sign需通过首次低速测试确认，图像右偏时应向右转。
 target_center_tolerance: 0.08
 target_center_required_hits: 2
-target_center_timeout_sec: 6.0
+target_center_timeout_sec: 12.0
 target_bbox_stale_sec: 0.8
 target_center_min_speed: 0.08
 target_center_max_speed: 0.18
 target_center_steering_sign: -1.0
+target_center_coarse_step_deg: 4.0
+target_center_fine_step_deg: 2.0
+target_center_fine_threshold: 0.20
+target_center_start_speed: 0.20
+target_center_step_max_speed: 0.35
+target_center_speed_increment: 0.05
+target_center_motion_window_sec: 0.6
+target_center_min_progress_deg: 0.5
+target_center_settle_sec: 0.25
+target_center_reverse_threshold: 0.03
+odom_topic: /odom
+odom_stale_sec: 0.5
 camera_boresight_yaw_offset: 0.0
 arrival_hold_sec: 0.6
+
+# 任务2完整模式覆盖这些参数；独立导航默认维持原0.4m目标且不做50cm框验证。
+validate_parking_box: false
+parking_box_width: 0.50
+parking_box_depth: 0.50
+parking_goal_offset: 0.4
+parking_xy_tolerance: 0.04
+parking_yaw_tolerance: 0.06
+parking_validation_margin: 0.01
+footprint_half_length: 0.171
+footprint_half_width: 0.128
+local_planner_reconfigure_ns: /move_base/TebLocalPlannerROS
 
 # 自转参数
 rotation_speed: 0.5   # rad/s，左转为正，所有巡航点共用

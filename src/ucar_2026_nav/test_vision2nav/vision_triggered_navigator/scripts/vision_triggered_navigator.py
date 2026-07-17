@@ -4,6 +4,7 @@
 import rospy
 import actionlib
 import tf
+import dynamic_reconfigure.client
 import json
 import math
 import os
@@ -12,7 +13,7 @@ import sys
 
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist, PoseWithCovarianceStamped
-from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import OccupancyGrid, Odometry
 from std_msgs.msg import Bool, String
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -22,8 +23,10 @@ if SCRIPT_DIR not in sys.path:
 from navigator_logic import (
     build_observation_candidates,
     center_angular_command,
+    center_step_angle,
     footprint_max_cost,
     normalize_angle,
+    parking_footprint_inside,
     scan_dwell_deadline,
     split_scan_angle,
 )
@@ -121,15 +124,58 @@ class VisionTriggeredNavigator(object):
         self.target_center_tolerance = rospy.get_param("~target_center_tolerance", 0.08)
         self.target_center_required_hits = int(rospy.get_param(
             "~target_center_required_hits", 2))
-        self.target_center_timeout = rospy.get_param("~target_center_timeout_sec", 6.0)
+        self.target_center_timeout = rospy.get_param("~target_center_timeout_sec", 12.0)
         self.target_bbox_stale = rospy.get_param("~target_bbox_stale_sec", 0.8)
         self.target_center_min_speed = rospy.get_param("~target_center_min_speed", 0.08)
         self.target_center_max_speed = rospy.get_param("~target_center_max_speed", 0.18)
         self.target_center_steering_sign = rospy.get_param(
             "~target_center_steering_sign", -1.0)
+        self.target_center_coarse_step = math.radians(abs(float(rospy.get_param(
+            "~target_center_coarse_step_deg", 4.0))))
+        self.target_center_fine_step = math.radians(abs(float(rospy.get_param(
+            "~target_center_fine_step_deg", 2.0))))
+        self.target_center_fine_threshold = abs(float(rospy.get_param(
+            "~target_center_fine_threshold", 0.20)))
+        self.target_center_start_speed = abs(float(rospy.get_param(
+            "~target_center_start_speed", 0.20)))
+        self.target_center_step_max_speed = max(
+            self.target_center_start_speed,
+            abs(float(rospy.get_param("~target_center_step_max_speed", 0.35))))
+        self.target_center_speed_increment = abs(float(rospy.get_param(
+            "~target_center_speed_increment", 0.05)))
+        self.target_center_motion_window = max(0.1, float(rospy.get_param(
+            "~target_center_motion_window_sec", 0.6)))
+        self.target_center_min_progress = math.radians(abs(float(rospy.get_param(
+            "~target_center_min_progress_deg", 0.5))))
+        self.target_center_settle = max(0.0, float(rospy.get_param(
+            "~target_center_settle_sec", 0.25)))
+        self.target_center_reverse_threshold = abs(float(rospy.get_param(
+            "~target_center_reverse_threshold", 0.03)))
+        self.odom_topic = rospy.get_param("~odom_topic", "/odom")
+        self.odom_stale = max(0.1, float(rospy.get_param(
+            "~odom_stale_sec", 0.5)))
         self.camera_boresight_yaw_offset = rospy.get_param(
             "~camera_boresight_yaw_offset", 0.0)
         self.arrival_hold_sec = rospy.get_param("~arrival_hold_sec", 0.6)
+
+        # 任务2专用的50cm停车框。独立导航默认不启用验证并继续使用vision_offset。
+        self.validate_parking_box = rospy.get_param("~validate_parking_box", False)
+        self.parking_box_width = abs(float(rospy.get_param("~parking_box_width", 0.50)))
+        self.parking_box_depth = abs(float(rospy.get_param("~parking_box_depth", 0.50)))
+        self.parking_goal_offset = abs(float(rospy.get_param(
+            "~parking_goal_offset", self.vision_offset)))
+        self.parking_xy_tolerance = abs(float(rospy.get_param(
+            "~parking_xy_tolerance", 0.04)))
+        self.parking_yaw_tolerance = abs(float(rospy.get_param(
+            "~parking_yaw_tolerance", 0.06)))
+        self.parking_validation_margin = max(0.0, float(rospy.get_param(
+            "~parking_validation_margin", 0.01)))
+        self.footprint_half_length = abs(float(rospy.get_param(
+            "~footprint_half_length", 0.171)))
+        self.footprint_half_width = abs(float(rospy.get_param(
+            "~footprint_half_width", 0.128)))
+        self.local_planner_reconfigure_ns = rospy.get_param(
+            "~local_planner_reconfigure_ns", "/move_base/TebLocalPlannerROS")
 
         # move_base 与 costmap
         self.move_base_server = rospy.get_param("~move_base_server", "/move_base")
@@ -158,6 +204,9 @@ class VisionTriggeredNavigator(object):
 
         self.costmap = None
         rospy.Subscriber(self.costmap_topic, OccupancyGrid, self._costmap_cb)
+        self.odom_yaw = None
+        self.odom_received_at = 0.0
+        rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=10)
 
         self.target_error = None
         self.target_payload_at = 0.0
@@ -189,6 +238,11 @@ class VisionTriggeredNavigator(object):
         self.current_goal_infeasible = False
         self.current_goal_near_enough = False
         self.current_goal_timed_out = False
+        self.parking_wall_point = None
+        self.parking_inward_normal = None
+        self._planner_client = None
+        self._saved_planner_tolerances = None
+        rospy.on_shutdown(self._restore_final_tolerances)
         self._publish_status("ready")
 
     # ------------------------------------------------------------------
@@ -197,6 +251,11 @@ class VisionTriggeredNavigator(object):
     def _costmap_cb(self, msg):
         """保存最新 costmap"""
         self.costmap = msg
+
+    def _odom_cb(self, msg):
+        """Keep a fresh, local yaw source for closed-loop centering steps."""
+        self.odom_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
+        self.odom_received_at = rospy.get_time()
 
     def _publish_status(self, status):
         """发布简洁、稳定的流程状态，供比赛总控监听。"""
@@ -748,53 +807,174 @@ class VisionTriggeredNavigator(object):
             patrol_idx + 1, revisit)
         return "deferred"
 
+    def _odom_is_fresh(self):
+        return (self.odom_yaw is not None and
+                rospy.get_time() - self.odom_received_at <= self.odom_stale)
+
+    def _rotate_center_step(self, direction, target_angle):
+        """Rotate one small odometry-closed-loop step, ramping through deadband."""
+        if not self._odom_is_fresh():
+            rospy.logerr("[vision_triggered_navigator] /odom超过%.2fs未更新，拒绝居中转动.",
+                         self.odom_stale)
+            return False
+
+        direction = 1.0 if direction >= 0.0 else -1.0
+        start_yaw = self.odom_yaw
+        speed = self.target_center_start_speed
+        window_started = rospy.get_time()
+        window_yaw = start_yaw
+        ramp_steps = int(math.ceil(
+            max(0.0, self.target_center_step_max_speed - self.target_center_start_speed) /
+            max(self.target_center_speed_increment, 1e-3)))
+        deadline = rospy.get_time() + max(
+            2.0,
+            target_angle / max(self.target_center_start_speed, 0.01) +
+            (ramp_steps + 2) * self.target_center_motion_window + 0.5)
+        rate = rospy.Rate(30)
+        while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            if not self._odom_is_fresh():
+                self.cmd_vel_pub.publish(Twist())
+                rospy.logerr("[vision_triggered_navigator] 居中步进期间/odom失效，立即停车.")
+                return False
+
+            progress = abs(normalize_angle(self.odom_yaw - start_yaw))
+            if progress >= target_angle:
+                self.cmd_vel_pub.publish(Twist())
+                rospy.loginfo(
+                    "[vision_triggered_navigator] 居中步进完成 angle=%.2fdeg speed=%.2f",
+                    math.degrees(progress), speed)
+                return True
+
+            now = rospy.get_time()
+            if now - window_started >= self.target_center_motion_window:
+                window_progress = abs(normalize_angle(self.odom_yaw - window_yaw))
+                if window_progress < self.target_center_min_progress:
+                    if speed + 1e-6 < self.target_center_step_max_speed:
+                        speed = min(
+                            self.target_center_step_max_speed,
+                            speed + self.target_center_speed_increment)
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 角速度未越过底盘死区，提升至%.2frad/s.",
+                            speed)
+                    else:
+                        self.cmd_vel_pub.publish(Twist())
+                        rospy.logerr(
+                            "[vision_triggered_navigator] 已到%.2frad/s仍无里程计转角，居中失败.",
+                            speed)
+                        return False
+                window_started = now
+                window_yaw = self.odom_yaw
+
+            twist = Twist()
+            twist.angular.z = direction * speed
+            self.cmd_vel_pub.publish(twist)
+            rate.sleep()
+
+        self.cmd_vel_pub.publish(Twist())
+        rospy.logerr("[vision_triggered_navigator] 居中单步转动超时.")
+        return False
+
+    def _wait_fresh_target(self, previous_stamp, deadline):
+        """Wait stopped for an OCR box newer than the one used for the last step."""
+        rate = rospy.Rate(30)
+        while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            self.cmd_vel_pub.publish(Twist())
+            if self.target_payload_at > previous_stamp:
+                return True
+            rate.sleep()
+        return False
+
+    def _centering_failure(self, message):
+        self.cmd_vel_pub.publish(Twist())
+        self._publish_status("centering_failed")
+        rospy.logerr("[vision_triggered_navigator] %s", message)
+        return False
+
     def _center_visual_target(self):
-        """Stop navigation and center the confirmed OCR target before final approach."""
+        """Center the OCR box with stop-look odometry-closed-loop angular steps."""
         if not self.coverage_search_mode:
             return True
         self._publish_status("target_centering")
         if not self._wait_navigation_idle():
-            rospy.logerr("[vision_triggered_navigator] move_base未释放控制权，拒绝视觉居中.")
-            return False
+            return self._centering_failure("move_base未释放控制权，拒绝视觉居中.")
+        if not self._odom_is_fresh():
+            return self._centering_failure("视觉居中开始前/odom不可用.")
+
         deadline = rospy.get_time() + self.target_center_timeout
         centered_hits = 0
-        rate = rospy.Rate(15)
+        last_centered_stamp = 0.0
+        steering_sign = self.target_center_steering_sign
+        reversed_once = False
+        must_improve_after_reverse = False
+
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             age = rospy.get_time() - self.target_payload_at
             if self.target_error is None or age > self.target_bbox_stale:
+                return self._centering_failure("目标框丢失或超过时效，停止而不恢复巡航.")
+            if not self._odom_is_fresh():
+                return self._centering_failure("视觉居中期间/odom超过时效.")
+
+            if abs(self.target_error) <= self.target_center_tolerance:
                 self.cmd_vel_pub.publish(Twist())
-                centered_hits = 0
-                rate.sleep()
-                continue
-            command = center_angular_command(
-                self.target_error,
-                self.target_center_tolerance,
-                self.target_center_min_speed,
-                self.target_center_max_speed,
-                self.target_center_steering_sign,
-            )
-            if command == 0.0:
-                centered_hits += 1
-                self.cmd_vel_pub.publish(Twist())
-                rospy.loginfo_throttle(
-                    0.5, "[vision_triggered_navigator] target centered error=%.3f hits=%d/%d",
-                    self.target_error, centered_hits, self.target_center_required_hits)
+                if self.target_payload_at > last_centered_stamp:
+                    last_centered_stamp = self.target_payload_at
+                    centered_hits += 1
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] target centered error=%.3f hits=%d/%d",
+                        self.target_error, centered_hits, self.target_center_required_hits)
                 if centered_hits >= self.target_center_required_hits:
-                    rospy.sleep(self.coverage_scan_settle)
+                    self._hold_stopped(self.target_center_settle)
                     return True
-            else:
-                centered_hits = 0
-                twist = Twist()
-                twist.angular.z = command
-                self.cmd_vel_pub.publish(twist)
-                rospy.loginfo_throttle(
-                    0.5, "[vision_triggered_navigator] centering target error=%.3f cmd=%.3f",
-                    self.target_error, command)
-            rate.sleep()
-        self.cmd_vel_pub.publish(Twist())
-        self._publish_status("target_lost")
-        rospy.logwarn("[vision_triggered_navigator] 目标居中超时，恢复当前墙段搜索.")
-        return False
+                if not self._wait_fresh_target(last_centered_stamp, min(
+                        deadline, rospy.get_time() + self.target_bbox_stale)):
+                    return self._centering_failure("居中后未收到第二帧新目标框.")
+                continue
+
+            centered_hits = 0
+            before_error = float(self.target_error)
+            before_stamp = self.target_payload_at
+            step_angle = center_step_angle(
+                before_error,
+                self.target_center_tolerance,
+                self.target_center_fine_threshold,
+                self.target_center_coarse_step,
+                self.target_center_fine_step,
+            )
+            direction = (1.0 if steering_sign >= 0.0 else -1.0) * math.copysign(
+                1.0, before_error)
+            rospy.loginfo(
+                "[vision_triggered_navigator] 居中步进 error=%.3f step=%.1fdeg direction=%+.0f",
+                before_error, math.degrees(step_angle), direction)
+            if not self._rotate_center_step(direction, step_angle):
+                return self._centering_failure("底盘未完成视觉居中步进.")
+            self._hold_stopped(self.target_center_settle)
+            settled_at = rospy.get_time()
+            if not self._wait_fresh_target(
+                    max(before_stamp, settled_at),
+                    min(deadline, rospy.get_time() + self.target_bbox_stale)):
+                return self._centering_failure("步进后未收到新的目标框.")
+
+            after_error = float(self.target_error)
+            improvement = abs(before_error) - abs(after_error)
+            rospy.loginfo(
+                "[vision_triggered_navigator] 居中反馈 before=%.3f after=%.3f improvement=%.3f",
+                before_error, after_error, improvement)
+            if must_improve_after_reverse:
+                if improvement <= 0.0:
+                    return self._centering_failure("自动反向后误差仍未减小，停止居中.")
+                must_improve_after_reverse = False
+            elif improvement < -self.target_center_reverse_threshold:
+                if reversed_once:
+                    return self._centering_failure("目标误差再次增大，停止居中.")
+                steering_sign *= -1.0
+                reversed_once = True
+                must_improve_after_reverse = True
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 首次步进使误差增大，自动反转居中方向为%+.0f.",
+                    steering_sign)
+
+        return self._centering_failure("目标居中超过%.1fs，车辆保持停车." %
+                                       self.target_center_timeout)
 
     def _hold_stopped(self, duration):
         deadline = rospy.get_time() + max(0.0, float(duration))
@@ -802,6 +982,78 @@ class VisionTriggeredNavigator(object):
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             self.cmd_vel_pub.publish(Twist())
             rate.sleep()
+
+    def _tighten_final_tolerances(self):
+        """Temporarily tighten TEB only for the 50cm task2 parking goal."""
+        if not self.validate_parking_box:
+            return True
+        try:
+            if self._planner_client is None:
+                self._planner_client = dynamic_reconfigure.client.Client(
+                    self.local_planner_reconfigure_ns, timeout=3.0)
+            current = self._planner_client.get_configuration(timeout=3.0)
+            self._saved_planner_tolerances = {
+                "xy_goal_tolerance": current.get("xy_goal_tolerance", 0.15),
+                "yaw_goal_tolerance": current.get("yaw_goal_tolerance", 0.1),
+                "free_goal_vel": current.get("free_goal_vel", False),
+            }
+            updated = self._planner_client.update_configuration({
+                "xy_goal_tolerance": self.parking_xy_tolerance,
+                "yaw_goal_tolerance": self.parking_yaw_tolerance,
+                "free_goal_vel": False,
+            })
+            rospy.loginfo(
+                "[vision_triggered_navigator] 最终停泊临时收紧TEB容差 xy=%.3f yaw=%.3f",
+                float(updated.get("xy_goal_tolerance", self.parking_xy_tolerance)),
+                float(updated.get("yaw_goal_tolerance", self.parking_yaw_tolerance)))
+            return True
+        except Exception as exc:
+            self._saved_planner_tolerances = None
+            rospy.logerr("[vision_triggered_navigator] 无法收紧最终停泊TEB容差: %s", str(exc))
+            return False
+
+    def _restore_final_tolerances(self):
+        """Restore navigation-team TEB values after task2 parking."""
+        saved = self._saved_planner_tolerances
+        self._saved_planner_tolerances = None
+        if not saved or self._planner_client is None:
+            return
+        try:
+            self._planner_client.update_configuration(saved)
+            rospy.loginfo(
+                "[vision_triggered_navigator] 已恢复TEB容差 xy=%.3f yaw=%.3f",
+                float(saved["xy_goal_tolerance"]),
+                float(saved["yaw_goal_tolerance"]))
+        except Exception as exc:
+            rospy.logerr("[vision_triggered_navigator] 恢复TEB容差失败: %s", str(exc))
+
+    def _validate_parking_pose(self):
+        """Require the full configured footprint to be inside the 50cm box."""
+        if not self.validate_parking_box:
+            return True
+        if self.parking_wall_point is None or self.parking_inward_normal is None:
+            rospy.logerr("[vision_triggered_navigator] 缺少停泊框几何，无法验证.")
+            return False
+        pose = self._get_robot_pose(self.base_frame)
+        if pose is None:
+            rospy.logerr("[vision_triggered_navigator] 无法获取最终位姿，停泊验证失败.")
+            return False
+        valid = parking_footprint_inside(
+            pose,
+            self.parking_wall_point,
+            self.parking_inward_normal,
+            self.parking_box_width,
+            self.parking_box_depth,
+            self.footprint_half_length,
+            self.footprint_half_width,
+            self.parking_validation_margin,
+        )
+        rospy.loginfo(
+            "[vision_triggered_navigator] 停泊框验证 pose=(%.4f, %.4f, %.4f) "
+            "box=%.2fx%.2f full_footprint_inside=%s",
+            pose[0], pose[1], pose[2], self.parking_box_width,
+            self.parking_box_depth, valid)
+        return valid
 
     # ------------------------------------------------------------------
     # 视觉触发目标计算
@@ -841,14 +1093,17 @@ class VisionTriggeredNavigator(object):
 
         ix, iy = best_point
         nx, ny = best_normal
-        gx = ix + nx * self.vision_offset
-        gy = iy + ny * self.vision_offset
+        offset = self.parking_goal_offset
+        gx = ix + nx * offset
+        gy = iy + ny * offset
         # 车头垂直指向墙外（与内法向相反）
         gyaw = math.atan2(-ny, -nx)
 
         rospy.loginfo("[vision_triggered_navigator] 墙交点 (%.4f, %.4f), 外法向 (%.2f, %.2f), "
                       "目标点 (%.4f, %.4f, yaw=%.4f)",
                       ix, iy, -nx, -ny, gx, gy, gyaw)
+        self.parking_wall_point = (ix, iy)
+        self.parking_inward_normal = (nx, ny)
         return gx, gy, gyaw
 
     @staticmethod
@@ -1001,27 +1256,44 @@ class VisionTriggeredNavigator(object):
                 rospy.loginfo("[vision_triggered_navigator] === 视觉触发阶段 ===")
                 self.cancel_goal()
                 self._hold_stopped(self.coverage_scan_settle)
+                self._publish_status("target_locked")
                 if not self._center_visual_target():
-                    self.triggered = False
-                    self.target_error = None
-                    state = "PATROL"
-                    continue
+                    rospy.logerr("[vision_triggered_navigator] 目标锁定后居中失败，车辆保持停车.")
+                    break
                 if self.center_only:
                     self._hold_stopped(self.arrival_hold_sec)
                     self._publish_status("centered")
-                    rospy.loginfo("[vision_triggered_navigator] 居中测试完成，按配置不执行最终靠近.")
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] center_only=true：仅完成居中，不执行50cm框停泊.")
                     break
-                self._publish_status("approaching")
+                self._publish_status("parking_approaching")
                 goal = self.compute_vision_goal()
                 if goal is not None:
                     gx, gy, gyaw = goal
+                else:
+                    rospy.logerr("[vision_triggered_navigator] 视觉目标计算失败.")
+                    self._publish_status("failed")
+                    break
+                if not self._tighten_final_tolerances():
+                    self._publish_status("parking_validation_failed")
+                    self._hold_stopped(self.arrival_hold_sec)
+                    break
+                parking_valid = False
+                try:
                     result = self.send_goal(gx, gy, gyaw)
                     if result != actionlib.GoalStatus.SUCCEEDED:
                         self._publish_status("failed")
                         break
-                else:
-                    rospy.logerr("[vision_triggered_navigator] 视觉目标计算失败.")
-                    self._publish_status("failed")
+                    self._hold_stopped(self.arrival_hold_sec)
+                    self._publish_status("parking_verifying")
+                    parking_valid = self._validate_parking_pose()
+                finally:
+                    self._restore_final_tolerances()
+                if not parking_valid:
+                    self._publish_status("parking_validation_failed")
+                    self._hold_stopped(self.arrival_hold_sec)
+                    rospy.logerr(
+                        "[vision_triggered_navigator] move_base已结束，但完整footprint不在50cm框内.")
                     break
                 if self.navigate_to_end_after_trigger:
                     state = "END"

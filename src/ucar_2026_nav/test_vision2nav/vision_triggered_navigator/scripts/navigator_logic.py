@@ -64,6 +64,63 @@ def center_angular_command(error, tolerance, min_speed, max_speed, steering_sign
     return (1.0 if float(steering_sign) >= 0.0 else -1.0) * math.copysign(magnitude, error)
 
 
+def center_step_angle(error, tolerance, fine_threshold,
+                      coarse_step_angle, fine_step_angle):
+    """Return the next closed-loop centering step angle in radians."""
+    magnitude = abs(float(error))
+    if magnitude <= abs(float(tolerance)):
+        return 0.0
+    if magnitude <= abs(float(fine_threshold)):
+        return abs(float(fine_step_angle))
+    return abs(float(coarse_step_angle))
+
+
+def parking_footprint_inside(pose, wall_point, inward_normal,
+                             box_width, box_depth,
+                             footprint_half_length, footprint_half_width,
+                             margin=0.0):
+    """Check a rectangular base footprint against a wall-aligned parking box.
+
+    ``wall_point`` is the middle of the box edge touching the wall.  Positive
+    normal distance points into the arena; tangent distance is measured along
+    the wall.  The check is deliberately based on the full navigation
+    footprint, which is more conservative than checking only wheel centres.
+    """
+    px, py, yaw = [float(value) for value in pose]
+    wx, wy = [float(value) for value in wall_point]
+    nx, ny = [float(value) for value in inward_normal]
+    normal_length = math.hypot(nx, ny)
+    if normal_length <= 1e-9:
+        return False
+    nx /= normal_length
+    ny /= normal_length
+    tx, ty = -ny, nx
+
+    half_length = abs(float(footprint_half_length))
+    half_width = abs(float(footprint_half_width))
+    width_limit = abs(float(box_width)) * 0.5 - max(0.0, float(margin))
+    depth_min = max(0.0, float(margin))
+    depth_max = abs(float(box_depth)) - max(0.0, float(margin))
+    if width_limit <= 0.0 or depth_max <= depth_min:
+        return False
+
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    for local_x in (-half_length, half_length):
+        for local_y in (-half_width, half_width):
+            corner_x = px + local_x * cos_yaw - local_y * sin_yaw
+            corner_y = py + local_x * sin_yaw + local_y * cos_yaw
+            delta_x = corner_x - wx
+            delta_y = corner_y - wy
+            normal_distance = delta_x * nx + delta_y * ny
+            tangent_distance = delta_x * tx + delta_y * ty
+            if normal_distance < depth_min or normal_distance > depth_max:
+                return False
+            if abs(tangent_distance) > width_limit:
+                return False
+    return True
+
+
 def footprint_max_cost(data, width, height, resolution, origin_x, origin_y,
                        x, y, radius, lethal_cost=253):
     """Return (known, max_cost, blocked) for a circular footprint in one grid frame."""

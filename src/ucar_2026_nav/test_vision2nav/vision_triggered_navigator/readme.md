@@ -15,8 +15,10 @@
      - `keyboard`：在终端按回车触发（测试用）。
      - `vision`：订阅指定视觉话题（默认 `/vision/detected`，`std_msgs/Bool`）。
    - 触发后打断当前巡航。
+   - 任务2覆盖模式先使用 `/odom` 闭环小角度步进，将OCR目标框居中；底盘未起转时角速度从 `0.20` 自适应提升至 `0.35 rad/s`。
    - 根据机器人/摄像头位姿向车头方向发射射线，与长方形围墙求最近交点。
    - 目标点 = 交点沿墙内法向量回退 `vision_offset`（默认 0.4 m），**车头垂直指向墙外**（与内法向相反）。
+   - 比赛任务2使用 `parking_goal_offset=0.25`，临时收紧TEB终点容差，并在发布 `arrived` 前验证完整footprint位于 `0.50×0.50m` 停车框内。
 
 3. **结束点阶段**
    - 直接发送结束点目标，等待到达。
@@ -45,6 +47,10 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `base_frame` | 机器人基座 TF 帧 | `base_link` |
 | `vision_rect_corners` | 长方形围墙 4 个角点 | 见 yaml |
 | `vision_offset` | 墙交点回退距离（m） | `0.4` |
+| `target_center_coarse_step_deg` / `target_center_fine_step_deg` | 任务2目标居中粗调/细调步长 | `4.0 / 2.0` |
+| `target_center_start_speed` / `target_center_step_max_speed` | 居中起始/最大角速度 | `0.20 / 0.35` |
+| `parking_goal_offset` | 任务2停车框中心距墙距离 | 独立模式 `0.4`，比赛任务2 `0.25` |
+| `validate_parking_box` | 是否要求完整footprint通过50cm框验证 | `false` |
 | `costmap_topic` | costmap 话题 | `/move_base/global_costmap/costmap` |
 | `cost_threshold` | 代价阈值，>= 则认为不可行 | `100` |
 | `feasibility_check_rate` | 导航中可行性检查频率（Hz） | `1.0` |
@@ -70,3 +76,4 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 - actionlib
 - tf
 - std_msgs
+- dynamic_reconfigure

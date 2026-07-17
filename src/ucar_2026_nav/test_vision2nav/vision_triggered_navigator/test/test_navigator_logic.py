@@ -11,8 +11,10 @@ if SCRIPTS not in sys.path:
 from navigator_logic import (
     build_observation_candidates,
     center_angular_command,
+    center_step_angle,
     footprint_max_cost,
     normalize_angle,
+    parking_footprint_inside,
     scan_dwell_deadline,
     split_scan_angle,
 )
@@ -34,6 +36,40 @@ def test_center_command_stops_in_tolerance_and_has_configurable_sign():
     assert center_angular_command(0.04, 0.08, 0.08, 0.18, -1) == 0.0
     assert center_angular_command(0.5, 0.08, 0.08, 0.18, -1) < 0.0
     assert center_angular_command(0.5, 0.08, 0.08, 0.18, 1) > 0.0
+
+
+def test_center_step_uses_coarse_fine_and_stop_bands():
+    assert center_step_angle(0.40, 0.08, 0.20,
+                             math.radians(4), math.radians(2)) == math.radians(4)
+    assert center_step_angle(0.12, 0.08, 0.20,
+                             math.radians(4), math.radians(2)) == math.radians(2)
+    assert center_step_angle(0.04, 0.08, 0.20,
+                             math.radians(4), math.radians(2)) == 0.0
+
+
+def test_full_footprint_must_fit_inside_50cm_wall_box():
+    valid_poses = [
+        ((0.25, 0.0, math.pi), (1.0, 0.0)),
+        ((-0.25, 0.0, 0.0), (-1.0, 0.0)),
+        ((0.0, 0.25, -math.pi / 2.0), (0.0, 1.0)),
+        ((0.0, -0.25, math.pi / 2.0), (0.0, -1.0)),
+    ]
+    for pose, inward in valid_poses:
+        assert parking_footprint_inside(
+            pose, (0.0, 0.0), inward,
+            0.50, 0.50, 0.171, 0.128, 0.01)
+    assert not parking_footprint_inside(
+        (0.40, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0),
+        0.50, 0.50, 0.171, 0.128, 0.01)
+    assert not parking_footprint_inside(
+        (0.25, 0.20, math.pi), (0.0, 0.0), (1.0, 0.0),
+        0.50, 0.50, 0.171, 0.128, 0.01)
+
+
+def test_tight_goal_tolerance_keeps_rotated_footprint_in_box():
+    assert parking_footprint_inside(
+        (0.29, 0.04, math.pi + 0.06), (0.0, 0.0), (1.0, 0.0),
+        0.50, 0.50, 0.171, 0.128, 0.01)
 
 
 def test_footprint_allows_inflation_but_rejects_lethal_cells():

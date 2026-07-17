@@ -9,10 +9,11 @@ find_package(catkin REQUIRED COMPONENTS
   actionlib
   tf
   std_msgs
+  dynamic_reconfigure
 )
 
 catkin_package(
-  CATKIN_DEPENDS rospy move_base_msgs geometry_msgs nav_msgs actionlib tf std_msgs
+  CATKIN_DEPENDS rospy move_base_msgs geometry_msgs nav_msgs actionlib tf std_msgs dynamic_reconfigure
 )
 
 catkin_install_python(PROGRAMS scripts/vision_triggered_navigator.py

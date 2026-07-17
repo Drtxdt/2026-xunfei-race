@@ -119,6 +119,7 @@ class CompetitionFlow:
             rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
         self.vision_trigger_until = 0.0
+        self.vision_trigger_latched = False
         self.ocr_trigger_hold_sec = float(rospy.get_param("~ocr_trigger_hold_sec", 1.0))
         self.navigator_status = ""
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
@@ -342,17 +343,17 @@ class CompetitionFlow:
             self.ocr_filter.required,
             bool(payload.get("target_bbox")),
         )
-        if confirmed and category == self.ocr_target and payload.get("target_bbox"):
-            self.vision_trigger_until = max(
-                self.vision_trigger_until,
-                time.monotonic() + self.ocr_trigger_hold_sec,
-            )
-            rospy.loginfo_throttle(
-                1.0,
-                "task2 OCR target confirmed: target=%s hits=%d/%d; triggering navigator",
+        if (confirmed and category == self.ocr_target and payload.get("target_bbox") and
+                not self.vision_trigger_latched):
+            self.vision_trigger_latched = True
+            self.vision_trigger_until = time.monotonic() + self.ocr_trigger_hold_sec
+            rospy.loginfo(
+                "task2 OCR target confirmed: target=%s hits=%d/%d; "
+                "trigger latched for %.1fs (will not retrigger)",
                 self.ocr_target,
                 self.ocr_filter.hit_count,
                 self.ocr_filter.required,
+                self.ocr_trigger_hold_sec,
             )
 
     def _vision_trigger_timer_cb(self, _event):
@@ -807,6 +808,7 @@ class CompetitionFlow:
         self.ocr_filter.reset()
         self.ocr_last_message_at = 0.0
         self.vision_trigger_until = 0.0
+        self.vision_trigger_latched = False
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
@@ -852,9 +854,28 @@ class CompetitionFlow:
                     "camera_boresight_yaw_offset": rospy.get_param(
                         "~camera_boresight_yaw_offset", 0.0),
                     "center_only": center_only,
+                    "validate_parking_box": not center_only,
                     "max_coverage_anchors": int(rospy.get_param(
                         "~max_coverage_anchors", 0)),
                     "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
+                    "parking_goal_offset": rospy.get_param(
+                        "~parking_goal_offset", 0.25),
+                    "parking_box_width": rospy.get_param("~parking_box_width", 0.50),
+                    "parking_box_depth": rospy.get_param("~parking_box_depth", 0.50),
+                    "parking_xy_tolerance": rospy.get_param(
+                        "~parking_xy_tolerance", 0.04),
+                    "parking_yaw_tolerance": rospy.get_param(
+                        "~parking_yaw_tolerance", 0.06),
+                    "target_center_coarse_step_deg": rospy.get_param(
+                        "~target_center_coarse_step_deg", 4.0),
+                    "target_center_fine_step_deg": rospy.get_param(
+                        "~target_center_fine_step_deg", 2.0),
+                    "target_center_start_speed": rospy.get_param(
+                        "~target_center_start_speed", 0.20),
+                    "target_center_step_max_speed": rospy.get_param(
+                        "~target_center_max_speed", 0.35),
+                    "target_center_timeout_sec": rospy.get_param(
+                        "~target_center_timeout_sec", 12.0),
                     "coverage_scan_step_deg": rospy.get_param(
                         "~coverage_scan_step_deg", 20.0),
                     "coverage_scan_angular_speed": rospy.get_param(
@@ -879,6 +900,10 @@ class CompetitionFlow:
                     break
                 if self.navigator_status == "failed":
                     raise StageError("factory navigation failed")
+                if self.navigator_status in (
+                        "centering_failed", "parking_validation_failed"):
+                    raise StageError("factory navigation {}".format(
+                        self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):
                     proc = self.children.get(key)
                     if proc and proc.poll() is not None:
@@ -889,6 +914,7 @@ class CompetitionFlow:
         finally:
             self.ocr_target = None
             self.vision_trigger_until = 0.0
+            self.vision_trigger_latched = False
             self.stop_child("factory_ocr")
             self.stop_child("factory_navigator")
             self.safe_stop(cancel_navigation=True)
