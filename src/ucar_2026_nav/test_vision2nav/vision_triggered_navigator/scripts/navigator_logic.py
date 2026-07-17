@@ -116,22 +116,30 @@ def scan_dwell_deadline(started_at, dwell_sec, candidate_at,
     return min(deadline, started_at + max(0.0, float(max_dwell_sec)))
 
 
-def build_observation_candidates(x, y, offsets, bounds, min_wall_clearance):
-    """Return unique candidate positions that remain safely inside the arena."""
-    x_min, x_max, y_min, y_max = [float(value) for value in bounds]
-    clearance = max(0.0, float(min_wall_clearance))
-    candidates = []
-    for dx, dy in offsets:
-        cx = float(x) + float(dx)
-        cy = float(y) + float(dy)
-        if cx < x_min + clearance or cx > x_max - clearance:
-            continue
-        if cy < y_min + clearance or cy > y_max - clearance:
-            continue
-        key = (round(cx, 6), round(cy, 6))
-        if key not in [(round(px, 6), round(py, 6)) for px, py in candidates]:
-            candidates.append((cx, cy))
-    return candidates
+def exact_observation_target(point):
+    """Return the calibrated observation pose without generating offsets."""
+    return float(point["x"]), float(point["y"]), float(point["yaw"])
+
+
+def should_skip_coverage_anchor(cost_known, max_cost, lethal_cost=253):
+    """Only a known lethal/inscribed footprint cost may skip an anchor."""
+    return bool(cost_known) and int(max_cost) >= int(lethal_cost)
+
+
+def costmap_value_at(data, width, height, resolution,
+                     origin_x, origin_y, x, y):
+    """Read one already-transformed costmap point; return -1 when unknown."""
+    resolution = float(resolution)
+    if resolution <= 0.0:
+        return -1
+    mx = int(math.floor((float(x) - float(origin_x)) / resolution))
+    my = int(math.floor((float(y) - float(origin_y)) / resolution))
+    width = int(width)
+    height = int(height)
+    if mx < 0 or mx >= width or my < 0 or my >= height:
+        return -1
+    raw = int(data[my * width + mx]) & 0xFF
+    return -1 if raw == 255 else raw
 
 
 def center_angular_command(error, tolerance, min_speed, max_speed, steering_sign=-1.0):
@@ -259,6 +267,7 @@ def footprint_max_cost(data, width, height, resolution, origin_x, origin_y,
         return False, -1, False
 
     max_cost = 0
+    saw_known = False
     radius_sq = max(0.0, float(radius)) ** 2
     for gy in range(my - cells, my + cells + 1):
         for gx in range(mx - cells, mx + cells + 1):
@@ -269,7 +278,10 @@ def footprint_max_cost(data, width, height, resolution, origin_x, origin_y,
             raw = int(data[gy * width + gx]) & 0xFF
             if raw == 255:
                 continue
+            saw_known = True
             max_cost = max(max_cost, raw)
             if raw >= int(lethal_cost):
                 return True, max_cost, True
+    if not saw_known:
+        return False, -1, False
     return True, max_cost, False

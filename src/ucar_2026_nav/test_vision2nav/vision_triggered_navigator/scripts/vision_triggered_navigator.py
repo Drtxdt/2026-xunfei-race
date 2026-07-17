@@ -22,9 +22,10 @@ if SCRIPT_DIR not in sys.path:
     sys.path.insert(0, SCRIPT_DIR)
 
 from navigator_logic import (
-    build_observation_candidates,
     build_quadrilateral_walls,
     center_step_angle,
+    costmap_value_at,
+    exact_observation_target,
     footprint_max_cost,
     latch_trigger,
     normalize_angle,
@@ -32,6 +33,7 @@ from navigator_logic import (
     parking_goal_from_wall,
     ray_segment_intersection,
     scan_dwell_deadline,
+    should_skip_coverage_anchor,
     split_scan_angle,
 )
 
@@ -94,17 +96,7 @@ class VisionTriggeredNavigator(object):
         # 任务2专用的覆盖优先模式。默认关闭，保证原独立导航行为不变。
         self.coverage_search_mode = rospy.get_param("~coverage_search_mode", False)
         self.target_topic = rospy.get_param("~target_topic", "/vision/target")
-        self.coverage_candidate_offsets = rospy.get_param(
-            "~coverage_candidate_offsets",
-            [[0.0, 0.0], [0.0, 0.28], [0.0, -0.28],
-             [0.28, 0.0], [-0.28, 0.0]])
-        self.coverage_min_wall_clearance = rospy.get_param(
-            "~coverage_min_wall_clearance", 0.36)
-        self.coverage_accept_radius = rospy.get_param("~coverage_accept_radius", 0.45)
         self.coverage_goal_timeout = rospy.get_param("~coverage_goal_timeout_sec", 25.0)
-        self.coverage_stall_timeout = rospy.get_param("~coverage_stall_timeout_sec", 6.0)
-        self.coverage_min_progress = rospy.get_param("~coverage_min_progress_m", 0.05)
-        self.coverage_revisit_passes = int(rospy.get_param("~coverage_revisit_passes", 1))
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
@@ -237,7 +229,6 @@ class VisionTriggeredNavigator(object):
         self.current_goal_x = None
         self.current_goal_y = None
         self.current_goal_infeasible = False
-        self.current_goal_near_enough = False
         self.current_goal_timed_out = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
@@ -381,7 +372,7 @@ class VisionTriggeredNavigator(object):
         self.rect_y_min = min(ys)
         self.rect_y_max = max(ys)
 
-        # AABB只供覆盖观察候选过滤；最终停泊使用实测四边形墙段。
+        # 最终停泊使用实测四边形墙段；AABB不参与观察点或停车目标生成。
         self.walls = build_quadrilateral_walls(self.vision_rect_corners)
 
     def _get_robot_pose(self, frame_id):
@@ -397,23 +388,25 @@ class VisionTriggeredNavigator(object):
             return None
 
     def _get_cost_at(self, x, y):
-        """查询 costmap 中 (x,y) 的代价值，未收到/越界返回 -1"""
+        """查询map目标在costmap中的代价；未知、TF失败或越界返回-1。"""
         if self.costmap is None:
             return -1
 
+        point = self._map_point_in_costmap_frame(x, y)
+        if point is None:
+            return -1
+        cost_x, cost_y = point
         info = self.costmap.info
-        mx = int((x - info.origin.position.x) / info.resolution)
-        my = int((y - info.origin.position.y) / info.resolution)
-
-        if mx < 0 or mx >= info.width or my < 0 or my >= info.height:
+        cost = costmap_value_at(
+            self.costmap.data, info.width, info.height, info.resolution,
+            info.origin.position.x, info.origin.position.y, cost_x, cost_y)
+        if cost < 0:
             return -1
-
-        idx = my * info.width + mx
-        raw = self.costmap.data[idx]
-        cost = raw & 0xFF  # costmap 的 int8 需要转无符号才是 0~255
-        if cost == 255:    # NO_INFORMATION
-            return -1
-        rospy.loginfo_throttle(5.0, "[vision_triggered_navigator] 查询 costmap (%.3f, %.3f) -> cost=%d", x, y, cost)
+        rospy.loginfo_throttle(
+            5.0,
+            "[vision_triggered_navigator] 查询costmap map=(%.3f, %.3f) %s=(%.3f, %.3f) -> cost=%d",
+            x, y, self.costmap.header.frame_id or self.map_frame,
+            cost_x, cost_y, cost)
         return cost
 
     def _map_point_in_costmap_frame(self, x, y):
@@ -437,8 +430,9 @@ class VisionTriggeredNavigator(object):
         except (tf.LookupException, tf.ConnectivityException,
                 tf.ExtrapolationException) as exc:
             rospy.logwarn_throttle(
-                2.0, "[vision_triggered_navigator] 无法将map目标转换到costmap坐标系%s: %s",
-                frame, str(exc))
+                2.0,
+                "[vision_triggered_navigator] map目标(%.4f, %.4f)无法转换到costmap坐标系%s: %s；按未知代价处理",
+                x, y, frame, str(exc))
             return None
 
     def _coverage_pose_cost(self, x, y):
@@ -519,7 +513,6 @@ class VisionTriggeredNavigator(object):
         self.current_goal_x = x
         self.current_goal_y = y
         self.current_goal_infeasible = False
-        self.current_goal_near_enough = False
         self.current_goal_timed_out = False
 
         goal = MoveBaseGoal()
@@ -539,58 +532,24 @@ class VisionTriggeredNavigator(object):
             timer = rospy.Timer(period, self._check_current_goal_cb)
 
         started = rospy.get_time()
-        last_progress_at = started
-        best_distance = None
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             state = self.move_base_client.get_state()
             if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
                 break
             if self.coverage_search_mode and not self.triggered:
-                pose = self._get_robot_pose(self.base_frame)
-                if pose is not None:
-                    distance = math.hypot(float(x) - pose[0], float(y) - pose[1])
-                    if best_distance is None or distance <= best_distance - self.coverage_min_progress:
-                        best_distance = distance
-                        last_progress_at = rospy.get_time()
-
-                    known, max_cost, blocked = self._coverage_pose_cost(x, y)
-                    if blocked and distance <= self.coverage_accept_radius:
-                        rospy.logwarn(
-                            "[vision_triggered_navigator] 精确观察点被障碍占据(cost=%d)，"
-                            "当前位置距锚点%.2fm，改在安全当前位置观察.", max_cost, distance)
-                        self.current_goal_near_enough = True
-                        self.cancel_goal()
-                        break
-
-                    now = rospy.get_time()
-                    if (now - last_progress_at >= self.coverage_stall_timeout and
-                            now - started >= self.coverage_stall_timeout):
-                        self.current_goal_near_enough = distance <= self.coverage_accept_radius
-                        self.current_goal_timed_out = True
-                        rospy.logwarn(
-                            "[vision_triggered_navigator] 观察点导航连续%.1fs无进展，"
-                            "distance=%.2f near_enough=%s，切换观察候选.",
-                            self.coverage_stall_timeout, distance,
-                            self.current_goal_near_enough)
-                        self.cancel_goal()
-                        break
-
                 if rospy.get_time() - started >= self.coverage_goal_timeout:
-                    if pose is not None:
-                        distance = math.hypot(float(x) - pose[0], float(y) - pose[1])
-                        self.current_goal_near_enough = distance <= self.coverage_accept_radius
                     self.current_goal_timed_out = True
                     rospy.logwarn(
-                        "[vision_triggered_navigator] 观察候选超过%.1fs，near_enough=%s，取消.",
-                        self.coverage_goal_timeout, self.current_goal_near_enough)
+                        "[vision_triggered_navigator] 精确观察点(%.4f, %.4f, %.4f)导航超过%.1fs，取消并进入下一原始锚点.",
+                        x, y, yaw, self.coverage_goal_timeout)
                     self.cancel_goal()
                     break
             rate.sleep()
 
         if timer is not None:
             timer.shutdown()
-        if self.current_goal_near_enough or self.current_goal_timed_out:
+        if self.current_goal_timed_out:
             self.move_base_client.wait_for_result(rospy.Duration(1.0))
         final_state = self.move_base_client.get_state()
 
@@ -777,62 +736,59 @@ class VisionTriggeredNavigator(object):
                 return False
         return True
 
-    def _observation_candidates(self, point):
-        bounds = (self.rect_x_min, self.rect_x_max,
-                  self.rect_y_min, self.rect_y_max)
-        positions = build_observation_candidates(
-            point["x"], point["y"], self.coverage_candidate_offsets,
-            bounds, self.coverage_min_wall_clearance)
-        return [(x, y, point["yaw"]) for x, y in positions]
+    def _visit_coverage_point(self, point, patrol_idx):
+        """Visit one calibrated anchor once, then perform its original scan."""
+        x, y, yaw = exact_observation_target(point)
+        if self.triggered:
+            return "triggered"
 
-    def _visit_coverage_point(self, point, patrol_idx, revisit=False):
-        """Observe one logical wall segment without silently losing coverage."""
-        candidates = self._observation_candidates(point)
-        label = "重访" if revisit else "首访"
-        for candidate_idx, (x, y, yaw) in enumerate(candidates):
-            if self.triggered:
-                return "triggered"
-            known, max_cost, blocked = self._coverage_pose_cost(x, y)
-            if known and blocked:
-                rospy.logwarn(
-                    "[vision_triggered_navigator] 锚点%d %s候选%d footprint被占(cost=%d)，换候选.",
-                    patrol_idx + 1, label, candidate_idx + 1, max_cost)
-                continue
-            rospy.loginfo(
-                "[vision_triggered_navigator] 锚点%d %s候选%d/%d: (%.3f, %.3f, %.3f)",
-                patrol_idx + 1, label, candidate_idx + 1, len(candidates), x, y, yaw)
-            result = self.send_goal(x, y, yaw)
-            if self.triggered:
-                return "triggered"
-            if result == actionlib.GoalStatus.SUCCEEDED or self.current_goal_near_enough:
-                if not self._wait_navigation_idle():
-                    rospy.logerr(
-                        "[vision_triggered_navigator] move_base未在期限内释放控制权，"
-                        "禁止执行观察自转，改试下一候选.")
-                    continue
-                self.cmd_vel_pub.publish(Twist())
-                initial_hold_at = rospy.get_time()
-                self._hold_scan_step(
-                    "锚点{}初始朝向".format(patrol_idx + 1),
-                    initial_hold_at - max(self.target_bbox_stale,
-                                          self.coverage_scan_dwell))
-                if self.triggered:
-                    return "triggered"
-                if not self.perform_rotations(point.get("rotations", [])):
-                    rospy.logwarn(
-                        "[vision_triggered_navigator] 锚点%d步进扫描未完成，延期重访.",
-                        patrol_idx + 1)
-                    return "deferred"
-                if self.triggered:
-                    return "triggered"
-                rospy.loginfo(
-                    "[vision_triggered_navigator] coverage anchor=%d state=covered candidate=%d revisit=%s",
-                    patrol_idx + 1, candidate_idx + 1, revisit)
-                return "covered"
-        rospy.logwarn(
-            "[vision_triggered_navigator] coverage anchor=%d state=deferred revisit=%s",
-            patrol_idx + 1, revisit)
-        return "deferred"
+        known, max_cost, _blocked = self._coverage_pose_cost(x, y)
+        if should_skip_coverage_anchor(known, max_cost, self.lethal_cost):
+            self.cmd_vel_pub.publish(Twist())
+            rospy.logwarn(
+                "[vision_triggered_navigator] 精确锚点%d footprint被锥桶占据(cost=%d)，仅跳过该原始点: (%.4f, %.4f, %.4f).",
+                patrol_idx + 1, max_cost, x, y, yaw)
+            return "skipped_blocked"
+
+        rospy.loginfo(
+            "[vision_triggered_navigator] 精确锚点%d: (%.4f, %.4f, %.4f)",
+            patrol_idx + 1, x, y, yaw)
+        result = self.send_goal(x, y, yaw)
+        if self.triggered:
+            return "triggered"
+        if result != actionlib.GoalStatus.SUCCEEDED:
+            self.cmd_vel_pub.publish(Twist())
+            rospy.logwarn(
+                "[vision_triggered_navigator] 精确锚点%d导航未成功(state=%s timeout=%s)，不生成替代坐标，进入下一原始点.",
+                patrol_idx + 1, str(result), self.current_goal_timed_out)
+            return "skipped_failed"
+        if not self._wait_navigation_idle():
+            self.cmd_vel_pub.publish(Twist())
+            rospy.logerr(
+                "[vision_triggered_navigator] 精确锚点%d到达后move_base未释放控制权，禁止观察自转并进入下一原始点.",
+                patrol_idx + 1)
+            return "skipped_failed"
+
+        self.cmd_vel_pub.publish(Twist())
+        initial_hold_at = rospy.get_time()
+        self._hold_scan_step(
+            "锚点{}初始朝向".format(patrol_idx + 1),
+            initial_hold_at - max(self.target_bbox_stale,
+                                  self.coverage_scan_dwell))
+        if self.triggered:
+            return "triggered"
+        if not self.perform_rotations(point.get("rotations", [])):
+            self.cmd_vel_pub.publish(Twist())
+            rospy.logwarn(
+                "[vision_triggered_navigator] 精确锚点%d步进扫描未完成，不重访，进入下一原始点.",
+                patrol_idx + 1)
+            return "skipped_scan_failed"
+        if self.triggered:
+            return "triggered"
+        rospy.loginfo(
+            "[vision_triggered_navigator] coverage anchor=%d state=covered exact=true",
+            patrol_idx + 1)
+        return "covered"
 
     def _odom_is_fresh(self):
         return (self.odom_yaw is not None and
@@ -1178,10 +1134,7 @@ class VisionTriggeredNavigator(object):
         coverage_count = len(self.patrol_points)
         if self.max_coverage_anchors > 0:
             coverage_count = min(coverage_count, self.max_coverage_anchors)
-        coverage_order = list(range(coverage_count))
         coverage_position = 0
-        coverage_deferred = []
-        coverage_revisit_pass = 0
 
         while not rospy.is_shutdown():
             # 一旦被触发，立即切换到视觉阶段
@@ -1192,37 +1145,22 @@ class VisionTriggeredNavigator(object):
 
             if state == "PATROL":
                 if self.coverage_search_mode:
-                    if coverage_position >= len(coverage_order):
-                        if (coverage_deferred and
-                                coverage_revisit_pass < self.coverage_revisit_passes):
-                            coverage_revisit_pass += 1
-                            coverage_order = list(coverage_deferred)
-                            coverage_deferred = []
-                            coverage_position = 0
-                            self._publish_status("revisiting")
-                            rospy.logwarn(
-                                "[vision_triggered_navigator] 开始覆盖重访%d/%d，锚点=%s",
-                                coverage_revisit_pass, self.coverage_revisit_passes,
-                                [idx + 1 for idx in coverage_order])
-                            continue
+                    if coverage_position >= coverage_count:
                         rospy.logerr(
-                            "[vision_triggered_navigator] 所有墙段扫描完成但未锁定目标；"
-                            "未覆盖锚点=%s", [idx + 1 for idx in coverage_deferred])
+                            "[vision_triggered_navigator] %d个精确观察点已按原顺序处理完成，但未锁定目标.",
+                            coverage_count)
                         self._publish_status("failed")
                         break
 
-                    point_idx = coverage_order[coverage_position]
+                    point_idx = coverage_position
                     point = self.patrol_points[point_idx]
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",
-                        coverage_position + 1, len(coverage_order), point_idx + 1)
-                    outcome = self._visit_coverage_point(
-                        point, point_idx, coverage_revisit_pass > 0)
+                        coverage_position + 1, coverage_count, point_idx + 1)
+                    outcome = self._visit_coverage_point(point, point_idx)
                     if outcome == "triggered":
                         state = "VISION"
                         continue
-                    if outcome == "deferred":
-                        coverage_deferred.append(point_idx)
                     coverage_position += 1
                     continue
 

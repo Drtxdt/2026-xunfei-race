@@ -4,15 +4,18 @@ import math
 import os
 import sys
 
+import yaml
+
 SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 if SCRIPTS not in sys.path:
     sys.path.insert(0, SCRIPTS)
 
 from navigator_logic import (
-    build_observation_candidates,
     build_quadrilateral_walls,
     center_angular_command,
     center_step_angle,
+    costmap_value_at,
+    exact_observation_target,
     footprint_max_cost,
     latch_trigger,
     normalize_angle,
@@ -21,6 +24,7 @@ from navigator_logic import (
     parking_goal_from_wall,
     ray_segment_intersection,
     scan_dwell_deadline,
+    should_skip_coverage_anchor,
     split_scan_angle,
 )
 
@@ -88,16 +92,58 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
     assert math.isclose(abs(yaw), math.pi)
 
 
-def test_candidates_stay_inside_wall_clearance_and_keep_primary():
-    candidates = build_observation_candidates(
-        -1.65, -1.77,
-        [[0, 0], [0, 0.28], [0, -0.28], [0.28, 0], [-0.28, 0]],
-        (-2.23, 2.80, -3.27, -1.19),
-        0.36,
-    )
-    assert candidates[0] == (-1.65, -1.77)
-    assert all(-1.87 <= x <= 2.44 for x, _y in candidates)
-    assert all(-2.91 <= y <= -1.55 for _x, y in candidates)
+def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
+    calibrated = [
+        (-1.6499, -1.7735, 1.0417),
+        (-1.6613, -2.2796, -3.1404),
+        (-1.6846, -2.7856, -3.1176),
+        (-0.6965, -2.8239, -1.5594),
+        (1.2660, -2.8863, -1.5443),
+        (2.3356, -2.7417, -2.1786),
+        (2.3471, -1.6090, -0.8607),
+        (1.2641, -1.6452, 0.8530),
+        (0.3011, -1.6319, 0.8913),
+    ]
+    points = [
+        {"x": x, "y": y, "yaw": yaw, "rotations": []}
+        for x, y, yaw in calibrated
+    ]
+    assert [exact_observation_target(point) for point in points] == calibrated
+
+    config_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "config",
+        "vision_triggered_navigator.yaml"))
+    with open(config_path, "r", encoding="utf-8") as stream:
+        configured = yaml.safe_load(stream)["patrol_points"]
+    assert [exact_observation_target(point) for point in configured] == calibrated
+    assert [[(rotation["direction"], rotation["duration"])
+             for rotation in point["rotations"]] for point in configured] == [
+        [("left", 4.5)],
+        [("right", 3.0), ("left", 3.5)],
+        [("left", 4.5)],
+        [("right", 3.0), ("left", 3.0)],
+        [("right", 3.0), ("left", 3.0)],
+        [("left", 4.5)],
+        [("left", 4.5)],
+        [("left", 4.0)],
+        [("left", 4.0)],
+    ]
+
+
+def test_only_known_lethal_cost_skips_a_coverage_anchor():
+    assert not should_skip_coverage_anchor(False, -1, 253)
+    assert not should_skip_coverage_anchor(True, 252, 253)
+    assert should_skip_coverage_anchor(True, 253, 253)
+    assert should_skip_coverage_anchor(True, 254, 253)
+
+
+def test_cost_query_uses_coordinates_already_transformed_to_costmap_frame():
+    data = [0] * 16
+    data[2 * 4 + 1] = 99
+    assert costmap_value_at(data, 4, 4, 1.0, 0.0, 0.0, 1.2, 2.4) == 99
+    assert costmap_value_at(data, 4, 4, 1.0, 0.0, 0.0, 100.0, 100.0) == -1
+    data[2 * 4 + 1] = -1
+    assert costmap_value_at(data, 4, 4, 1.0, 0.0, 0.0, 1.2, 2.4) == -1
 
 
 def test_center_command_stops_in_tolerance_and_has_configurable_sign():
@@ -159,10 +205,16 @@ def test_footprint_allows_inflation_but_rejects_lethal_cells():
     known, max_cost, blocked = footprint_max_cost(
         data, width, height, 0.1, 0.0, 0.0, 1.05, 1.05, 0.21, 253)
     assert known and max_cost == 99 and not blocked
-    data[10 * width + 10] = 253
+    for value, expected_blocked in [(252, False), (253, True), (254, True)]:
+        data[10 * width + 10] = value
+        known, max_cost, blocked = footprint_max_cost(
+            data, width, height, 0.1, 0.0, 0.0, 1.05, 1.05, 0.21, 253)
+        assert known and max_cost == value and blocked is expected_blocked
+
+    unknown = [-1] * (width * height)
     known, max_cost, blocked = footprint_max_cost(
-        data, width, height, 0.1, 0.0, 0.0, 1.05, 1.05, 0.21, 253)
-    assert known and max_cost == 253 and blocked
+        unknown, width, height, 0.1, 0.0, 0.0, 1.05, 1.05, 0.21, 253)
+    assert not known and max_cost == -1 and not blocked
 
 
 def test_angle_wrap():

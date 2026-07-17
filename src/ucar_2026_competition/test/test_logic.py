@@ -9,6 +9,7 @@ if PACKAGE_SRC not in sys.path:
     sys.path.insert(0, PACKAGE_SRC)
 
 from ucar_2026_competition.logic import (
+    CATEGORY_LABELS,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -53,6 +54,16 @@ class CompetitionLogicTest(unittest.TestCase):
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")
         self.assertEqual(normalize_category("食品加工车间"), "food")
+
+    def test_all_three_task2_categories_are_data_driven(self):
+        expected = {
+            "food": ("食品", "食品加工车间"),
+            "daily": ("日用品", "日用品加工车间"),
+            "electronics": ("电子产品", "电子产品生产车间"),
+        }
+        self.assertEqual(CATEGORY_LABELS, expected)
+        for category in expected:
+            self.assertEqual(normalize_category(category), category)
 
     def test_ocr_consecutive_filter(self):
         target_filter = ConsecutiveTargetFilter(3)

@@ -13,7 +13,7 @@ base_frame: "base_link"
 camera_frame: "camera_frame"
 
 # 视觉区实测四角，顺序固定为：左上、右上、左下、右下。
-# 最终停泊直接使用四条真实墙段；min/max 包围盒仅过滤观察候选点。
+# 最终停泊直接使用四条真实墙段；观察点严格使用下方9个标定坐标。
 vision_rect_corners:
   - [-2.2311, -1.2505]
   - [ 2.8000, -1.1940]
@@ -31,18 +31,7 @@ feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频�
 # 任务2覆盖优先模式（launch默认关闭，只有比赛任务2显式开启）。
 coverage_search_mode: false
 target_topic: "/vision/target"
-coverage_candidate_offsets:
-  - [0.00, 0.00]
-  - [0.00, 0.28]
-  - [0.00, -0.28]
-  - [0.28, 0.00]
-  - [-0.28, 0.00]
-coverage_min_wall_clearance: 0.36
-coverage_accept_radius: 0.45
 coverage_goal_timeout_sec: 25.0
-coverage_stall_timeout_sec: 6.0
-coverage_min_progress_m: 0.05
-coverage_revisit_passes: 1
 max_coverage_anchors: 0
 center_only: false
 coverage_scan_settle_sec: 0.35

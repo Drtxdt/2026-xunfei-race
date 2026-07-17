@@ -10,7 +10,7 @@ local_costmap:
   publish_frequency: 2.0 #10.0
   transform_tolerance: 0.5 #1.0
   track_unknown_space: false           
-  always_send_full_costmap: false     
+  always_send_full_costmap: true
   plugins:
 #    - {name: static_layer,    type: "costmap_2d::StaticLayer"}
     - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
