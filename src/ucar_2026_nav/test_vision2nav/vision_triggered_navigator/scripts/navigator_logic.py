@@ -93,6 +93,117 @@ def parking_goal_from_wall(wall_point, inward_normal, offset,
     return gx, gy, yaw
 
 
+def docking_pose_errors(current_pose, target_pose):
+    """Return target errors in the current robot body frame plus yaw error."""
+    x, y, yaw = [float(value) for value in current_pose]
+    target_x, target_y, target_yaw = [float(value) for value in target_pose]
+    dx = target_x - x
+    dy = target_y - y
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+    forward = cos_yaw * dx + sin_yaw * dy
+    lateral = -sin_yaw * dx + cos_yaw * dy
+    return forward, lateral, normalize_angle(target_yaw - yaw)
+
+
+def bounded_axis_command(error, tolerance, gain, maximum, minimum=0.0):
+    """Return a signed proportional command with deadband and bounds."""
+    error = float(error)
+    if abs(error) <= abs(float(tolerance)):
+        return 0.0
+    magnitude = min(abs(float(maximum)), abs(float(gain)) * abs(error))
+    magnitude = max(min(abs(float(minimum)), abs(float(maximum))), magnitude)
+    return math.copysign(magnitude, error)
+
+
+def docking_command(errors, normal_tolerance, tangent_tolerance, yaw_tolerance,
+                    max_x, max_y, max_yaw,
+                    gain_x=0.8, gain_y=1.0, gain_yaw=1.5,
+                    min_x=0.03, min_y=0.025, min_yaw=0.05):
+    """Compute a conservative two-phase holonomic docking command.
+
+    Tangent and yaw alignment happen before forward motion.  Once aligned,
+    small lateral/yaw corrections remain active during the straight approach.
+    """
+    forward, lateral, yaw_error = [float(value) for value in errors]
+    aligned = (abs(lateral) <= abs(float(tangent_tolerance)) and
+               abs(yaw_error) <= abs(float(yaw_tolerance)))
+    command_x = 0.0
+    if aligned:
+        command_x = bounded_axis_command(
+            forward, normal_tolerance, gain_x, max_x, min_x)
+    command_y = bounded_axis_command(
+        lateral, tangent_tolerance, gain_y, max_y, min_y)
+    command_yaw = bounded_axis_command(
+        yaw_error, yaw_tolerance, gain_yaw, max_yaw, min_yaw)
+    return command_x, command_y, command_yaw
+
+
+def docking_within_tolerance(errors, normal_tolerance,
+                             tangent_tolerance, yaw_tolerance):
+    forward, lateral, yaw_error = [abs(float(value)) for value in errors]
+    return (forward <= abs(float(normal_tolerance)) and
+            lateral <= abs(float(tangent_tolerance)) and
+            yaw_error <= abs(float(yaw_tolerance)))
+
+
+def staging_motion_is_rotation_stall(distance_moved, yaw_accumulated,
+                                     minimum_distance=0.03,
+                                     maximum_yaw=math.radians(45.0)):
+    """Detect move_base rotating without useful translation in one window."""
+    return (float(distance_moved) < abs(float(minimum_distance)) and
+            abs(float(yaw_accumulated)) > abs(float(maximum_yaw)))
+
+
+def wall_normal_distance(pose, wall_point, inward_normal):
+    """Return base-centre distance from a wall along its inward normal."""
+    x, y = float(pose[0]), float(pose[1])
+    wall_x, wall_y = float(wall_point[0]), float(wall_point[1])
+    nx, ny = float(inward_normal[0]), float(inward_normal[1])
+    length = math.hypot(nx, ny)
+    if length <= 1e-9:
+        raise ValueError("inward normal must be non-zero")
+    return ((x - wall_x) * nx + (y - wall_y) * ny) / length
+
+
+def sensor_is_fresh(received_at, now, timeout):
+    """Return whether a sensor sample is present and within its age budget."""
+    received_at = float(received_at or 0.0)
+    return (received_at > 0.0 and
+            float(now) - received_at <= max(0.0, float(timeout)))
+
+
+def lidar_base_wall_distance(raw_distance, forward_offset):
+    """Convert a forward laser range to an equivalent base-centre wall range.
+
+    The UCAR laser origin is mounted ahead of ``base_link``.  Applying this
+    extrinsic prevents a safe 0.22 m base target from being rejected as a
+    0.14 m raw laser reading.
+    """
+    return float(raw_distance) + float(forward_offset)
+
+
+def lidar_requires_stop(raw_distance, base_equivalent_distance,
+                        geometric_wall_distance, stop_distance,
+                        mismatch_tolerance=0.03):
+    """Reject a hard-close return or a return inconsistent with the wall.
+
+    A raw wall return can legitimately be below ``stop_distance`` because the
+    laser sits ahead of base_link.  It is safe only when its base-equivalent
+    range agrees with the independently computed wall geometry.
+    """
+    raw_distance = float(raw_distance)
+    base_equivalent_distance = float(base_equivalent_distance)
+    geometric_wall_distance = float(geometric_wall_distance)
+    stop_distance = abs(float(stop_distance))
+    mismatch_tolerance = abs(float(mismatch_tolerance))
+    if base_equivalent_distance < stop_distance:
+        return True
+    return (raw_distance < stop_distance and
+            base_equivalent_distance <
+            geometric_wall_distance - mismatch_tolerance)
+
+
 def split_scan_angle(total_angle, step_angle):
     """Split one configured sweep into fixed steps while preserving its total angle."""
     remaining = max(0.0, float(total_angle))

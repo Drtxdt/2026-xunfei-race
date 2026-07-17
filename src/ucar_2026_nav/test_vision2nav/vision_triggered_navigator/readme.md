@@ -19,7 +19,8 @@
    - 比赛总控通过 `/vision_triggered_navigator/trigger_target` 服务完成带确认的一次性触发；`/vision/detected` 仍供独立测试使用。
    - 根据机器人/摄像头位姿向车头方向发射射线，与四个实测角点构成的真实四边形墙段求最近交点，不进行 50cm 网格吸附。
    - 目标点 = 交点沿真实墙内法向量回退 `vision_offset`（默认 0.4 m），**车头垂直指向墙外**（与内法向相反）。
-   - 比赛任务2使用 `parking_goal_offset=0.25`，临时收紧TEB终点容差，并在发布 `arrived` 前验证完整footprint位于 `0.50×0.50m` 停车框内。
+   - 比赛任务2先由 move_base 到距墙 `0.55m` 的预停点，再取消导航目标并锁定 odom 坐标，由麦克纳姆低速闭环驶至距墙 `0.22m` 的最终点。
+   - 最后约 `0.33m` 不再交给 TEB，避免近墙恢复旋转；发布 `arrived` 前要求完整 footprint 位于 `0.50×0.50m` 停车框内且最小物理余量不少于 `2cm`。
 
 3. **结束点阶段**
    - 直接发送结束点目标，等待到达。
@@ -51,7 +52,10 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `vision_offset` | 墙交点回退距离（m） | `0.4` |
 | `target_center_coarse_step_deg` / `target_center_fine_step_deg` | 任务2目标居中粗调/细调步长 | `4.0 / 2.0` |
 | `target_center_start_speed` / `target_center_step_max_speed` | 居中起始/最大角速度 | `0.20 / 0.35` |
-| `parking_goal_offset` | 任务2停车框中心距墙距离 | 独立模式 `0.4`，比赛任务2 `0.25` |
+| `parking_staging_offset` | move_base 预停点距墙距离 | 比赛任务2 `0.55` |
+| `parking_goal_offset` | 低速闭环最终点距墙距离 | 独立模式 `0.4`，比赛任务2 `0.22` |
+| `parking_docking_timeout_sec` | odom 短距闭环超时 | `15.0` |
+| `parking_dock_max_x/y/yaw` | 最终停泊三轴速度上限 | `0.10 / 0.06 / 0.15` |
 | `parking_normal_offset` / `parking_tangent_offset` | 最终目标沿墙法向/切向的实车标定修正 | `0.0 / 0.0` |
 | `validate_parking_box` | 是否要求完整footprint通过50cm框验证 | `false` |
 | `costmap_topic` | costmap 话题 | `/move_base/global_costmap/costmap` |

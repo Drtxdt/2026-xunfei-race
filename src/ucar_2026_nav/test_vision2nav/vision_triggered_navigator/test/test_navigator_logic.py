@@ -5,6 +5,7 @@ import os
 import sys
 
 import yaml
+import pytest
 
 SCRIPTS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
 if SCRIPTS not in sys.path:
@@ -15,17 +16,25 @@ from navigator_logic import (
     center_angular_command,
     center_step_angle,
     costmap_value_at,
+    docking_command,
+    docking_pose_errors,
+    docking_within_tolerance,
     exact_observation_target,
     footprint_max_cost,
     latch_trigger,
+    lidar_base_wall_distance,
+    lidar_requires_stop,
     normalize_angle,
     parking_footprint_margins,
     parking_footprint_inside,
     parking_goal_from_wall,
     ray_segment_intersection,
     scan_dwell_deadline,
+    sensor_is_fresh,
+    staging_motion_is_rotation_stall,
     should_skip_coverage_anchor,
     split_scan_angle,
+    wall_normal_distance,
 )
 
 
@@ -233,3 +242,90 @@ def test_scan_dwell_extends_for_candidate_but_is_bounded():
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 0.0, 1.2, 2.0), 10.65)
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 10.2, 1.2, 2.0), 11.4)
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 11.8, 1.2, 2.0), 12.0)
+
+
+def test_docking_errors_are_expressed_in_robot_body_frame():
+    forward, lateral, yaw_error = docking_pose_errors(
+        (1.0, 2.0, math.pi / 2.0), (0.8, 2.3, math.pi / 2.0 + 0.04))
+    assert math.isclose(forward, 0.3, abs_tol=1e-9)
+    assert math.isclose(lateral, 0.2, abs_tol=1e-9)
+    assert math.isclose(yaw_error, 0.04, abs_tol=1e-9)
+
+
+def test_docking_aligns_before_forward_motion_and_limits_every_axis():
+    command = docking_command(
+        (0.30, 0.10, 0.10), 0.015, 0.02, 0.035,
+        0.10, 0.06, 0.15)
+    assert command == (0.0, 0.06, 0.15)
+
+    command = docking_command(
+        (0.30, 0.01, 0.01), 0.015, 0.02, 0.035,
+        0.10, 0.06, 0.15)
+    assert command == (0.10, 0.0, 0.0)
+    assert docking_within_tolerance(
+        (0.015, -0.02, 0.035), 0.015, 0.02, 0.035)
+    assert not docking_within_tolerance(
+        (0.016, 0.0, 0.0), 0.015, 0.02, 0.035)
+
+
+def test_staging_watchdog_detects_rotation_without_translation():
+    assert staging_motion_is_rotation_stall(
+        0.029, math.radians(45.1), 0.03, math.radians(45.0))
+    assert not staging_motion_is_rotation_stall(
+        0.030, math.radians(90.0), 0.03, math.radians(45.0))
+    assert not staging_motion_is_rotation_stall(
+        0.0, math.radians(45.0), 0.03, math.radians(45.0))
+
+
+def test_sensor_freshness_and_lidar_extrinsic_safety_distance():
+    assert sensor_is_fresh(9.6, 10.0, 0.5)
+    assert not sensor_is_fresh(9.4, 10.0, 0.5)
+    assert not sensor_is_fresh(0.0, 10.0, 0.5)
+    assert math.isclose(lidar_base_wall_distance(0.14, 0.08), 0.22)
+    # 0.14m raw is the expected wall at a safe 0.22m base distance.
+    assert not lidar_requires_stop(0.14, 0.22, 0.22, 0.15)
+    # The same raw return is an unexpected obstacle while geometry says 0.35m.
+    assert lidar_requires_stop(0.14, 0.22, 0.35, 0.15)
+    assert lidar_requires_stop(0.06, 0.14, 0.22, 0.15)
+
+
+def test_22cm_final_goal_has_more_than_2cm_footprint_margin():
+    diagnostics = parking_footprint_margins(
+        (0.22, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0),
+        0.50, 0.50, 0.171, 0.128, 0.0)
+    assert diagnostics["inside"]
+    assert min(diagnostics["near_margin"], diagnostics["far_margin"],
+               diagnostics["side_margin"]) >= 0.02
+    assert math.isclose(
+        wall_normal_distance((0.22, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0)),
+        0.22)
+
+
+def test_staging_and_final_goals_share_wall_tangent_and_yaw():
+    wall_point = (1.2, -0.7)
+    normal = (-0.8, 0.6)
+    staging = parking_goal_from_wall(wall_point, normal, 0.55)
+    final = parking_goal_from_wall(wall_point, normal, 0.22)
+    assert math.isclose(staging[2], final[2], abs_tol=1e-12)
+    assert math.isclose(math.hypot(staging[0] - final[0],
+                                   staging[1] - final[1]), 0.33, abs_tol=1e-12)
+
+
+@pytest.mark.parametrize("wall_point,normal", [
+    ((2.7767, -2.9992), (-0.9999, 0.0129)),   # task2_food.log
+    ((-2.2238, -2.5445), (1.0000, 0.0056)),  # task2_daily.log
+    ((0.6399, -1.2183), (0.0112, -0.9999)),  # task2_electronics.log
+])
+def test_logged_wall_solutions_make_safe_staging_and_22cm_final_goal(
+        wall_point, normal):
+    staging = parking_goal_from_wall(wall_point, normal, 0.55)
+    final = parking_goal_from_wall(wall_point, normal, 0.22)
+    assert math.isclose(wall_normal_distance(staging, wall_point, normal),
+                        0.55, abs_tol=1e-9)
+    assert math.isclose(wall_normal_distance(final, wall_point, normal),
+                        0.22, abs_tol=1e-9)
+    diagnostics = parking_footprint_margins(
+        final, wall_point, normal, 0.50, 0.50, 0.171, 0.128, 0.0)
+    assert diagnostics["inside"]
+    assert min(diagnostics["near_margin"], diagnostics["far_margin"],
+               diagnostics["side_margin"]) >= 0.02

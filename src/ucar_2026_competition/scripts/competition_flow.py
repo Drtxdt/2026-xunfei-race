@@ -914,7 +914,29 @@ class CompetitionFlow:
                         "~max_coverage_anchors", 0)),
                     "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
                     "parking_goal_offset": rospy.get_param(
-                        "~parking_goal_offset", 0.25),
+                        "~parking_goal_offset", 0.22),
+                    "parking_staging_offset": rospy.get_param(
+                        "~parking_staging_offset", 0.55),
+                    "parking_staging_timeout_sec": rospy.get_param(
+                        "~parking_staging_timeout_sec", 20.0),
+                    "parking_docking_timeout_sec": rospy.get_param(
+                        "~parking_docking_timeout_sec", 15.0),
+                    "parking_dock_max_x": rospy.get_param(
+                        "~parking_dock_max_x", 0.10),
+                    "parking_dock_max_y": rospy.get_param(
+                        "~parking_dock_max_y", 0.06),
+                    "parking_dock_max_yaw": rospy.get_param(
+                        "~parking_dock_max_yaw", 0.15),
+                    "parking_dock_normal_tolerance": rospy.get_param(
+                        "~parking_dock_normal_tolerance", 0.015),
+                    "parking_dock_tangent_tolerance": rospy.get_param(
+                        "~parking_dock_tangent_tolerance", 0.02),
+                    "parking_dock_yaw_tolerance": rospy.get_param(
+                        "~parking_dock_yaw_tolerance", 0.035),
+                    "parking_min_wall_distance": rospy.get_param(
+                        "~parking_min_wall_distance", 0.19),
+                    "parking_lidar_stop_distance": rospy.get_param(
+                        "~parking_lidar_stop_distance", 0.15),
                     "parking_normal_offset": rospy.get_param(
                         "~parking_normal_offset", 0.0),
                     "parking_tangent_offset": rospy.get_param(
@@ -961,7 +983,8 @@ class CompetitionFlow:
                 if self.navigator_status == "failed":
                     raise StageError("factory navigation failed")
                 if self.navigator_status in (
-                        "centering_failed", "parking_validation_failed"):
+                        "centering_failed", "parking_staging_failed",
+                        "parking_docking_failed", "parking_validation_failed"):
                     raise StageError("factory navigation {}".format(
                         self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):
