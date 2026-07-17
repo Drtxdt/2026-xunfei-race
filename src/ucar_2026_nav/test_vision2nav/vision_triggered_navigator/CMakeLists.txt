@@ -19,6 +19,10 @@ catkin_install_python(PROGRAMS scripts/vision_triggered_navigator.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+install(FILES scripts/navigator_logic.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 install(DIRECTORY launch config
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )

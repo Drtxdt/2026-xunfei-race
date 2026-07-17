@@ -20,3 +20,4 @@ msc
 src/pctest
 src/ucar_controller/log_info/
 src/ucar_2026_nav/3rd/geometry/tf/src/tf/__pycache__/
+*.log

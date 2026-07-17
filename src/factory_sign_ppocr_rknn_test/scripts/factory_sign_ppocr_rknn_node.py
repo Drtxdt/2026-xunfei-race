@@ -17,13 +17,13 @@ from typing import Deque, Dict, List, Optional, Sequence, Tuple
 CATEGORY_NAMES = {
     "food": "食品加工车间",
     "daily": "日用品加工车间",
-    "electronic": "电子产品加工车间",
+    "electronic": "电子产品生产车间",
 }
 
 SPEECH_TEXTS = {
     "food": "识别到食品加工车间",
     "daily": "识别到日用品加工车间",
-    "electronic": "识别到电子产品加工车间",
+    "electronic": "识别到电子产品生产车间",
 }
 
 
@@ -145,6 +145,14 @@ class OCRCandidate:
 class FactorySignKeywordClassifier:
     """Strict factory-sign classifier; generic wall text is never evidence."""
 
+    # Context-bound OCR confusions observed on the food workshop sign.  These
+    # are deliberately not applied as global character replacements: a
+    # fallback match must still be one complete, boxed "xx加工车x" sign.
+    FOOD_WORKSHOP_PATTERN = re.compile(
+        r"^[食金良盒][品晶吕县]加工车[间面闻阀闫]$"
+    )
+    STRUCTURED_MIN_CONFIDENCE = 0.45
+
     FEATURES: Dict[str, Tuple[Tuple[str, float], ...]] = {
         "food": (("食品", 1.0), ("food", 1.0)),
         "daily": (("日用品", 1.0), ("日用", 0.92), ("用品", 0.88), ("daily", 1.0)),
@@ -181,6 +189,13 @@ class FactorySignKeywordClassifier:
                         hits[category].append(token)
                         break
 
+            structured = self._structured_food_evidence(item)
+            if structured:
+                value = 0.85 * confidence
+                if value > scores["food"]:
+                    scores["food"] = value
+                hits["food"].append("workshop_shape:" + structured)
+
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best_category, best_score = ranked[0]
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
@@ -194,6 +209,18 @@ class FactorySignKeywordClassifier:
         evidence = hits[best_category][0] if hits[best_category] else ""
         return best_category, best_score, evidence, debug
 
+    @classmethod
+    def _structured_food_evidence(cls, item: OCRText) -> str:
+        """Recognize only a boxed, full food-workshop phrase with known confusions."""
+        if float(item.score or 0.0) < cls.STRUCTURED_MIN_CONFIDENCE:
+            return ""
+        if len(item.box) != 4 or any(len(point) < 2 for point in item.box):
+            return ""
+        for chinese_run in re.findall(r"[\u4e00-\u9fff]+", item.text or ""):
+            if cls.FOOD_WORKSHOP_PATTERN.fullmatch(chinese_run):
+                return chinese_run
+        return ""
+
     @staticmethod
     def _normalize(text: str) -> str:
         text = (text or "").lower()
@@ -202,6 +229,23 @@ class FactorySignKeywordClassifier:
         text = re.sub(r"\s+", "", text)
         text = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]+", "", text)
         return text
+
+
+def select_category_box(texts: Sequence[OCRText], category: Optional[str], classifier):
+    """Pick the strongest OCR box that independently supports the chosen category."""
+    if not category:
+        return None
+    matches = []
+    for item in texts:
+        if len(item.box) != 4:
+            continue
+        observed, score, _evidence, _debug = classifier.classify_evidence([item])
+        if observed == category:
+            matches.append((float(score), float(item.score or 0.0), item))
+    if not matches:
+        return None
+    matches.sort(key=lambda value: (value[0], value[1]), reverse=True)
+    return matches[0][2]
 
 
 class VoteWindow:
@@ -794,12 +838,31 @@ class FactorySignPPOCRRknnNode:
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed and self.enable_speech else False
+        target_item = select_category_box(result.texts, confirmed, self.classifier)
+        target_box = []
+        target_center_x = None
+        target_center_y = None
+        if target_item is not None:
+            target_box = map_box_to_frame(
+                target_item.box, self.last_roi_box, self.last_ocr_scale_factor)
+            target_center_x = sum(point[0] for point in target_box) / len(target_box)
+            target_center_y = sum(point[1] for point in target_box) / len(target_box)
+        frame_height, frame_width = frame.shape[:2]
         self.result_pub.publish(self.String(data=json.dumps({
             "category": confirmed or "",
             "workshop": CATEGORY_NAMES.get(confirmed, ""),
             "confidence": float(result.confidence),
+            "category_score": float(result.category_score),
+            "evidence": result.evidence,
+            "view_scale": float(result.view_scale),
+            "candidate_count": int(result.candidate_count),
             "raw_text": result.raw_text,
             "match_debug": result.match_debug,
+            "target_bbox": target_box,
+            "target_center_x": target_center_x,
+            "target_center_y": target_center_y,
+            "image_width": int(frame_width),
+            "image_height": int(frame_height),
             "error": result.error,
             "stamp": time.time(),
         }, ensure_ascii=False)))

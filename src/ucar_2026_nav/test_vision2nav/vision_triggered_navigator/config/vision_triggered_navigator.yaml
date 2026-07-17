@@ -26,6 +26,46 @@ costmap_topic: "/move_base/local_costmap/costmap"
 cost_threshold: 50          # 代价 >= 阈值认为不可行
 feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频率
 
+# 任务2覆盖优先模式（launch默认关闭，只有比赛任务2显式开启）。
+coverage_search_mode: false
+target_topic: "/vision/target"
+coverage_candidate_offsets:
+  - [0.00, 0.00]
+  - [0.00, 0.28]
+  - [0.00, -0.28]
+  - [0.28, 0.00]
+  - [-0.28, 0.00]
+coverage_min_wall_clearance: 0.36
+coverage_accept_radius: 0.45
+coverage_goal_timeout_sec: 25.0
+coverage_stall_timeout_sec: 6.0
+coverage_min_progress_m: 0.05
+coverage_revisit_passes: 1
+max_coverage_anchors: 0
+center_only: false
+coverage_scan_settle_sec: 0.35
+# 仅coverage_search_mode使用：保持原扫描弧度，按20度一档停稳识别。
+coverage_scan_step_deg: 20.0
+coverage_scan_angular_speed: 0.35
+coverage_scan_dwell_sec: 0.65
+coverage_candidate_hold_sec: 1.2
+coverage_scan_max_dwell_sec: 2.0
+coverage_scan_pose_timeout_sec: 0.5
+coverage_scan_step_timeout_margin_sec: 2.0
+robot_footprint_radius: 0.215
+lethal_cost: 253
+
+# 目标厂牌居中。steering_sign需通过首次低速测试确认，图像右偏时应向右转。
+target_center_tolerance: 0.08
+target_center_required_hits: 2
+target_center_timeout_sec: 6.0
+target_bbox_stale_sec: 0.8
+target_center_min_speed: 0.08
+target_center_max_speed: 0.18
+target_center_steering_sign: -1.0
+camera_boresight_yaw_offset: 0.0
+arrival_hold_sec: 0.6
+
 # 自转参数
 rotation_speed: 0.5   # rad/s，左转为正，所有巡航点共用
 cmd_vel_topic: "/cmd_vel"

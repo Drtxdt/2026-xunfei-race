@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 
 
 CATEGORY_LABELS = {
@@ -96,6 +97,36 @@ class ConsecutiveTargetFilter:
         else:
             self.hits = 0
         return self.hits >= self.required
+
+
+class TemporalTargetFilter:
+    """Confirm repeated target evidence within a time window; blanks do not erase it."""
+
+    def __init__(self, required=2, window_sec=1.5):
+        self.required = max(1, int(required))
+        self.window_sec = max(0.05, float(window_sec))
+        self.hit_times = []
+
+    @property
+    def hit_count(self):
+        return len(self.hit_times)
+
+    def reset(self):
+        self.hit_times = []
+
+    def push(self, target, observed, now=None):
+        now = time.monotonic() if now is None else float(now)
+        self.hit_times = [
+            stamp for stamp in self.hit_times
+            if now - stamp <= self.window_sec
+        ]
+        if observed is None or observed == "":
+            return len(self.hit_times) >= self.required
+        if not target or observed != target:
+            self.reset()
+            return False
+        self.hit_times.append(now)
+        return len(self.hit_times) >= self.required
 
 
 def parse_category(text):

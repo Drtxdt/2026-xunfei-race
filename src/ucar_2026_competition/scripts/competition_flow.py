@@ -32,7 +32,7 @@ from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
-    ConsecutiveTargetFilter,
+    TemporalTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
@@ -86,6 +86,8 @@ class CompetitionFlow:
         )
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=2)
         self.vision_pub = rospy.Publisher("/vision/detected", Bool, queue_size=5)
+        self.vision_target_pub = rospy.Publisher(
+            "/vision/target", String, queue_size=10)
 
         self.wakeup_received = False
         self.voice_prompt_started = False
@@ -111,9 +113,13 @@ class CompetitionFlow:
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
         self.ocr_target = None
-        self.ocr_filter = ConsecutiveTargetFilter(
-            rospy.get_param("~ocr_required_consecutive", 3)
+        self.ocr_last_message_at = 0.0
+        self.ocr_filter = TemporalTargetFilter(
+            rospy.get_param("~ocr_required_hits", 2),
+            rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
+        self.vision_trigger_until = 0.0
+        self.ocr_trigger_hold_sec = float(rospy.get_param("~ocr_trigger_hold_sec", 1.0))
         self.navigator_status = ""
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
@@ -151,6 +157,8 @@ class CompetitionFlow:
 
         rospy.Service("/competition/resume", Trigger, self._resume_cb)
         rospy.Service("/competition/abort", Trigger, self._abort_cb)
+        self.vision_trigger_timer = rospy.Timer(
+            rospy.Duration(0.1), self._vision_trigger_timer_cb)
         rospy.on_shutdown(self.shutdown)
 
         self.move_base = actionlib.SimpleActionClient("/move_base", MoveBaseAction)
@@ -319,11 +327,36 @@ class CompetitionFlow:
             payload = json.loads(msg.data)
             category = normalize_category(payload.get("category"))
         except Exception:
-            self.ocr_filter.reset()
             return
-        if self.ocr_filter.push(self.ocr_target, category):
-            # Keep publishing after confirmation so a navigator that has just
-            # finished initialization cannot miss the one-shot trigger.
+        self.ocr_last_message_at = time.monotonic()
+        if category == self.ocr_target and payload.get("target_bbox"):
+            self.vision_target_pub.publish(msg)
+        confirmed = self.ocr_filter.push(
+            self.ocr_target, category, time.monotonic())
+        rospy.loginfo_throttle(
+            0.5,
+            "task2 OCR filter: target=%s observed=%s hits=%d/%d bbox=%s",
+            self.ocr_target,
+            category or "none",
+            self.ocr_filter.hit_count,
+            self.ocr_filter.required,
+            bool(payload.get("target_bbox")),
+        )
+        if confirmed and category == self.ocr_target and payload.get("target_bbox"):
+            self.vision_trigger_until = max(
+                self.vision_trigger_until,
+                time.monotonic() + self.ocr_trigger_hold_sec,
+            )
+            rospy.loginfo_throttle(
+                1.0,
+                "task2 OCR target confirmed: target=%s hits=%d/%d; triggering navigator",
+                self.ocr_target,
+                self.ocr_filter.hit_count,
+                self.ocr_filter.required,
+            )
+
+    def _vision_trigger_timer_cb(self, _event):
+        if time.monotonic() < self.vision_trigger_until:
             self.vision_pub.publish(Bool(data=True))
 
     def _navigator_cb(self, msg):
@@ -768,23 +801,15 @@ class CompetitionFlow:
         workshop = self.task1_result.get("pickup_workshop") or CATEGORY_LABELS[self.category][1]
         if not item:
             raise StageError("task2 target_item is missing")
+        center_only = bool_param("~task2_center_only", False)
 
         self.ocr_target = self.category
         self.ocr_filter.reset()
+        self.ocr_last_message_at = 0.0
+        self.vision_trigger_until = 0.0
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
-            self.start_child(
-                "factory_navigator",
-                "vision_triggered_navigator",
-                "vision_triggered_navigator.launch",
-                {
-                    "trigger_mode": "vision",
-                    "vision_topic": "/vision/detected",
-                    "publish_initial_pose": bool_param("~navigator_publish_initial_pose", False),
-                    "navigate_to_end_after_trigger": False,
-                },
-            )
             self.start_child(
                 "factory_ocr",
                 "factory_sign_ppocr_rknn_test",
@@ -794,8 +819,54 @@ class CompetitionFlow:
                     "start_competition_speech": False,
                     "start_viewer": self.debug,
                     "recognition_mode": "ppocr_rknn_system",
+                    "target_category": self.category,
                     "enable_speech": False,
                     "required": True,
+                },
+            )
+            self.publish_status("task2", "waiting_ocr", "waiting for first OCR result before motion")
+            ocr_ready_deadline = time.time() + float(
+                rospy.get_param("~ocr_ready_timeout_sec", 12.0))
+            while time.time() < ocr_ready_deadline and not self.ocr_last_message_at:
+                self.check_abort()
+                proc = self.children.get("factory_ocr")
+                if proc and proc.poll() is not None:
+                    raise StageError(
+                        "factory_ocr exited before ready with code {}".format(proc.returncode))
+                rospy.sleep(0.1)
+            if not self.ocr_last_message_at:
+                raise StageError("factory OCR produced no result before motion timeout")
+            self.start_child(
+                "factory_navigator",
+                "vision_triggered_navigator",
+                "vision_triggered_navigator.launch",
+                {
+                    "trigger_mode": "vision",
+                    "vision_topic": "/vision/detected",
+                    "target_topic": "/vision/target",
+                    "publish_initial_pose": bool_param("~navigator_publish_initial_pose", False),
+                    "navigate_to_end_after_trigger": False,
+                    "coverage_search_mode": True,
+                    "target_center_steering_sign": rospy.get_param(
+                        "~target_center_steering_sign", -1.0),
+                    "camera_boresight_yaw_offset": rospy.get_param(
+                        "~camera_boresight_yaw_offset", 0.0),
+                    "center_only": center_only,
+                    "max_coverage_anchors": int(rospy.get_param(
+                        "~max_coverage_anchors", 0)),
+                    "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
+                    "coverage_scan_step_deg": rospy.get_param(
+                        "~coverage_scan_step_deg", 20.0),
+                    "coverage_scan_angular_speed": rospy.get_param(
+                        "~coverage_scan_angular_speed", 0.35),
+                    "coverage_scan_dwell_sec": rospy.get_param(
+                        "~coverage_scan_dwell_sec", 0.65),
+                    "coverage_candidate_hold_sec": rospy.get_param(
+                        "~coverage_candidate_hold_sec", 1.2),
+                    "coverage_scan_max_dwell_sec": rospy.get_param(
+                        "~coverage_scan_max_dwell_sec", 2.0),
+                    "coverage_scan_pose_timeout_sec": rospy.get_param(
+                        "~coverage_scan_pose_timeout_sec", 0.5),
                 },
             )
             timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))
@@ -803,6 +874,8 @@ class CompetitionFlow:
             while time.time() < deadline:
                 self.check_abort()
                 if self.navigator_status == "arrived":
+                    break
+                if center_only and self.navigator_status == "centered":
                     break
                 if self.navigator_status == "failed":
                     raise StageError("factory navigation failed")
@@ -815,9 +888,13 @@ class CompetitionFlow:
                 raise StageError("factory navigation timed out after {:.1f}s".format(timeout))
         finally:
             self.ocr_target = None
+            self.vision_trigger_until = 0.0
             self.stop_child("factory_ocr")
             self.stop_child("factory_navigator")
             self.safe_stop(cancel_navigation=True)
+        if center_only:
+            self.publish_status("task2", "center_test_completed", "target centering test completed")
+            return
         self.announce("task2", item=item, workshop=workshop)
         self.publish_status("task2", "completed", "target factory reached")
 

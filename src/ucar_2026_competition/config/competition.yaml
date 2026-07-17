@@ -28,9 +28,23 @@ voice_retry_reply: "请再说一次"
 voice_start_listening_service: /speech_command_node/start_listening
 voice_stop_listening_service: /speech_command_node/stop_listening
 
-# OCR 连续命中次数。PPOCR 自身输出结构化 JSON，总控只对当前目标类别触发导航。
-ocr_required_consecutive: 3
+# OCR时间窗证据。空白帧不清空，其他完整类别会清空当前目标证据。
+ocr_required_hits: 2
+ocr_evidence_window_sec: 1.5
+ocr_trigger_hold_sec: 1.0
+ocr_ready_timeout_sec: 12.0
+# 图像横向误差为正时的转向符号。首次低速居中测试必须确认方向。
+target_center_steering_sign: -1.0
+# 厂牌居中后，车头射线相对相机光轴的实车标定偏差。
+camera_boresight_yaw_offset: 0.0
 factory_navigation_timeout_sec: 420.0
+# 任务2厂牌覆盖扫描：仅传给coverage_search_mode导航节点。
+coverage_scan_step_deg: 20.0
+coverage_scan_angular_speed: 0.35
+coverage_scan_dwell_sec: 0.65
+coverage_candidate_hold_sec: 1.2
+coverage_scan_max_dwell_sec: 2.0
+coverage_scan_pose_timeout_sec: 0.5
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003

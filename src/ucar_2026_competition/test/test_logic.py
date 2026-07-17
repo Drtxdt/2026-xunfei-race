@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 import json
+import os
+import sys
 import unittest
+
+PACKAGE_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if PACKAGE_SRC not in sys.path:
+    sys.path.insert(0, PACKAGE_SRC)
 
 from ucar_2026_competition.logic import (
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
+    TemporalTargetFilter,
     normalize_category,
     normalize_angle,
     parse_category,
@@ -53,6 +60,19 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(target_filter.push("food", "food"))
         self.assertFalse(target_filter.push("food", "food"))
         self.assertTrue(target_filter.push("food", "food"))
+
+    def test_ocr_temporal_filter_keeps_blank_frame(self):
+        target_filter = TemporalTargetFilter(2, 1.5)
+        self.assertFalse(target_filter.push("food", "food", now=10.0))
+        self.assertFalse(target_filter.push("food", None, now=10.4))
+        self.assertTrue(target_filter.push("food", "food", now=11.0))
+
+    def test_ocr_temporal_filter_expires_and_resets_on_competitor(self):
+        target_filter = TemporalTargetFilter(2, 1.5)
+        self.assertFalse(target_filter.push("food", "food", now=10.0))
+        self.assertFalse(target_filter.push("food", "food", now=12.0))
+        self.assertFalse(target_filter.push("food", "daily", now=12.2))
+        self.assertFalse(target_filter.push("food", "food", now=12.3))
 
     def test_qr_values(self):
         payload = {"items": [
