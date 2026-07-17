@@ -291,6 +291,8 @@ class VisionTriggeredNavigator(object):
             "~footprint_half_width", 0.128)))
         self.local_planner_reconfigure_ns = rospy.get_param(
             "~local_planner_reconfigure_ns", "/move_base/TebLocalPlannerROS")
+        self.move_base_reconfigure_ns = rospy.get_param(
+            "~move_base_reconfigure_ns", "/move_base")
 
         # move_base 与 costmap
         self.move_base_server = rospy.get_param("~move_base_server", "/move_base")
@@ -362,7 +364,11 @@ class VisionTriggeredNavigator(object):
         self.parking_failure_status = "parking_docking_failed"
         self._planner_client = None
         self._saved_planner_tolerances = None
+        self._move_base_reconfigure_client = None
+        self._saved_move_base_recovery = None
+        self._saved_teb_oscillation_recovery = None
         rospy.on_shutdown(self._restore_final_tolerances)
+        rospy.on_shutdown(self._restore_move_base_recovery)
         self._publish_status("ready")
         # 只有在 action client 和全部状态完成初始化后才接收触发，避免启动竞态。
         self.trigger_service = rospy.Service(
@@ -678,6 +684,11 @@ class VisionTriggeredNavigator(object):
         self._publish_status("coverage_anchor_yaw_aligning")
         deadline = rospy.get_time() + self.coverage_anchor_yaw_timeout
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            if self.triggered:
+                self.cmd_vel_pub.publish(Twist())
+                rospy.loginfo(
+                    "[vision_triggered_navigator] OCR触发优先，中断锚点航向补偿.")
+                return False
             if not self._odom_is_fresh():
                 self.cmd_vel_pub.publish(Twist())
                 return False
@@ -690,7 +701,9 @@ class VisionTriggeredNavigator(object):
                     error)
                 return True
             step = min(abs(error), math.radians(10.0))
-            if not self._rotate_center_step(1.0 if error > 0.0 else -1.0, step):
+            if not self._rotate_center_step(
+                    1.0 if error > 0.0 else -1.0, step,
+                    abort_on_trigger=True):
                 return False
         self.cmd_vel_pub.publish(Twist())
         rospy.logerr("[vision_triggered_navigator] 精确锚点航向闭环超过%.1fs.",
@@ -1082,6 +1095,9 @@ class VisionTriggeredNavigator(object):
                         self._align_coverage_anchor_yaw((x, y, yaw))):
                     navigation_reached = True
                     break
+                if self.triggered:
+                    self.cmd_vel_pub.publish(Twist())
+                    return "triggered"
                 rospy.logerr(
                     "[vision_triggered_navigator] 精确锚点%d的odom航向闭环失败.",
                     patrol_idx + 1)
@@ -1141,7 +1157,8 @@ class VisionTriggeredNavigator(object):
         return (self.odom_yaw is not None and sensor_is_fresh(
             self.odom_received_at, rospy.get_time(), self.odom_stale))
 
-    def _rotate_center_step(self, direction, target_angle):
+    def _rotate_center_step(self, direction, target_angle,
+                            abort_on_trigger=False):
         """Rotate one small odometry-closed-loop step, ramping through deadband."""
         if not self._odom_is_fresh():
             rospy.logerr("[vision_triggered_navigator] /odom超过%.2fs未更新，拒绝居中转动.",
@@ -1162,6 +1179,11 @@ class VisionTriggeredNavigator(object):
             (ramp_steps + 2) * self.target_center_motion_window + 0.5)
         rate = rospy.Rate(30)
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            if abort_on_trigger and self.triggered:
+                self.cmd_vel_pub.publish(Twist())
+                rospy.loginfo(
+                    "[vision_triggered_navigator] OCR触发优先，中断当前航向步进.")
+                return False
             if not self._odom_is_fresh():
                 self.cmd_vel_pub.publish(Twist())
                 rospy.logerr("[vision_triggered_navigator] 居中步进期间/odom失效，立即停车.")
@@ -1682,6 +1704,83 @@ class VisionTriggeredNavigator(object):
                      self.parking_docking_timeout)
         return False
 
+    def _disable_move_base_recovery_for_coverage(self):
+        """Deterministically prevent move_base from executing recovery spins."""
+        if not self.coverage_search_mode:
+            return True
+        try:
+            if self._move_base_reconfigure_client is None:
+                self._move_base_reconfigure_client = (
+                    dynamic_reconfigure.client.Client(
+                        self.move_base_reconfigure_ns, timeout=3.0))
+            current = self._move_base_reconfigure_client.get_configuration(
+                timeout=3.0)
+            required = ("recovery_behavior_enabled",
+                        "clearing_rotation_allowed")
+            missing = [name for name in required if name not in current]
+            if missing:
+                raise RuntimeError(
+                    "move_base dynamic config missing {}".format(
+                        ",".join(missing)))
+            self._saved_move_base_recovery = {
+                name: bool(current[name]) for name in required
+            }
+            if self._planner_client is None:
+                self._planner_client = dynamic_reconfigure.client.Client(
+                    self.local_planner_reconfigure_ns, timeout=3.0)
+            planner_current = self._planner_client.get_configuration(
+                timeout=3.0)
+            if "oscillation_recovery" not in planner_current:
+                raise RuntimeError(
+                    "TEB dynamic config missing oscillation_recovery")
+            self._saved_teb_oscillation_recovery = bool(
+                planner_current["oscillation_recovery"])
+            updated = self._move_base_reconfigure_client.update_configuration({
+                "recovery_behavior_enabled": False,
+                "clearing_rotation_allowed": False,
+            })
+            planner_updated = self._planner_client.update_configuration({
+                "oscillation_recovery": False,
+            })
+            if (bool(updated.get("recovery_behavior_enabled", True)) or
+                    bool(updated.get("clearing_rotation_allowed", True)) or
+                    bool(planner_updated.get("oscillation_recovery", True))):
+                raise RuntimeError("move_base rejected recovery disable request")
+            self._publish_status("coverage_recovery_disabled")
+            rospy.logwarn(
+                "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复行为和清障旋转；退出时自动恢复.")
+            return True
+        except Exception as exc:
+            rospy.logerr(
+                "[vision_triggered_navigator] 无法关闭move_base旋转恢复，拒绝启动任务2运动: %s",
+                str(exc))
+            self._restore_move_base_recovery()
+            return False
+
+    def _restore_move_base_recovery(self):
+        saved = self._saved_move_base_recovery
+        saved_teb = self._saved_teb_oscillation_recovery
+        self._saved_move_base_recovery = None
+        self._saved_teb_oscillation_recovery = None
+        try:
+            if saved and self._move_base_reconfigure_client is not None:
+                self._move_base_reconfigure_client.update_configuration(saved)
+                rospy.loginfo(
+                    "[vision_triggered_navigator] 已恢复move_base恢复配置 recovery=%s clearing_rotation=%s.",
+                    saved["recovery_behavior_enabled"],
+                    saved["clearing_rotation_allowed"])
+            if saved_teb is not None and self._planner_client is not None:
+                self._planner_client.update_configuration({
+                    "oscillation_recovery": saved_teb,
+                })
+                rospy.loginfo(
+                    "[vision_triggered_navigator] 已恢复TEB oscillation_recovery=%s.",
+                    saved_teb)
+        except Exception as exc:
+            rospy.logerr(
+                "[vision_triggered_navigator] 恢复move_base恢复配置失败: %s",
+                str(exc))
+
     def _tighten_final_tolerances(self):
         """Temporarily tighten TEB only for the 50cm task2 parking goal."""
         if not self.validate_parking_box:
@@ -1889,6 +1988,11 @@ class VisionTriggeredNavigator(object):
     # ------------------------------------------------------------------
     def run(self):
         rospy.loginfo("[vision_triggered_navigator] 节点启动，开始三阶段导航.")
+        if (self.coverage_search_mode and
+                not self._disable_move_base_recovery_for_coverage()):
+            self.cmd_vel_pub.publish(Twist())
+            self._publish_status("coverage_recovery_disable_failed")
+            return
         self._publish_status("patrolling")
 
         # 步骤 0：给 AMCL 发送初始位姿
@@ -2071,6 +2175,7 @@ class VisionTriggeredNavigator(object):
                 break
 
         self.cmd_vel_pub.publish(Twist())
+        self._restore_move_base_recovery()
 
 
 def main():

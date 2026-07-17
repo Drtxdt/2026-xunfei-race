@@ -390,7 +390,10 @@ class CompetitionFlow:
             )
 
     def _navigator_cb(self, msg):
-        self.navigator_status = msg.data.strip().lower()
+        status = msg.data.strip().lower()
+        if status != self.navigator_status:
+            rospy.loginfo("task2 navigator status: %s", status)
+        self.navigator_status = status
 
     def _deliver_target_trigger(self):
         """Deliver one OCR lock through a synchronous service and wait for status ACK."""
@@ -1111,7 +1114,8 @@ class CompetitionFlow:
                 if self.navigator_status in (
                         "centering_failed", "parking_staging_failed",
                         "parking_recenter_failed", "parking_wall_fit_failed",
-                        "parking_docking_failed", "parking_validation_failed"):
+                        "parking_docking_failed", "parking_validation_failed",
+                        "coverage_recovery_disable_failed"):
                     raise StageError("factory navigation {}".format(
                         self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):
