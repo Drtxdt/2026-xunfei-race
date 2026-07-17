@@ -257,6 +257,18 @@ def wall_fit_matches_expected(fit, expected_normal_angle,
             float(maximum_error))
 
 
+def wall_fit_is_continuous(current, previous, maximum_distance_jump=0.05,
+                           maximum_normal_jump=math.radians(8.0)):
+    """Accept a near-field fit only when it continues an acquired wall."""
+    if not current or not previous:
+        return False
+    return (abs(float(current["distance"]) - float(previous["distance"])) <=
+            abs(float(maximum_distance_jump)) and
+            abs(normalize_angle(float(current["normal_angle"]) -
+                                float(previous["normal_angle"]))) <=
+            abs(float(maximum_normal_jump)))
+
+
 def docking_within_tolerance(errors, normal_tolerance,
                              tangent_tolerance, yaw_tolerance):
     forward, lateral, yaw_error = [abs(float(value)) for value in errors]
@@ -271,6 +283,22 @@ def staging_motion_is_rotation_stall(distance_moved, yaw_accumulated,
     """Detect move_base rotating without useful translation in one window."""
     return (float(distance_moved) < abs(float(minimum_distance)) and
             abs(float(yaw_accumulated)) > abs(float(maximum_yaw)))
+
+
+def coverage_motion_is_rotation_stall(distance_moved, yaw_accumulated,
+                                      minimum_distance=0.03,
+                                      maximum_yaw=math.radians(90.0)):
+    """Detect a coverage goal about to enter move_base rotation recovery."""
+    return staging_motion_is_rotation_stall(
+        distance_moved, yaw_accumulated, minimum_distance, maximum_yaw)
+
+
+def coverage_position_needs_yaw_alignment(distance, yaw_error,
+                                          position_tolerance=0.15,
+                                          yaw_tolerance=0.06):
+    """Hand a reached position's remaining heading correction to odometry."""
+    return (float(distance) <= abs(float(position_tolerance)) and
+            abs(float(yaw_error)) > abs(float(yaw_tolerance)))
 
 
 def coverage_timeout_decision(elapsed, window_progress,

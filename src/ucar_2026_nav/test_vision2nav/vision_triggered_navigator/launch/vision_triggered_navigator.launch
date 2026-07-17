@@ -53,6 +53,9 @@
   <arg name="parking_wall_fit_half_angle_deg" default="35.0" />
   <arg name="parking_wall_fit_min_points" default="12" />
   <arg name="parking_wall_fit_min_span" default="0.25" />
+  <arg name="parking_wall_fit_near_min_span" default="0.18" />
+  <arg name="parking_wall_fit_max_distance_jump" default="0.05" />
+  <arg name="parking_wall_fit_max_normal_jump_deg" default="8.0" />
   <arg name="parking_wall_fit_max_residual" default="0.015" />
   <arg name="parking_wall_fit_max_normal_error_deg" default="20.0" />
   <arg name="parking_normal_offset" default="0.0" />
@@ -120,6 +123,9 @@
     <param name="parking_wall_fit_half_angle_deg" value="$(arg parking_wall_fit_half_angle_deg)" />
     <param name="parking_wall_fit_min_points" value="$(arg parking_wall_fit_min_points)" />
     <param name="parking_wall_fit_min_span" value="$(arg parking_wall_fit_min_span)" />
+    <param name="parking_wall_fit_near_min_span" value="$(arg parking_wall_fit_near_min_span)" />
+    <param name="parking_wall_fit_max_distance_jump" value="$(arg parking_wall_fit_max_distance_jump)" />
+    <param name="parking_wall_fit_max_normal_jump_deg" value="$(arg parking_wall_fit_max_normal_jump_deg)" />
     <param name="parking_wall_fit_max_residual" value="$(arg parking_wall_fit_max_residual)" />
     <param name="parking_wall_fit_max_normal_error_deg" value="$(arg parking_wall_fit_max_normal_error_deg)" />
     <param name="parking_normal_offset" value="$(arg parking_normal_offset)" />

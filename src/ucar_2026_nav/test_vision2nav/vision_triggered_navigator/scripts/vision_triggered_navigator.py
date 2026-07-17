@@ -16,7 +16,7 @@ from geometry_msgs.msg import PoseStamped, Quaternion, Twist, PoseWithCovariance
 from nav_msgs.msg import OccupancyGrid, Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
-from std_srvs.srv import Trigger, TriggerResponse
+from std_srvs.srv import Empty, Trigger, TriggerResponse
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPT_DIR not in sys.path:
@@ -24,6 +24,8 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
+    coverage_motion_is_rotation_stall,
+    coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
     docking_command,
     docking_pose_errors,
@@ -48,6 +50,7 @@ from navigator_logic import (
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
     wall_fit_matches_expected,
+    wall_fit_is_continuous,
     wall_frame_docking_command,
     wall_normal_distance,
 )
@@ -122,6 +125,22 @@ class VisionTriggeredNavigator(object):
             "~coverage_goal_progress_window_sec", 5.0)))
         self.coverage_goal_min_progress = max(0.0, float(rospy.get_param(
             "~coverage_goal_min_progress", 0.03)))
+        self.coverage_rotation_watchdog_window = max(1.0, float(rospy.get_param(
+            "~coverage_rotation_watchdog_window_sec", 5.0)))
+        self.coverage_rotation_min_progress = max(0.0, float(rospy.get_param(
+            "~coverage_rotation_min_progress", 0.03)))
+        self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
+            "~coverage_rotation_max_yaw_deg", 90.0))))
+        self.coverage_goal_retry_count = max(0, int(rospy.get_param(
+            "~coverage_goal_retry_count", 1)))
+        self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
+            "~coverage_anchor_position_tolerance", 0.15)))
+        self.coverage_anchor_yaw_tolerance = math.radians(abs(float(rospy.get_param(
+            "~coverage_anchor_yaw_tolerance_deg", math.degrees(0.06)))))
+        self.coverage_anchor_yaw_hold = max(0.0, float(rospy.get_param(
+            "~coverage_anchor_yaw_hold_sec", 0.5)))
+        self.coverage_anchor_yaw_timeout = max(1.0, float(rospy.get_param(
+            "~coverage_anchor_yaw_timeout_sec", 20.0)))
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
@@ -244,6 +263,12 @@ class VisionTriggeredNavigator(object):
             "~parking_wall_fit_min_points", 12)))
         self.parking_wall_fit_min_span = abs(float(rospy.get_param(
             "~parking_wall_fit_min_span", 0.25)))
+        self.parking_wall_fit_near_min_span = abs(float(rospy.get_param(
+            "~parking_wall_fit_near_min_span", 0.18)))
+        self.parking_wall_fit_max_distance_jump = abs(float(rospy.get_param(
+            "~parking_wall_fit_max_distance_jump", 0.05)))
+        self.parking_wall_fit_max_normal_jump = math.radians(abs(float(
+            rospy.get_param("~parking_wall_fit_max_normal_jump_deg", 8.0))))
         self.parking_wall_fit_max_residual = abs(float(rospy.get_param(
             "~parking_wall_fit_max_residual", 0.015)))
         self.parking_wall_fit_max_normal_error = math.radians(abs(float(
@@ -293,6 +318,7 @@ class VisionTriggeredNavigator(object):
             self.status_topic, String, queue_size=10, latch=True)
 
         self.costmap = None
+        self.costmap_received_at = 0.0
         rospy.Subscriber(self.costmap_topic, OccupancyGrid, self._costmap_cb)
         self.odom_yaw = None
         self.odom_pose = None
@@ -324,6 +350,8 @@ class VisionTriggeredNavigator(object):
         self.current_goal_y = None
         self.current_goal_infeasible = False
         self.current_goal_timed_out = False
+        self.current_goal_rotation_stall = False
+        self.current_goal_needs_yaw_alignment = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
@@ -358,6 +386,7 @@ class VisionTriggeredNavigator(object):
     def _costmap_cb(self, msg):
         """保存最新 costmap"""
         self.costmap = msg
+        self.costmap_received_at = rospy.get_time()
 
     def _odom_cb(self, msg):
         """Keep a fresh odom pose for centering and final docking."""
@@ -620,6 +649,54 @@ class VisionTriggeredNavigator(object):
         state = self.move_base_client.get_state()
         return state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]
 
+    def _clear_costmaps_and_wait(self, timeout=2.0):
+        """Clear stale obstacle history, then require fresh scan and costmap data."""
+        try:
+            rospy.wait_for_service("/move_base/clear_costmaps", timeout=timeout)
+            rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            rospy.logerr("[vision_triggered_navigator] 清理costmap失败: %s", str(exc))
+            return False
+        called_at = rospy.get_time()
+        deadline = rospy.get_time() + max(0.1, float(timeout))
+        rate = rospy.Rate(20)
+        while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            if (self.costmap_received_at > called_at and
+                    self.scan_received_at > called_at):
+                rospy.loginfo("[vision_triggered_navigator] costmap清理后已收到新雷达和完整局部代价地图.")
+                return True
+            rate.sleep()
+        rospy.logerr("[vision_triggered_navigator] costmap清理后未在%.1fs内收到新快照.", timeout)
+        return False
+
+    def _align_coverage_anchor_yaw(self, map_pose):
+        """Finish only the calibrated anchor heading with odometry, not TEB."""
+        odom_frame = self.odom_frame_from_msg or self.odom_frame
+        target = self._transform_map_pose(odom_frame, map_pose)
+        if target is None:
+            return False
+        self._publish_status("coverage_anchor_yaw_aligning")
+        deadline = rospy.get_time() + self.coverage_anchor_yaw_timeout
+        while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            if not self._odom_is_fresh():
+                self.cmd_vel_pub.publish(Twist())
+                return False
+            error = normalize_angle(target[2] - self.odom_yaw)
+            if abs(error) <= self.coverage_anchor_yaw_tolerance:
+                self._hold_stopped(self.coverage_anchor_yaw_hold)
+                self._publish_status("coverage_anchor_yaw_aligned")
+                rospy.loginfo(
+                    "[vision_triggered_navigator] 精确锚点航向由odom闭环完成: error=%.3frad.",
+                    error)
+                return True
+            step = min(abs(error), math.radians(10.0))
+            if not self._rotate_center_step(1.0 if error > 0.0 else -1.0, step):
+                return False
+        self.cmd_vel_pub.publish(Twist())
+        rospy.logerr("[vision_triggered_navigator] 精确锚点航向闭环超过%.1fs.",
+                     self.coverage_anchor_yaw_timeout)
+        return False
+
     def _check_current_goal_cb(self, event):
         """定时器回调：检查当前导航目标是否仍然可行"""
         if self.current_goal_infeasible:
@@ -644,6 +721,8 @@ class VisionTriggeredNavigator(object):
         self.current_goal_y = y
         self.current_goal_infeasible = False
         self.current_goal_timed_out = False
+        self.current_goal_rotation_stall = False
+        self.current_goal_needs_yaw_alignment = False
 
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = self.map_frame
@@ -669,6 +748,11 @@ class VisionTriggeredNavigator(object):
         latest_yaw_error = float("nan")
         window_progress = 0.0
         coverage_extended = False
+        rotation_window_started = started
+        rotation_window_pose = None
+        rotation_window_yaw = None
+        rotation_accumulated = 0.0
+        anchor_close_since = None
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             state = self.move_base_client.get_state()
@@ -683,6 +767,14 @@ class VisionTriggeredNavigator(object):
                     if pose is not None:
                         latest_distance = math.hypot(x - pose[0], y - pose[1])
                         latest_yaw_error = abs(normalize_angle(yaw - pose[2]))
+                        if rotation_window_pose is None:
+                            rotation_window_pose = pose
+                            rotation_window_yaw = pose[2]
+                            rotation_window_started = now
+                        else:
+                            rotation_accumulated += abs(normalize_angle(
+                                pose[2] - rotation_window_yaw))
+                            rotation_window_yaw = pose[2]
                         progress_samples.append((now, latest_distance))
                         cutoff = now - self.coverage_goal_progress_window
                         progress_samples = [
@@ -690,6 +782,44 @@ class VisionTriggeredNavigator(object):
                         if progress_samples:
                             window_progress = max(
                                 0.0, progress_samples[0][1] - latest_distance)
+                        if coverage_position_needs_yaw_alignment(
+                                latest_distance, latest_yaw_error,
+                                self.coverage_anchor_position_tolerance,
+                                self.coverage_anchor_yaw_tolerance):
+                            if anchor_close_since is None:
+                                anchor_close_since = now
+                            elif now - anchor_close_since >= self.coverage_anchor_yaw_hold:
+                                self.current_goal_needs_yaw_alignment = True
+                                rospy.logwarn(
+                                    "[vision_triggered_navigator] 已进入锚点位置容差(distance=%.3f)，但yaw_error=%.3f；取消TEB并改用odom航向闭环.",
+                                    latest_distance, latest_yaw_error)
+                                self.cancel_goal()
+                                break
+                        else:
+                            anchor_close_since = None
+                        if (rotation_window_pose is not None and
+                                now - rotation_window_started >=
+                                self.coverage_rotation_watchdog_window):
+                            moved = math.hypot(
+                                pose[0] - rotation_window_pose[0],
+                                pose[1] - rotation_window_pose[1])
+                            if coverage_motion_is_rotation_stall(
+                                    moved, rotation_accumulated,
+                                    self.coverage_rotation_min_progress,
+                                    self.coverage_rotation_max_yaw):
+                                self.current_goal_rotation_stall = True
+                                self._publish_status(
+                                    "coverage_goal_recovery_preempted")
+                                rospy.logwarn(
+                                    "[vision_triggered_navigator] 覆盖目标转圈预警: %.1fs位移%.3fm累计转角%.1fdeg；抢在move_base恢复前取消.",
+                                    self.coverage_rotation_watchdog_window,
+                                    moved, math.degrees(rotation_accumulated))
+                                self.cancel_goal()
+                                break
+                            rotation_window_started = now
+                            rotation_window_pose = pose
+                            rotation_window_yaw = pose[2]
+                            rotation_accumulated = 0.0
                     if now - last_progress_log >= 2.0:
                         last_progress_log = now
                         rospy.loginfo(
@@ -736,7 +866,8 @@ class VisionTriggeredNavigator(object):
 
         if timer is not None:
             timer.shutdown()
-        if self.current_goal_timed_out:
+        if (self.current_goal_timed_out or self.current_goal_rotation_stall or
+                self.current_goal_needs_yaw_alignment):
             self.move_base_client.wait_for_result(rospy.Duration(1.0))
         final_state = self.move_base_client.get_state()
 
@@ -940,14 +1071,43 @@ class VisionTriggeredNavigator(object):
         rospy.loginfo(
             "[vision_triggered_navigator] 精确锚点%d: (%.4f, %.4f, %.4f)",
             patrol_idx + 1, x, y, yaw)
-        result = self.send_goal(x, y, yaw)
-        if self.triggered:
-            return "triggered"
-        if result != actionlib.GoalStatus.SUCCEEDED:
+        result = None
+        navigation_reached = False
+        for attempt in range(self.coverage_goal_retry_count + 1):
+            result = self.send_goal(x, y, yaw)
+            if self.triggered:
+                return "triggered"
+            if self.current_goal_needs_yaw_alignment:
+                if (self._wait_navigation_idle() and
+                        self._align_coverage_anchor_yaw((x, y, yaw))):
+                    navigation_reached = True
+                    break
+                rospy.logerr(
+                    "[vision_triggered_navigator] 精确锚点%d的odom航向闭环失败.",
+                    patrol_idx + 1)
+                return "skipped_failed"
+            if result == actionlib.GoalStatus.SUCCEEDED:
+                navigation_reached = True
+                break
+            if (self.current_goal_rotation_stall and
+                    attempt < self.coverage_goal_retry_count):
+                self.cmd_vel_pub.publish(Twist())
+                if not self._wait_navigation_idle():
+                    return "skipped_failed"
+                self._publish_status("coverage_goal_retry")
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 精确锚点%d清理costmap后仅重试同一标定坐标一次.",
+                    patrol_idx + 1)
+                if not self._clear_costmaps_and_wait():
+                    return "skipped_failed"
+                continue
+            break
+        if not navigation_reached:
             self.cmd_vel_pub.publish(Twist())
             rospy.logwarn(
-                "[vision_triggered_navigator] 精确锚点%d导航未成功(state=%s timeout=%s)，不生成替代坐标，进入下一原始点.",
-                patrol_idx + 1, str(result), self.current_goal_timed_out)
+                "[vision_triggered_navigator] 精确锚点%d导航未成功(state=%s timeout=%s rotation_stall=%s)，不生成替代坐标，进入下一原始点.",
+                patrol_idx + 1, str(result), self.current_goal_timed_out,
+                self.current_goal_rotation_stall)
             return "skipped_failed"
         if not self._wait_navigation_idle():
             self.cmd_vel_pub.publish(Twist())
@@ -1332,6 +1492,32 @@ class VisionTriggeredNavigator(object):
             self.parking_last_wall_fit = fit
             self.parking_last_wall_fit_at = rospy.get_time()
             return fit
+        # Once a long wall has been acquired, close range may crop its visible
+        # span below 25 cm.  Re-fit with the near threshold, but accept only a
+        # geometrically continuous line so a cone cluster cannot take over.
+        now = rospy.get_time()
+        if (self.parking_last_wall_fit is not None and sensor_is_fresh(
+                self.parking_last_wall_fit_at, now, self.scan_stale)):
+            near_fit = fit_wall_line(
+                self.scan_wall_points,
+                self.parking_wall_fit_min_points,
+                self.parking_wall_fit_near_min_span,
+                self.parking_wall_fit_max_residual,
+            )
+            if (near_fit and wall_fit_matches_expected(
+                    near_fit, expected_in_base,
+                    self.parking_wall_fit_max_normal_error) and
+                    wall_fit_is_continuous(
+                        near_fit, self.parking_last_wall_fit,
+                        self.parking_wall_fit_max_distance_jump,
+                        self.parking_wall_fit_max_normal_jump)):
+                rospy.loginfo_throttle(
+                    1.0,
+                    "[vision_triggered_navigator] 近墙连续拟合启用: span=%.3fm distance=%.3fm.",
+                    near_fit["span"], near_fit["distance"])
+                self.parking_last_wall_fit = near_fit
+                self.parking_last_wall_fit_at = now
+                return near_fit
         return None
 
     def _run_parking_docking(self, map_goal):

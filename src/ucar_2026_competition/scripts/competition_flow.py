@@ -25,9 +25,10 @@ from move_base_msgs.msg import (
     MoveBaseActionResult,
     MoveBaseGoal,
 )
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid, Odometry
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
-from std_srvs.srv import Trigger, TriggerResponse
+from std_srvs.srv import Empty, Trigger, TriggerResponse
 from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
@@ -115,6 +116,8 @@ class CompetitionFlow:
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
         self.base_twist = None
+        self.handoff_scan_received_at = 0.0
+        self.handoff_costmap_received_at = 0.0
         self.ocr_target = None
         self.ocr_last_message_at = 0.0
         self.ocr_filter = TemporalTargetFilter(
@@ -144,6 +147,11 @@ class CompetitionFlow:
             self._qr_odom_cb,
             queue_size=10,
         )
+        rospy.Subscriber(
+            "/scan", LaserScan, self._handoff_scan_cb, queue_size=1)
+        rospy.Subscriber(
+            "/move_base/local_costmap/costmap", OccupancyGrid,
+            self._handoff_costmap_cb, queue_size=1)
         rospy.Subscriber(
             "/move_base/goal", MoveBaseActionGoal, self._qr_move_base_goal_cb, queue_size=5
         )
@@ -319,6 +327,14 @@ class CompetitionFlow:
                 float(msg.twist.twist.linear.y),
                 float(msg.twist.twist.angular.z),
             )
+
+    def _handoff_scan_cb(self, _msg):
+        with self.lock:
+            self.handoff_scan_received_at = time.monotonic()
+
+    def _handoff_costmap_cb(self, _msg):
+        with self.lock:
+            self.handoff_costmap_received_at = time.monotonic()
 
     def _qr_move_base_goal_cb(self, msg):
         with self.lock:
@@ -502,6 +518,7 @@ class CompetitionFlow:
             "~task1_task2_handoff_stable_sec", 0.5))
         deadline = time.monotonic() + timeout
         stable_since = None
+        stationary_ready = False
         while time.monotonic() < deadline and not rospy.is_shutdown():
             self.check_abort()
             self.safe_stop(cancel_navigation=True)
@@ -516,16 +533,42 @@ class CompetitionFlow:
                 if stable_since is None:
                     stable_since = time.monotonic()
                 elif time.monotonic() - stable_since >= stable_required:
-                    self.publish_status(
-                        "task1", "task2_handoff_ready",
-                        "move_base idle; odom stationary; preserving AMCL state")
-                    return
+                    stationary_ready = True
+                    break
             else:
                 stable_since = None
             rospy.sleep(0.05)
-        raise StageError(
-            "task1->task2 handoff did not reach {:.1f}s stationary idle state".format(
-                stable_required))
+        if not stationary_ready:
+            raise StageError(
+                "task1->task2 handoff did not reach {:.1f}s stationary idle state".format(
+                    stable_required))
+
+        self.publish_status(
+            "task1", "task2_costmap_refreshing",
+            "clearing QR-scan obstacle history before task2 coverage navigation")
+        try:
+            rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
+            rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError(
+                "task1->task2 costmap refresh failed: {}".format(exc))
+        cleared_at = time.monotonic()
+        refresh_deadline = cleared_at + 2.0
+        while time.monotonic() < refresh_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                scan_fresh = self.handoff_scan_received_at > cleared_at
+                costmap_fresh = self.handoff_costmap_received_at > cleared_at
+            if scan_fresh and costmap_fresh:
+                break
+            rospy.sleep(0.05)
+        else:
+            raise StageError(
+                "task1->task2 costmap refresh produced no fresh scan/costmap snapshot")
+        self.safe_stop(cancel_navigation=True)
+        self.publish_status(
+            "task1", "task2_handoff_ready",
+            "move_base idle; fresh costmap; preserving AMCL state")
 
     def start_child(self, key, package, launch_file, args=None):
         self.stop_child(key)
@@ -961,7 +1004,7 @@ class CompetitionFlow:
                         "~max_coverage_anchors", 0)),
                     "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
                     "parking_goal_offset": rospy.get_param(
-                        "~parking_goal_offset", 0.22),
+                        "~parking_goal_offset", 0.26),
                     "parking_staging_offset": rospy.get_param(
                         "~parking_staging_offset", 0.55),
                     "parking_staging_timeout_sec": rospy.get_param(
@@ -1002,6 +1045,12 @@ class CompetitionFlow:
                         "~parking_wall_fit_min_points", 12),
                     "parking_wall_fit_min_span": rospy.get_param(
                         "~parking_wall_fit_min_span", 0.25),
+                    "parking_wall_fit_near_min_span": rospy.get_param(
+                        "~parking_wall_fit_near_min_span", 0.18),
+                    "parking_wall_fit_max_distance_jump": rospy.get_param(
+                        "~parking_wall_fit_max_distance_jump", 0.05),
+                    "parking_wall_fit_max_normal_jump_deg": rospy.get_param(
+                        "~parking_wall_fit_max_normal_jump_deg", 8.0),
                     "parking_wall_fit_max_residual": rospy.get_param(
                         "~parking_wall_fit_max_residual", 0.015),
                     "parking_wall_fit_max_normal_error_deg": rospy.get_param(

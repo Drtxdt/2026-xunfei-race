@@ -56,7 +56,7 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `parking_staging_offset` | move_base 预停点距墙距离 | 比赛任务2 `0.55` |
 | `parking_staging_position_tolerance` / `parking_staging_yaw_tolerance` | move_base控制权交接门限 | `0.10m / 0.10rad` |
 | `parking_recenter_initial_wait_sec` | 预停后等待新OCR框；超时则保留首次锁定结果 | `1.0` |
-| `parking_goal_offset` | 低速闭环最终点距墙距离 | 独立模式 `0.4`，比赛任务2 `0.22` |
+| `parking_goal_offset` | 低速闭环最终点距墙距离 | 独立模式 `0.4`，比赛任务2 `0.26` |
 | `parking_docking_timeout_sec` | odom 短距闭环超时 | `15.0` |
 | `parking_dock_max_x/y/yaw` | 最终停泊三轴速度上限 | `0.10 / 0.06 / 0.15` |
 | `parking_wall_fit_*` | 实际墙线点数、跨度、残差及方向门限 | 见 yaml |

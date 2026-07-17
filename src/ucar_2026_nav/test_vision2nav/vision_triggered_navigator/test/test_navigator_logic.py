@@ -15,6 +15,8 @@ from navigator_logic import (
     build_quadrilateral_walls,
     center_angular_command,
     center_step_angle,
+    coverage_motion_is_rotation_stall,
+    coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
     costmap_value_at,
     docking_command,
@@ -40,6 +42,7 @@ from navigator_logic import (
     split_scan_angle,
     wall_normal_distance,
     wall_fit_matches_expected,
+    wall_fit_is_continuous,
     wall_frame_docking_command,
 )
 
@@ -158,6 +161,16 @@ def test_coverage_goal_soft_timeout_extends_only_with_recent_progress():
     assert coverage_timeout_decision(25.0, 0.03, 25.0, 40.0, 0.03) == "extend"
     assert coverage_timeout_decision(39.9, 0.10, 25.0, 40.0, 0.03) == "extend"
     assert coverage_timeout_decision(40.0, 1.0, 25.0, 40.0, 0.03) == "hard_timeout"
+
+
+def test_coverage_rotation_stall_and_local_yaw_handoff():
+    assert coverage_motion_is_rotation_stall(
+        0.029, math.radians(90.1), 0.03, math.radians(90.0))
+    assert not coverage_motion_is_rotation_stall(
+        0.031, math.radians(180.0), 0.03, math.radians(90.0))
+    assert coverage_position_needs_yaw_alignment(0.15, math.pi, 0.15, 0.06)
+    assert not coverage_position_needs_yaw_alignment(0.151, math.pi, 0.15, 0.06)
+    assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
 
 
 def test_recenter_requires_a_fresh_target_sample_before_motion():
@@ -309,26 +322,26 @@ def test_sensor_freshness_and_lidar_extrinsic_safety_distance():
     assert lidar_requires_stop(0.06, 0.14, 0.22, 0.15)
 
 
-def test_22cm_final_goal_has_more_than_2cm_footprint_margin():
+def test_26cm_final_goal_has_more_than_2cm_footprint_margin():
     diagnostics = parking_footprint_margins(
-        (0.22, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0),
+        (0.26, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0),
         0.50, 0.50, 0.171, 0.128, 0.0)
     assert diagnostics["inside"]
     assert min(diagnostics["near_margin"], diagnostics["far_margin"],
                diagnostics["side_margin"]) >= 0.02
     assert math.isclose(
-        wall_normal_distance((0.22, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0)),
-        0.22)
+        wall_normal_distance((0.26, 0.0, math.pi), (0.0, 0.0), (1.0, 0.0)),
+        0.26)
 
 
 def test_staging_and_final_goals_share_wall_tangent_and_yaw():
     wall_point = (1.2, -0.7)
     normal = (-0.8, 0.6)
     staging = parking_goal_from_wall(wall_point, normal, 0.55)
-    final = parking_goal_from_wall(wall_point, normal, 0.22)
+    final = parking_goal_from_wall(wall_point, normal, 0.26)
     assert math.isclose(staging[2], final[2], abs_tol=1e-12)
     assert math.isclose(math.hypot(staging[0] - final[0],
-                                   staging[1] - final[1]), 0.33, abs_tol=1e-12)
+                                   staging[1] - final[1]), 0.29, abs_tol=1e-12)
 
 
 @pytest.mark.parametrize("wall_point,normal", [
@@ -336,14 +349,14 @@ def test_staging_and_final_goals_share_wall_tangent_and_yaw():
     ((-2.2238, -2.5445), (1.0000, 0.0056)),  # task2_daily.log
     ((0.6399, -1.2183), (0.0112, -0.9999)),  # task2_electronics.log
 ])
-def test_logged_wall_solutions_make_safe_staging_and_22cm_final_goal(
+def test_logged_wall_solutions_make_safe_staging_and_26cm_final_goal(
         wall_point, normal):
     staging = parking_goal_from_wall(wall_point, normal, 0.55)
-    final = parking_goal_from_wall(wall_point, normal, 0.22)
+    final = parking_goal_from_wall(wall_point, normal, 0.26)
     assert math.isclose(wall_normal_distance(staging, wall_point, normal),
                         0.55, abs_tol=1e-9)
     assert math.isclose(wall_normal_distance(final, wall_point, normal),
-                        0.22, abs_tol=1e-9)
+                        0.26, abs_tol=1e-9)
     diagnostics = parking_footprint_margins(
         final, wall_point, normal, 0.50, 0.50, 0.171, 0.128, 0.0)
     assert diagnostics["inside"]
@@ -389,6 +402,22 @@ def test_wall_fit_uses_long_wall_and_rejects_short_cone_cluster():
     assert abs(normalize_angle(fit["normal_angle"] - normal_angle)) < 0.02
     assert wall_fit_matches_expected(fit, 0.0, math.radians(20))
     assert not wall_fit_matches_expected(fit, math.pi / 2.0, math.radians(20))
+
+
+def test_near_wall_fit_may_shrink_only_when_continuous():
+    previous = {
+        "distance": 0.272, "normal_angle": 0.011,
+        "span": 0.252, "residual": 0.0014, "inliers": 80,
+    }
+    current = {
+        "distance": 0.260, "normal_angle": 0.009,
+        "span": 0.19, "residual": 0.0015, "inliers": 60,
+    }
+    assert wall_fit_is_continuous(
+        current, previous, 0.05, math.radians(8.0))
+    jumped = dict(current, distance=0.19)
+    assert not wall_fit_is_continuous(
+        jumped, previous, 0.05, math.radians(8.0))
 
 
 @pytest.mark.parametrize("logged_yaw_error", [-1.690, -1.283, -0.341])
