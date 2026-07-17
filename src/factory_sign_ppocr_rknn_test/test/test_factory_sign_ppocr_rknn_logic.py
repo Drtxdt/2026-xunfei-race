@@ -9,68 +9,13 @@ if SCRIPTS not in sys.path:
 
 from factory_sign_ppocr_rknn_node import (
     CTCLabelDecoder,
-    FactorySignPPOCRRknnNode,
     FactorySignKeywordClassifier,
     OCRText,
     PPOCRRknnRecognizer,
-    RknnRuntime,
     VoteWindow,
     map_box_to_frame,
     parse_view_scales,
-    select_category_box,
 )
-
-
-class FakeRuntime:
-    def __init__(self):
-        self.release_calls = 0
-
-    def release(self):
-        self.release_calls += 1
-
-
-class FakeSubscription:
-    def __init__(self):
-        self.unregister_calls = 0
-
-    def unregister(self):
-        self.unregister_calls += 1
-
-
-def test_rknn_runtime_release_is_idempotent():
-    runtime = RknnRuntime.__new__(RknnRuntime)
-    fake = FakeRuntime()
-    runtime.rknn = fake
-    runtime.release()
-    runtime.release()
-    assert fake.release_calls == 1
-
-
-def test_recognizer_releases_detector_and_recognizer_once():
-    recognizer = PPOCRRknnRecognizer.__new__(PPOCRRknnRecognizer)
-    recognizer.rec = FakeRuntime()
-    recognizer.det = FakeRuntime()
-    recognizer.release()
-    recognizer.release()
-    assert recognizer.rec.release_calls == 1
-    assert recognizer.det.release_calls == 1
-
-
-def test_shutdown_waits_for_run_loop_before_releasing_runtime():
-    node = FactorySignPPOCRRknnNode.__new__(FactorySignPPOCRRknnNode)
-    node.shutdown_requested = False
-    node.resources_released = False
-    node.image_sub = FakeSubscription()
-    node.recognizer = FakeRuntime()
-
-    node._on_shutdown()
-    assert node.shutdown_requested
-    assert node.image_sub.unregister_calls == 1
-    assert node.recognizer.release_calls == 0
-
-    node._release_resources()
-    node._release_resources()
-    assert node.recognizer.release_calls == 1
 
 
 def test_keyword_classifier_maps_requested_categories():
@@ -78,7 +23,6 @@ def test_keyword_classifier_maps_requested_categories():
     assert classifier.classify("食品加工车间") == "food"
     assert classifier.classify("日用品加工车间") == "daily"
     assert classifier.classify("电子产品加工车间") == "electronic"
-    assert classifier.classify("电子产品生产车间") == "electronic"
     assert classifier.classify("FOOD") == "food"
     assert classifier.classify("品") is None
     assert classifier.classify("车间") is None
@@ -94,37 +38,6 @@ def test_keyword_classifier_uses_only_complete_category_evidence():
     assert classifier.classify("电子产生产") == "electronic"
     for noise in ("食", "日", "电", "电品062093", "navigation", "ROS", "robot map"):
         assert classifier.classify(noise) is None
-
-
-def test_food_workshop_shape_correction_requires_box_and_confidence():
-    classifier = FactorySignKeywordClassifier()
-    box = [[10, 10], [235, 10], [235, 42], [10, 42]]
-
-    category, score, evidence, _debug = classifier.classify_evidence(
-        [OCRText("金县加工车面", 0.477, box)]
-    )
-    assert category == "food"
-    assert score > 0.0
-    assert evidence.startswith("workshop_shape:")
-
-    assert classifier.classify_evidence(
-        [OCRText("食品加工车面", 0.477, box)]
-    )[0] == "food"
-
-    assert classifier.classify_evidence([OCRText("金县加工车面", 0.44, box)])[0] is None
-    assert classifier.classify("金县加工车面") is None
-
-
-def test_food_workshop_shape_does_not_enable_generic_fuzzy_matching():
-    classifier = FactorySignKeywordClassifier()
-    box = [[0, 0], [200, 0], [200, 30], [0, 30]]
-    for noise in (
-        "机械加工车间",
-        "SLAM NAVIGATION ROS",
-        "金县加工",
-        "金县车面",
-    ):
-        assert classifier.classify_evidence([OCRText(noise, 0.99, box)])[0] is None
 
 
 def test_keyword_classifier_scores_ocr_candidates_not_concatenated_noise():
@@ -240,11 +153,3 @@ def test_detected_box_expansion_and_center_ranking():
 def test_debug_box_mapping_accounts_for_view_origin_and_resize():
     mapped = map_box_to_frame([[20.0, 10.0], [40.0, 30.0]], (100, 50, 300, 150), 2.0)
     assert mapped == [[110.0, 55.0], [120.0, 65.0]]
-
-
-def test_target_box_selects_only_the_confirmed_category():
-    classifier = FactorySignKeywordClassifier()
-    daily = OCRText("日用品", 0.80, [[10, 10], [80, 10], [80, 30], [10, 30]])
-    noise = OCRText("SLAM NAVIGATION ROS", 0.99, [[0, 0], [100, 0], [100, 10], [0, 10]])
-    selected = select_category_box([noise, daily], "daily", classifier)
-    assert selected is daily

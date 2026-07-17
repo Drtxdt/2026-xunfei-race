@@ -17,13 +17,13 @@ from typing import Deque, Dict, List, Optional, Sequence, Tuple
 CATEGORY_NAMES = {
     "food": "食品加工车间",
     "daily": "日用品加工车间",
-    "electronic": "电子产品生产车间",
+    "electronic": "电子产品加工车间",
 }
 
 SPEECH_TEXTS = {
     "food": "识别到食品加工车间",
     "daily": "识别到日用品加工车间",
-    "electronic": "识别到电子产品生产车间",
+    "electronic": "识别到电子产品加工车间",
 }
 
 
@@ -145,14 +145,6 @@ class OCRCandidate:
 class FactorySignKeywordClassifier:
     """Strict factory-sign classifier; generic wall text is never evidence."""
 
-    # Context-bound OCR confusions observed on the food workshop sign.  These
-    # are deliberately not applied as global character replacements: a
-    # fallback match must still be one complete, boxed "xx加工车x" sign.
-    FOOD_WORKSHOP_PATTERN = re.compile(
-        r"^[食金良盒][品晶吕县]加工车[间面闻阀闫]$"
-    )
-    STRUCTURED_MIN_CONFIDENCE = 0.45
-
     FEATURES: Dict[str, Tuple[Tuple[str, float], ...]] = {
         "food": (("食品", 1.0), ("food", 1.0)),
         "daily": (("日用品", 1.0), ("日用", 0.92), ("用品", 0.88), ("daily", 1.0)),
@@ -189,13 +181,6 @@ class FactorySignKeywordClassifier:
                         hits[category].append(token)
                         break
 
-            structured = self._structured_food_evidence(item)
-            if structured:
-                value = 0.85 * confidence
-                if value > scores["food"]:
-                    scores["food"] = value
-                hits["food"].append("workshop_shape:" + structured)
-
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
         best_category, best_score = ranked[0]
         second_score = ranked[1][1] if len(ranked) > 1 else 0.0
@@ -208,18 +193,6 @@ class FactorySignKeywordClassifier:
             return None, best_score, "", debug
         evidence = hits[best_category][0] if hits[best_category] else ""
         return best_category, best_score, evidence, debug
-
-    @classmethod
-    def _structured_food_evidence(cls, item: OCRText) -> str:
-        """Recognize only a boxed, full food-workshop phrase with known confusions."""
-        if float(item.score or 0.0) < cls.STRUCTURED_MIN_CONFIDENCE:
-            return ""
-        if len(item.box) != 4 or any(len(point) < 2 for point in item.box):
-            return ""
-        for chinese_run in re.findall(r"[\u4e00-\u9fff]+", item.text or ""):
-            if cls.FOOD_WORKSHOP_PATTERN.fullmatch(chinese_run):
-                return chinese_run
-        return ""
 
     @staticmethod
     def _normalize(text: str) -> str:
@@ -831,16 +804,11 @@ class FactorySignPPOCRRknnNode:
 
     def run(self) -> None:
         rate = self.rospy.Rate(self.inference_rate)
-        try:
-            while not self.rospy.is_shutdown() and not self.shutdown_requested:
-                if self.latest_image is not None and self.latest_image_seq != self.processed_image_seq:
-                    self.processed_image_seq = self.latest_image_seq
-                    self._process_once(self.latest_image.copy())
-                rate.sleep()
-        finally:
-            # This runs only after an in-flight synchronous RKNN inference has
-            # returned, so shutdown can never release the runtime underneath it.
-            self._release_resources()
+        while not self.rospy.is_shutdown():
+            if self.latest_image is not None and self.latest_image_seq != self.processed_image_seq:
+                self.processed_image_seq = self.latest_image_seq
+                self._process_once(self.latest_image.copy())
+            rate.sleep()
 
     def _process_once(self, frame) -> None:
         view_scale = self.view_scales[self.view_index % len(self.view_scales)]
