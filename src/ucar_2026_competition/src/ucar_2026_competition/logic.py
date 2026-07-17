@@ -2,12 +2,13 @@
 
 import json
 import math
+import time
 
 
 CATEGORY_LABELS = {
     "food": ("食品", "食品加工车间"),
     "daily": ("日用品", "日用品加工车间"),
-    "electronics": ("电子产品", "电子产品生产车间"),
+    "electronics": ("电子产品", "电子产品加工车间"),
 }
 
 OCR_CATEGORY_ALIASES = {
@@ -96,6 +97,30 @@ class ConsecutiveTargetFilter:
         else:
             self.hits = 0
         return self.hits >= self.required
+
+
+class TemporalTargetFilter:
+    """Confirm repeated target evidence within a window without penalizing blanks."""
+
+    def __init__(self, required=2, window_sec=1.5):
+        self.required = max(1, int(required))
+        self.window_sec = max(0.01, float(window_sec))
+        self.hit_times = []
+
+    def reset(self):
+        self.hit_times = []
+
+    def push(self, target, observed, now=None):
+        now = time.monotonic() if now is None else float(now)
+        cutoff = now - self.window_sec
+        self.hit_times = [stamp for stamp in self.hit_times if stamp >= cutoff]
+        if observed is None:
+            return len(self.hit_times) >= self.required
+        if not target or observed != target:
+            self.hit_times = []
+            return False
+        self.hit_times.append(now)
+        return len(self.hit_times) >= self.required
 
 
 def parse_category(text):

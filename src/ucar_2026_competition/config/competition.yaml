@@ -28,8 +28,10 @@ voice_retry_reply: "请再说一次"
 voice_start_listening_service: /speech_command_node/start_listening
 voice_stop_listening_service: /speech_command_node/stop_listening
 
-# OCR 连续命中次数。PPOCR 自身输出结构化 JSON，总控只对当前目标类别触发导航。
-ocr_required_consecutive: 3
+# OCR 在时间窗内允许丢帧；其他完整类别会清空当前目标证据。
+ocr_required_hits: 2
+ocr_evidence_window_sec: 1.5
+ocr_trigger_hold_sec: 1.0
 factory_navigation_timeout_sec: 420.0
 
 # 仿真独立 ROS Master，通过 TCP 协同。

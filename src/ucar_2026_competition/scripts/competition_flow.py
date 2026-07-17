@@ -32,9 +32,9 @@ from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
-    ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
+    TemporalTargetFilter,
     TRACK_CONFIG,
     normalize_category,
     parse_category,
@@ -111,9 +111,12 @@ class CompetitionFlow:
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
         self.ocr_target = None
-        self.ocr_filter = ConsecutiveTargetFilter(
-            rospy.get_param("~ocr_required_consecutive", 3)
+        self.ocr_filter = TemporalTargetFilter(
+            rospy.get_param("~ocr_required_hits", 2),
+            rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
+        self.ocr_trigger_hold_sec = float(rospy.get_param("~ocr_trigger_hold_sec", 1.0))
+        self.ocr_trigger_until = 0.0
         self.navigator_status = ""
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
@@ -140,6 +143,7 @@ class CompetitionFlow:
         rospy.Subscriber(
             "/factory_sign_ppocr_rknn_test/result", String, self._ocr_cb, queue_size=20
         )
+        self.ocr_trigger_timer = rospy.Timer(rospy.Duration(0.1), self._ocr_trigger_timer_cb)
         rospy.Subscriber(
             "/vision_triggered_navigator/status", String, self._navigator_cb, queue_size=20
         )
@@ -319,11 +323,13 @@ class CompetitionFlow:
             payload = json.loads(msg.data)
             category = normalize_category(payload.get("category"))
         except Exception:
-            self.ocr_filter.reset()
-            return
-        if self.ocr_filter.push(self.ocr_target, category):
-            # Keep publishing after confirmation so a navigator that has just
-            # finished initialization cannot miss the one-shot trigger.
+            category = None
+        now = time.monotonic()
+        if self.ocr_filter.push(self.ocr_target, category, now=now) and category == self.ocr_target:
+            self.ocr_trigger_until = max(self.ocr_trigger_until, now + self.ocr_trigger_hold_sec)
+
+    def _ocr_trigger_timer_cb(self, _event):
+        if self.ocr_target and time.monotonic() <= self.ocr_trigger_until:
             self.vision_pub.publish(Bool(data=True))
 
     def _navigator_cb(self, msg):
@@ -771,6 +777,7 @@ class CompetitionFlow:
 
         self.ocr_target = self.category
         self.ocr_filter.reset()
+        self.ocr_trigger_until = 0.0
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
@@ -794,6 +801,7 @@ class CompetitionFlow:
                     "start_competition_speech": False,
                     "start_viewer": self.debug,
                     "recognition_mode": "ppocr_rknn_system",
+                    "target_category": self.category,
                     "enable_speech": False,
                     "required": True,
                 },
@@ -815,6 +823,7 @@ class CompetitionFlow:
                 raise StageError("factory navigation timed out after {:.1f}s".format(timeout))
         finally:
             self.ocr_target = None
+            self.ocr_trigger_until = 0.0
             self.stop_child("factory_ocr")
             self.stop_child("factory_navigator")
             self.safe_stop(cancel_navigation=True)
