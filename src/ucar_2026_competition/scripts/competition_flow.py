@@ -136,6 +136,7 @@ class CompetitionFlow:
         self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
+        self.strict_mission_status = {}
         self.track_status = {}
 
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
@@ -169,6 +170,9 @@ class CompetitionFlow:
         )
         rospy.Subscriber(
             "/traffic_light_rknn_test/detections", String, self._traffic_cb, queue_size=20
+        )
+        rospy.Subscriber(
+            "/strict_mission/status", String, self._strict_mission_cb, queue_size=20
         )
         for _, topic, _ in TRACK_CONFIG.values():
             rospy.Subscriber(topic, String, self._track_cb, callback_args=topic, queue_size=10)
@@ -447,6 +451,14 @@ class CompetitionFlow:
             decision = traffic_decision_from_payload(json.loads(msg.data))
             if decision:
                 self.traffic_decision = decision
+        except Exception:
+            return
+
+    def _strict_mission_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            if isinstance(payload, dict):
+                self.strict_mission_status = payload
         except Exception:
             return
 
@@ -1284,19 +1296,68 @@ class CompetitionFlow:
         self.announce("task3", item=item, workshop=workshop)
         self.publish_status("task3", "completed", result_text)
 
+    def approach_task4_stop_line(self):
+        self.strict_mission_status = {}
+        self.publish_status(
+            "task4", "approaching_stop_line",
+            "navigating to staging pose, then approaching the stop line visually")
+        self.start_child(
+            "strict_line",
+            "ucar_2026_strict_mission",
+            "strict_mission.launch",
+            {
+                "start_traffic_detector": False,
+                "start_viewer": self.debug,
+                "traffic_pose_configured": True,
+                "traffic_staging_x": float(rospy.get_param("~traffic_x")),
+                "traffic_staging_y": float(rospy.get_param("~traffic_y")),
+                "traffic_staging_yaw": float(rospy.get_param("~traffic_yaw")),
+            },
+        )
+        try:
+            rospy.wait_for_service("/strict_mission/start", timeout=10.0)
+            response = rospy.ServiceProxy("/strict_mission/start", Trigger)()
+            if not response.success:
+                raise StageError(
+                    "strict stop-line approach refused start: {}".format(response.message))
+
+            timeout = (
+                float(rospy.get_param("~move_base_timeout_sec", 90.0))
+                + float(rospy.get_param("~line_approach_timeout_sec", 45.0))
+                + 15.0
+            )
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                self.check_abort()
+                status = self.strict_mission_status
+                state = str(status.get("state", ""))
+                if state == "WAIT_TRAFFIC":
+                    distance = status.get("distance_m")
+                    self.publish_status(
+                        "task4", "stop_line_reached",
+                        "vehicle held before stop line; distance_m={}".format(distance))
+                    return
+                if state == "FAULT":
+                    raise StageError(
+                        "strict stop-line approach failed: {}".format(
+                            status.get("error") or status.get("detail") or "unknown fault"))
+                proc = self.children.get("strict_line")
+                if proc and proc.poll() is not None:
+                    raise StageError("strict stop-line approach exited unexpectedly")
+                rospy.sleep(0.1)
+            raise StageError(
+                "strict stop-line approach timed out after {:.1f}s".format(timeout))
+        finally:
+            self.stop_child("strict_line")
+            self.safe_stop(cancel_navigation=True)
+
     def task4(self):
         configured = bool_param("~traffic_pose_configured", False)
         if not configured:
             raise StageError(
                 "traffic pose is not configured; set ~traffic_x/~traffic_y/~traffic_yaw and ~traffic_pose_configured=true"
             )
-        self.navigate(
-            float(rospy.get_param("~traffic_x")),
-            float(rospy.get_param("~traffic_y")),
-            float(rospy.get_param("~traffic_yaw")),
-            "task4",
-        )
-        self.safe_stop(cancel_navigation=True)
+        self.approach_task4_stop_line()
         self.traffic_decision = ""
         self.red_announced = False
         self.publish_status("task4", "detecting", "waiting for traffic-light consensus")
