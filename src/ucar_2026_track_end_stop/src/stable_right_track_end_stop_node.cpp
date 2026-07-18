@@ -37,24 +37,14 @@ struct KinkResult
   LineModel far_arm;
 };
 
-struct LaneObservation
+struct RightObservation
 {
   bool valid = false;
-  bool left_valid = false;
-  bool right_valid = false;
+  double detected_x = 0.0;
   double lateral_error_px = 0.0;
   double heading_error_px = 0.0;
   double heading_angle_deg = 0.0;
-  double right_clearance_px = 0.0;
-  double lane_width_px = 0.0;
   double confidence = 0.0;
-};
-
-struct SafetyDecision
-{
-  bool stop = false;
-  double linear = 0.0;
-  double angular = 0.0;
 };
 
 class EndLineDebouncer
@@ -89,13 +79,6 @@ public:
 private:
   int required_frames_ = 3;
   int count_ = 0;
-};
-
-struct LanePairChoice
-{
-  int left_index = -1;
-  int right_index = -1;
-  double score = std::numeric_limits<double>::max();
 };
 
 double xAt(const LineModel& line, double y)
@@ -187,80 +170,22 @@ KinkResult detectKink(const std::vector<SamplePoint>& points, int min_arm_points
   return best;
 }
 
-LaneObservation observeLane(const LineModel& left, const LineModel& right,
-                            double near_y, double far_y, double vehicle_x,
-                            double path_ratio, double historical_lane_width_px)
+RightObservation observeRightBoundary(const LineModel& right,
+                                      double control_y,
+                                      double far_y,
+                                      double target_right_x)
 {
-  LaneObservation result;
-  result.left_valid = left.valid;
-  result.right_valid = right.valid;
-  if (!right.valid)
+  RightObservation result;
+  if (!right.valid || control_y <= far_y)
     return result;
-
-  const double right_near = xAt(right, near_y);
-  const double right_far = xAt(right, far_y);
-  result.right_clearance_px = right_near - vehicle_x;
-
-  double target_near = 0.0;
-  double target_far = 0.0;
-  if (left.valid)
-  {
-    const double left_near = xAt(left, near_y);
-    const double left_far = xAt(left, far_y);
-    const double near_width = right_near - left_near;
-    const double far_width = right_far - left_far;
-    if (near_width <= 20.0 || far_width <= 10.0)
-      return result;
-    result.lane_width_px = near_width;
-    target_near = left_near + path_ratio * near_width;
-    target_far = left_far + path_ratio * far_width;
-    const double residual_penalty = std::min(1.0, (left.rmse + right.rmse) / 30.0);
-    const double point_factor =
-        std::min(1.0, static_cast<double>(std::min(left.point_count, right.point_count)) / 8.0);
-    result.confidence = point_factor * (1.0 - residual_penalty);
-  }
-  else
-  {
-    if (historical_lane_width_px <= 20.0)
-      return result;
-    result.lane_width_px = historical_lane_width_px;
-    const double desired_right_clearance =
-        (1.0 - path_ratio) * historical_lane_width_px;
-    target_near = right_near - desired_right_clearance;
-    target_far = right_far - desired_right_clearance;
-    const double residual_penalty = std::min(1.0, right.rmse / 20.0);
-    const double point_factor =
-        std::min(1.0, static_cast<double>(right.point_count) / 8.0);
-    result.confidence = 0.70 * point_factor * (1.0 - residual_penalty);
-  }
-
   result.valid = true;
-  result.lateral_error_px = target_near - vehicle_x;
-  result.heading_error_px = target_far - target_near;
+  result.detected_x = xAt(right, control_y);
+  const double far_x = xAt(right, far_y);
+  result.lateral_error_px = target_right_x - result.detected_x;
+  result.heading_error_px = far_x - result.detected_x;
   result.heading_angle_deg =
-      std::atan2(result.heading_error_px, std::max(1.0, near_y - far_y)) *
+      std::atan2(result.heading_error_px, control_y - far_y) *
       180.0 / kPi;
-  return result;
-}
-
-SafetyDecision applyRightGuard(double clearance_px, double hard_clearance_px,
-                               double warning_clearance_px, double angular,
-                               double linear)
-{
-  SafetyDecision result;
-  result.linear = linear;
-  result.angular = angular;
-  if (clearance_px <= hard_clearance_px)
-  {
-    result.stop = true;
-    result.linear = 0.0;
-    result.angular = std::max(0.0, angular);
-  }
-  else if (clearance_px <= warning_clearance_px)
-  {
-    result.linear = std::min(linear, 0.06);
-    result.angular = std::max(0.0, angular);
-  }
   return result;
 }
 
@@ -274,83 +199,19 @@ double advanceDuration(double distance_m, double speed_mps)
   return speed_mps > 1e-9 ? distance_m / speed_mps : 0.0;
 }
 
-LanePairChoice chooseLanePair(const std::vector<double>& candidates,
-                              double predicted_left,
-                              double predicted_right,
-                              double min_lane_width,
-                              double max_lane_width,
-                              double search_radius)
-{
-  LanePairChoice result;
-  for (int left = 0; left < static_cast<int>(candidates.size()); ++left)
-  {
-    for (int right = left + 1;
-         right < static_cast<int>(candidates.size()); ++right)
-    {
-      const double width = candidates[right] - candidates[left];
-      if (width < min_lane_width || width > max_lane_width)
-        continue;
-      const double score =
-          std::fabs(candidates[left] - predicted_left) +
-          std::fabs(candidates[right] - predicted_right);
-      if (score < result.score)
-      {
-        result.left_index = left;
-        result.right_index = right;
-        result.score = score;
-      }
-    }
-  }
-  if (result.left_index >= 0)
-    return result;
-
-  double best_left_distance = search_radius;
-  double best_right_distance = search_radius;
-  for (int index = 0; index < static_cast<int>(candidates.size()); ++index)
-  {
-    const double left_distance =
-        std::fabs(candidates[index] - predicted_left);
-    if (left_distance < best_left_distance)
-    {
-      best_left_distance = left_distance;
-      result.left_index = index;
-    }
-    const double right_distance =
-        std::fabs(candidates[index] - predicted_right);
-    if (right_distance < best_right_distance)
-    {
-      best_right_distance = right_distance;
-      result.right_index = index;
-    }
-  }
-  if (result.left_index == result.right_index &&
-      result.left_index >= 0)
-  {
-    if (best_right_distance <= best_left_distance)
-      result.left_index = -1;
-    else
-      result.right_index = -1;
-  }
-  result.score = std::min(best_left_distance, best_right_distance);
-  return result;
-}
 }  // namespace stable_track
 
 #ifdef STABLE_TRACK_SELF_TEST
 
 using stable_track::KinkResult;
-using stable_track::LaneObservation;
-using stable_track::LanePairChoice;
 using stable_track::LineModel;
+using stable_track::RightObservation;
 using stable_track::SamplePoint;
-using stable_track::SafetyDecision;
 using stable_track::EndLineDebouncer;
 using stable_track::advanceDuration;
-using stable_track::applyRightGuard;
-using stable_track::chooseLanePair;
 using stable_track::detectKink;
 using stable_track::fitLineModel;
-using stable_track::observeLane;
+using stable_track::observeRightBoundary;
 using stable_track::parkingEnabled;
 
 static void expect(bool value, const char* message)
@@ -374,32 +235,6 @@ int main(int argc, char** argv)
   expect(!detectKink(straight, 2, 20.0, 85.0).detected,
          "one straight line must not form a corner");
 
-  LineModel left;
-  left.valid = true;
-  left.intercept = 120.0;
-  left.rmse = 1.0;
-  left.point_count = 8;
-  LineModel right = left;
-  right.intercept = 520.0;
-  const LaneObservation centered =
-      observeLane(left, right, 160.0, 30.0, 320.0, 0.45, 400.0);
-  expect(centered.valid, "two lines must produce a lane");
-  expect(centered.right_clearance_px > 180.0,
-         "centered car must have safe right clearance");
-  expect(std::fabs(centered.heading_angle_deg) < 1e-9,
-         "parallel lane must have zero heading angle");
-
-  const LineModel missing_left;
-  const LaneObservation right_only =
-      observeLane(missing_left, right, 160.0, 30.0, 320.0, 0.45, 400.0);
-  expect(right_only.valid && right_only.right_valid,
-         "right line alone must keep a conservative track target");
-
-  const SafetyDecision hard_guard =
-      applyRightGuard(70.0, 100.0, 140.0, -0.20, 0.20);
-  expect(hard_guard.stop, "hard right guard must stop");
-  expect(hard_guard.angular >= 0.0,
-         "right guard must forbid steering toward the right line");
   expect(!parkingEnabled(1, 2), "parking must stay disabled before two corners");
   expect(parkingEnabled(2, 2), "parking must enable after two corners");
   expect(std::fabs(advanceDuration(0.20, 0.10) - 2.0) < 1e-9,
@@ -417,16 +252,19 @@ int main(int argc, char** argv)
   expect(!end_line.update(false, true),
          "one negative frame must clear end-line confirmation");
 
-  const LanePairChoice pair = chooseLanePair(
-      std::vector<double>{35.0, 120.0, 520.0, 615.0},
-      125.0, 515.0, 100.0, 550.0, 140.0);
-  expect(pair.left_index == 1 && pair.right_index == 2,
-         "lane pairing must reject outer glare candidates");
-  const LanePairChoice right_single = chooseLanePair(
-      std::vector<double>{510.0}, 125.0, 515.0,
-      100.0, 550.0, 140.0);
-  expect(right_single.left_index < 0 && right_single.right_index == 0,
-         "one candidate near prediction must remain the right line");
+  LineModel tracked_right;
+  tracked_right.valid = true;
+  tracked_right.intercept = 210.0;
+  tracked_right.rmse = 1.0;
+  tracked_right.point_count = 8;
+  const RightObservation right_observation =
+      observeRightBoundary(tracked_right, 160.0, 30.0, 200.0);
+  expect(right_observation.valid,
+         "a fitted right boundary must produce a right-only observation");
+  expect(std::fabs(right_observation.lateral_error_px + 10.0) < 1e-9,
+         "right-only error must preserve target minus detected position");
+  expect(std::fabs(right_observation.heading_angle_deg) < 1e-9,
+         "vertical right boundary must have zero heading angle");
 
   if (argc > 1)
   {
@@ -435,23 +273,39 @@ int main(int argc, char** argv)
                              std::istreambuf_iterator<char>());
     const std::string corner_advance = std::string("Corner") + "Advance";
     const std::string reacquire = std::string("Reacquire") + "RightLine";
-    const std::string align_lane = std::string("Align") + "Lane";
+    const std::string align_right = std::string("Align") + "RightLine";
     const std::string lost_timeout = std::string("lost_stop") + "_timeout";
     const std::string corner_counter = std::string("completed_corner") + "_count_";
     const std::string blind_lost_speed =
         std::string("lost_hold") + "_speed_";
+    const std::string active_left_line =
+        std::string("vision.") + "left_line";
+    const std::string active_left_points =
+        std::string("vision.") + "left_points";
+    const std::string permanent_reacquire_fault =
+        std::string("enterFault(\"") + "reacquire_timeout";
+    const std::string right_target =
+        std::string("target_right_x_") + ", 200.0";
     expect(source.find(corner_advance) != std::string::npos,
            "corner advance state must exist");
     expect(source.find(reacquire) != std::string::npos,
            "right-line reacquisition state must exist");
-    expect(source.find(align_lane) != std::string::npos,
-           "lane alignment state must exist");
+    expect(source.find(align_right) != std::string::npos,
+           "right-only alignment state must exist");
     expect(source.find(lost_timeout) != std::string::npos,
            "lost-line stop timeout parameter must exist");
     expect(source.find(corner_counter) != std::string::npos,
            "completed corner counter must exist");
     expect(source.find(blind_lost_speed) == std::string::npos,
            "lost line must never keep a blind forward speed");
+    expect(source.find(active_left_line) == std::string::npos,
+           "production control must never consume a left line");
+    expect(source.find(active_left_points) == std::string::npos,
+           "production vision must never extract left-line points");
+    expect(source.find(permanent_reacquire_fault) == std::string::npos,
+           "reacquire timeout must not enter a permanent fault stop");
+    expect(source.find(right_target) != std::string::npos,
+           "right-only tracking must retain the calibrated 200px target");
   }
   return 0;
 }
@@ -511,7 +365,6 @@ public:
     state_start_time_ = now;
     last_confident_line_time_ = now;
     corner_cooldown_until_ = now;
-    historical_lane_width_px_ = default_lane_width_px_;
     state_ = auto_start_ ? State::StartupForward : State::Idle;
     status_ = auto_start_ ? "stable_right_startup_forward" : "idle";
 
@@ -531,8 +384,7 @@ private:
     CornerStop,
     TurnRight,
     ReacquireRightLine,
-    AlignLane,
-    FaultStop,
+    AlignRightLine,
     EndDetected,
     ParkingTurnLeft,
     ParkingForward,
@@ -552,12 +404,6 @@ private:
     }
   };
 
-  struct BoundarySamples
-  {
-    std::vector<stable_track::SamplePoint> left;
-    std::vector<stable_track::SamplePoint> right;
-  };
-
   struct EndLineResult
   {
     bool detected = false;
@@ -567,14 +413,11 @@ private:
 
   struct VisionResult
   {
-    stable_track::LineModel left_line;
     stable_track::LineModel right_line;
-    stable_track::LaneObservation lane;
+    stable_track::RightObservation right;
     stable_track::KinkResult corner;
-    std::vector<stable_track::SamplePoint> left_points;
     std::vector<stable_track::SamplePoint> right_points;
     EndLineResult end_line;
-    double left_confidence = 0.0;
     double right_confidence = 0.0;
   };
 
@@ -610,10 +453,8 @@ private:
                       min_line_segment_width_px_, 2);
     private_nh_.param("max_line_segment_width_px",
                       max_line_segment_width_px_, 85);
-    private_nh_.param("min_lane_width_px", min_lane_width_px_, 80.0);
-    private_nh_.param("max_lane_width_px", max_lane_width_px_, 600.0);
     private_nh_.param("candidate_search_radius_px",
-                      candidate_search_radius_px_, 145.0);
+                      candidate_search_radius_px_, 170.0);
     private_nh_.param("min_line_points", min_line_points_, 5);
     private_nh_.param("fit_inlier_threshold_px",
                       fit_inlier_threshold_px_, 18.0);
@@ -621,11 +462,12 @@ private:
     private_nh_.param("control_fit_y_min_ratio",
                       control_fit_y_min_ratio_, 0.42);
 
-    private_nh_.param("vehicle_center_x", vehicle_center_x_, 320.0);
-    private_nh_.param("safe_path_ratio_from_left",
-                      safe_path_ratio_from_left_, 0.43);
-    private_nh_.param("default_lane_width_px", default_lane_width_px_, 360.0);
-    private_nh_.param("lane_width_alpha", lane_width_alpha_, 0.12);
+    private_nh_.param("target_right_x", target_right_x_, 200.0);
+    private_nh_.param("right_control_y_ratio",
+                      right_control_y_ratio_, 0.65);
+    private_nh_.param("right_far_y_ratio", right_far_y_ratio_, 0.28);
+    private_nh_.param("reference_heading_alpha",
+                      reference_heading_alpha_, 0.06);
     private_nh_.param("min_tracking_confidence",
                       min_tracking_confidence_, 0.32);
     private_nh_.param("line_lock_frames", line_lock_frames_, 4);
@@ -635,10 +477,9 @@ private:
     private_nh_.param("low_confidence_speed", low_confidence_speed_, 0.08);
     private_nh_.param("lateral_kp", lateral_kp_, 0.0030);
     private_nh_.param("lateral_kd", lateral_kd_, 0.0007);
-    private_nh_.param("heading_kp", heading_kp_, 0.0050);
-    private_nh_.param("steering_sign", steering_sign_, -1.0);
+    private_nh_.param("heading_kp", heading_kp_, 0.0060);
     private_nh_.param("lateral_deadband_px", lateral_deadband_px_, 5.0);
-    private_nh_.param("heading_deadband_px", heading_deadband_px_, 3.0);
+    private_nh_.param("heading_deadband_deg", heading_deadband_deg_, 2.0);
     private_nh_.param("curve_lateral_threshold_px",
                       curve_lateral_threshold_px_, 32.0);
     private_nh_.param("curve_heading_threshold_deg",
@@ -651,22 +492,19 @@ private:
                       angular_filter_old_weight_, 0.65);
     private_nh_.param("max_angular_step", max_angular_step_, 0.05);
 
-    private_nh_.param("right_warning_clearance_ratio",
-                      right_warning_clearance_ratio_, 0.42);
-    private_nh_.param("right_hard_clearance_ratio",
-                      right_hard_clearance_ratio_, 0.30);
+    private_nh_.param("right_warning_error_px",
+                      right_warning_error_px_, -48.0);
+    private_nh_.param("right_hard_error_px",
+                      right_hard_error_px_, -82.0);
     private_nh_.param("right_guard_speed", right_guard_speed_, 0.06);
     private_nh_.param("right_guard_away_angular",
                       right_guard_away_angular_, 0.10);
 
     private_nh_.param("lost_hold_timeout", lost_hold_timeout_, 0.10);
     private_nh_.param("lost_stop_timeout", lost_stop_timeout_, 0.30);
-    private_nh_.param("search_timeout", search_timeout_, 8.0);
-    private_nh_.param("search_right_time", search_right_time_, 1.5);
-    private_nh_.param("search_cycle_time", search_cycle_time_, 4.0);
+    private_nh_.param("search_rotate_time", search_rotate_time_, 0.80);
     private_nh_.param("search_right_angular",
-                      search_right_angular_, -0.22);
-    private_nh_.param("search_left_angular", search_left_angular_, 0.18);
+                      search_right_angular_, -0.10);
 
     private_nh_.param("corner_confirm_frames", corner_confirm_frames_, 5);
     private_nh_.param("corner_confirm_timeout", corner_confirm_timeout_, 0.80);
@@ -687,20 +525,18 @@ private:
     private_nh_.param("corner_stop_hold", corner_stop_hold_, 0.50);
     private_nh_.param("turn_right_angular_speed",
                       turn_right_angular_speed_, -0.34);
-    private_nh_.param("turn_right_min_time", turn_right_min_time_, 1.20);
+    private_nh_.param("turn_right_min_time", turn_right_min_time_, 1.80);
     private_nh_.param("reacquire_angular_speed",
-                      reacquire_angular_speed_, -0.22);
-    private_nh_.param("reacquire_timeout", reacquire_timeout_, 3.2);
-    private_nh_.param("reacquire_frames", reacquire_frames_, 4);
-    private_nh_.param("reacquire_max_heading_deg",
-                      reacquire_max_heading_deg_, 10.0);
+                      reacquire_angular_speed_, -0.16);
+    private_nh_.param("reacquire_timeout", reacquire_timeout_, 2.5);
+    private_nh_.param("reacquire_frames", reacquire_frames_, 3);
     private_nh_.param("align_speed", align_speed_, 0.08);
     private_nh_.param("align_timeout", align_timeout_, 4.0);
     private_nh_.param("align_lateral_tolerance_px",
                       align_lateral_tolerance_px_, 12.0);
     private_nh_.param("align_heading_tolerance_deg",
-                      align_heading_tolerance_deg_, 4.0);
-    private_nh_.param("align_stable_frames", align_stable_frames_, 5);
+                      align_heading_tolerance_deg_, 6.0);
+    private_nh_.param("align_stable_frames", align_stable_frames_, 4);
     private_nh_.param("corner_cooldown_seconds",
                       corner_cooldown_seconds_, 1.5);
     private_nh_.param("required_corner_count", required_corner_count_, 2);
@@ -725,14 +561,15 @@ private:
     reacquire_frames_ = std::max(2, reacquire_frames_);
     align_stable_frames_ = std::max(2, align_stable_frames_);
     end_confirm_frames_ = std::max(2, end_confirm_frames_);
-    search_right_time_ = std::max(0.2, search_right_time_);
-    search_cycle_time_ =
-        std::max(search_right_time_ + 0.5, search_cycle_time_);
+    search_rotate_time_ = std::max(0.0, search_rotate_time_);
     morph_kernel_size_ = std::max(1, morph_kernel_size_);
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
-    safe_path_ratio_from_left_ =
-        clampDouble(safe_path_ratio_from_left_, 0.30, 0.50);
+    right_control_y_ratio_ =
+        clampDouble(right_control_y_ratio_, 0.45, 0.85);
+    right_far_y_ratio_ =
+        clampDouble(right_far_y_ratio_, 0.10,
+                    right_control_y_ratio_ - 0.10);
   }
 
   void imageCallback(const sensor_msgs::ImageConstPtr& msg)
@@ -801,13 +638,8 @@ private:
         handleReacquire(vision, now);
         break;
 
-      case State::AlignLane:
+      case State::AlignRightLine:
         handleAlign(vision, now);
-        break;
-
-      case State::FaultStop:
-        setStatus("stable_right_fault_stop_" + fault_reason_);
-        publishStop();
         break;
 
       case State::EndDetected:
@@ -891,9 +723,10 @@ private:
     return segments;
   }
 
-  BoundarySamples extractBoundarySamples(const cv::Mat& mask) const
+  std::vector<stable_track::SamplePoint> extractRightBoundarySamples(
+      const cv::Mat& mask) const
   {
-    BoundarySamples result;
+    std::vector<stable_track::SamplePoint> right_points;
     for (int index = 0; index < sample_row_count_; ++index)
     {
       const double t = sample_row_count_ <= 1
@@ -919,40 +752,33 @@ private:
         continue;
       std::sort(candidates.begin(), candidates.end());
 
-      const double perspective_scale = 0.30 + 0.70 * y_ratio;
-      const double initial_left =
-          vehicle_center_x_ -
-          safe_path_ratio_from_left_ * default_lane_width_px_ *
-              perspective_scale;
-      const double initial_right =
-          vehicle_center_x_ +
-          (1.0 - safe_path_ratio_from_left_) * default_lane_width_px_ *
-              perspective_scale;
-      const double predicted_left =
-          previous_left_model_.valid
-              ? stable_track::xAt(previous_left_model_, y)
-              : initial_left;
-      const double predicted_right =
-          previous_right_model_.valid
-              ? stable_track::xAt(previous_right_model_, y)
-              : initial_right;
-
-      const double minimum_width = min_lane_width_px_ * perspective_scale;
-      const stable_track::LanePairChoice choice =
-          stable_track::chooseLanePair(
-              candidates, predicted_left, predicted_right,
-              minimum_width, max_lane_width_px_,
-              candidate_search_radius_px_);
-      if (choice.left_index >= 0)
-        result.left.push_back(
-            stable_track::SamplePoint{candidates[choice.left_index],
-                                      static_cast<double>(y)});
-      if (choice.right_index >= 0)
-        result.right.push_back(
-            stable_track::SamplePoint{candidates[choice.right_index],
-                                      static_cast<double>(y)});
+      int selected_index = static_cast<int>(candidates.size()) - 1;
+      if (previous_right_model_.valid)
+      {
+        const double predicted =
+            stable_track::xAt(previous_right_model_, y);
+        double best_distance = candidate_search_radius_px_;
+        int predicted_index = -1;
+        for (int candidate_index = 0;
+             candidate_index < static_cast<int>(candidates.size());
+             ++candidate_index)
+        {
+          const double distance =
+              std::fabs(candidates[candidate_index] - predicted);
+          if (distance < best_distance)
+          {
+            best_distance = distance;
+            predicted_index = candidate_index;
+          }
+        }
+        if (predicted_index >= 0)
+          selected_index = predicted_index;
+      }
+      right_points.push_back(
+          stable_track::SamplePoint{candidates[selected_index],
+                                    static_cast<double>(y)});
     }
-    return result;
+    return right_points;
   }
 
   stable_track::LineModel robustControlFit(
@@ -1003,54 +829,28 @@ private:
   VisionResult analyzeMask(const cv::Mat& mask)
   {
     VisionResult result;
-    const BoundarySamples samples = extractBoundarySamples(mask);
-    result.left_points = samples.left;
-    result.right_points = samples.right;
-    result.left_line = robustControlFit(samples.left, mask.rows);
-    result.right_line = robustControlFit(samples.right, mask.rows);
-    result.left_confidence =
-        lineConfidence(result.left_line,
-                       static_cast<int>(samples.left.size()));
+    result.right_points = extractRightBoundarySamples(mask);
+    result.right_line =
+        robustControlFit(result.right_points, mask.rows);
     result.right_confidence =
         lineConfidence(result.right_line,
-                       static_cast<int>(samples.right.size()));
-
-    if (result.left_confidence <= 0.0)
-      result.left_line.valid = false;
+                       static_cast<int>(result.right_points.size()));
     if (result.right_confidence <= 0.0)
       result.right_line.valid = false;
 
-    const double near_y = mask.rows * 0.90;
-    const double far_y = mask.rows * 0.28;
-    result.lane = stable_track::observeLane(
-        result.left_line, result.right_line, near_y, far_y,
-        vehicle_center_x_, safe_path_ratio_from_left_,
-        historical_lane_width_px_);
-    if (result.lane.valid)
-    {
-      result.lane.confidence =
-          result.left_line.valid
-              ? std::min(result.left_confidence, result.right_confidence)
-              : 0.70 * result.right_confidence;
-    }
-
-    if (result.left_line.valid && result.right_line.valid &&
-        result.lane.lane_width_px >= min_lane_width_px_ &&
-        result.lane.lane_width_px <= max_lane_width_px_)
-    {
-      historical_lane_width_px_ =
-          (1.0 - lane_width_alpha_) * historical_lane_width_px_ +
-          lane_width_alpha_ * result.lane.lane_width_px;
-      previous_left_model_ = result.left_line;
-      previous_right_model_ = result.right_line;
-    }
-    else if (result.right_line.valid)
+    result.right = stable_track::observeRightBoundary(
+        result.right_line,
+        mask.rows * right_control_y_ratio_,
+        mask.rows * right_far_y_ratio_,
+        target_right_x_);
+    result.right.confidence = result.right_confidence;
+    if (result.right_line.valid)
     {
       previous_right_model_ = result.right_line;
     }
 
     result.corner = stable_track::detectKink(
-        samples.right, corner_min_arm_points_,
+        result.right_points, corner_min_arm_points_,
         corner_min_angle_deg_, corner_max_angle_deg_);
     if (result.corner.detected)
     {
@@ -1104,29 +904,30 @@ private:
 
   bool trackingUsable(const VisionResult& vision) const
   {
-    return vision.lane.valid && vision.lane.right_valid &&
-           vision.right_confidence >= min_tracking_confidence_ &&
-           vision.lane.confidence >= min_tracking_confidence_;
+    return vision.right.valid &&
+           vision.right_line.valid &&
+           vision.right_confidence >= min_tracking_confidence_;
   }
 
-  geometry_msgs::Twist makeLaneCommand(const VisionResult& vision,
-                                       double speed_limit)
+  geometry_msgs::Twist makeRightCommand(const VisionResult& vision,
+                                        double speed_limit)
   {
     geometry_msgs::Twist cmd;
-    const stable_track::LaneObservation& lane = vision.lane;
-    double lateral = lane.lateral_error_px;
-    double heading = lane.heading_error_px;
+    const stable_track::RightObservation& right = vision.right;
+    double lateral = right.lateral_error_px;
+    double heading =
+        right.heading_angle_deg - reference_right_heading_deg_;
     if (std::fabs(lateral) <= lateral_deadband_px_)
       lateral = 0.0;
-    if (std::fabs(heading) <= heading_deadband_px_)
+    if (std::fabs(heading) <= heading_deadband_deg_)
       heading = 0.0;
 
     const double derivative = lateral - last_lateral_error_;
     last_lateral_error_ = lateral;
     double target_angular =
-        steering_sign_ *
-        (lateral_kp_ * lateral + lateral_kd_ * derivative +
-         heading_kp_ * heading);
+        lateral_kp_ * lateral +
+        lateral_kd_ * derivative +
+        heading_kp_ * heading;
     target_angular = clampDouble(
         target_angular, -max_right_angular_speed_,
         max_left_angular_speed_);
@@ -1142,37 +943,31 @@ private:
 
     const bool curve =
         std::fabs(lateral) > curve_lateral_threshold_px_ ||
-        std::fabs(lane.heading_angle_deg) >
+        std::fabs(heading) >
             curve_heading_threshold_deg_;
     double speed = curve ? curve_speed_ : base_speed_;
-    if (lane.confidence < 0.55)
+    if (right.confidence < 0.55)
       speed = std::min(speed, low_confidence_speed_);
     speed = std::min(speed, speed_limit);
 
-    const double warning_clearance =
-        lane.lane_width_px * right_warning_clearance_ratio_;
-    const double hard_clearance =
-        lane.lane_width_px * right_hard_clearance_ratio_;
-    stable_track::SafetyDecision safety =
-        stable_track::applyRightGuard(
-            lane.right_clearance_px, hard_clearance,
-            warning_clearance, filtered_angular_, speed);
-    if (safety.stop)
+    if (right.lateral_error_px <= right_hard_error_px_)
     {
-      safety.linear = 0.0;
-      safety.angular = std::max(
-          right_guard_away_angular_, safety.angular);
+      cmd.linear.x = 0.0;
+      cmd.angular.z = std::max(
+          right_guard_away_angular_, filtered_angular_);
       setStatus("stable_right_hard_guard_recover");
+      return cmd;
     }
-    else if (lane.right_clearance_px <= warning_clearance)
+    if (right.lateral_error_px <= right_warning_error_px_)
     {
-      safety.linear = std::min(safety.linear, right_guard_speed_);
-      safety.angular = std::max(
-          right_guard_away_angular_, safety.angular);
+      cmd.linear.x = std::min(speed, right_guard_speed_);
+      cmd.angular.z = std::max(
+          right_guard_away_angular_, filtered_angular_);
       setStatus("stable_right_warning_guard");
+      return cmd;
     }
-    cmd.linear.x = safety.linear;
-    cmd.angular.z = safety.angular;
+    cmd.linear.x = speed;
+    cmd.angular.z = filtered_angular_;
     return cmd;
   }
 
@@ -1185,7 +980,7 @@ private:
     {
       last_confident_line_time_ = now;
       setStatus(normal_status);
-      publishCmd(makeLaneCommand(vision, speed_limit));
+      publishCmd(makeRightCommand(vision, speed_limit));
       return true;
     }
 
@@ -1219,8 +1014,18 @@ private:
     const double elapsed = (now - start_time_).toSec();
     if (elapsed >= startup_time_)
     {
-      enterState(State::SearchRightLine, now);
-      setStatus("stable_right_search_after_startup");
+      if (trackingUsable(vision))
+      {
+        last_confident_line_time_ = now;
+        updateReferenceHeading(vision);
+        enterState(State::Follow, now);
+        setStatus("stable_right_tracking_after_startup");
+      }
+      else
+      {
+        enterState(State::SearchRightLine, now);
+        setStatus("stable_right_search_after_startup");
+      }
       publishStop();
       return;
     }
@@ -1230,16 +1035,15 @@ private:
     if (trackingUsable(vision))
     {
       last_confident_line_time_ = now;
+      updateReferenceHeading(vision);
       const double target =
-          steering_sign_ *
-          (0.0012 * vision.lane.lateral_error_px +
-           0.0020 * vision.lane.heading_error_px);
+          0.0012 * vision.right.lateral_error_px +
+          0.0020 *
+              (vision.right.heading_angle_deg -
+               reference_right_heading_deg_);
       cmd.angular.z = clampDouble(
           target, -startup_max_angular_, startup_max_angular_);
-      const double hard_clearance =
-          vision.lane.lane_width_px *
-          right_hard_clearance_ratio_;
-      if (vision.lane.right_clearance_px <= hard_clearance)
+      if (vision.right.lateral_error_px <= right_hard_error_px_)
       {
         cmd.linear.x = 0.0;
         cmd.angular.z = right_guard_away_angular_;
@@ -1267,6 +1071,7 @@ private:
       if (line_lock_count_ >= line_lock_frames_)
       {
         last_confident_line_time_ = now;
+        updateReferenceHeading(vision);
         resetController();
         enterState(State::Follow, now);
         setStatus("stable_right_tracking");
@@ -1276,25 +1081,25 @@ private:
     line_lock_count_ = 0;
 
     const double elapsed = (now - state_start_time_).toSec();
-    if (elapsed >= search_timeout_)
-    {
-      enterFault("search_timeout", now);
-      return;
-    }
-    const double phase = std::fmod(elapsed, search_cycle_time_);
     geometry_msgs::Twist cmd;
-    cmd.angular.z =
-        phase < search_right_time_
-            ? search_right_angular_
-            : search_left_angular_;
-    setStatus(phase < search_right_time_
-                  ? "stable_right_search_turn_right"
-                  : "stable_right_search_sweep_left");
+    if (elapsed < search_rotate_time_)
+    {
+      cmd.angular.z = search_right_angular_;
+      setStatus("stable_right_search_single_right_pulse");
+    }
+    else
+    {
+      cmd.angular.z = 0.0;
+      setStatus("stable_right_search_waiting_stopped");
+    }
     publishCmd(cmd);
   }
 
   void handleFollow(const VisionResult& vision, const ros::Time& now)
   {
+    if (trackingUsable(vision) && !vision.corner.detected)
+      updateReferenceHeading(vision);
+
     const bool parking_enabled = stable_track::parkingEnabled(
         completed_corner_count_, required_corner_count_);
     const bool end_confirmed = end_line_debouncer_.update(
@@ -1378,16 +1183,14 @@ private:
     {
       last_confident_line_time_ = now;
       const double correction =
-          steering_sign_ *
-          (0.0010 * vision.lane.lateral_error_px +
-           0.0015 * vision.lane.heading_error_px);
+          0.0010 * vision.right.lateral_error_px +
+          0.0015 *
+              (vision.right.heading_angle_deg -
+               reference_right_heading_deg_);
       cmd.angular.z = clampDouble(
           correction, -corner_forward_max_angular_,
           corner_forward_max_angular_);
-      const double hard_clearance =
-          vision.lane.lane_width_px *
-          right_hard_clearance_ratio_;
-      if (vision.lane.right_clearance_px <= hard_clearance)
+      if (vision.right.lateral_error_px <= right_hard_error_px_)
       {
         enterState(State::CornerStop, now);
         setStatus("stable_right_corner_advance_guard_stop");
@@ -1434,12 +1237,7 @@ private:
   void handleReacquire(const VisionResult& vision,
                        const ros::Time& now)
   {
-    const bool candidate =
-        vision.right_line.valid &&
-        vision.right_confidence >= min_tracking_confidence_ &&
-        vision.lane.valid &&
-        std::fabs(vision.lane.heading_angle_deg) <=
-            reacquire_max_heading_deg_;
+    const bool candidate = trackingUsable(vision);
     if (candidate)
       ++reacquire_stable_count_;
     else
@@ -1447,45 +1245,48 @@ private:
 
     if (reacquire_stable_count_ >= reacquire_frames_)
     {
-      enterState(State::AlignLane, now);
-      setStatus("stable_right_align_lane");
+      enterState(State::AlignRightLine, now);
+      setStatus("stable_right_align_right_line");
       hardStop();
-      return;
-    }
-    if ((now - state_start_time_).toSec() >= reacquire_timeout_)
-    {
-      enterFault("reacquire_timeout", now);
       return;
     }
 
     geometry_msgs::Twist cmd;
-    cmd.angular.z = reacquire_angular_speed_;
-    setStatus("stable_right_reacquire_right_line");
+    if ((now - state_start_time_).toSec() < reacquire_timeout_)
+    {
+      cmd.angular.z = reacquire_angular_speed_;
+      setStatus("stable_right_reacquire_turn_right");
+    }
+    else
+    {
+      cmd.angular.z = 0.0;
+      setStatus("stable_right_reacquire_waiting_stopped");
+    }
     publishCmd(cmd);
   }
 
   void handleAlign(const VisionResult& vision, const ros::Time& now)
   {
-    if ((now - state_start_time_).toSec() >= align_timeout_)
-    {
-      enterFault("align_timeout", now);
-      return;
-    }
     if (!trackingUsable(vision))
     {
       align_stable_count_ = 0;
-      geometry_msgs::Twist cmd;
-      cmd.angular.z = 0.5 * reacquire_angular_speed_;
-      setStatus("stable_right_align_search");
-      publishCmd(cmd);
+      setStatus("stable_right_align_right_line_lost_stop");
+      publishStop();
+      if ((now - state_start_time_).toSec() >= align_timeout_)
+      {
+        enterState(State::ReacquireRightLine, now);
+        setStatus("stable_right_align_retry_reacquire");
+      }
       return;
     }
 
+    const double heading_delta =
+        vision.right.heading_angle_deg -
+        reference_right_heading_deg_;
     const bool aligned =
-        vision.left_line.valid && vision.right_line.valid &&
-        std::fabs(vision.lane.lateral_error_px) <=
+        std::fabs(vision.right.lateral_error_px) <=
             align_lateral_tolerance_px_ &&
-        std::fabs(vision.lane.heading_angle_deg) <=
+        std::fabs(heading_delta) <=
             align_heading_tolerance_deg_;
     if (aligned)
       ++align_stable_count_;
@@ -1493,8 +1294,11 @@ private:
       align_stable_count_ = 0;
 
     publishTrackedCommand(
-        vision, now, align_speed_, "stable_right_align_lane");
-    if (align_stable_count_ < align_stable_frames_)
+        vision, now, align_speed_, "stable_right_align_right_line");
+    const bool alignment_timed_out =
+        (now - state_start_time_).toSec() >= align_timeout_;
+    if (align_stable_count_ < align_stable_frames_ &&
+        !alignment_timed_out)
       return;
 
     ++completed_corner_count_;
@@ -1503,7 +1307,9 @@ private:
         now + ros::Duration(corner_cooldown_seconds_);
     resetController();
     enterState(State::Follow, now);
-    setStatus("stable_right_aligned_follow");
+    setStatus(alignment_timed_out
+                  ? "stable_right_align_timeout_follow_right"
+                  : "stable_right_aligned_right_follow");
     ROS_INFO("right corner completed: %d/%d",
              completed_corner_count_, required_corner_count_);
   }
@@ -1560,17 +1366,8 @@ private:
       line_lock_count_ = 0;
     if (state == State::ReacquireRightLine)
       reacquire_stable_count_ = 0;
-    if (state == State::AlignLane)
+    if (state == State::AlignRightLine)
       align_stable_count_ = 0;
-  }
-
-  void enterFault(const std::string& reason, const ros::Time& now)
-  {
-    fault_reason_ = reason;
-    enterState(State::FaultStop, now);
-    setStatus("stable_right_fault_stop_" + reason);
-    hardStop();
-    ROS_ERROR("stable right controller stopped: %s", reason.c_str());
   }
 
   void resetController()
@@ -1578,6 +1375,24 @@ private:
     last_lateral_error_ = 0.0;
     filtered_angular_ = 0.0;
     last_angular_ = 0.0;
+  }
+
+  void updateReferenceHeading(const VisionResult& vision)
+  {
+    if (!trackingUsable(vision))
+      return;
+    if (!reference_heading_initialized_)
+    {
+      reference_right_heading_deg_ =
+          vision.right.heading_angle_deg;
+      reference_heading_initialized_ = true;
+      return;
+    }
+    reference_right_heading_deg_ =
+        (1.0 - reference_heading_alpha_) *
+            reference_right_heading_deg_ +
+        reference_heading_alpha_ *
+            vision.right.heading_angle_deg;
   }
 
   void publishCmd(const geometry_msgs::Twist& cmd)
@@ -1643,22 +1458,15 @@ private:
     const int roi_height = frame.rows - roi_y0;
     cv::rectangle(debug, cv::Rect(0, roi_y0, frame.cols, roi_height),
                   cv::Scalar(255, 180, 0), 1);
-    cv::line(debug, cv::Point(static_cast<int>(vehicle_center_x_), roi_y0),
-             cv::Point(static_cast<int>(vehicle_center_x_), frame.rows - 1),
+    cv::line(debug, cv::Point(static_cast<int>(target_right_x_), roi_y0),
+             cv::Point(static_cast<int>(target_right_x_), frame.rows - 1),
              cv::Scalar(255, 0, 255), 1);
 
-    for (const stable_track::SamplePoint& point : vision.left_points)
-      cv::circle(debug,
-                 cv::Point(static_cast<int>(point.x),
-                           roi_y0 + static_cast<int>(point.y)),
-                 3, cv::Scalar(255, 255, 0), -1);
     for (const stable_track::SamplePoint& point : vision.right_points)
       cv::circle(debug,
                  cv::Point(static_cast<int>(point.x),
                            roi_y0 + static_cast<int>(point.y)),
                  3, cv::Scalar(0, 0, 255), -1);
-    drawLine(debug, vision.left_line, roi_y0, roi_height,
-             cv::Scalar(255, 255, 0));
     drawLine(debug, vision.right_line, roi_y0, roi_height,
              cv::Scalar(0, 0, 255));
 
@@ -1691,21 +1499,21 @@ private:
                 cv::Scalar(0, 255, 0), 2);
 
     std::ostringstream line2;
-    line2 << "L/R conf=" << std::fixed << std::setprecision(2)
-          << vision.left_confidence << "/"
+    line2 << "RIGHT ONLY conf=" << std::fixed
+          << std::setprecision(2)
           << vision.right_confidence
-          << " lane=" << vision.lane.confidence
-          << " width=" << std::setprecision(0)
-          << vision.lane.lane_width_px;
+          << " x=" << std::setprecision(1)
+          << vision.right.detected_x
+          << " target=" << target_right_x_;
     cv::putText(debug, line2.str(), cv::Point(10, 230),
                 cv::FONT_HERSHEY_SIMPLEX, 0.50,
                 cv::Scalar(0, 220, 255), 2);
 
     std::ostringstream line3;
     line3 << "lat=" << std::fixed << std::setprecision(1)
-          << vision.lane.lateral_error_px
-          << " head=" << vision.lane.heading_angle_deg
-          << "deg right_clear=" << vision.lane.right_clearance_px
+          << vision.right.lateral_error_px
+          << " head=" << vision.right.heading_angle_deg
+          << "deg ref=" << reference_right_heading_deg_
           << " corner=" << boolText(vision.corner.detected)
           << "(" << vision.corner.angle_deg << "deg)";
     cv::putText(debug, line3.str(), cv::Point(10, 255),
@@ -1730,17 +1538,16 @@ private:
   {
     std::ostringstream stream;
     stream << "state=" << status_
-           << " left_found=" << boolText(vision.left_line.valid)
            << " right_found=" << boolText(vision.right_line.valid)
-           << " left_conf=" << std::fixed << std::setprecision(3)
-           << vision.left_confidence
-           << " right_conf=" << vision.right_confidence
-           << " lane_conf=" << vision.lane.confidence
+           << " right_only=1"
+           << " right_conf=" << std::fixed
+           << std::setprecision(3) << vision.right_confidence
+           << " right_x=" << vision.right.detected_x
            << " lateral_px=" << std::setprecision(1)
-           << vision.lane.lateral_error_px
-           << " heading_deg=" << vision.lane.heading_angle_deg
-           << " right_clearance_px="
-           << vision.lane.right_clearance_px
+           << vision.right.lateral_error_px
+           << " heading_deg=" << vision.right.heading_angle_deg
+           << " reference_heading_deg="
+           << reference_right_heading_deg_
            << " corner=" << boolText(vision.corner.detected)
            << " corner_angle_deg=" << vision.corner.angle_deg
            << " corner_confirm=" << corner_confirm_count_
@@ -1751,8 +1558,7 @@ private:
            << " state_elapsed="
            << (now - state_start_time_).toSec()
            << " cmd_linear=" << last_linear_
-           << " cmd_angular=" << last_angular_
-           << " fault=" << fault_reason_;
+           << " cmd_angular=" << last_angular_;
     std_msgs::String msg;
     msg.data = stream.str();
     debug_info_pub_.publish(msg);
@@ -1772,7 +1578,6 @@ private:
   std::string debug_image_topic_;
   std::string debug_info_topic_;
   std::string status_;
-  std::string fault_reason_ = "none";
 
   State state_ = State::Idle;
   ros::Time start_time_;
@@ -1796,19 +1601,18 @@ private:
   double sample_y_max_ratio_ = 0.94;
   int min_line_segment_width_px_ = 2;
   int max_line_segment_width_px_ = 85;
-  double min_lane_width_px_ = 80.0;
-  double max_lane_width_px_ = 600.0;
-  double candidate_search_radius_px_ = 145.0;
+  double candidate_search_radius_px_ = 170.0;
   int min_line_points_ = 5;
   double fit_inlier_threshold_px_ = 18.0;
   double max_fit_rmse_px_ = 16.0;
   double control_fit_y_min_ratio_ = 0.42;
 
-  double vehicle_center_x_ = 320.0;
-  double safe_path_ratio_from_left_ = 0.43;
-  double default_lane_width_px_ = 360.0;
-  double historical_lane_width_px_ = 360.0;
-  double lane_width_alpha_ = 0.12;
+  double target_right_x_ = 200.0;
+  double right_control_y_ratio_ = 0.65;
+  double right_far_y_ratio_ = 0.28;
+  double reference_heading_alpha_ = 0.06;
+  double reference_right_heading_deg_ = 0.0;
+  bool reference_heading_initialized_ = false;
   double min_tracking_confidence_ = 0.32;
   int line_lock_frames_ = 4;
 
@@ -1817,10 +1621,9 @@ private:
   double low_confidence_speed_ = 0.08;
   double lateral_kp_ = 0.0030;
   double lateral_kd_ = 0.0007;
-  double heading_kp_ = 0.0050;
-  double steering_sign_ = -1.0;
+  double heading_kp_ = 0.0060;
   double lateral_deadband_px_ = 5.0;
-  double heading_deadband_px_ = 3.0;
+  double heading_deadband_deg_ = 2.0;
   double curve_lateral_threshold_px_ = 32.0;
   double curve_heading_threshold_deg_ = 7.0;
   double max_left_angular_speed_ = 0.28;
@@ -1828,18 +1631,15 @@ private:
   double angular_filter_old_weight_ = 0.65;
   double max_angular_step_ = 0.05;
 
-  double right_warning_clearance_ratio_ = 0.42;
-  double right_hard_clearance_ratio_ = 0.30;
+  double right_warning_error_px_ = -48.0;
+  double right_hard_error_px_ = -82.0;
   double right_guard_speed_ = 0.06;
   double right_guard_away_angular_ = 0.10;
 
   double lost_hold_timeout_ = 0.10;
   double lost_stop_timeout_ = 0.30;
-  double search_timeout_ = 8.0;
-  double search_right_time_ = 1.5;
-  double search_cycle_time_ = 4.0;
-  double search_right_angular_ = -0.22;
-  double search_left_angular_ = 0.18;
+  double search_rotate_time_ = 0.80;
+  double search_right_angular_ = -0.10;
 
   int corner_confirm_frames_ = 5;
   double corner_confirm_timeout_ = 0.80;
@@ -1854,16 +1654,15 @@ private:
   double corner_advance_lost_timeout_ = 0.15;
   double corner_stop_hold_ = 0.50;
   double turn_right_angular_speed_ = -0.34;
-  double turn_right_min_time_ = 1.20;
-  double reacquire_angular_speed_ = -0.22;
-  double reacquire_timeout_ = 3.2;
-  int reacquire_frames_ = 4;
-  double reacquire_max_heading_deg_ = 10.0;
+  double turn_right_min_time_ = 1.80;
+  double reacquire_angular_speed_ = -0.16;
+  double reacquire_timeout_ = 2.5;
+  int reacquire_frames_ = 3;
   double align_speed_ = 0.08;
   double align_timeout_ = 4.0;
   double align_lateral_tolerance_px_ = 12.0;
-  double align_heading_tolerance_deg_ = 4.0;
-  int align_stable_frames_ = 5;
+  double align_heading_tolerance_deg_ = 6.0;
+  int align_stable_frames_ = 4;
   double corner_cooldown_seconds_ = 1.5;
   int required_corner_count_ = 2;
 
@@ -1885,7 +1684,6 @@ private:
   double filtered_angular_ = 0.0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
-  stable_track::LineModel previous_left_model_;
   stable_track::LineModel previous_right_model_;
   stable_track::EndLineDebouncer end_line_debouncer_;
 };
