@@ -180,7 +180,7 @@ rosrun yolo keyboard_collect_yolo_images.py --cls red --interval 0.3 --start-pau
 | `rosrun yolo ...` 找不到包 | 先 `source ~/2026-xunfei-race/devel/setup.bash`，确认 `catkin_make` 过 |
 | `$(find ucar_controller)` 找不到 | 先 `source ~/ucar_ws/devel/setup.bash` |
 | `devel/setup.bash: No such file` | 不要在 `src/` 下 source，要在工作空间根目录 `~/2026-xunfei-race/` 下执行 |
-| 摄像头画面左右反转（镜像） | launch 加 `flip:=true`，采集加 `--flip`，保证视频流和保存图片方向一致 |
+| 红绿灯画面左右反转（镜像） | 不得用水平翻转纠正；保持 `flip:=false`，以原始图像中的箭头实际方向标注 |
 
 ---
 
@@ -197,13 +197,14 @@ rosrun yolo keyboard_collect_yolo_images.py --cls red --interval 0.3 --start-pau
 | `green_left` | 绿灯左转 ← | 左转 |
 | `green_right` | 绿灯右转 → | 右转 |
 
-### 4.2 镜像翻转问题
+### 4.2 左右方向安全约束
 
-小车摄像头画面左右是反的（镜像），采集和实时视频都需要加 `flip` 水平翻转纠正：
+红绿灯数据集和部署画面统一使用摄像头原始方向：
 
-- launch 启动时加 `flip:=true`，视频流自动翻转
-- 键盘采集加 `--flip`，保存的图片也翻转
-- 训练 YOLO 用纠正后的图片，检测时推理也 flip，保持一致
+- launch 必须使用 `flip:=false`；采集脚本不得加 `--flip`。
+- 标注时以图片里箭头实际指向为准，不以观察者的主观“正反”为准。
+- YOLOv5 训练设置 `fliplr=0.0` 和 `flipud=0.0`，否则左右类别会被破坏。
+- 采集脚本现已默认拒绝 `--flip`，防止误操作。
 
 ### 4.3 编译 yolo 包
 
@@ -218,7 +219,7 @@ source devel/setup.bash
 ### 4.4 一键启动：运动控制 + 摄像头 + 视频流
 
 ```bash
-source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && roslaunch yolo traffic_light_collect.launch flip:=true
+source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && roslaunch yolo traffic_light_collect.launch flip:=false
 ```
 
 一条命令同时启动：
@@ -227,16 +228,16 @@ source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash 
 |------|------------|------|
 | `base_driver` | `ucar_controller/base_driver.launch`（来自 `~/ucar_ws`） | 底盘驱动，订阅 `/cmd_vel` 控制麦克纳姆轮 |
 | `usb_cam` | `usb_cam/usb_cam-test.launch`（ROS 系统包） | USB 摄像头驱动，发布 `/usb_cam/image_raw` |
-| `camera_mjpeg_server` | `yolo/camera_mjpeg_server.py`（来自 `~/2026-xunfei-race`） | MJPEG HTTP 视频流，端口 8080，flip 翻转 |
+| `camera_mjpeg_server` | `yolo/camera_mjpeg_server.py`（来自 `~/2026-xunfei-race`） | MJPEG HTTP 视频流，端口 8080 |
 
 参数控制：
 
 ```bash
-# 不翻转画面（默认）
+# 红绿灯采集必须不翻转（默认）
 roslaunch yolo traffic_light_collect.launch flip:=false
 
 # 只启动摄像头+视频流，不启底盘（调试用）
-roslaunch yolo traffic_light_collect.launch start_driver:=false flip:=true
+roslaunch yolo traffic_light_collect.launch start_driver:=false flip:=false
 
 # 只启动底盘+摄像头，不开视频流
 roslaunch yolo traffic_light_collect.launch start_mjpeg:=false
@@ -246,60 +247,61 @@ roslaunch yolo traffic_light_collect.launch start_mjpeg:=false
 
 在电脑浏览器打开：**`http://192.168.1.6:8080/stream`**
 
-> flip:=true 后画面方向正常，和采集保存的图片一致。
+> 浏览器画面与保存图片均保持原始方向。不要在浏览器或采集端另做水平翻转。
 
 ### 4.6 键盘采集命令行（一句复制）
 
 **终端 1 — 启动服务：**
 
 ```bash
-source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && roslaunch yolo traffic_light_collect.launch flip:=true
+source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && roslaunch yolo traffic_light_collect.launch start_driver:=false start_inference:=false flip:=false
 ```
 
-**终端 2 — 依次采集 4 个类别（每个 Ctrl-C 退出后运行下一条）：**
+**终端 2 — 按 session 依次采集 4 个正类和 background：**
 
 ```bash
-source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && rosrun yolo keyboard_collect_yolo_images.py --cls red_light --interval 0.3 --start-paused --flip
-```
-
-```bash
-source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && rosrun yolo keyboard_collect_yolo_images.py --cls green_straight --interval 0.3 --start-paused --flip
+rosrun yolo keyboard_collect_yolo_images.py --cls red_light --output ~/traffic_dataset_raw/session_01_normal_light --interval 0.8 --max-images 120 --start-paused
 ```
 
 ```bash
-source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && rosrun yolo keyboard_collect_yolo_images.py --cls green_left --interval 0.3 --start-paused --flip
+rosrun yolo keyboard_collect_yolo_images.py --cls green_straight --output ~/traffic_dataset_raw/session_01_normal_light --interval 0.8 --max-images 120 --start-paused
 ```
 
 ```bash
-source ~/ucar_ws/devel/setup.bash && source ~/2026-xunfei-race/devel/setup.bash && rosrun yolo keyboard_collect_yolo_images.py --cls green_right --interval 0.3 --start-paused --flip
+rosrun yolo keyboard_collect_yolo_images.py --cls green_left --output ~/traffic_dataset_raw/session_01_normal_light --interval 0.8 --max-images 120 --start-paused
 ```
 
-启动后先按 `P` 开始自动保存，再用 `WASD` 缓慢移动小车变换角度和距离。每个类别建议采集 100~200 张。
+```bash
+rosrun yolo keyboard_collect_yolo_images.py --cls green_right --output ~/traffic_dataset_raw/session_01_normal_light --interval 0.8 --max-images 120 --start-paused
+```
+
+负样本把 `--cls` 替换为 `background`。启动后按 `P` 开始保存；安全起见默认不启动车轮驱动，由人工调整车位。完整的 session 配额、LabelImg 标注和数据集构建流程见 `src/yolo/traffic_yolov5_dataset.md`。
 
 **关键参数：**
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--cls` | red_light | 类别名：red_light / green_straight / green_left / green_right |
+| `--cls` | red_light | 类别名：red_light / green_straight / green_left / green_right / background |
 | `--interval` | 0.5 | 自动保存间隔（秒） |
 | `--linear` | 0.04 | 基础线速度 m/s |
 | `--angular` | 0.18 | 基础角速度 rad/s |
 | `--max-images` | 0 | 最大保存张数（0=不限制） |
 | `--start-paused` | false | 启动后暂停，需按 P 开始 |
-| `--flip` | false | 水平翻转纠正镜像 |
+| `--flip` | false | 危险兼容参数；红绿灯数据不得使用 |
 
-图片保存路径：`~/2026-xunfei-race/src/yolo/yolo_dataset/raw_images/<cls>/`
+图片保存路径：`<output>/<cls>/`，每个 session 使用独立的 `<output>`。
 
 文件名格式：`<cls>_000001_<timestamp>.jpg`
 
 采集完目录结构：
 
 ```
-yolo_dataset/raw_images/
-├── red_light/
-├── green_straight/
+traffic_dataset_raw/session_01_normal_light/
 ├── green_left/
-└── green_right/
+├── green_right/
+├── green_straight/
+├── red_light/
+└── background/
 ```
 
 ### 4.7 yolo 包文件结构
@@ -325,7 +327,7 @@ roscd yolo
 roscd yolo/launch
 
 # 直接运行脚本
-rosrun yolo camera_mjpeg_server.py _flip:=true
-rosrun yolo keyboard_collect_yolo_images.py --cls red_light --flip
+rosrun yolo camera_mjpeg_server.py _flip:=false
+rosrun yolo keyboard_collect_yolo_images.py --cls red_light --output ~/traffic_dataset_raw/session_01_normal_light --start-paused
 rosrun yolo qr_collect_and_decode.py --fetch
 ```

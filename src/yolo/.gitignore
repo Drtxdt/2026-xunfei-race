@@ -1,6 +1,12 @@
 # Generated training dataset (large)
 yolo_dataset/images/
 yolo_dataset/labels/
+traffic_dataset_raw/
+traffic_yolov5/images/
+traffic_yolov5/labels/
+traffic_yolov5/qa/
+traffic_yolov5/dataset_report.json
+traffic_yolov5/near_duplicates.csv
 
 # Python cache
 __pycache__/

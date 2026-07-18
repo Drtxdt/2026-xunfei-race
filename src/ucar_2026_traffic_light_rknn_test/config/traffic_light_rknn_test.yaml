@@ -4,31 +4,37 @@ detections_topic: /traffic_light_rknn_test/detections
 debug_image_topic: /traffic_light_rknn_test/debug_image
 status_topic: /traffic_light_rknn_test/status
 
-# Model
-model_path: $(find yolo)/models/best_640.rknn
-input_size: 640              # 640 FP16 model
-confidence_threshold: 0.5
-nms_iou_threshold: 0.45
+# ResNet18 five-class RKNN. The launch file supplies the resolved default path.
+class_names: [green_left, green_right, green_straight, red_light, background]
+model_quantization: int8
+input_width: 320
+input_height: 160
+crop_top: 0.18
+crop_bottom: 0.72
+flip: true
 inference_rate: 10.0
-flip: false
 
-# Consensus filtering
-consensus_confirm_frames: 3
-consensus_release_frames: 3
-consensus_timeout: 1.0
-consensus_ema_alpha: 0.3
+# Score filtering and temporal consensus
+confidence_threshold: 0.55
+margin_threshold: 0.12
+score_window_size: 5
+min_valid_samples: 3
+red_confirm_frames: 2
+green_confirm_frames: 3
+# One rejected/background frame immediately makes the published decision inactive.
+consensus_release_frames: 1
 
-# Debug
+# Debug and safety
 publish_debug: true
-image_timeout: 5.0
+image_timeout: 1.0
 
-# Speech
+# Speech: reuse the competition speech service from task1_task2.
 enable_speech: true
 announce_service: /competition_speech/announce
 announce_service_timeout_sec: 0.5
 speak_topic: /speak
 use_announce_service: true
-announce_event: custom          # custom = speak slow text; task4 = standard traffic decision
+announce_event: custom
 fallback_to_speak_topic: true
 slow_speech: true
 repeat_same: false
