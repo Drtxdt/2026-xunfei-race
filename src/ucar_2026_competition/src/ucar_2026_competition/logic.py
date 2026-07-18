@@ -80,6 +80,8 @@ def stage_sequence(mode):
         return ("task1", "task2", "task3", "task4", "task5")
     if normalized == "task1_task2":
         return ("task1", "task2")
+    if normalized == "task3_task4":
+        return ("task3", "task4")
     if normalized in ("task1", "task2", "task3", "task4", "task5"):
         return (normalized,)
     raise ValueError("unsupported start_stage: {}".format(mode))

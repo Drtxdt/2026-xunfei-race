@@ -124,7 +124,26 @@ class CompetitionLogicTest(unittest.TestCase):
     def test_state_machine_sequence(self):
         self.assertEqual(stage_sequence("full"), ("task1", "task2", "task3", "task4", "task5"))
         self.assertEqual(stage_sequence("task1_task2"), ("task1", "task2"))
+        self.assertEqual(stage_sequence("task3_task4"), ("task3", "task4"))
         self.assertEqual(stage_sequence("task4"), ("task4",))
+
+    def test_task3_task4_launch_preserves_localization(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "task3_task4.launch"))
+        root = ET.parse(launch_path).getroot()
+        core_include = next(
+            item for item in root.findall("include")
+            if "common_core.launch" in item.attrib.get("file", ""))
+        core_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in core_include.findall("arg")}
+        self.assertEqual(core_args["start_nav"], "true")
+        flow_include = next(
+            item for item in root.findall("include")
+            if "flow_node.launch" in item.attrib.get("file", ""))
+        flow_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in flow_include.findall("arg")}
+        self.assertEqual(flow_args["start_stage"], "task3_task4")
+        self.assertEqual(flow_args["navigator_publish_initial_pose"], "false")
 
     def test_task_handoff_stationary_gate(self):
         self.assertTrue(base_is_stopped(0.005, -0.005, 0.01))
