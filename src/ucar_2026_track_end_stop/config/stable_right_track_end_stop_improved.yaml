@@ -1,0 +1,58 @@
+# 巡线改良版建议参数（可在 launch 中 rosparam load）
+auto_start: true
+startup_time: 2.0
+startup_speed: 0.35
+
+target_right_x: 205
+base_speed: 0.23
+curve_speed: 0.14
+search_speed: 0.07
+search_angular_speed: -0.30
+lost_linear_speed: 0.06
+lost_angular_speed: -0.18
+
+kp: 0.0040
+kd: 0.0010
+error_alpha: 0.14
+curve_error_threshold: 34.0
+curve_angular_gain: 1.10
+max_angular_speed: 0.42
+steering_deadband_px: 7.0
+max_straight_angular_speed: 0.16
+max_right_angular_speed: 0.32
+straight_angular_alpha: 0.84
+curve_angular_alpha: 0.58
+straight_angular_step: 0.025
+curve_angular_step: 0.065
+right_guard_error_px: 60.0
+right_guard_speed: 0.10
+deadband_angular_decay: 0.40
+
+# 防压右线保护：right_x 越小表示右线越靠近车体中心
+right_danger_x: 150
+right_emergency_x: 120
+right_escape_speed: 0.06
+right_escape_angular: 0.36
+
+# 右线连续识别和异常点过滤
+line_jump_limit_px: 75
+line_search_window_px: 165
+min_valid_rows: 3
+found_confirm_frames: 2
+lost_brake_frames: 3
+lost_stop_frames: 10
+
+roi_y_start_ratio: 0.60
+white_s_max: 50
+white_v_min: 190
+morph_kernel_size: 5
+min_component_area: 220.0
+
+end_enable_delay: 3.0
+end_roi_y_start_ratio: 0.87
+end_min_width_ratio: 0.45
+end_stop_hold: 1.0
+end_forward_distance_m: 0.65
+end_forward_speed: 0.17
+end_turn_left_angle_deg: 10.0
+end_turn_left_angular_speed: 0.50
