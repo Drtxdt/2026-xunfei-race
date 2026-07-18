@@ -35,7 +35,58 @@ session_05_final_field       每类 50张 -> test
 
 每类总计 500 张；每个 session 还按相同配额采集 `background`，最终共约 2500 张。
 
-## 2. 采集
+## 2. 用 X11 launch 采集
+
+从 MobaXterm 开启 X11 forwarding 的 SSH 会话，确认 `echo $DISPLAY` 非空。每个任务都有独立 launch，例如：
+
+```bash
+source ~/ucar_ws/devel/setup.bash
+source ~/2026-xunfei-race/devel/setup.bash
+roslaunch yolo traffic_collect_s01_green_left.launch
+```
+
+启动后会出现两个 X11 窗口：
+
+- `image_view` 显示未镜像的摄像头原图。
+- `xterm` 运行采集器。鼠标点中 xterm 后按 `P` 开始/暂停，`C` 单张拍摄，`Esc` 退出。
+
+采集入口共 25 个：
+
+```text
+traffic_collect_s01_green_left.launch
+traffic_collect_s01_green_right.launch
+traffic_collect_s01_green_straight.launch
+traffic_collect_s01_red_light.launch
+traffic_collect_s01_background.launch
+
+traffic_collect_s02_green_left.launch
+traffic_collect_s02_green_right.launch
+traffic_collect_s02_green_straight.launch
+traffic_collect_s02_red_light.launch
+traffic_collect_s02_background.launch
+
+traffic_collect_s03_green_left.launch
+traffic_collect_s03_green_right.launch
+traffic_collect_s03_green_straight.launch
+traffic_collect_s03_red_light.launch
+traffic_collect_s03_background.launch
+
+traffic_collect_s04_green_left.launch
+traffic_collect_s04_green_right.launch
+traffic_collect_s04_green_straight.launch
+traffic_collect_s04_red_light.launch
+traffic_collect_s04_background.launch
+
+traffic_collect_s05_green_left.launch
+traffic_collect_s05_green_right.launch
+traffic_collect_s05_green_straight.launch
+traffic_collect_s05_red_light.launch
+traffic_collect_s05_background.launch
+```
+
+`s01/s02/s03/s04/s05` 每类分别自动限制为 `120/120/110/100/50` 张，并保存到对应 session。一个任务结束后先用 `Ctrl-C` 停止当前 roslaunch，再启动下一个，避免重复启动摄像头。
+
+### 手动参数方式（备用）
 
 终端一只启动摄像头，不启动底盘：
 

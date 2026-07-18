@@ -1,0 +1,44 @@
+<launch>
+  <!-- Common implementation used by the 25 session/class capture launch files. -->
+  <arg name="session" />
+  <arg name="class_name" />
+  <arg name="max_images" />
+  <arg name="output_root" default="$(env HOME)/traffic_dataset_raw" />
+  <arg name="camera_topic" default="/usb_cam/image_raw" />
+  <arg name="interval" default="0.8" />
+  <arg name="start_camera" default="true" />
+  <arg name="start_viewer" default="true" />
+
+  <include file="$(find yolo)/launch/traffic_light_collect.launch">
+    <arg name="start_driver" value="false" />
+    <arg name="start_camera" value="$(arg start_camera)" />
+    <arg name="start_mjpeg" value="false" />
+    <arg name="start_inference" value="false" />
+    <arg name="camera_topic" value="$(arg camera_topic)" />
+    <arg name="flip" value="false" />
+  </include>
+
+  <!-- Raw, unmirrored 640x480 image forwarded through the SSH X11 display. -->
+  <group if="$(arg start_viewer)">
+    <node pkg="image_view" type="image_view"
+          name="traffic_capture_x11_viewer" output="screen"
+          launch-prefix="bash -c 'sleep 2; exec &quot;$@&quot;' dummy">
+      <remap from="image" to="$(arg camera_topic)" />
+      <param name="autosize" value="true" />
+    </node>
+  </group>
+
+  <!-- xterm gives the collector a real TTY, so P/C/Esc work under roslaunch. -->
+  <node pkg="yolo" type="keyboard_collect_yolo_images.py"
+        name="traffic_capture_keyboard" output="screen"
+        launch-prefix="xterm -T traffic_capture_$(arg session)_$(arg class_name) -e">
+    <param name="cls" value="$(arg class_name)" />
+    <param name="output" value="$(arg output_root)/$(arg session)" />
+    <param name="topic" value="$(arg camera_topic)" />
+    <param name="interval" value="$(arg interval)" />
+    <param name="max_images" value="$(arg max_images)" />
+    <param name="flip" value="false" />
+    <param name="allow_horizontal_flip" value="false" />
+    <param name="start_paused" value="true" />
+  </node>
+</launch>

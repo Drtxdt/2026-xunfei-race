@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import cv2
@@ -150,3 +151,26 @@ def test_training_hyp_disables_direction_destroying_flips():
     text = (PKG_DIR / "config" / "traffic_yolov5_hyp.yaml").read_text(encoding="utf-8")
     assert "fliplr: 0.0" in text
     assert "flipud: 0.0" in text
+
+
+def test_all_25_capture_launch_files_are_valid_and_unflipped():
+    launch_dir = PKG_DIR / "launch"
+    tasks = sorted(launch_dir.glob("traffic_collect_s??_*.launch"))
+    assert len(tasks) == 25
+    expected_classes = {"green_left", "green_right", "green_straight", "red_light", "background"}
+    seen = set()
+    for path in tasks:
+        root = ET.parse(str(path)).getroot()
+        values = {
+            element.attrib["name"]: element.attrib["value"]
+            for element in root.findall(".//arg")
+        }
+        assert values["class_name"] in expected_classes
+        assert values["max_images"] in {"120", "110", "100", "50"}
+        seen.add((values["session"], values["class_name"]))
+    assert len(seen) == 25
+
+    common = (launch_dir / "traffic_capture_x11.launch").read_text(encoding="utf-8")
+    ET.parse(str(launch_dir / "traffic_capture_x11.launch"))
+    assert '<param name="flip" value="false" />' in common
+    assert 'launch-prefix="xterm ' in common
