@@ -1,3 +1,41 @@
+#include <algorithm>
+#include <cmath>
+#include <iomanip>
+#include <numeric>
+#include <sstream>
+#include <string>
+#include <vector>
+
+#include <cv_bridge/cv_bridge.h>
+#include <geometry_msgs/Twist.h>
+#include <opencv2/opencv.hpp>
+#include <ros/ros.h>
+#include <sensor_msgs/Image.h>
+#include <std_msgs/Header.h>
+#include <std_msgs/String.h>
+
+namespace
+{
+constexpr int kImageRows = 480;
+constexpr int kImageCols = 640;
+
+int clampInt(int value, int low, int high)
+{
+  return std::max(low, std::min(high, value));
+}
+
+double clampDouble(double value, double low, double high)
+{
+  return std::max(low, std::min(high, value));
+}
+
+std::string boolText(bool value)
+{
+  return value ? "1" : "0";
+}
+}  // namespace
+
+class StableRightTrackEndStopNode
 {
 public:
   StableRightTrackEndStopNode() : private_nh_("~")
