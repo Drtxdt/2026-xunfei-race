@@ -29,6 +29,12 @@ from yolo_tools.traffic_dataset import (  # noqa: E402
     write_data_yaml,
 )
 from build_traffic_yolo_dataset import collect_records  # noqa: E402
+from prepare_traffic_cls_dataset import (  # noqa: E402
+    CLASS_NAMES as CLS_CLASS_NAMES,
+    read_image,
+    vertical_band,
+    write_jpeg,
+)
 
 
 def assert_raises_value_error(callable_object):
@@ -174,3 +180,36 @@ def test_all_25_capture_launch_files_are_valid_and_unflipped():
     ET.parse(str(launch_dir / "traffic_capture_x11.launch"))
     assert '<param name="flip" value="false" />' in common
     assert 'launch-prefix="xterm ' in common
+
+
+def test_classifier_crop_preserves_full_width_and_expected_shape():
+    image = np.zeros((480, 640, 3), dtype=np.uint8)
+    image[:, 0] = (10, 20, 30)
+    image[:, -1] = (40, 50, 60)
+    cropped = vertical_band(image, 0.18, 0.72, (320, 160))
+    assert cropped.shape == (160, 320, 3)
+    assert int(cropped[:, 0].mean()) > 0
+    assert int(cropped[:, -1].mean()) > 0
+
+
+def test_classifier_class_order_and_training_has_no_horizontal_augmentation():
+    assert CLS_CLASS_NAMES == (
+        "green_left", "green_right", "green_straight", "red_light", "background"
+    )
+    training_source = (PKG_DIR / "scripts" / "train_traffic_resnet18.py").read_text(
+        encoding="utf-8"
+    )
+    assert "transforms.RandomHorizontalFlip(" not in training_source
+    assert '"runtime_horizontal_flip_required": True' in training_source
+
+
+def test_unicode_image_io_round_trip():
+    with tempfile.TemporaryDirectory() as temp_dir:
+        directory = Path(temp_dir) / "讯飞数据"
+        directory.mkdir()
+        path = directory / "左转.jpg"
+        image = np.full((24, 32, 3), 127, dtype=np.uint8)
+        assert write_jpeg(path, image, 95)
+        decoded = read_image(path)
+        assert decoded is not None
+        assert decoded.shape == image.shape

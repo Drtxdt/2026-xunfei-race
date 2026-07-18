@@ -9,6 +9,8 @@ find_package(catkin REQUIRED COMPONENTS
   ucar_2026_competition_speech
 )
 
+catkin_python_setup()
+
 catkin_package()
 
 catkin_install_python(PROGRAMS
@@ -20,3 +22,7 @@ catkin_install_python(PROGRAMS
 install(DIRECTORY launch config
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_traffic_light_classifier.py)
+endif()

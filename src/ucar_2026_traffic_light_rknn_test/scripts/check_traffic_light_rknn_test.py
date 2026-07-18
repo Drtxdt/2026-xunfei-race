@@ -27,6 +27,7 @@ def run(cmd: List[str], timeout: float = 4.0) -> str:
 
 def main() -> int:
     print("=== RKNN traffic light test diagnostics ===")
+    failed = False
 
     yolo_path = run(["rospack", "find", "yolo"])
     if not yolo_path or yolo_path.startswith("ERROR"):
@@ -34,17 +35,26 @@ def main() -> int:
         return 1
     print("[ OK ] yolo package: %s" % yolo_path)
 
-    model_path = os.path.join(yolo_path, "models", "best_640.rknn")
+    model_path = os.path.join(
+        yolo_path, "models", "traffic_resnet18_rk3588_int8.rknn"
+    )
     if os.path.isfile(model_path):
-        print("[ OK ] RKNN model exists: %s" % model_path)
+        size_mib = os.path.getsize(model_path) / float(1024 * 1024)
+        if size_mib < 1.0:
+            print("[FAIL] RKNN model is unexpectedly small: %.2f MiB" % size_mib)
+            failed = True
+        else:
+            print("[ OK ] RKNN model exists: %s (%.2f MiB)" % (model_path, size_mib))
     else:
         print("[FAIL] RKNN model missing: %s" % model_path)
+        failed = True
 
     try:
         import rknnlite.api  # noqa: F401
         print("[ OK ] rknnlite.api import works")
     except Exception as exc:
         print("[FAIL] rknnlite.api import failed: %s" % exc)
+        failed = True
 
     nodes = run(["rosnode", "list"])
     for node in [
@@ -71,7 +81,7 @@ def main() -> int:
     else:
         print("[WARN] no detection sample")
 
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

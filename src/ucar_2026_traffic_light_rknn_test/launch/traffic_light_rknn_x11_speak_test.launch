@@ -6,8 +6,9 @@
   <arg name="camera_topic" default="/usb_cam/image_raw" />
   <arg name="debug_image_topic" default="/traffic_light_rknn_test/debug_image" />
   <arg name="config_file" default="$(find ucar_2026_traffic_light_rknn_test)/config/traffic_light_rknn_test.yaml" />
-  <arg name="model_path" default="" />
-  <arg name="flip" default="false" />
+  <arg name="model_path" default="$(find yolo)/models/traffic_resnet18_rk3588_int8.rknn" />
+  <arg name="model_quantization" default="int8" />
+  <arg name="flip" default="true" />
   <arg name="chars_per_second" default="2.0" />
   <arg name="required" default="false" />
   <arg name="enable_speech" default="true" />
@@ -37,6 +38,7 @@
     <param name="image_topic" value="$(arg camera_topic)" />
     <param name="debug_image_topic" value="$(arg debug_image_topic)" />
     <param name="model_path" value="$(arg model_path)" />
+    <param name="model_quantization" value="$(arg model_quantization)" />
     <param name="flip" value="$(arg flip)" />
     <param name="enable_speech" value="$(arg enable_speech)" />
   </node>
