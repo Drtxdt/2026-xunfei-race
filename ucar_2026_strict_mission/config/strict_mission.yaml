@@ -1,0 +1,55 @@
+{
+  "image_topic": "/usb_cam/image_raw",
+  "cmd_vel_topic": "/cmd_vel",
+  "status_topic": "/strict_mission/status",
+  "traffic_topic": "/traffic_light_rknn_test/detections",
+  "competition_status_topic": "/competition/status",
+  "move_base_action": "move_base",
+
+  "traffic_pose_configured": false,
+  "traffic_frame": "map",
+  "traffic_staging_x": 0.0,
+  "traffic_staging_y": 0.0,
+  "traffic_staging_yaw": 0.0,
+  "navigation_timeout_sec": 120.0,
+
+  "auto_start_on_warehouse_status": false,
+  "warehouse_complete_stage": "task3",
+
+  "distance_calibration": [
+    [0.55, 0.50],
+    [0.65, 0.32],
+    [0.75, 0.20],
+    [0.85, 0.11],
+    [0.90, 0.07],
+    [0.94, 0.03]
+  ],
+
+  "target_min_m": 0.05,
+  "target_max_m": 0.07,
+  "absolute_max_m": 0.10,
+  "calibration_error_m": 0.03,
+  "stop_confirm_frames": 5,
+  "stop_settle_sec": 0.60,
+
+  "speed_far": 0.10,
+  "speed_medium": 0.06,
+  "speed_near": 0.035,
+  "speed_creep": 0.018,
+
+  "line_roi_start_ratio": 0.45,
+  "white_s_max": 85,
+  "white_v_min": 165,
+  "morph_kernel_size": 5,
+  "line_min_width_ratio": 0.45,
+  "line_max_height_ratio": 0.12,
+  "line_min_fill_ratio": 0.55,
+
+  "image_stale_stop_sec": 0.25,
+  "image_stale_fault_sec": 1.0,
+  "line_missing_fault_sec": 2.0,
+  "line_approach_timeout_sec": 45.0,
+  "traffic_confirm_frames": 3,
+  "traffic_timeout_sec": 180.0,
+  "track_timeout_sec": 420.0
+}
