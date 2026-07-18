@@ -6,11 +6,11 @@
   "competition_status_topic": "/competition/status",
   "move_base_action": "move_base",
 
-  "traffic_pose_configured": false,
+  "traffic_pose_configured": true,
   "traffic_frame": "map",
-  "traffic_staging_x": 0.0,
-  "traffic_staging_y": 0.0,
-  "traffic_staging_yaw": 0.0,
+  "traffic_staging_x": 0.3195,
+  "traffic_staging_y": -3.0,
+  "traffic_staging_yaw":  -1.5596,
   "navigation_timeout_sec": 120.0,
 
   "auto_start_on_warehouse_status": false,
