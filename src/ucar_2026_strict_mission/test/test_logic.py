@@ -13,6 +13,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    lowest_horizontal_band,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -105,6 +106,21 @@ class StopLineDetectionTests(unittest.TestCase):
         self.assertFalse(valid_stop_line_geometry(0.30, 0.04, 0.90, 0.90))
         self.assertFalse(valid_stop_line_geometry(0.70, 0.04, 0.20, 0.90))
         self.assertFalse(valid_stop_line_geometry(0.70, 0.04, 0.90, 0.40))
+
+    def test_selects_lowest_wide_horizontal_band(self):
+        occupancies = [0.0] * 100
+        occupancies[20:25] = [0.8] * 5
+        occupancies[70:76] = [0.7] * 6
+        self.assertEqual(
+            lowest_horizontal_band(occupancies, 0.45, 12),
+            (70, 75),
+        )
+
+    def test_rejects_single_row_noise_and_tall_white_region(self):
+        occupancies = [0.0] * 100
+        occupancies[50] = 0.9
+        occupancies[70:90] = [0.9] * 20
+        self.assertIsNone(lowest_horizontal_band(occupancies, 0.45, 12))
 
 
 if __name__ == "__main__":

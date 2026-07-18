@@ -27,6 +27,31 @@ TRACK_CONFIG = {
 }
 
 
+def lowest_horizontal_band(row_occupancies, min_occupancy, max_band_rows,
+                           min_band_rows=2):
+    """Return the lowest credible wide horizontal band as (start, end)."""
+    threshold = float(min_occupancy)
+    max_rows = max(1, int(max_band_rows))
+    min_rows = max(1, int(min_band_rows))
+    runs = []
+    start = None
+    for index, occupancy in enumerate(row_occupancies):
+        if float(occupancy) >= threshold:
+            if start is None:
+                start = index
+            continue
+        if start is not None:
+            runs.append((start, index - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(row_occupancies) - 1))
+    credible = [
+        run for run in runs
+        if min_rows <= run[1] - run[0] + 1 <= max_rows
+    ]
+    return max(credible, key=lambda run: run[1]) if credible else None
+
+
 class DistanceCalibration:
     """Monotonic image-row to front-bumper distance calibration."""
 

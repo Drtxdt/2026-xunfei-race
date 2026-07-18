@@ -12,6 +12,7 @@ import time
 
 import actionlib
 import cv2
+import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
@@ -24,6 +25,7 @@ from ucar_2026_strict_mission.logic import (
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    lowest_horizontal_band,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -136,6 +138,8 @@ class StrictMissionNode:
         self.worker.start()
 
     def publish_status(self, detail="", **extra):
+        if self.state == "FAULT" and "error" not in extra:
+            extra["error"] = self.fault_reason
         payload = {
             "state": self.state,
             "detail": detail,
@@ -245,7 +249,18 @@ class StrictMissionNode:
                     (x, y0 + y, box_width, box_height),
                 ))
         if not candidates:
-            return None, mask, None
+            row_occupancies = np.count_nonzero(mask, axis=1) / float(width)
+            band = lowest_horizontal_band(
+                row_occupancies,
+                float(rospy.get_param("~line_min_width_ratio", 0.45)),
+                int(round(height * float(rospy.get_param(
+                    "~line_max_height_ratio", 0.12)))),
+            )
+            if band is None:
+                return None, mask, None
+            start, end = band
+            bottom_ratio = float(y0 + end + 1) / float(height)
+            return bottom_ratio, mask, (0, y0 + start, width, end - start + 1)
         _, bottom_ratio, box = max(candidates, key=lambda item: item[0])
         return bottom_ratio, mask, box
 
