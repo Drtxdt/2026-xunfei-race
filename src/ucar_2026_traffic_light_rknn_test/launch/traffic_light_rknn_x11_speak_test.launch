@@ -18,8 +18,14 @@
   </group>
 
   <group if="$(arg start_tts)">
-    <node pkg="speech_command" type="voice_speak_node" name="voice_speak_node" output="screen"
-          launch-prefix="bash -c 'sleep 1; exec &quot;$@&quot;' dummy" />
+    <!-- Match the proven task1_task2 voice path.  The legacy speech_command
+         package lives in /home/ucar/ucar_ws and must not be added wholesale
+         to ROS_PACKAGE_PATH because it contains packages duplicated here. -->
+    <node pkg="ucar_2026_competition" type="external_voice_nodes.py"
+          name="traffic_light_external_tts" output="screen" required="true">
+      <param name="start_asr" value="false" />
+      <param name="start_tts" value="true" />
+    </node>
   </group>
 
   <group if="$(arg start_competition_speech)">

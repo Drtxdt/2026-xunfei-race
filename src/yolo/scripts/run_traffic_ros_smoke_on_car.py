@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--password-env", default="UCAR_SSH_PASSWORD")
     parser.add_argument("--workspace", default="/home/ucar/2026-xunfei-race")
     parser.add_argument("--ros-setup", default="/home/ucar/ucar_ws/devel/setup.bash")
+    parser.add_argument("--with-speech", action="store_true")
     args = parser.parse_args()
     password = os.environ.get(args.password_env)
     if not password:
@@ -94,14 +95,45 @@ while not rospy.is_shutdown():
         if master_ok != 0:
             pids.append(start_background(client, env + " && exec roscore", master_log))
             time.sleep(3.0)
+        start_tts = "true" if args.with_speech else "false"
+        start_announcer = "true" if args.with_speech else "false"
         launch_command = (
             env
             + " && exec roslaunch ucar_2026_traffic_light_rknn_test "
-            "traffic_light_rknn_x11_speak_test.launch start_camera:=false start_tts:=false "
-            "start_competition_speech:=false start_viewer:=false enable_speech:=false required:=true"
-        )
+            "traffic_light_rknn_x11_speak_test.launch start_camera:=false start_tts:={} "
+            "start_competition_speech:={} start_viewer:=false enable_speech:=false required:=true"
+        ).format(start_tts, start_announcer)
         pids.append(start_background(client, launch_command, launch_log))
         time.sleep(7.0)
+        if args.with_speech:
+            speech_code, speech_graph, speech_error = execute(
+                client,
+                "bash -lc '{} && rosnode list; rostopic info /speak; "
+                "rosnode info /traffic_light_external_tts'".format(env),
+                True,
+            )
+            print(speech_graph)
+            if speech_error:
+                print(speech_error)
+            if (
+                speech_code != 0
+                or "/traffic_light_external_tts" not in speech_graph
+                or "Subscribers:" not in speech_graph
+                or "/voice_speak_node" not in speech_graph
+            ):
+                _, log_text, _ = execute(client, "tail -n 160 {}".format(launch_log), True)
+                raise RuntimeError("TTS graph is incomplete; launch log:\n{}".format(log_text))
+            announce_code, announce_out, announce_error = execute(
+                client,
+                "bash -lc '{} && rosrun ucar_2026_competition_speech announce_once.py "
+                "_event:=custom _text:=traffic_light_voice_regression_fixed _wait:=false'".format(env),
+                True,
+            )
+            print(announce_out)
+            if announce_error:
+                print(announce_error)
+            if announce_code != 0:
+                raise RuntimeError("announcement service smoke failed")
         execute(
             client,
             "pkill -TERM -f '[/]tmp/traffic_ros_smoke_raw.jpg' 2>/dev/null || true",

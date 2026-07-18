@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -99,3 +100,22 @@ def test_json_payload_keeps_competition_consensus_contract():
     assert decoded["consensus"]["class_name"] == "green_straight"
     assert decoded["raw_detections"][0]["bbox"] == [0, 86, 640, 346]
     assert set(decoded["diagnostics"]["probabilities"]) == set(CLASS_NAMES)
+
+
+def test_launch_uses_proven_external_tts_wrapper_not_legacy_rospack_lookup():
+    package_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    launch_path = os.path.join(
+        package_root, "launch", "traffic_light_rknn_x11_speak_test.launch"
+    )
+    root = ET.parse(launch_path).getroot()
+    nodes = list(root.iter("node"))
+    assert not any(node.get("pkg") == "speech_command" for node in nodes)
+    wrappers = [
+        node
+        for node in nodes
+        if node.get("pkg") == "ucar_2026_competition"
+        and node.get("type") == "external_voice_nodes.py"
+    ]
+    assert len(wrappers) == 1
+    params = {item.get("name"): item.get("value") for item in wrappers[0].findall("param")}
+    assert params == {"start_asr": "false", "start_tts": "true"}
