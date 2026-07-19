@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Recognize the three fixed task commands from the legacy microphone PCM stream."""
+"""Recognize the complete two-category task1 command from microphone PCM."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ import rospy
 import websocket
 from std_msgs.msg import String, UInt8MultiArray
 
-from ucar_2026_competition.logic import parse_category
+from ucar_2026_competition.logic import parse_task1_categories
 
 
 class FixedCommandIat:
@@ -42,6 +42,9 @@ class FixedCommandIat:
         self.stream_gap_sec = float(rospy.get_param("~stream_gap_sec", 0.8))
         self.max_session_sec = float(rospy.get_param("~max_session_sec", 55.0))
         self.result_wait_sec = float(rospy.get_param("~result_wait_sec", 3.0))
+        self.receive_timeout_sec = float(
+            rospy.get_param("~receive_timeout_sec", self.max_session_sec + 5.0)
+        )
         self.reconnect_sec = float(rospy.get_param("~reconnect_sec", 0.5))
 
         self.appid, self.api_secret, self.api_key = self._load_credentials()
@@ -156,15 +159,16 @@ class FixedCommandIat:
         return json.dumps(payload, separators=(",", ":"))
 
     def _publish_text(self, text, final=False):
-        category = parse_category(text)
+        pickup_category, sim_category = parse_task1_categories(text)
         payload = {
             "stamp": time.time(),
             "text": text,
-            "category": category or "",
+            "pickup_category": pickup_category or "",
+            "sim_category": sim_category or "",
             "final": bool(final),
         }
         self.text_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
-        return category
+        return pickup_category, sim_category
 
     def _receive(self, ws, done, accepted):
         segments = {}
@@ -196,11 +200,21 @@ class FixedCommandIat:
                 if text:
                     segments[sn] = text
                     full_text = "".join(segments[key] for key in sorted(segments))
-                    category = self._publish_text(full_text, data.get("status") == 2)
-                    if category and not accepted.is_set():
+                    pickup_category, sim_category = self._publish_text(
+                        full_text, data.get("status") == 2
+                    )
+                    if (
+                        pickup_category
+                        and sim_category
+                        and not accepted.is_set()
+                    ):
                         accepted.set()
                         self.question_pub.publish(String(data=full_text))
-                        rospy.loginfo("fixed command accepted: category=%s", category)
+                        rospy.loginfo(
+                            "fixed command accepted: pickup=%s simulation=%s",
+                            pickup_category,
+                            sim_category,
+                        )
                 if data.get("status") == 2:
                     break
         except (ValueError, websocket.WebSocketException, OSError) as exc:
@@ -216,7 +230,10 @@ class FixedCommandIat:
             sslopt={"cert_reqs": ssl.CERT_REQUIRED},
             http_proxy_host=None,
         )
-        ws.settimeout(10)
+        # A complete two-category instruction can take longer than ten seconds.
+        # Keep the short connection timeout above, but let the active recognition
+        # session wait for the full utterance and its final result.
+        ws.settimeout(self.receive_timeout_sec)
         done = threading.Event()
         accepted = threading.Event()
         receiver = threading.Thread(

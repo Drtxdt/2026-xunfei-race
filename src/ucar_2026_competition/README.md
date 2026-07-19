@@ -28,6 +28,14 @@ roslaunch ucar_2026_competition task4.launch traffic_pose_configured:=true traff
 roslaunch ucar_2026_competition task5.launch traffic_decision:=left
 ```
 
+任务1唤醒后必须一次说出实体和仿真两个目标类别，例如：
+
+```text
+前往物品领取区，取得食品类，放置在对应仓库，并领取仿真环境中需要的日用品类放置在对应仓库
+```
+
+前半句类别供实体领取和任务2使用，“仿真环境”后的类别供任务3使用。两个类别和最终取得的两个货品均允许相同或不同；同一大类只对应一个候选货品时，两边选择同一货品是合法结果。缺少任一类别时，总控会拒绝继续执行。
+
 任务1完成后直接联调任务2（复用同一导航栈、相机和AMCL，不重新发布初始位姿）：
 
 ```bash

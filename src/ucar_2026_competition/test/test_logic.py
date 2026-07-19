@@ -12,6 +12,7 @@ if PACKAGE_SRC not in sys.path:
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
     base_is_stopped,
+    build_task1_instruction,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -20,6 +21,7 @@ from ucar_2026_competition.logic import (
     normalize_category,
     normalize_angle,
     parse_category,
+    parse_task1_categories,
     qr_values_from_payload,
     stage_sequence,
     traffic_decision_from_payload,
@@ -53,6 +55,31 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(parse_category("取得日用品"), "daily")
         self.assertEqual(parse_category("请取得电子产品类"), "electronics")
         self.assertEqual(parse_category("取得电子产品"), "electronics")
+
+    def test_parses_task1_categories_by_context(self):
+        command = (
+            "小飞小飞，前往物品领取区，取得食品类，放置在对应仓库，"
+            "并领取仿真环境中需要的日用品类放置在对应仓库"
+        )
+        self.assertEqual(parse_task1_categories(command), ("food", "daily"))
+        self.assertEqual(
+            parse_task1_categories(
+                "取得电子产品类，仿真环境中需要食品类"
+            ),
+            ("electronics", "food"),
+        )
+
+    def test_task1_parser_reports_missing_simulation_category(self):
+        self.assertEqual(parse_task1_categories("取得食品类"), ("food", None))
+
+    def test_builds_official_two_target_task1_instruction(self):
+        instruction = build_task1_instruction("food", "daily")
+        self.assertIn("取得食品类", instruction)
+        self.assertIn("仿真环境中需要的日用品类", instruction)
+
+    def test_task1_allows_same_category_for_both_targets(self):
+        command = build_task1_instruction("food", "food")
+        self.assertEqual(parse_task1_categories(command), ("food", "food"))
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")
