@@ -42,6 +42,9 @@ class FixedCommandIat:
         self.stream_gap_sec = float(rospy.get_param("~stream_gap_sec", 0.8))
         self.max_session_sec = float(rospy.get_param("~max_session_sec", 55.0))
         self.result_wait_sec = float(rospy.get_param("~result_wait_sec", 3.0))
+        self.receive_timeout_sec = float(
+            rospy.get_param("~receive_timeout_sec", self.max_session_sec + 5.0)
+        )
         self.reconnect_sec = float(rospy.get_param("~reconnect_sec", 0.5))
 
         self.appid, self.api_secret, self.api_key = self._load_credentials()
@@ -227,7 +230,10 @@ class FixedCommandIat:
             sslopt={"cert_reqs": ssl.CERT_REQUIRED},
             http_proxy_host=None,
         )
-        ws.settimeout(10)
+        # A complete two-category instruction can take longer than ten seconds.
+        # Keep the short connection timeout above, but let the active recognition
+        # session wait for the full utterance and its final result.
+        ws.settimeout(self.receive_timeout_sec)
         done = threading.Event()
         accepted = threading.Event()
         receiver = threading.Thread(
