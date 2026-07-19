@@ -18,6 +18,7 @@ namespace
 constexpr int kImageRows = 480;
 constexpr int kImageCols = 640;
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kStrictNoParkingDurationSec = 20.0;
 
 int clampInt(int value, int low, int high)
 {
@@ -65,6 +66,7 @@ private:
     StartupForward,
     SearchRightLine,
     Follow,
+    EarlyCrossShiftRight,
     EarlyCrossLineSearch,
     EndDetected,
     TurnRight,
@@ -187,7 +189,10 @@ private:
     private_nh_.param("lookahead_confirm_frames", lookahead_confirm_frames_, 2);
     private_nh_.param("lookahead_baseline_alpha", lookahead_baseline_alpha_, 0.025);
 
-    private_nh_.param("end_enable_delay", end_enable_delay_, 20.0);
+    private_nh_.param("early_cross_shift_distance_m",
+                      early_cross_shift_distance_m_, 0.20);
+    private_nh_.param("early_cross_shift_speed",
+                      early_cross_shift_speed_, 0.10);
     private_nh_.param("early_cross_search_speed",
                       early_cross_search_speed_, 0.07);
     private_nh_.param("early_cross_search_angular_speed",
@@ -229,20 +234,37 @@ private:
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
     const double elapsed = (now - start_time_).toSec();
-    if (elapsed < end_enable_delay_)
+
+    // Strict horizontal-line policy:
+    //   before 20 s -> never park; shift right 20 cm, then search right line;
+    //   at/after 20 s -> the original parking sequence is allowed.
+    // Apply it before the state switch so Startup, Search and Follow all obey
+    // exactly the same rule.
+    const bool normal_navigation_state =
+        state_ == State::StartupForward ||
+        state_ == State::SearchRightLine ||
+        state_ == State::Follow;
+    if (normal_navigation_state && end_result.detected)
     {
-      if (end_result.detected)
+      if (elapsed < kStrictNoParkingDurationSec)
       {
-        early_cross_clear_count_ = 0;
-      }
-      else if (early_cross_line_handled_)
-      {
-        ++early_cross_clear_count_;
-        if (early_cross_clear_count_ >= 5)
+        if (!early_cross_line_handled_)
         {
-          early_cross_line_handled_ = false;
-          early_cross_clear_count_ = 0;
+          early_cross_line_handled_ = true;
+          reacquire_count_ = 0;
+          line_was_lost_ = false;
+          state_ = State::EarlyCrossShiftRight;
+          state_start_time_ = now;
+          ROS_INFO("early cross-line at %.2fs: shift right %.2f m first",
+                   elapsed, early_cross_shift_distance_m_);
         }
+      }
+      else
+      {
+        state_ = State::EndDetected;
+        state_start_time_ = now;
+        hardStop();
+        ROS_INFO("cross-line at %.2fs: parking logic enabled", elapsed);
       }
     }
     FollowResult follow;
@@ -306,39 +328,38 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask);
-        if (end_result.detected &&
-            elapsed < end_enable_delay_ &&
-            !early_cross_line_handled_)
+        publishFollowCommand(follow);
+        break;
+
+      case State::EarlyCrossShiftRight:
+      {
+        const double shift_duration =
+            early_cross_shift_distance_m_ /
+            std::max(std::fabs(early_cross_shift_speed_), 1e-6);
+        if ((now - state_start_time_).toSec() < shift_duration)
         {
-          // A cross-line seen during the first 20 seconds is a course feature,
-          // not the finish marker.  Crawl forward while steering right until
-          // a continuous right boundary is acquired again.
-          early_cross_line_handled_ = true;
-          early_cross_clear_count_ = 0;
+          setStatus("stable_right_early_cross_shift_right_20cm");
+          cmd.linear.x = 0.0;
+          // ROS base_link convention: positive y is left, negative y is right.
+          cmd.linear.y = -std::fabs(early_cross_shift_speed_);
+          cmd.angular.z = 0.0;
+          publishCmd(cmd);
+        }
+        else
+        {
           reacquire_count_ = 0;
-          line_was_lost_ = true;
+          line_was_lost_ = false;
           state_ = State::EarlyCrossLineSearch;
           state_start_time_ = now;
           setStatus("stable_right_early_cross_search_right");
           cmd.linear.x = early_cross_search_speed_;
+          cmd.linear.y = 0.0;
           cmd.angular.z = early_cross_search_angular_speed_;
           publishCmd(cmd);
-          ROS_INFO("early cross-line detected at %.2fs: searching right boundary",
-                   elapsed);
-        }
-        else if (end_result.detected && elapsed >= end_enable_delay_)
-        {
-          ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
-                   end_result.best_width_ratio, end_result.best_y_ratio);
-          state_ = State::EndDetected;
-          state_start_time_ = now;
-          hardStop();
-        }
-        else
-        {
-          publishFollowCommand(follow);
+          ROS_INFO("20 cm right shift complete; slow right-line search starts");
         }
         break;
+      }
 
       case State::EarlyCrossLineSearch:
         follow = computeFollow(mask);
@@ -1065,7 +1086,8 @@ private:
   int lookahead_confirm_frames_ = 2;
   double lookahead_baseline_alpha_ = 0.025;
 
-  double end_enable_delay_ = 20.0;
+  double early_cross_shift_distance_m_ = 0.20;
+  double early_cross_shift_speed_ = 0.10;
   double early_cross_search_speed_ = 0.07;
   double early_cross_search_angular_speed_ = -0.10;
   double end_roi_y_start_ratio_ = 0.87;
@@ -1090,7 +1112,6 @@ private:
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
   bool early_cross_line_handled_ = false;
-  int early_cross_clear_count_ = 0;
   int heading_baseline_samples_ = 0;
   int lookahead_candidate_count_ = 0;
   double heading_baseline_sum_ = 0.0;
