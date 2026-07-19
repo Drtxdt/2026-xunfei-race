@@ -18,7 +18,6 @@ namespace
 constexpr int kImageRows = 480;
 constexpr int kImageCols = 640;
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kStrictNoParkingDurationSec = 20.0;
 
 int clampInt(int value, int low, int high)
 {
@@ -66,8 +65,6 @@ private:
     StartupForward,
     SearchRightLine,
     Follow,
-    EarlyCrossShiftRight,
-    EarlyCrossLineSearch,
     EndDetected,
     TurnRight,
     Forward50cm,
@@ -82,9 +79,6 @@ private:
     int line_support = 0;
     double line_confidence = 0.0;
     double line_span_ratio = 0.0;
-    double heading_shift_px = 0.0;
-    double heading_delta_px = 0.0;
-    bool lookahead_active = false;
     double error = 0.0;
     double filtered_error = 0.0;
     double linear = 0.0;
@@ -99,7 +93,6 @@ private:
     int support = 0;
     double confidence = 0.0;
     double span_ratio = 0.0;
-    double heading_shift_px = 0.0;
   };
 
   struct Segment
@@ -139,10 +132,6 @@ private:
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
     private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
     private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
-    private_nh_.param("lost_grace_time", lost_grace_time_, 0.28);
-    private_nh_.param("lost_grace_speed", lost_grace_speed_, 0.07);
-    private_nh_.param("lost_sweep_period", lost_sweep_period_, 0.65);
-    private_nh_.param("lost_sweep_angular_speed", lost_sweep_angular_speed_, 0.11);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
@@ -181,22 +170,8 @@ private:
     private_nh_.param("right_min_scan_support",
                       right_min_scan_support_, 3);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
-    private_nh_.param("lookahead_min_support", lookahead_min_support_, 5);
-    private_nh_.param("lookahead_baseline_frames", lookahead_baseline_frames_, 6);
-    private_nh_.param("lookahead_trigger_px", lookahead_trigger_px_, 7.0);
-    private_nh_.param("lookahead_gain", lookahead_gain_, 0.006);
-    private_nh_.param("lookahead_max_angular", lookahead_max_angular_, 0.16);
-    private_nh_.param("lookahead_confirm_frames", lookahead_confirm_frames_, 2);
-    private_nh_.param("lookahead_baseline_alpha", lookahead_baseline_alpha_, 0.025);
 
-    private_nh_.param("early_cross_shift_distance_m",
-                      early_cross_shift_distance_m_, 0.20);
-    private_nh_.param("early_cross_shift_speed",
-                      early_cross_shift_speed_, 0.10);
-    private_nh_.param("early_cross_search_speed",
-                      early_cross_search_speed_, 0.07);
-    private_nh_.param("early_cross_search_angular_speed",
-                      early_cross_search_angular_speed_, -0.10);
+    private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
@@ -233,40 +208,6 @@ private:
                         cv::Range(0, frame.cols));
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
-    const double elapsed = (now - start_time_).toSec();
-
-    // Strict horizontal-line policy:
-    //   before 20 s -> never park; shift right 20 cm, then search right line;
-    //   at/after 20 s -> the original parking sequence is allowed.
-    // Apply it before the state switch so Startup, Search and Follow all obey
-    // exactly the same rule.
-    const bool normal_navigation_state =
-        state_ == State::StartupForward ||
-        state_ == State::SearchRightLine ||
-        state_ == State::Follow;
-    if (normal_navigation_state && end_result.detected)
-    {
-      if (elapsed < kStrictNoParkingDurationSec)
-      {
-        if (!early_cross_line_handled_)
-        {
-          early_cross_line_handled_ = true;
-          reacquire_count_ = 0;
-          line_was_lost_ = false;
-          state_ = State::EarlyCrossShiftRight;
-          state_start_time_ = now;
-          ROS_INFO("early cross-line at %.2fs: shift right %.2f m first",
-                   elapsed, early_cross_shift_distance_m_);
-        }
-      }
-      else
-      {
-        state_ = State::EndDetected;
-        state_start_time_ = now;
-        hardStop();
-        ROS_INFO("cross-line at %.2fs: parking logic enabled", elapsed);
-      }
-    }
     FollowResult follow;
     geometry_msgs::Twist cmd;
 
@@ -328,75 +269,17 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask);
-        publishFollowCommand(follow);
-        break;
-
-      case State::EarlyCrossShiftRight:
-      {
-        const double shift_duration =
-            early_cross_shift_distance_m_ /
-            std::max(std::fabs(early_cross_shift_speed_), 1e-6);
-        if ((now - state_start_time_).toSec() < shift_duration)
+        if (end_result.detected)
         {
-          setStatus("stable_right_early_cross_shift_right_20cm");
-          cmd.linear.x = 0.0;
-          // ROS base_link convention: positive y is left, negative y is right.
-          cmd.linear.y = -std::fabs(early_cross_shift_speed_);
-          cmd.angular.z = 0.0;
-          publishCmd(cmd);
-        }
-        else
-        {
-          reacquire_count_ = 0;
-          line_was_lost_ = false;
-          state_ = State::EarlyCrossLineSearch;
+          ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
+                   end_result.best_width_ratio, end_result.best_y_ratio);
+          state_ = State::EndDetected;
           state_start_time_ = now;
-          setStatus("stable_right_early_cross_search_right");
-          cmd.linear.x = early_cross_search_speed_;
-          cmd.linear.y = 0.0;
-          cmd.angular.z = early_cross_search_angular_speed_;
-          publishCmd(cmd);
-          ROS_INFO("20 cm right shift complete; slow right-line search starts");
-        }
-        break;
-      }
-
-      case State::EarlyCrossLineSearch:
-        follow = computeFollow(mask);
-        if (!follow.found)
-        {
-          reacquire_count_ = 0;
-          setStatus("stable_right_early_cross_search_right");
-          cmd.linear.x = early_cross_search_speed_;
-          cmd.angular.z = early_cross_search_angular_speed_;
-          publishCmd(cmd);
+          hardStop();
         }
         else
         {
-          ++reacquire_count_;
-          last_right_x_ = follow.right_x;
-          setStatus("stable_right_early_cross_confirm_right_line");
-          if (reacquire_count_ < reacquire_confirm_frames_)
-          {
-            // Keep moving gently instead of stopping on the course feature.
-            cmd.linear.x = early_cross_search_speed_;
-            cmd.angular.z = early_cross_search_angular_speed_;
-            publishCmd(cmd);
-          }
-          else
-          {
-            reacquire_count_ = 0;
-            line_was_lost_ = false;
-            filtered_error_ = follow.error;
-            last_error_ = follow.error;
-            filtered_angular_ = 0.0;
-            last_detection_time_ = now;
-            state_ = State::Follow;
-            state_start_time_ = now;
-            setStatus("stable_right_early_cross_right_line_reacquired");
-            publishFollowCommand(follow);
-            ROS_INFO("right boundary reacquired after early cross-line");
-          }
+          publishFollowCommand(follow);
         }
         break;
 
@@ -506,7 +389,6 @@ private:
     result.line_support = line.support;
     result.line_confidence = line.confidence;
     result.line_span_ratio = line.span_ratio;
-    result.heading_shift_px = line.heading_shift_px;
     result.found = line.found;
     if (!result.found)
       return result;
@@ -522,59 +404,7 @@ private:
     const double control_derivative = inside_deadband ? 0.0 : d_error;
     double angular = kp_ * control_error + kd_ * control_derivative;
     double linear = base_speed_;
-
-    // The old controller only used the average x coordinate.  On a shallow
-    // bend the upper (far) part of the boundary can already be turning while
-    // the heavily weighted lower rows still look straight.  Learn the normal
-    // perspective slope on the approach, then use a slope change as a
-    // look-ahead steering cue.
-    if (line.support >= lookahead_min_support_)
-    {
-      if (heading_baseline_samples_ < lookahead_baseline_frames_)
-      {
-        heading_baseline_sum_ += line.heading_shift_px;
-        ++heading_baseline_samples_;
-        heading_baseline_px_ =
-            heading_baseline_sum_ /
-            static_cast<double>(heading_baseline_samples_);
-      }
-      else
-      {
-        result.heading_delta_px = heading_baseline_px_ - line.heading_shift_px;
-        const bool heading_candidate =
-            std::fabs(result.heading_delta_px) >= lookahead_trigger_px_;
-        if (heading_candidate)
-          lookahead_candidate_count_ =
-              std::min(lookahead_candidate_count_ + 1,
-                       lookahead_confirm_frames_);
-        else
-          lookahead_candidate_count_ = 0;
-
-        result.lookahead_active =
-            lookahead_candidate_count_ >= lookahead_confirm_frames_;
-        if (result.lookahead_active)
-        {
-          angular += clampDouble(lookahead_gain_ * result.heading_delta_px,
-                                 -lookahead_max_angular_,
-                                 lookahead_max_angular_);
-        }
-        else if (abs_error < steering_deadband_px_ * 1.5)
-        {
-          // Adapt very slowly on genuine straight sections so lighting and
-          // camera vibration do not make the learned reference stale.
-          heading_baseline_px_ =
-              (1.0 - lookahead_baseline_alpha_) * heading_baseline_px_ +
-              lookahead_baseline_alpha_ * line.heading_shift_px;
-        }
-      }
-    }
-    else
-    {
-      lookahead_candidate_count_ = 0;
-    }
-
-    const bool in_curve =
-        abs_error > curve_error_threshold_ || result.lookahead_active;
+    const bool in_curve = abs_error > curve_error_threshold_;
     if (in_curve)
     {
       linear = curve_speed_;
@@ -691,33 +521,6 @@ private:
     }
 
     const auto y_bounds = std::minmax_element(ys.begin(), ys.end());
-
-    // Least-squares x(y) fit.  The difference between the fitted far and near
-    // x coordinates is almost insensitive to one noisy scan row and retains
-    // the shallow-bend information that an average x value discards.
-    double mean_x = 0.0;
-    double mean_y = 0.0;
-    for (std::size_t i = 0; i < xs.size(); ++i)
-    {
-      mean_x += xs[i];
-      mean_y += ys[i];
-    }
-    mean_x /= static_cast<double>(xs.size());
-    mean_y /= static_cast<double>(ys.size());
-    double covariance = 0.0;
-    double variance_y = 0.0;
-    for (std::size_t i = 0; i < xs.size(); ++i)
-    {
-      covariance += (ys[i] - mean_y) * (xs[i] - mean_x);
-      variance_y += (ys[i] - mean_y) * (ys[i] - mean_y);
-    }
-    const double slope =
-        variance_y > 1e-6 ? covariance / variance_y : 0.0;
-    const double far_x =
-        mean_x + slope * (*y_bounds.first - mean_y);
-    const double near_x =
-        mean_x + slope * (*y_bounds.second - mean_y);
-
     result.found = true;
     result.x = clampInt(static_cast<int>(std::round(weighted_x)),
                         0, mask.cols - 1);
@@ -728,14 +531,14 @@ private:
     result.span_ratio =
         (*y_bounds.second - *y_bounds.first) /
         std::max(1.0, static_cast<double>(mask.rows));
-    result.heading_shift_px = far_x - near_x;
     return result;
   }
 
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
   {
     EndOfTrackResult result;
-    (void)now;
+    if ((now - start_time_).toSec() < end_enable_delay_)
+      return result;
 
     const int y0 = clampInt(static_cast<int>(mask.rows * end_roiYInMask()), 0, mask.rows - 1);
     const int bottom_height = mask.rows - y0;
@@ -822,45 +625,21 @@ private:
     geometry_msgs::Twist cmd;
     if (!follow.found)
     {
+      line_was_lost_ = true;
       reacquire_count_ = 0;
-      const ros::Time now = ros::Time::now();
-      if (!line_was_lost_)
+      if (filtered_error_ >= right_warning_error_px_)
       {
-        line_was_lost_ = true;
-        lost_start_time_ = now;
-        last_reliable_angular_ = last_angular_;
-      }
-      const double lost_elapsed = (now - lost_start_time_).toSec();
-
-      // A one- or two-frame miss at the shallow bend must not immediately
-      // become an endless in-place turn.  Briefly preserve the last reliable
-      // heading, then sweep in alternating directions until the line returns.
-      if (lost_elapsed < lost_grace_time_)
-      {
-        setStatus("stable_right_lost_short_grace");
-        cmd.linear.x = lost_grace_speed_;
-        cmd.angular.z =
-            clampDouble(last_reliable_angular_,
-                        -max_straight_angular_speed_,
-                        max_straight_angular_speed_);
+        // If the last trustworthy observation already showed that the car was
+        // close to the right boundary, do not blindly move farther right.
+        setStatus("stable_right_lost_last_seen_too_close");
+        cmd.linear.x = 0.0;
+        cmd.angular.z = right_hard_away_angular_;
       }
       else
       {
-        const int sweep_index = static_cast<int>(
-            (lost_elapsed - lost_grace_time_) /
-            std::max(0.10, lost_sweep_period_));
-        double first_direction =
-            last_reliable_angular_ >= 0.03 ? 1.0 :
-            (last_reliable_angular_ <= -0.03 ? -1.0 :
-             (lost_angular_speed_ >= 0.0 ? 1.0 : -1.0));
-        if ((sweep_index % 2) != 0)
-          first_direction = -first_direction;
-        setStatus((sweep_index % 2) == 0
-                      ? "stable_right_lost_sweep_first"
-                      : "stable_right_lost_sweep_reverse");
+        setStatus("stable_right_lost_rotate_right_in_place");
         cmd.linear.x = lost_linear_speed_;
-        cmd.angular.z =
-            first_direction * std::fabs(lost_sweep_angular_speed_);
+        cmd.angular.z = lost_angular_speed_;
       }
       publishCmd(cmd);
       return;
@@ -888,15 +667,12 @@ private:
 
     last_right_x_ = follow.right_x;
     last_detection_time_ = ros::Time::now();
-    last_reliable_angular_ = follow.angular;
     cmd.linear.x = follow.linear;
     cmd.angular.z = follow.angular;
     if (follow.guard_level >= 2)
       setStatus("stable_right_tracking_right_hard_guard");
     else if (follow.guard_level == 1)
       setStatus("stable_right_tracking_right_guard");
-    else if (follow.lookahead_active)
-      setStatus("stable_right_tracking_shallow_curve_lookahead");
     else if (std::fabs(follow.filtered_error) > curve_error_threshold_)
       setStatus("stable_right_tracking_curve");
     else
@@ -959,8 +735,6 @@ private:
     line2 << "right_x=" << follow.right_x << " err=" << std::fixed << std::setprecision(1)
           << follow.filtered_error << " support=" << follow.line_support
           << " span=" << std::setprecision(2) << follow.line_span_ratio
-          << " head_d=" << std::setprecision(1) << follow.heading_delta_px
-          << " look=" << boolText(follow.lookahead_active)
           << " guard=" << follow.guard_level;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
@@ -986,9 +760,6 @@ private:
        << " line_support=" << follow.line_support
        << " line_confidence=" << follow.line_confidence
        << " line_span_ratio=" << follow.line_span_ratio
-       << " heading_shift_px=" << follow.heading_shift_px
-       << " heading_delta_px=" << follow.heading_delta_px
-       << " lookahead_active=" << boolText(follow.lookahead_active)
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
        << " guard_level=" << follow.guard_level
@@ -1041,10 +812,6 @@ private:
   double search_angular_speed_ = -0.08;
   double lost_linear_speed_ = 0.0;
   double lost_angular_speed_ = -0.08;
-  double lost_grace_time_ = 0.28;
-  double lost_grace_speed_ = 0.07;
-  double lost_sweep_period_ = 0.65;
-  double lost_sweep_angular_speed_ = 0.11;
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
@@ -1078,18 +845,8 @@ private:
   int min_segment_gap_px_ = 10;
   int right_min_scan_support_ = 3;
   double max_target_jump_px_ = 160.0;
-  int lookahead_min_support_ = 5;
-  int lookahead_baseline_frames_ = 6;
-  double lookahead_trigger_px_ = 7.0;
-  double lookahead_gain_ = 0.006;
-  double lookahead_max_angular_ = 0.16;
-  int lookahead_confirm_frames_ = 2;
-  double lookahead_baseline_alpha_ = 0.025;
 
-  double early_cross_shift_distance_m_ = 0.20;
-  double early_cross_shift_speed_ = 0.10;
-  double early_cross_search_speed_ = 0.07;
-  double early_cross_search_angular_speed_ = -0.10;
+  double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
   double end_min_width_ratio_ = 0.45;
   double end_stop_hold_ = 1.0;
@@ -1102,7 +859,6 @@ private:
   ros::Time start_time_;
   ros::Time state_start_time_;
   ros::Time last_detection_time_;
-  ros::Time lost_start_time_;
   std::string status_ = "idle";
 
   double last_error_ = 0.0;
@@ -1111,12 +867,6 @@ private:
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
-  bool early_cross_line_handled_ = false;
-  int heading_baseline_samples_ = 0;
-  int lookahead_candidate_count_ = 0;
-  double heading_baseline_sum_ = 0.0;
-  double heading_baseline_px_ = 0.0;
-  double last_reliable_angular_ = 0.0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };
