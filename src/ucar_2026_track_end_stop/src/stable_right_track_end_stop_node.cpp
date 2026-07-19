@@ -453,8 +453,8 @@ private:
         if (result.lookahead_active)
         {
           angular += clampDouble(lookahead_gain_ * result.heading_delta_px,
-                                 -lookahead_max_angular,
-                                 lookahead_max_angular);
+                                 -lookahead_max_angular_,
+                                 lookahead_max_angular_);
         }
         else if (abs_error < steering_deadband_px_ * 1.5)
         {
