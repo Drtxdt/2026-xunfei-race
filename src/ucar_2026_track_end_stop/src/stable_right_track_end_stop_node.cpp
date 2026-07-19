@@ -121,7 +121,11 @@ private:
     private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("target_right_x", target_right_x_, 270);
+    private_nh_.param("right_line_offset_px", right_line_offset_px_, 170.0);
+    target_right_x_ = clampInt(
+        static_cast<int>(std::round(kImageCols * 0.5 +
+                                    right_line_offset_px_)),
+        0, kImageCols - 1);
     private_nh_.param("base_speed", base_speed_, 0.20);
     private_nh_.param("curve_speed", curve_speed_, 0.12);
     private_nh_.param("search_speed", search_speed_, 0.0);
@@ -154,26 +158,18 @@ private:
     private_nh_.param("white_v_min", white_v_min_, 200);
     private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
     private_nh_.param("min_component_area", min_component_area_, 260.0);
-    private_nh_.param("right_min_contour_length_px",
-                      right_min_contour_length_px_, 135.0);
-    private_nh_.param("right_min_vertical_span_ratio",
-                      right_min_vertical_span_ratio_, 0.20);
-    private_nh_.param("right_min_curve_width_ratio",
-                      right_min_curve_width_ratio_, 0.16);
-    private_nh_.param("right_min_curve_height_ratio",
-                      right_min_curve_height_ratio_, 0.11);
-    private_nh_.param("right_horizontal_reject_width_ratio",
-                      right_horizontal_reject_width_ratio_, 0.44);
-    private_nh_.param("right_horizontal_reject_height_ratio",
-                      right_horizontal_reject_height_ratio_, 0.10);
-    private_nh_.param("right_control_y_ratio", right_control_y_ratio_, 0.78);
-    private_nh_.param("right_min_contour_samples",
-                      right_min_contour_samples_, 4);
-    private_nh_.param("right_min_confidence", right_min_confidence_, 0.36);
-    private_nh_.param("right_max_temporal_jump_px",
-                      right_max_temporal_jump_px_, 170.0);
-    private_nh_.param("right_reacquire_max_jump_px",
-                      right_reacquire_max_jump_px_, 300.0);
+    right_scan_rows_ = {
+        0.95, 0.92, 0.88, 0.84, 0.80,
+        0.75, 0.70, 0.64, 0.58};
+    private_nh_.param("right_scan_bottom_weight",
+                      right_scan_bottom_weight_, 1.8);
+    private_nh_.param("min_line_width_px", min_line_width_px_, 5);
+    private_nh_.param("max_line_segment_width_px",
+                      max_line_segment_width_px_, 90);
+    private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
+    private_nh_.param("right_min_scan_support",
+                      right_min_scan_support_, 3);
+    private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
@@ -466,134 +462,76 @@ private:
 
   RightLineResult findRightLine(const cv::Mat& mask) const
   {
-    RightLineResult best;
-    double best_score = -1e9;
-    cv::Mat contour_input = mask.clone();
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(contour_input, contours, cv::RETR_EXTERNAL,
-                     cv::CHAIN_APPROX_SIMPLE);
+    RightLineResult result;
+    std::vector<double> xs;
+    std::vector<double> ys;
+    std::vector<double> weights;
 
-    for (std::size_t contour_index = 0;
-         contour_index < contours.size(); ++contour_index)
+    for (std::size_t i = 0; i < right_scan_rows_.size(); ++i)
     {
-      const std::vector<cv::Point>& contour = contours[contour_index];
-      const double contour_length = cv::arcLength(contour, true);
-      if (contour_length < right_min_contour_length_px_)
-        continue;
-
-      const cv::Rect box = cv::boundingRect(contour);
-      const double height_ratio =
-          static_cast<double>(box.height) /
-          std::max(1.0, static_cast<double>(mask.rows));
-      const double width_ratio =
-          static_cast<double>(box.width) /
-          std::max(1.0, static_cast<double>(mask.cols));
-
-      // Accept both the tall straight boundary and a wide, visibly curved
-      // boundary at a corner.  Reject a short horizontal parking stripe.
-      const bool straight_shape =
-          height_ratio >= right_min_vertical_span_ratio_;
-      const bool curved_shape =
-          width_ratio >= right_min_curve_width_ratio_ &&
-          height_ratio >= right_min_curve_height_ratio_;
-      const bool horizontal_bar =
-          width_ratio >= right_horizontal_reject_width_ratio_ &&
-          height_ratio <= right_horizontal_reject_height_ratio_;
-      if ((!straight_shape && !curved_shape) || horizontal_bar)
-        continue;
-
-      cv::Mat component = cv::Mat::zeros(mask.size(), CV_8UC1);
-      cv::drawContours(component, contours,
-                       static_cast<int>(contour_index),
-                       cv::Scalar(255), cv::FILLED);
-
-      std::vector<int> sample_x;
-      std::vector<int> sample_y;
-      constexpr int kContourSamples = 9;
-      for (int sample = 0; sample < kContourSamples; ++sample)
-      {
-        const int y = clampInt(
-            box.y + (std::max(1, box.height) - 1) * sample /
-                        (kContourSamples - 1),
-            0, mask.rows - 1);
-        const uchar* ptr = component.ptr<uchar>(y);
-        int detected_x = -1;
-        for (int x = std::min(mask.cols - 1, box.x + box.width - 1);
-             x >= std::max(0, box.x); --x)
-        {
-          if (ptr[x] > 0)
-          {
-            detected_x = x;
-            break;
-          }
-        }
-        if (detected_x >= 0)
-        {
-          sample_x.push_back(detected_x);
-          sample_y.push_back(y);
-        }
-      }
-      if (sample_x.size() <
-          static_cast<std::size_t>(right_min_contour_samples_))
-        continue;
-
-      const int control_y = clampInt(
-          static_cast<int>(mask.rows * right_control_y_ratio_),
+      const int y = clampInt(
+          static_cast<int>(mask.rows * right_scan_rows_[i]),
           0, mask.rows - 1);
-      int candidate_x = sample_x.front();
-      int closest_y_distance =
-          std::abs(sample_y.front() - control_y);
-      for (std::size_t i = 1; i < sample_x.size(); ++i)
-      {
-        const int distance = std::abs(sample_y[i] - control_y);
-        if (distance < closest_y_distance)
-        {
-          candidate_x = sample_x[i];
-          closest_y_distance = distance;
-        }
-      }
-
-      const double allowed_jump = line_was_lost_
-          ? right_reacquire_max_jump_px_
-          : right_max_temporal_jump_px_;
-      const double temporal_jump = last_right_x_ >= 0
-          ? std::fabs(static_cast<double>(candidate_x - last_right_x_))
-          : 0.0;
-      if (last_right_x_ >= 0 && temporal_jump > allowed_jump)
+      std::vector<Segment> segments = findSegments(mask.row(y));
+      segments.erase(
+          std::remove_if(
+              segments.begin(), segments.end(),
+              [this](const Segment& segment) {
+                return segment.width > max_line_segment_width_px_;
+              }),
+          segments.end());
+      if (segments.empty())
         continue;
 
-      const double length_score =
-          clampDouble(contour_length / 420.0, 0.0, 1.0);
-      const double span_ratio =
-          std::max(height_ratio, 0.70 * width_ratio);
-      const double span_score =
-          clampDouble(span_ratio / 0.55, 0.0, 1.0);
-      const double sample_score =
-          static_cast<double>(sample_x.size()) /
-          static_cast<double>(kContourSamples);
-      const double confidence =
-          0.40 * length_score + 0.35 * span_score +
-          0.25 * sample_score;
-      if (confidence < right_min_confidence_)
-        continue;
-
-      // Prefer the rightmost long component, with a continuity bonus from the
-      // previous frame.  No left-line model is ever built or consumed.
-      const double score =
-          0.75 * static_cast<double>(candidate_x) +
-          120.0 * confidence + 0.18 * contour_length -
-          0.20 * temporal_jump;
-      if (score > best_score)
-      {
-        best_score = score;
-        best.found = true;
-        best.x = candidate_x;
-        best.support = static_cast<int>(sample_x.size());
-        best.confidence = confidence;
-        best.span_ratio = span_ratio;
-      }
+      // The requested boundary is always the rightmost admissible segment.
+      const Segment& rightmost = segments.back();
+      const double center =
+          0.5 * static_cast<double>(rightmost.left + rightmost.right);
+      const double bottom_factor =
+          static_cast<double>(right_scan_rows_.size() - i) /
+          std::max(1.0,
+                   static_cast<double>(right_scan_rows_.size() - 1));
+      const double weight =
+          1.0 + bottom_factor * (right_scan_bottom_weight_ - 1.0);
+      xs.push_back(center);
+      ys.push_back(static_cast<double>(y));
+      weights.push_back(weight);
     }
-    return best;
+
+    if (xs.size() < static_cast<std::size_t>(right_min_scan_support_))
+      return result;
+
+    double weight_sum = 0.0;
+    double weighted_x = 0.0;
+    for (std::size_t i = 0; i < xs.size(); ++i)
+    {
+      weight_sum += weights[i];
+      weighted_x += xs[i] * weights[i];
+    }
+    weighted_x /= std::max(1e-6, weight_sum);
+
+    // Reuse the attachment's target-jump limiter: keep tracking a bend
+    // continuously instead of accepting a one-frame jump to another object.
+    if (last_right_x_ >= 0)
+    {
+      weighted_x = clampDouble(
+          weighted_x,
+          last_right_x_ - max_target_jump_px_,
+          last_right_x_ + max_target_jump_px_);
+    }
+
+    const auto y_bounds = std::minmax_element(ys.begin(), ys.end());
+    result.found = true;
+    result.x = clampInt(static_cast<int>(std::round(weighted_x)),
+                        0, mask.cols - 1);
+    result.support = static_cast<int>(xs.size());
+    result.confidence =
+        static_cast<double>(xs.size()) /
+        std::max(1.0, static_cast<double>(right_scan_rows_.size()));
+    result.span_ratio =
+        (*y_bounds.second - *y_bounds.first) /
+        std::max(1.0, static_cast<double>(mask.rows));
+    return result;
   }
 
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
@@ -647,13 +585,39 @@ private:
         start = x;
       else if (!active && start >= 0)
       {
-        segments.push_back(Segment{start, x - 1, x - start});
+        const int width = x - start;
+        if (width >= min_line_width_px_)
+          segments.push_back(Segment{start, x - 1, width});
         start = -1;
       }
     }
     if (start >= 0)
-      segments.push_back(Segment{start, row.cols - 1, row.cols - start});
-    return segments;
+    {
+      const int width = row.cols - start;
+      if (width >= min_line_width_px_)
+        segments.push_back(
+            Segment{start, row.cols - 1, width});
+    }
+
+    if (segments.empty())
+      return segments;
+    std::vector<Segment> merged;
+    merged.push_back(segments.front());
+    for (std::size_t i = 1; i < segments.size(); ++i)
+    {
+      Segment& previous = merged.back();
+      const Segment& current = segments[i];
+      if (current.left - previous.right <= min_segment_gap_px_)
+      {
+        previous.right = current.right;
+        previous.width = previous.right - previous.left + 1;
+      }
+      else
+      {
+        merged.push_back(current);
+      }
+    }
+    return merged;
   }
 
   void publishFollowCommand(const FollowResult& follow)
@@ -840,7 +804,8 @@ private:
   double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
-  int target_right_x_ = 270;
+  double right_line_offset_px_ = 170.0;
+  int target_right_x_ = 490;
   double base_speed_ = 0.20;
   double curve_speed_ = 0.12;
   double search_speed_ = 0.0;
@@ -873,17 +838,13 @@ private:
   int white_v_min_ = 200;
   int morph_kernel_size_ = 5;
   double min_component_area_ = 260.0;
-  double right_min_contour_length_px_ = 135.0;
-  double right_min_vertical_span_ratio_ = 0.20;
-  double right_min_curve_width_ratio_ = 0.16;
-  double right_min_curve_height_ratio_ = 0.11;
-  double right_horizontal_reject_width_ratio_ = 0.44;
-  double right_horizontal_reject_height_ratio_ = 0.10;
-  double right_control_y_ratio_ = 0.78;
-  int right_min_contour_samples_ = 4;
-  double right_min_confidence_ = 0.36;
-  double right_max_temporal_jump_px_ = 170.0;
-  double right_reacquire_max_jump_px_ = 300.0;
+  std::vector<double> right_scan_rows_;
+  double right_scan_bottom_weight_ = 1.8;
+  int min_line_width_px_ = 5;
+  int max_line_segment_width_px_ = 90;
+  int min_segment_gap_px_ = 10;
+  int right_min_scan_support_ = 3;
+  double max_target_jump_px_ = 160.0;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
