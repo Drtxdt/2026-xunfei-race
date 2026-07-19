@@ -72,6 +72,14 @@ private:
     Finish
   };
 
+  enum class LostRecoveryState
+  {
+    Tracking,
+    Advance10cm,
+    TurnRightUntilWhite,
+    AwaitRightLine
+  };
+
   struct FollowResult
   {
     bool found = false;
@@ -130,8 +138,14 @@ private:
     private_nh_.param("curve_speed", curve_speed_, 0.12);
     private_nh_.param("search_speed", search_speed_, 0.0);
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
+    private_nh_.param("lost_advance_distance_m",
+                      lost_advance_distance_m_, 0.10);
+    private_nh_.param("lost_advance_speed",
+                      lost_advance_speed_, 0.10);
+    private_nh_.param("lost_turn_right_angular_speed",
+                      lost_turn_right_angular_speed_, -0.10);
+    private_nh_.param("lost_white_min_pixels",
+                      lost_white_min_pixels_, 120);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
@@ -207,6 +221,8 @@ private:
                                   frame.rows),
                         cv::Range(0, frame.cols));
     cv::Mat mask = extractWhiteMask(roi);
+    const bool white_line_visible =
+        cv::countNonZero(mask) >= lost_white_min_pixels_;
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
     FollowResult follow;
     geometry_msgs::Twist cmd;
@@ -259,10 +275,10 @@ private:
             ROS_INFO("stable right continuous line found: support=%d confidence=%.2f",
                      follow.line_support, follow.line_confidence);
             last_detection_time_ = now;
-            line_was_lost_ = false;
+            lost_recovery_state_ = LostRecoveryState::Tracking;
             state_ = State::Follow;
             state_start_time_ = now;
-            publishFollowCommand(follow);
+            publishFollowCommand(follow, white_line_visible, now);
           }
         }
         break;
@@ -279,7 +295,7 @@ private:
         }
         else
         {
-          publishFollowCommand(follow);
+          publishFollowCommand(follow, white_line_visible, now);
         }
         break;
 
@@ -620,42 +636,102 @@ private:
     return merged;
   }
 
-  void publishFollowCommand(const FollowResult& follow)
+  void publishFollowCommand(const FollowResult& follow,
+                            bool white_line_visible,
+                            const ros::Time& now)
   {
     geometry_msgs::Twist cmd;
+
+    if (lost_recovery_state_ == LostRecoveryState::Tracking &&
+        !follow.found)
+    {
+      lost_recovery_state_ = LostRecoveryState::Advance10cm;
+      lost_recovery_start_time_ = now;
+      filtered_angular_ = 0.0;
+    }
+
+    if (lost_recovery_state_ == LostRecoveryState::Advance10cm)
+    {
+      const double duration = lost_advance_distance_m_ /
+          std::max(1e-6, lost_advance_speed_);
+      if ((now - lost_recovery_start_time_).toSec() < duration)
+      {
+        setStatus("stable_right_lost_advance_10cm");
+        cmd.linear.x = lost_advance_speed_;
+        cmd.angular.z = 0.0;
+        publishCmd(cmd);
+      }
+      else
+      {
+        lost_recovery_state_ =
+            LostRecoveryState::TurnRightUntilWhite;
+        lost_recovery_start_time_ = now;
+        setStatus("stable_right_lost_advance_done_stop");
+        publishStop();
+      }
+      return;
+    }
+
+    if (lost_recovery_state_ ==
+        LostRecoveryState::TurnRightUntilWhite)
+    {
+      if (white_line_visible)
+      {
+        lost_recovery_state_ = LostRecoveryState::AwaitRightLine;
+        setStatus("stable_right_white_seen_stop_turn");
+        publishStop();
+      }
+      else
+      {
+        setStatus("stable_right_turn_right_until_white");
+        cmd.linear.x = 0.0;
+        cmd.angular.z = lost_turn_right_angular_speed_;
+        publishCmd(cmd);
+      }
+      return;
+    }
+
+    if (lost_recovery_state_ == LostRecoveryState::AwaitRightLine)
+    {
+      if (!white_line_visible)
+      {
+        lost_recovery_state_ =
+            LostRecoveryState::TurnRightUntilWhite;
+        setStatus("stable_right_white_lost_resume_right_turn");
+        cmd.angular.z = lost_turn_right_angular_speed_;
+        publishCmd(cmd);
+        return;
+      }
+      if (!follow.found)
+      {
+        setStatus("stable_right_white_seen_wait_right_line");
+        publishStop();
+        return;
+      }
+
+      lost_recovery_state_ = LostRecoveryState::Tracking;
+      filtered_error_ = follow.error;
+      last_error_ = follow.error;
+      filtered_angular_ = 0.0;
+      last_right_x_ = follow.right_x;
+      last_detection_time_ = now;
+      setStatus("stable_right_resume_tracking_current_pose");
+    }
+
     if (!follow.found)
     {
-      line_was_lost_ = true;
-      reacquire_count_ = 0;
-      setStatus("stable_right_lost_rotate_right_in_place");
-      cmd.linear.x = 0.0;
-      cmd.angular.z = lost_angular_speed_;
+      // Defensive fallback: a tracking frame cannot move without a valid
+      // right line.
+      lost_recovery_state_ = LostRecoveryState::Advance10cm;
+      lost_recovery_start_time_ = now;
+      setStatus("stable_right_lost_advance_10cm");
+      cmd.linear.x = lost_advance_speed_;
       publishCmd(cmd);
       return;
     }
 
-    if (line_was_lost_)
-    {
-      ++reacquire_count_;
-      last_right_x_ = follow.right_x;
-      setStatus("stable_right_reacquire_confirming_continuous_line");
-      if (reacquire_count_ < reacquire_confirm_frames_)
-      {
-        publishStop();
-        return;
-      }
-      line_was_lost_ = false;
-      reacquire_count_ = 0;
-      filtered_error_ = follow.error;
-      last_error_ = follow.error;
-      filtered_angular_ = 0.0;
-      setStatus("stable_right_reacquired_continuous_line");
-      publishStop();
-      return;
-    }
-
     last_right_x_ = follow.right_x;
-    last_detection_time_ = ros::Time::now();
+    last_detection_time_ = now;
     cmd.linear.x = follow.linear;
     cmd.angular.z = follow.angular;
     if (follow.guard_level >= 2)
@@ -799,8 +875,10 @@ private:
   double curve_speed_ = 0.12;
   double search_speed_ = 0.0;
   double search_angular_speed_ = -0.08;
-  double lost_linear_speed_ = 0.0;
-  double lost_angular_speed_ = -0.08;
+  double lost_advance_distance_m_ = 0.10;
+  double lost_advance_speed_ = 0.10;
+  double lost_turn_right_angular_speed_ = -0.10;
+  int lost_white_min_pixels_ = 120;
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
@@ -854,8 +932,10 @@ private:
   double filtered_error_ = 0.0;
   double filtered_angular_ = 0.0;
   int last_right_x_ = -1;
-  bool line_was_lost_ = false;
   int reacquire_count_ = 0;
+  LostRecoveryState lost_recovery_state_ =
+      LostRecoveryState::Tracking;
+  ros::Time lost_recovery_start_time_;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };
