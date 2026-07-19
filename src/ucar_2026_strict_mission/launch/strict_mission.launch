@@ -1,0 +1,34 @@
+<launch>
+  <arg name="config_file"
+       default="$(find ucar_2026_strict_mission)/config/strict_mission.yaml" />
+  <arg name="start_traffic_detector" default="true" />
+  <arg name="start_viewer" default="false" />
+  <arg name="traffic_pose_configured" default="true" />
+  <arg name="traffic_staging_x" default="0.3195" />
+  <arg name="traffic_staging_y" default="-3.0" />
+  <arg name="traffic_staging_yaw" default="-1.5596" />
+  <arg name="traffic_config_file"
+       default="$(find ucar_2026_strict_mission)/config/traffic_light_no_speech.yaml" />
+
+  <include if="$(arg start_traffic_detector)"
+           file="$(find ucar_2026_traffic_light_rknn_test)/launch/traffic_light_rknn_x11_speak_test.launch">
+    <arg name="start_camera" value="false" />
+    <arg name="start_tts" value="false" />
+    <arg name="start_competition_speech" value="false" />
+    <arg name="start_viewer" value="$(arg start_viewer)" />
+    <arg name="config_file" value="$(arg traffic_config_file)" />
+    <arg name="required" value="true" />
+  </include>
+
+  <node pkg="ucar_2026_strict_mission"
+        type="strict_mission_node.py"
+        name="strict_mission"
+        output="screen"
+        required="true">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
+    <param name="traffic_staging_x" value="$(arg traffic_staging_x)" />
+    <param name="traffic_staging_y" value="$(arg traffic_staging_y)" />
+    <param name="traffic_staging_yaw" value="$(arg traffic_staging_yaw)" />
+  </node>
+</launch>

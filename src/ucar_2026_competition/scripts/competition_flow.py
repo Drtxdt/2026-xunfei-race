@@ -136,6 +136,7 @@ class CompetitionFlow:
         self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
+        self.strict_mission_status = {}
         self.track_status = {}
 
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
@@ -169,6 +170,9 @@ class CompetitionFlow:
         )
         rospy.Subscriber(
             "/traffic_light_rknn_test/detections", String, self._traffic_cb, queue_size=20
+        )
+        rospy.Subscriber(
+            "/strict_mission/status", String, self._strict_mission_cb, queue_size=20
         )
         for _, topic, _ in TRACK_CONFIG.values():
             rospy.Subscriber(topic, String, self._track_cb, callback_args=topic, queue_size=10)
@@ -450,6 +454,14 @@ class CompetitionFlow:
         except Exception:
             return
 
+    def _strict_mission_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            if isinstance(payload, dict):
+                self.strict_mission_status = payload
+        except Exception:
+            return
+
     def _track_cb(self, msg, topic):
         self.track_status[topic] = msg.data.strip().lower()
 
@@ -572,6 +584,65 @@ class CompetitionFlow:
         self.publish_status(
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
+
+    def task3_task4_handoff(self):
+        """Resume physical navigation without resetting the random factory pose."""
+        self.publish_status(
+            "task3", "task4_handoff",
+            "preserving AMCL pose and preparing physical navigation")
+        self.safe_stop(cancel_navigation=True)
+        timeout = float(rospy.get_param(
+            "~task3_task4_handoff_timeout_sec", 5.0))
+        stable_required = float(rospy.get_param(
+            "~task3_task4_handoff_stable_sec", 0.5))
+        deadline = time.monotonic() + timeout
+        stable_since = None
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self.safe_stop(cancel_navigation=True)
+            state = self.move_base.get_state()
+            with self.lock:
+                twist = self.base_twist
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            idle = state not in (GoalStatus.PENDING, GoalStatus.ACTIVE)
+            stopped = (twist is not None and odom_age <= 0.5 and
+                       base_is_stopped(*twist))
+            if idle and stopped:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= stable_required:
+                    break
+            else:
+                stable_since = None
+            rospy.sleep(0.05)
+        else:
+            raise StageError(
+                "task3->task4 handoff did not reach {:.1f}s stationary idle state".format(
+                    stable_required))
+
+        try:
+            rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
+            rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError(
+                "task3->task4 costmap refresh failed: {}".format(exc))
+        cleared_at = time.monotonic()
+        refresh_deadline = cleared_at + 2.0
+        while time.monotonic() < refresh_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                scan_fresh = self.handoff_scan_received_at > cleared_at
+                costmap_fresh = self.handoff_costmap_received_at > cleared_at
+            if scan_fresh and costmap_fresh:
+                break
+            rospy.sleep(0.05)
+        else:
+            raise StageError(
+                "task3->task4 costmap refresh produced no fresh scan/costmap snapshot")
+        self.safe_stop(cancel_navigation=True)
+        self.publish_status(
+            "task3", "task4_handoff_ready",
+            "current AMCL pose preserved; fresh costmap; task4 may navigate")
 
     def start_child(self, key, package, launch_file, args=None):
         self.stop_child(key)
@@ -1225,19 +1296,68 @@ class CompetitionFlow:
         self.announce("task3", item=item, workshop=workshop)
         self.publish_status("task3", "completed", result_text)
 
+    def approach_task4_stop_line(self):
+        self.strict_mission_status = {}
+        self.publish_status(
+            "task4", "approaching_stop_line",
+            "navigating to staging pose, then approaching the stop line visually")
+        self.start_child(
+            "strict_line",
+            "ucar_2026_strict_mission",
+            "strict_mission.launch",
+            {
+                "start_traffic_detector": False,
+                "start_viewer": self.debug,
+                "traffic_pose_configured": True,
+                "traffic_staging_x": float(rospy.get_param("~traffic_x")),
+                "traffic_staging_y": float(rospy.get_param("~traffic_y")),
+                "traffic_staging_yaw": float(rospy.get_param("~traffic_yaw")),
+            },
+        )
+        try:
+            rospy.wait_for_service("/strict_mission/start", timeout=10.0)
+            response = rospy.ServiceProxy("/strict_mission/start", Trigger)()
+            if not response.success:
+                raise StageError(
+                    "strict stop-line approach refused start: {}".format(response.message))
+
+            timeout = (
+                float(rospy.get_param("~move_base_timeout_sec", 90.0))
+                + float(rospy.get_param("~line_approach_timeout_sec", 45.0))
+                + 15.0
+            )
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                self.check_abort()
+                status = self.strict_mission_status
+                state = str(status.get("state", ""))
+                if state == "WAIT_TRAFFIC":
+                    distance = status.get("distance_m")
+                    self.publish_status(
+                        "task4", "stop_line_reached",
+                        "vehicle held before stop line; distance_m={}".format(distance))
+                    return
+                if state == "FAULT":
+                    raise StageError(
+                        "strict stop-line approach failed: {}".format(
+                            status.get("error") or status.get("detail") or "unknown fault"))
+                proc = self.children.get("strict_line")
+                if proc and proc.poll() is not None:
+                    raise StageError("strict stop-line approach exited unexpectedly")
+                rospy.sleep(0.1)
+            raise StageError(
+                "strict stop-line approach timed out after {:.1f}s".format(timeout))
+        finally:
+            self.stop_child("strict_line")
+            self.safe_stop(cancel_navigation=True)
+
     def task4(self):
         configured = bool_param("~traffic_pose_configured", False)
         if not configured:
             raise StageError(
                 "traffic pose is not configured; set ~traffic_x/~traffic_y/~traffic_yaw and ~traffic_pose_configured=true"
             )
-        self.navigate(
-            float(rospy.get_param("~traffic_x")),
-            float(rospy.get_param("~traffic_y")),
-            float(rospy.get_param("~traffic_yaw")),
-            "task4",
-        )
-        self.safe_stop(cancel_navigation=True)
+        self.approach_task4_stop_line()
         self.traffic_decision = ""
         self.red_announced = False
         self.publish_status("task4", "detecting", "waiting for traffic-light consensus")
@@ -1321,6 +1441,8 @@ class CompetitionFlow:
             for stage in stage_sequence(self.mode):
                 if previous_stage == "task1" and stage == "task2":
                     self.run_stage("task1", self.task1_task2_handoff)
+                if previous_stage == "task3" and stage == "task4":
+                    self.run_stage("task3", self.task3_task4_handoff)
                 self.run_stage(stage, handlers[stage])
                 previous_stage = stage
             self.publish_status("competition", "completed", "requested flow completed")
