@@ -51,8 +51,8 @@ class ApproachPolicyTests(unittest.TestCase):
     def test_uses_staged_conservative_speeds(self):
         self.assertEqual(self.policy.command_for_distance(0.50), 0.10)
         self.assertEqual(self.policy.command_for_distance(0.25), 0.06)
-        self.assertEqual(self.policy.command_for_distance(0.14), 0.035)
-        self.assertEqual(self.policy.command_for_distance(0.09), 0.018)
+        self.assertEqual(self.policy.command_for_distance(0.14), 0.05)
+        self.assertEqual(self.policy.command_for_distance(0.09), 0.045)
 
     def test_stops_inside_target_band_and_when_too_close(self):
         self.assertEqual(self.policy.command_for_distance(0.06), 0.0)

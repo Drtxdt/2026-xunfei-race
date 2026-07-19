@@ -100,8 +100,8 @@ class ApproachPolicy:
         calibration_error_m,
         speed_far=0.10,
         speed_medium=0.06,
-        speed_near=0.035,
-        speed_creep=0.018,
+        speed_near=0.05,
+        speed_creep=0.045,
     ):
         self.target_min_m = float(target_min_m)
         self.target_max_m = float(target_max_m)

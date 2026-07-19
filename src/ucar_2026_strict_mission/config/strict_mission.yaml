@@ -34,8 +34,8 @@
 
   "speed_far": 0.10,
   "speed_medium": 0.06,
-  "speed_near": 0.035,
-  "speed_creep": 0.018,
+  "speed_near": 0.05,
+  "speed_creep": 0.045,
 
   "line_roi_start_ratio": 0.45,
   "white_s_max": 85,
@@ -48,7 +48,7 @@
   "image_stale_stop_sec": 0.25,
   "image_stale_fault_sec": 1.0,
   "line_missing_fault_sec": 2.0,
-  "line_approach_timeout_sec": 45.0,
+  "line_approach_timeout_sec": 75.0,
   "traffic_confirm_frames": 3,
   "traffic_timeout_sec": 180.0,
   "track_timeout_sec": 420.0

@@ -75,8 +75,8 @@ class StrictMissionNode:
             float(rospy.get_param("~calibration_error_m", 0.03)),
             speed_far=float(rospy.get_param("~speed_far", 0.10)),
             speed_medium=float(rospy.get_param("~speed_medium", 0.06)),
-            speed_near=float(rospy.get_param("~speed_near", 0.035)),
-            speed_creep=float(rospy.get_param("~speed_creep", 0.018)),
+            speed_near=float(rospy.get_param("~speed_near", 0.05)),
+            speed_creep=float(rospy.get_param("~speed_creep", 0.045)),
         )
         self.band_filter = ConsecutiveBandFilter(
             int(rospy.get_param("~stop_confirm_frames", 5)),
@@ -442,7 +442,7 @@ class StrictMissionNode:
             self.publish_status("visual stop-line approach armed")
             self.wait_event(
                 self.parked_event,
-                float(rospy.get_param("~line_approach_timeout_sec", 45.0)),
+                float(rospy.get_param("~line_approach_timeout_sec", 75.0)),
                 "strict line approach",
             )
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))
