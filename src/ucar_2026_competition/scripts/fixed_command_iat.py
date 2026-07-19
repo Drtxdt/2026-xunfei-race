@@ -203,7 +203,6 @@ class FixedCommandIat:
                     if (
                         pickup_category
                         and sim_category
-                        and pickup_category != sim_category
                         and not accepted.is_set()
                     ):
                         accepted.set()

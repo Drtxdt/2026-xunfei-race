@@ -216,13 +216,6 @@ class CompetitionFlow:
                     "command must contain physical and simulation categories: {}".format(question),
                 )
                 return
-            if pickup_category == sim_category:
-                rospy.logwarn("ignoring voice text with identical categories: %s", question)
-                self.publish_status(
-                    "task1", "listening_command",
-                    "physical and simulation categories must differ",
-                )
-                return
             self.question = question
             self.voice_listening = False
             self.voice_command_ack_in_progress = True
@@ -285,7 +278,7 @@ class CompetitionFlow:
                     self.voice_listening = True
                 self.publish_status(
                     "task1", "listening_command",
-                    "waiting for distinct physical and simulation categories",
+                    "waiting for physical and simulation target categories",
                 )
         except Exception as exc:
             self._set_voice_handshake_error(exc)
@@ -322,7 +315,6 @@ class CompetitionFlow:
                 and self.voice_command_acknowledged
                 and self.category
                 and self.sim_category
-                and self.category != self.sim_category
             )
 
     def _qr_cb(self, msg):
@@ -872,7 +864,7 @@ class CompetitionFlow:
         self.publish_status(
             "task1",
             "waiting_voice",
-            "say 小飞小飞, wait for 我在, then give different physical/simulation categories",
+            "say 小飞小飞, wait for 我在, then give physical/simulation categories",
         )
         self.wait_loop(0, self._voice_command_ready)
 

@@ -194,8 +194,6 @@ def build_task1_instruction(pickup_category, sim_category):
     simulation = CATEGORY_LABELS.get(sim_category)
     if not pickup or not simulation:
         raise ValueError("both task1 categories are required")
-    if pickup_category == sim_category:
-        raise ValueError("task1 physical and simulation categories must differ")
     return (
         "小飞小飞，前往物品领取区，取得{}类，放置在对应仓库，"
         "并领取仿真环境中需要的{}类放置在对应仓库"
