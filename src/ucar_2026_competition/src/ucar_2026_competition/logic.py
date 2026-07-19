@@ -92,6 +92,22 @@ def base_is_stopped(linear_x, linear_y, angular_z,
             abs(float(angular_z)) <= abs(float(angular_tolerance)))
 
 
+def traffic_staging_pose(reference_x, reference_y, reference_yaw, backoff):
+    """Place the move_base handoff point behind the calibrated stop reference."""
+    yaw = float(reference_yaw)
+    distance = max(0.0, float(backoff))
+    return (
+        float(reference_x) - distance * math.cos(yaw),
+        float(reference_y) - distance * math.sin(yaw),
+        yaw,
+    )
+
+
+def traffic_detection_allowed(stop_line_status):
+    """Traffic-light inference may start only after verified line stopping."""
+    return str(stop_line_status or "").strip().lower() == "stopped"
+
+
 class ConsecutiveTargetFilter:
     def __init__(self, required=3):
         self.required = max(1, int(required))

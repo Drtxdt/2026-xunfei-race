@@ -1,0 +1,33 @@
+<launch>
+  <arg name="calibrate_only" default="false" />
+  <arg name="calibration_file" default="$(env HOME)/.ros/traffic_stop_line_calibration.yaml" />
+  <arg name="target_front_gap_m" default="0.06" />
+  <arg name="max_search_distance" default="0.60" />
+  <arg name="search_timeout_sec" default="15.0" />
+  <arg name="min_width_ratio" default="0.35" />
+  <arg name="required_hits" default="3" />
+  <arg name="window_size" default="5" />
+  <arg name="angle_tolerance_deg" default="3.0" />
+  <arg name="publish_debug" default="false" />
+  <arg name="required" default="true" />
+  <arg name="start_camera" default="false" />
+
+  <group if="$(arg start_camera)">
+    <include file="$(find usb_cam)/launch/usb_cam-test.launch" />
+  </group>
+
+  <node pkg="ucar_2026_traffic_stop_line" type="traffic_stop_line_node.py"
+        name="traffic_stop_line" output="screen" required="$(arg required)">
+    <rosparam command="load" file="$(find ucar_2026_traffic_stop_line)/config/traffic_stop_line.yaml" />
+    <param name="calibrate_only" value="$(arg calibrate_only)" />
+    <param name="calibration_file" value="$(arg calibration_file)" />
+    <param name="target_front_gap_m" value="$(arg target_front_gap_m)" />
+    <param name="max_search_distance" value="$(arg max_search_distance)" />
+    <param name="search_timeout_sec" value="$(arg search_timeout_sec)" />
+    <param name="min_width_ratio" value="$(arg min_width_ratio)" />
+    <param name="required_hits" value="$(arg required_hits)" />
+    <param name="window_size" value="$(arg window_size)" />
+    <param name="angle_tolerance_deg" value="$(arg angle_tolerance_deg)" />
+    <param name="publish_debug" value="$(arg publish_debug)" />
+  </node>
+</launch>

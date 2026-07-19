@@ -42,8 +42,10 @@ from ucar_2026_competition.logic import (
     parse_category,
     qr_values_from_payload,
     stage_sequence,
+    traffic_detection_allowed,
     traffic_decision_from_payload,
     task2_announcement_required,
+    traffic_staging_pose,
     trigger_delivery_state,
 )
 
@@ -136,6 +138,8 @@ class CompetitionFlow:
         self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
+        self.stop_line_status = ""
+        self.task4_stop_line_active = False
         self.track_status = {}
 
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
@@ -170,6 +174,9 @@ class CompetitionFlow:
         rospy.Subscriber(
             "/traffic_light_rknn_test/detections", String, self._traffic_cb, queue_size=20
         )
+        rospy.Subscriber(
+            rospy.get_param("~stop_line_status_topic", "/traffic_stop_line/status"),
+            String, self._stop_line_cb, queue_size=20)
         for _, topic, _ in TRACK_CONFIG.values():
             rospy.Subscriber(topic, String, self._track_cb, callback_args=topic, queue_size=10)
 
@@ -450,6 +457,23 @@ class CompetitionFlow:
         except Exception:
             return
 
+    def _stop_line_cb(self, msg):
+        status = msg.data.strip().lower()
+        with self.lock:
+            changed = status != self.stop_line_status
+            self.stop_line_status = status
+            active = self.task4_stop_line_active
+        if changed:
+            rospy.loginfo("task4 stop-line status: %s", status)
+        if not active:
+            return
+        if status in ("line_searching", "line_aligning", "line_approaching",
+                      "line_verifying", "stopped"):
+            self.publish_status(
+                "task4", status, "visual stop-line controller")
+        elif status in ("failed", "calibration_missing", "calibration_failed"):
+            self.publish_status("task4", "stop_line_failed", status)
+
     def _track_cb(self, msg, topic):
         self.track_status[topic] = msg.data.strip().lower()
 
@@ -572,6 +596,30 @@ class CompetitionFlow:
         self.publish_status(
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
+
+    def wait_motion_idle(self, stage, timeout=5.0, stable_sec=0.5):
+        """Prove move_base is idle and odometry is stationary before direct control."""
+        deadline = time.monotonic() + float(timeout)
+        stable_since = None
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self.safe_stop(cancel_navigation=True)
+            state = self.move_base.get_state()
+            with self.lock:
+                twist = self.base_twist
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            idle = state not in (GoalStatus.PENDING, GoalStatus.ACTIVE)
+            stopped = (twist is not None and odom_age <= 0.5 and
+                       base_is_stopped(*twist))
+            if idle and stopped:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= float(stable_sec):
+                    return
+            else:
+                stable_since = None
+            rospy.sleep(0.05)
+        raise StageError("{} motion handoff did not become idle".format(stage))
 
     def start_child(self, key, package, launch_file, args=None):
         self.stop_child(key)
@@ -1229,15 +1277,127 @@ class CompetitionFlow:
         configured = bool_param("~traffic_pose_configured", False)
         if not configured:
             raise StageError(
-                "traffic pose is not configured; set ~traffic_x/~traffic_y/~traffic_yaw and ~traffic_pose_configured=true"
+                "traffic reference is not configured; set the navigation-team end goal and ~traffic_pose_configured=true"
             )
+        reference_x = float(rospy.get_param(
+            "~traffic_reference_x", rospy.get_param("~traffic_x", 0.3195)))
+        reference_y = float(rospy.get_param(
+            "~traffic_reference_y", rospy.get_param("~traffic_y", -3.2703)))
+        reference_yaw = float(rospy.get_param(
+            "~traffic_reference_yaw", rospy.get_param("~traffic_yaw", -1.5596)))
+        backoff = float(rospy.get_param("~traffic_staging_backoff", 0.35))
+        staging_x, staging_y, staging_yaw = traffic_staging_pose(
+            reference_x, reference_y, reference_yaw, backoff)
         self.navigate(
-            float(rospy.get_param("~traffic_x")),
-            float(rospy.get_param("~traffic_y")),
-            float(rospy.get_param("~traffic_yaw")),
+            staging_x,
+            staging_y,
+            staging_yaw,
             "task4",
+            timeout_sec=float(rospy.get_param(
+                "~traffic_navigation_timeout_sec", 120.0)),
+            status_state="navigating_to_staging",
         )
+        self.publish_status(
+            "task4", "staging_reached",
+            "reference=({:.4f},{:.4f},{:.4f}) backoff={:.2f}".format(
+                reference_x, reference_y, reference_yaw, backoff))
+        self.wait_motion_idle("task4", timeout=5.0, stable_sec=0.5)
+
+        with self.lock:
+            self.stop_line_status = ""
+            self.task4_stop_line_active = True
+        try:
+            self.start_child(
+                "traffic_stop_line",
+                "ucar_2026_traffic_stop_line",
+                "traffic_stop_line.launch",
+                {
+                    "calibrate_only": False,
+                    "calibration_file": rospy.get_param(
+                        "~stop_line_calibration_file",
+                        os.path.expanduser(
+                            "~/.ros/traffic_stop_line_calibration.yaml")),
+                    "target_front_gap_m": rospy.get_param(
+                        "~stop_line_target_front_gap", 0.06),
+                    "max_search_distance": rospy.get_param(
+                        "~stop_line_max_search_distance", 0.60),
+                    "search_timeout_sec": rospy.get_param(
+                        "~stop_line_search_timeout_sec", 15.0),
+                    "min_width_ratio": rospy.get_param(
+                        "~stop_line_min_width_ratio", 0.35),
+                    "required_hits": rospy.get_param(
+                        "~stop_line_required_hits", 3),
+                    "window_size": rospy.get_param(
+                        "~stop_line_window_size", 5),
+                    "angle_tolerance_deg": rospy.get_param(
+                        "~stop_line_angle_tolerance_deg", 3.0),
+                    "publish_debug": self.debug,
+                    "required": True,
+                },
+            )
+            service = rospy.get_param(
+                "~stop_line_start_service", "/traffic_stop_line/start")
+            rospy.wait_for_service(service, timeout=10.0)
+            trigger = rospy.ServiceProxy(service, Trigger)
+            start_deadline = time.time() + 5.0
+            response = None
+            while time.time() < start_deadline and not rospy.is_shutdown():
+                response = trigger()
+                if response.success:
+                    break
+                if response.message not in (
+                        "image_stale", "odom_stale", "scan_stale"):
+                    raise StageError(
+                        "stop-line start rejected: {}".format(response.message))
+                rospy.sleep(0.1)
+            if response is None or not response.success:
+                raise StageError("stop-line sensors did not become ready")
+            deadline = time.time() + float(rospy.get_param(
+                "~stop_line_total_timeout_sec", 25.0))
+            while time.time() < deadline and not rospy.is_shutdown():
+                self.check_abort()
+                with self.lock:
+                    status = self.stop_line_status
+                if traffic_detection_allowed(status):
+                    break
+                if status in (
+                        "failed", "calibration_missing", "calibration_failed"):
+                    raise StageError("stop-line controller {}".format(status))
+                proc = self.children.get("traffic_stop_line")
+                if proc and proc.poll() is not None:
+                    raise StageError("stop-line controller exited unexpectedly")
+                rospy.sleep(0.05)
+            else:
+                raise StageError("stop-line docking timed out")
+        except (StageError, Aborted):
+            self.stop_child("traffic_stop_line")
+            with self.lock:
+                self.task4_stop_line_active = False
+            self.safe_stop(cancel_navigation=True)
+            raise
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            self.stop_child("traffic_stop_line")
+            with self.lock:
+                self.task4_stop_line_active = False
+            self.safe_stop(cancel_navigation=True)
+            raise StageError("stop-line service failed: {}".format(exc))
+        except Exception as exc:
+            self.stop_child("traffic_stop_line")
+            with self.lock:
+                self.task4_stop_line_active = False
+            self.safe_stop(cancel_navigation=True)
+            raise StageError("stop-line controller failed: {}".format(exc))
+
         self.safe_stop(cancel_navigation=True)
+        with self.lock:
+            verified_stop_line_status = self.stop_line_status
+        if not traffic_detection_allowed(verified_stop_line_status):
+            self.stop_child("traffic_stop_line")
+            with self.lock:
+                self.task4_stop_line_active = False
+            raise StageError(
+                "traffic-light start blocked: stop-line status is {}".format(
+                    verified_stop_line_status or "empty"))
         self.traffic_decision = ""
         self.red_announced = False
         self.publish_status("task4", "detecting", "waiting for traffic-light consensus")
@@ -1279,6 +1439,9 @@ class CompetitionFlow:
             raise StageError("traffic-light recognition timed out")
         finally:
             self.stop_child("traffic_light")
+            self.stop_child("traffic_stop_line")
+            with self.lock:
+                self.task4_stop_line_active = False
             self.safe_stop(cancel_navigation=True)
 
     def task5(self):

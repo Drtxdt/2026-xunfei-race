@@ -103,11 +103,27 @@ coverage_anchor_yaw_timeout_sec: 20.0
 sim_bridge_port: 26003
 sim_timeout_sec: 900.0
 
-# 交通灯坐标必须经实车标定后显式设置。未设置时流程安全暂停。
-traffic_pose_configured: false
-traffic_x: 0.0
-traffic_y: 0.0
-traffic_yaw: 0.0
+# 大手子的结束点只作为停止线参考；move_base在其后方0.35m释放控制权。
+traffic_pose_configured: true
+traffic_x: 0.3195
+traffic_y: -3.2703
+traffic_yaw: -1.5596
+traffic_reference_x: 0.3195
+traffic_reference_y: -3.2703
+traffic_reference_yaw: -1.5596
+traffic_staging_backoff: 0.35
+traffic_navigation_timeout_sec: 120.0
+stop_line_status_topic: /traffic_stop_line/status
+stop_line_start_service: /traffic_stop_line/start
+stop_line_calibration_file: ~/.ros/traffic_stop_line_calibration.yaml
+stop_line_target_front_gap: 0.06
+stop_line_total_timeout_sec: 25.0
+stop_line_max_search_distance: 0.60
+stop_line_search_timeout_sec: 15.0
+stop_line_min_width_ratio: 0.35
+stop_line_required_hits: 3
+stop_line_window_size: 5
+stop_line_angle_tolerance_deg: 3.0
 traffic_timeout_sec: 180.0
 
 track_timeout_sec: 420.0

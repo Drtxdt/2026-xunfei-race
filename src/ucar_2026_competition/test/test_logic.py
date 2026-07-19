@@ -22,7 +22,9 @@ from ucar_2026_competition.logic import (
     parse_category,
     qr_values_from_payload,
     stage_sequence,
+    traffic_detection_allowed,
     traffic_decision_from_payload,
+    traffic_staging_pose,
     task2_announcement_required,
     trigger_delivery_state,
 )
@@ -131,6 +133,19 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(base_is_stopped(0.02, 0.0, 0.0))
         self.assertFalse(base_is_stopped(0.0, 0.0, 0.03))
 
+    def test_task4_staging_pose_is_behind_navigation_team_end_goal(self):
+        x, y, yaw = traffic_staging_pose(
+            0.3195, -3.2703, -1.5596, 0.35)
+        self.assertAlmostEqual(x, 0.31558, places=4)
+        self.assertAlmostEqual(y, -2.92032, places=4)
+        self.assertEqual(yaw, -1.5596)
+
+    def test_task4_traffic_light_is_gated_by_verified_stop(self):
+        self.assertTrue(traffic_detection_allowed("stopped"))
+        self.assertTrue(traffic_detection_allowed(" STOPPED "))
+        for status in ("", "line_searching", "line_verifying", "failed"):
+            self.assertFalse(traffic_detection_allowed(status))
+
     def test_task2_announcement_is_allowed_once_and_only_after_arrival(self):
         self.assertFalse(task2_announcement_required("parking_verifying", False))
         self.assertTrue(task2_announcement_required("arrived", False))
@@ -153,6 +168,28 @@ class CompetitionLogicTest(unittest.TestCase):
                          "$(arg coverage_goal_soft_timeout_sec)")
         self.assertEqual(args["coverage_goal_hard_timeout_sec"],
                          "$(arg coverage_goal_hard_timeout_sec)")
+
+    def test_task4_launch_uses_official_reference_and_visual_handoff(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "task4.launch"))
+        root = ET.parse(launch_path).getroot()
+        defaults = {item.attrib["name"]: item.attrib.get("default")
+                    for item in root.findall("arg")}
+        self.assertEqual(defaults["traffic_x"], "0.3195")
+        self.assertEqual(defaults["traffic_y"], "-3.2703")
+        self.assertEqual(defaults["traffic_yaw"], "-1.5596")
+        self.assertEqual(defaults["traffic_staging_backoff"], "0.35")
+        self.assertEqual(defaults["stop_line_target_front_gap"], "0.06")
+        self.assertEqual(defaults["stop_line_required_hits"], "3")
+        self.assertEqual(defaults["stop_line_window_size"], "5")
+        flow_include = next(
+            item for item in root.findall("include")
+            if "flow_node.launch" in item.attrib.get("file", ""))
+        args = {item.attrib["name"]: item.attrib.get("value")
+                for item in flow_include.findall("arg")}
+        self.assertEqual(args["start_stage"], "task4")
+        self.assertEqual(args["stop_line_calibration_file"],
+                         "$(arg stop_line_calibration_file)")
 
 
 if __name__ == "__main__":

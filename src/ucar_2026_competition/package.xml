@@ -23,6 +23,7 @@
   <exec_depend>simple_navigator</exec_depend>
   <exec_depend>ucar_2026_track_end_stop</exec_depend>
   <exec_depend>ucar_2026_traffic_light_rknn_test</exec_depend>
+  <exec_depend>ucar_2026_traffic_stop_line</exec_depend>
   <exec_depend>ucar_nav</exec_depend>
   <exec_depend>usb_cam</exec_depend>
   <exec_depend>vision_triggered_navigator</exec_depend>
