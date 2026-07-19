@@ -152,14 +152,6 @@ private:
     private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
     private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
-    private_nh_.param("recovery_forward_time",
-                      recovery_forward_time_, 0.65);
-    private_nh_.param("recovery_forward_speed",
-                      recovery_forward_speed_, 0.10);
-    private_nh_.param("recovery_approach_px",
-                      recovery_approach_px_, 4.0);
-    private_nh_.param("recovery_left_angular",
-                      recovery_left_angular_, 0.055);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
     private_nh_.param("white_s_max", white_s_max_, 45);
@@ -419,7 +411,8 @@ private:
       angular *= curve_angular_gain_;
     }
 
-    // Preserve the previous version's lateral-distance guard.
+    // error = target - detected.  A positive error means that the right line
+    // has moved left in the image and the car is getting too close to it.
     if (filtered_error_ >= right_warning_error_px_)
     {
       result.guard_level = 1;
@@ -634,9 +627,6 @@ private:
     {
       line_was_lost_ = true;
       reacquire_count_ = 0;
-      recovery_active_ = false;
-      // The only lost-line search direction is right.  Keep linear speed at
-      // zero so the car cannot draw a blind arc across the boundary.
       setStatus("stable_right_lost_rotate_right_in_place");
       cmd.linear.x = 0.0;
       cmd.angular.z = lost_angular_speed_;
@@ -659,46 +649,9 @@ private:
       filtered_error_ = follow.error;
       last_error_ = follow.error;
       filtered_angular_ = 0.0;
-      recovery_active_ = true;
-      recovery_start_time_ = ros::Time::now();
-      recovery_reference_right_x_ =
-          static_cast<double>(follow.right_x);
-      setStatus("stable_right_reacquired_prepare_forward");
+      setStatus("stable_right_reacquired_continuous_line");
       publishStop();
       return;
-    }
-
-    if (recovery_active_)
-    {
-      const double elapsed =
-          (ros::Time::now() - recovery_start_time_).toSec();
-      if (elapsed < recovery_forward_time_)
-      {
-        cmd.linear.x = recovery_forward_speed_;
-        const bool approaching_right_line =
-            static_cast<double>(follow.right_x) <=
-                recovery_reference_right_x_ - recovery_approach_px_ ||
-            follow.error >= right_warning_error_px_;
-        if (approaching_right_line)
-        {
-          cmd.angular.z = recovery_left_angular_;
-          setStatus("stable_right_recovery_forward_slight_left");
-        }
-        else
-        {
-          cmd.angular.z = 0.0;
-          setStatus("stable_right_recovery_forward_straight");
-        }
-        last_right_x_ = follow.right_x;
-        last_detection_time_ = ros::Time::now();
-        publishCmd(cmd);
-        return;
-      }
-
-      recovery_active_ = false;
-      filtered_error_ = follow.error;
-      last_error_ = follow.error;
-      filtered_angular_ = 0.0;
     }
 
     last_right_x_ = follow.right_x;
@@ -868,10 +821,6 @@ private:
   double right_guard_away_angular_ = 0.10;
   double right_hard_away_angular_ = 0.24;
   double deadband_angular_decay_ = 0.45;
-  double recovery_forward_time_ = 0.65;
-  double recovery_forward_speed_ = 0.10;
-  double recovery_approach_px_ = 4.0;
-  double recovery_left_angular_ = 0.055;
 
   double roi_y_start_ratio_ = 0.60;
   int white_s_max_ = 45;
@@ -907,9 +856,6 @@ private:
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
-  bool recovery_active_ = false;
-  ros::Time recovery_start_time_;
-  double recovery_reference_right_x_ = -1.0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };
