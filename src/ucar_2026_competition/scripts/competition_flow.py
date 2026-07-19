@@ -940,9 +940,6 @@ class CompetitionFlow:
             raise StageError("LLM physical category does not match voice category")
         if normalize_category(result.sim_major) != self.sim_category:
             raise StageError("LLM simulation category does not match voice category")
-        if result.pickup_item.strip() == result.sim_item.strip():
-            raise StageError("LLM selected the same item for physical and simulation tasks")
-
         self.task1_result = {
             "qr_items": items,
             "category": self.category,

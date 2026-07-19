@@ -60,8 +60,8 @@ announcement 句式必须与赛题一致：
 - announcement_physical 必须以「取得」开头，包含「属于」「应放置在」，车间为上述三个全名之一。
 - announcement_simulation 必须以「仿真环境中取得」开头（中间不要逗号），同样包含「属于」「应放置在」。
 - 物品领取区和仿真环境的目标大类允许相同，也允许不同，必须分别按语音指令填写。
-- pickup_item 和 sim_item 必须是两个不同货品；即使目标大类相同，也必须选择该大类下不同的货品。
-- 如果语音没有给出两个目标大类，或三个候选中无法选出两个不同货品，返回 null 并在 err_hint 中说明。
+- pickup_item 和 sim_item 允许相同，也允许不同；同一大类只对应一个候选货品时，两边应选择同一货品。
+- 如果语音没有给出两个目标大类，返回 null 并在 err_hint 中说明。
 """
 
 
@@ -273,10 +273,6 @@ def _handle_request(req: ReasonPickupOrderRequest) -> ReasonPickupOrderResponse:
     if not pickup_category or not sim_category:
         res.error_message = "模型未给出两个有效的目标大类"
         return res
-    if res.pickup_item.strip() == res.sim_item.strip():
-        res.error_message = "物品领取区和仿真环境取得的货品必须不同"
-        return res
-
     res.success = True
     return res
 

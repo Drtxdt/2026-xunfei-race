@@ -77,7 +77,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("取得食品类", instruction)
         self.assertIn("仿真环境中需要的日用品类", instruction)
 
-    def test_task1_allows_same_category_for_two_different_items(self):
+    def test_task1_allows_same_category_for_both_targets(self):
         command = build_task1_instruction("food", "food")
         self.assertEqual(parse_task1_categories(command), ("food", "food"))
 
