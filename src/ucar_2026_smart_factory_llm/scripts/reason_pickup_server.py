@@ -59,7 +59,20 @@ SYSTEM_PROMPT = """你是第21届全国大学生智能汽车竞赛「讯飞智�
 announcement 句式必须与赛题一致：
 - announcement_physical 必须以「取得」开头，包含「属于」「应放置在」，车间为上述三个全名之一。
 - announcement_simulation 必须以「仿真环境中取得」开头（中间不要逗号），同样包含「属于」「应放置在」。
+- 物品领取区和仿真环境的目标大类必须不同，pickup_item 和 sim_item 也必须不同。
+- 不得把物品领取区的大类复制到仿真字段；如果语音没有给出两个不同大类，返回 null 并在 err_hint 中说明。
 """
+
+
+def _normalize_major(value: Any) -> Optional[str]:
+    compact = "".join(str(value or "").split()).lower()
+    if "日用品" in compact or "daily" in compact:
+        return "daily"
+    if "电子产品" in compact or "electronics" in compact or "electronic" in compact:
+        return "electronics"
+    if "食品" in compact or "food" in compact:
+        return "food"
+    return None
 
 
 def _strip_code_fence(text: str) -> str:
@@ -253,6 +266,17 @@ def _handle_request(req: ReasonPickupOrderRequest) -> ReasonPickupOrderResponse:
 
     if not res.pickup_item or not res.sim_item:
         res.error_message = "模型未给出完整的 pickup_item / sim_item"
+        return res
+    pickup_category = _normalize_major(res.pickup_major)
+    sim_category = _normalize_major(res.sim_major)
+    if not pickup_category or not sim_category:
+        res.error_message = "模型未给出两个有效的目标大类"
+        return res
+    if pickup_category == sim_category:
+        res.error_message = "物品领取区和仿真环境的目标大类必须不同"
+        return res
+    if res.pickup_item.strip() == res.sim_item.strip():
+        res.error_message = "物品领取区和仿真环境取得的货品必须不同"
         return res
 
     res.success = True
