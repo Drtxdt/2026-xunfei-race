@@ -118,8 +118,10 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_time", startup_time_, 2.0);
-    private_nh_.param("startup_speed", startup_speed_, 0.45);
+    // Keep about 0.60 m of open-loop travel before vision control starts,
+    // while using a moderate speed to reduce the deviation accumulated there.
+    private_nh_.param("startup_time", startup_time_, 2.40);
+    private_nh_.param("startup_speed", startup_speed_, 0.25);
 
     private_nh_.param("right_line_offset_px", right_line_offset_px_, 170.0);
     target_right_x_ = clampInt(
@@ -135,22 +137,26 @@ private:
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
-    private_nh_.param("error_alpha", error_alpha_, 0.15);
-    private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
+    // React before a gentle bend develops into a large lateral error.
+    private_nh_.param("error_alpha", error_alpha_, 0.28);
+    private_nh_.param("curve_error_threshold", curve_error_threshold_, 24.0);
     private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
     private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
-    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.15);
+    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.22);
     private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.82);
+    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.68);
     private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.03);
+    private_nh_.param("straight_angular_step", straight_angular_step_, 0.05);
     private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
     private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
-    private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
+    private_nh_.param("right_hard_error_px", right_hard_error_px_, 76.0);
     private_nh_.param("right_guard_speed", right_guard_speed_, 0.09);
+    private_nh_.param("right_hard_guard_speed", right_hard_guard_speed_, 0.055);
     private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
-    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
+    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.20);
+    private_nh_.param("lost_away_linear_speed", lost_away_linear_speed_, 0.04);
+    private_nh_.param("lost_away_angular_speed", lost_away_angular_speed_, 0.14);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
@@ -158,20 +164,23 @@ private:
     private_nh_.param("white_v_min", white_v_min_, 200);
     private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
     private_nh_.param("min_component_area", min_component_area_, 260.0);
+    // Include several farther-ahead rows.  The bottom rows still have more
+    // weight, so the existing right-line offset remains approximately valid.
     right_scan_rows_ = {
-        0.95, 0.92, 0.88, 0.84, 0.80,
-        0.75, 0.70, 0.64, 0.58};
+        0.96, 0.92, 0.87, 0.81, 0.74,
+        0.66, 0.58, 0.50, 0.42};
     private_nh_.param("right_scan_bottom_weight",
                       right_scan_bottom_weight_, 1.8);
     private_nh_.param("min_line_width_px", min_line_width_px_, 5);
     private_nh_.param("max_line_segment_width_px",
-                      max_line_segment_width_px_, 90);
+                      max_line_segment_width_px_, 120);
     private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
     private_nh_.param("right_min_scan_support",
                       right_min_scan_support_, 3);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
+    private_nh_.param("end_confirm_frames", end_confirm_frames_, 3);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
@@ -270,9 +279,15 @@ private:
       case State::Follow:
         follow = computeFollow(mask);
         if (end_result.detected)
+          ++end_confirm_count_;
+        else
+          end_confirm_count_ = 0;
+
+        if (end_confirm_count_ >= end_confirm_frames_)
         {
           ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
                    end_result.best_width_ratio, end_result.best_y_ratio);
+          end_confirm_count_ = 0;
           state_ = State::EndDetected;
           state_start_time_ = now;
           hardStop();
@@ -422,7 +437,10 @@ private:
     if (filtered_error_ >= right_hard_error_px_)
     {
       result.guard_level = 2;
-      linear = 0.0;
+      // Keep a slow forward crawl so a gentle bend is followed as an arc.
+      // Stopping here used to turn an ordinary accumulated error into an
+      // in-place left rotation that could no longer see the right boundary.
+      linear = right_hard_guard_speed_;
       angular = std::max(angular, right_hard_away_angular_);
     }
 
@@ -632,8 +650,12 @@ private:
         // If the last trustworthy observation already showed that the car was
         // close to the right boundary, do not blindly move farther right.
         setStatus("stable_right_lost_last_seen_too_close");
-        cmd.linear.x = 0.0;
-        cmd.angular.z = right_hard_away_angular_;
+        // filtered_error_ is stale while the line is absent.  Do not let that
+        // stale value lock the vehicle into an endless in-place left turn.
+        // A slow left arc preserves camera motion and normally brings the
+        // right boundary back into the ROI.
+        cmd.linear.x = lost_away_linear_speed_;
+        cmd.angular.z = lost_away_angular_speed_;
       }
       else
       {
@@ -801,8 +823,8 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_time_ = 2.0;
-  double startup_speed_ = 0.45;
+  double startup_time_ = 2.40;
+  double startup_speed_ = 0.25;
 
   double right_line_offset_px_ = 170.0;
   int target_right_x_ = 490;
@@ -815,22 +837,25 @@ private:
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
-  double error_alpha_ = 0.15;
-  double curve_error_threshold_ = 38.0;
+  double error_alpha_ = 0.28;
+  double curve_error_threshold_ = 24.0;
   double curve_angular_gain_ = 1.05;
   double max_angular_speed_ = 0.40;
   double steering_deadband_px_ = 7.0;
-  double max_straight_angular_speed_ = 0.15;
+  double max_straight_angular_speed_ = 0.22;
   double max_right_angular_speed_ = 0.34;
-  double straight_angular_alpha_ = 0.82;
+  double straight_angular_alpha_ = 0.68;
   double curve_angular_alpha_ = 0.58;
-  double straight_angular_step_ = 0.03;
+  double straight_angular_step_ = 0.05;
   double curve_angular_step_ = 0.06;
   double right_warning_error_px_ = 28.0;
-  double right_hard_error_px_ = 52.0;
+  double right_hard_error_px_ = 76.0;
   double right_guard_speed_ = 0.09;
+  double right_hard_guard_speed_ = 0.055;
   double right_guard_away_angular_ = 0.10;
-  double right_hard_away_angular_ = 0.24;
+  double right_hard_away_angular_ = 0.20;
+  double lost_away_linear_speed_ = 0.04;
+  double lost_away_angular_speed_ = 0.14;
   double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
@@ -841,12 +866,13 @@ private:
   std::vector<double> right_scan_rows_;
   double right_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;
-  int max_line_segment_width_px_ = 90;
+  int max_line_segment_width_px_ = 120;
   int min_segment_gap_px_ = 10;
   int right_min_scan_support_ = 3;
   double max_target_jump_px_ = 160.0;
 
   double end_enable_delay_ = 3.0;
+  int end_confirm_frames_ = 3;
   double end_roi_y_start_ratio_ = 0.87;
   double end_min_width_ratio_ = 0.45;
   double end_stop_hold_ = 1.0;
@@ -867,6 +893,7 @@ private:
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
+  int end_confirm_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };
