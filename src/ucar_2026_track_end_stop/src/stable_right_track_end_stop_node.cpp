@@ -65,6 +65,7 @@ private:
     StartupForward,
     SearchRightLine,
     Follow,
+    EarlyCrossLineSearch,
     EndDetected,
     TurnRight,
     Forward50cm,
@@ -186,7 +187,11 @@ private:
     private_nh_.param("lookahead_confirm_frames", lookahead_confirm_frames_, 2);
     private_nh_.param("lookahead_baseline_alpha", lookahead_baseline_alpha_, 0.025);
 
-    private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
+    private_nh_.param("end_enable_delay", end_enable_delay_, 20.0);
+    private_nh_.param("early_cross_search_speed",
+                      early_cross_search_speed_, 0.07);
+    private_nh_.param("early_cross_search_angular_speed",
+                      early_cross_search_angular_speed_, -0.10);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
@@ -223,6 +228,23 @@ private:
                         cv::Range(0, frame.cols));
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
+    const double elapsed = (now - start_time_).toSec();
+    if (elapsed < end_enable_delay_)
+    {
+      if (end_result.detected)
+      {
+        early_cross_clear_count_ = 0;
+      }
+      else if (early_cross_line_handled_)
+      {
+        ++early_cross_clear_count_;
+        if (early_cross_clear_count_ >= 5)
+        {
+          early_cross_line_handled_ = false;
+          early_cross_clear_count_ = 0;
+        }
+      }
+    }
     FollowResult follow;
     geometry_msgs::Twist cmd;
 
@@ -284,7 +306,27 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask);
-        if (end_result.detected)
+        if (end_result.detected &&
+            elapsed < end_enable_delay_ &&
+            !early_cross_line_handled_)
+        {
+          // A cross-line seen during the first 20 seconds is a course feature,
+          // not the finish marker.  Crawl forward while steering right until
+          // a continuous right boundary is acquired again.
+          early_cross_line_handled_ = true;
+          early_cross_clear_count_ = 0;
+          reacquire_count_ = 0;
+          line_was_lost_ = true;
+          state_ = State::EarlyCrossLineSearch;
+          state_start_time_ = now;
+          setStatus("stable_right_early_cross_search_right");
+          cmd.linear.x = early_cross_search_speed_;
+          cmd.angular.z = early_cross_search_angular_speed_;
+          publishCmd(cmd);
+          ROS_INFO("early cross-line detected at %.2fs: searching right boundary",
+                   elapsed);
+        }
+        else if (end_result.detected && elapsed >= end_enable_delay_)
         {
           ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
                    end_result.best_width_ratio, end_result.best_y_ratio);
@@ -295,6 +337,45 @@ private:
         else
         {
           publishFollowCommand(follow);
+        }
+        break;
+
+      case State::EarlyCrossLineSearch:
+        follow = computeFollow(mask);
+        if (!follow.found)
+        {
+          reacquire_count_ = 0;
+          setStatus("stable_right_early_cross_search_right");
+          cmd.linear.x = early_cross_search_speed_;
+          cmd.angular.z = early_cross_search_angular_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          ++reacquire_count_;
+          last_right_x_ = follow.right_x;
+          setStatus("stable_right_early_cross_confirm_right_line");
+          if (reacquire_count_ < reacquire_confirm_frames_)
+          {
+            // Keep moving gently instead of stopping on the course feature.
+            cmd.linear.x = early_cross_search_speed_;
+            cmd.angular.z = early_cross_search_angular_speed_;
+            publishCmd(cmd);
+          }
+          else
+          {
+            reacquire_count_ = 0;
+            line_was_lost_ = false;
+            filtered_error_ = follow.error;
+            last_error_ = follow.error;
+            filtered_angular_ = 0.0;
+            last_detection_time_ = now;
+            state_ = State::Follow;
+            state_start_time_ = now;
+            setStatus("stable_right_early_cross_right_line_reacquired");
+            publishFollowCommand(follow);
+            ROS_INFO("right boundary reacquired after early cross-line");
+          }
         }
         break;
 
@@ -633,8 +714,7 @@ private:
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
   {
     EndOfTrackResult result;
-    if ((now - start_time_).toSec() < end_enable_delay_)
-      return result;
+    (void)now;
 
     const int y0 = clampInt(static_cast<int>(mask.rows * end_roiYInMask()), 0, mask.rows - 1);
     const int bottom_height = mask.rows - y0;
@@ -985,7 +1065,9 @@ private:
   int lookahead_confirm_frames_ = 2;
   double lookahead_baseline_alpha_ = 0.025;
 
-  double end_enable_delay_ = 3.0;
+  double end_enable_delay_ = 20.0;
+  double early_cross_search_speed_ = 0.07;
+  double early_cross_search_angular_speed_ = -0.10;
   double end_roi_y_start_ratio_ = 0.87;
   double end_min_width_ratio_ = 0.45;
   double end_stop_hold_ = 1.0;
@@ -1007,6 +1089,8 @@ private:
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
+  bool early_cross_line_handled_ = false;
+  int early_cross_clear_count_ = 0;
   int heading_baseline_samples_ = 0;
   int lookahead_candidate_count_ = 0;
   double heading_baseline_sum_ = 0.0;
