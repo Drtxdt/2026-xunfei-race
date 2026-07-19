@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bisect import bisect_right
+import math
 
 
 TRAFFIC_CLASS_TO_DECISION = {
@@ -25,6 +26,15 @@ TRACK_CONFIG = {
         "stable_right_finish",
     ),
 }
+
+
+def forward_progress(start_pose, current_pose):
+    """Return odometry displacement along the starting heading."""
+    start_x, start_y, start_yaw = (float(value) for value in start_pose)
+    current_x, current_y = (float(value) for value in current_pose[:2])
+    delta_x = current_x - start_x
+    delta_y = current_y - start_y
+    return delta_x * math.cos(start_yaw) + delta_y * math.sin(start_yaw)
 
 
 def lowest_horizontal_band(row_occupancies, min_occupancy, max_band_rows,

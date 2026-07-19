@@ -17,6 +17,7 @@ import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger, TriggerResponse
@@ -26,6 +27,7 @@ from ucar_2026_strict_mission.logic import (
     ConsecutiveBandFilter,
     DistanceCalibration,
     lowest_horizontal_band,
+    forward_progress,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -50,6 +52,8 @@ class StrictMissionNode:
         self.last_image_at = 0.0
         self.line_missing_since = None
         self.last_distance_m = None
+        self.odom_pose = None
+        self.odom_received_at = 0.0
         self.traffic_hits = 0
         self.last_traffic_decision = None
         self.selected_decision = None
@@ -109,6 +113,7 @@ class StrictMissionNode:
             self.image_topic, Image, self.image_callback, queue_size=1,
             buff_size=2 ** 24,
         )
+        rospy.Subscriber("/odom", Odometry, self.odom_callback, queue_size=5)
         rospy.Subscriber(
             self.traffic_topic, String, self.traffic_callback, queue_size=10)
         rospy.Subscriber(
@@ -194,6 +199,19 @@ class StrictMissionNode:
                     self.started = True
                     self.start_event.set()
                     self.publish_status("warehouse completion trigger accepted")
+
+    def odom_callback(self, msg):
+        orientation = msg.pose.pose.orientation
+        yaw = math.atan2(
+            2.0 * (orientation.w * orientation.z
+                   + orientation.x * orientation.y),
+            1.0 - 2.0 * (orientation.y * orientation.y
+                         + orientation.z * orientation.z),
+        )
+        position = msg.pose.pose.position
+        with self.lock:
+            self.odom_pose = (position.x, position.y, yaw)
+            self.odom_received_at = time.monotonic()
 
     def detect_stop_line(self, frame):
         height, width = frame.shape[:2]
@@ -300,10 +318,10 @@ class StrictMissionNode:
         if self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
-                self.state = "STOP_CONFIRM"
+                self.state = "FINAL_ADVANCE"
                 self.parked_event.set()
             self.publish_status(
-                "strict stop band confirmed",
+                "visual stop band confirmed; arming odometry final advance",
                 line_bottom_ratio=bottom_ratio,
             )
         else:
@@ -406,6 +424,60 @@ class StrictMissionNode:
                 "navigation failed with action state {}".format(
                     self.move_base.get_state()))
 
+    def final_advance(self):
+        target = float(rospy.get_param("~final_advance_m", 0.0))
+        if target <= 0.0:
+            return
+        speed = float(rospy.get_param("~final_advance_speed", 0.045))
+        timeout = float(rospy.get_param("~final_advance_timeout_sec", 6.0))
+        stale = float(rospy.get_param("~final_advance_odom_stale_sec", 0.5))
+        if speed <= 0.0 or timeout <= 0.0 or stale <= 0.0:
+            raise RuntimeError("final advance parameters must be positive")
+
+        wait_deadline = time.monotonic() + min(2.0, timeout)
+        start_pose = None
+        while not rospy.is_shutdown() and time.monotonic() < wait_deadline:
+            with self.lock:
+                pose = self.odom_pose
+                age = time.monotonic() - self.odom_received_at
+            if pose is not None and age <= stale:
+                start_pose = pose
+                break
+            self.publish_stop()
+            time.sleep(0.02)
+        if start_pose is None:
+            raise RuntimeError("fresh odometry unavailable for final advance")
+
+        deadline = time.monotonic() + timeout
+        rate = rospy.Rate(30)
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            with self.lock:
+                pose = self.odom_pose
+                age = time.monotonic() - self.odom_received_at
+            if pose is None or age > stale:
+                self.publish_stop()
+                raise RuntimeError("odometry became stale during final advance")
+            progress = forward_progress(start_pose, pose)
+            if progress >= target:
+                self.publish_stop()
+                self.publish_status(
+                    "odometry final advance completed",
+                    final_advance_m=progress,
+                )
+                return
+            command = Twist()
+            command.linear.x = speed
+            self.cmd_pub.publish(command)
+            self.publish_status(
+                "odometry final advance",
+                final_advance_m=progress,
+                final_advance_target_m=target,
+                commanded_speed_mps=speed,
+            )
+            rate.sleep()
+        self.publish_stop()
+        raise RuntimeError("odometry final advance timed out")
+
     def launch_track(self, decision):
         launch_file, status_topic, finish_value = track_launch_for_decision(
             decision)
@@ -445,6 +517,9 @@ class StrictMissionNode:
                 float(rospy.get_param("~line_approach_timeout_sec", 75.0)),
                 "strict line approach",
             )
+            self.final_advance()
+            with self.lock:
+                self.state = "STOP_CONFIRM"
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))
             settle_deadline = time.monotonic() + settle
             while time.monotonic() < settle_deadline:

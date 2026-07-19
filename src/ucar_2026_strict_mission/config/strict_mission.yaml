@@ -32,6 +32,11 @@
   "stop_confirm_frames": 5,
   "stop_settle_sec": 0.60,
 
+  "final_advance_m": 0.12,
+  "final_advance_speed": 0.045,
+  "final_advance_timeout_sec": 6.0,
+  "final_advance_odom_stale_sec": 0.50,
+
   "speed_far": 0.10,
   "speed_medium": 0.06,
   "speed_near": 0.05,

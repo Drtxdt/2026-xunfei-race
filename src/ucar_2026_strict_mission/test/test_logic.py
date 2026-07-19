@@ -13,6 +13,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    forward_progress,
     lowest_horizontal_band,
     track_launch_for_decision,
     traffic_decision_from_payload,
@@ -33,6 +34,26 @@ class DistanceCalibrationTests(unittest.TestCase):
         calibration = DistanceCalibration([[0.50, 0.40], [0.90, 0.08]])
         self.assertIsNone(calibration.distance_for_ratio(0.45))
         self.assertIsNone(calibration.distance_for_ratio(0.95))
+
+
+class OdometryProgressTests(unittest.TestCase):
+    def test_projects_displacement_along_starting_heading(self):
+        self.assertAlmostEqual(
+            forward_progress((1.0, 2.0, 0.0), (1.12, 2.04, 0.0)),
+            0.12,
+        )
+        self.assertAlmostEqual(
+            forward_progress((1.0, 2.0, 1.57079632679),
+                             (1.03, 2.12, 1.57079632679)),
+            0.12,
+            places=6,
+        )
+
+    def test_reverse_motion_does_not_count_as_progress(self):
+        self.assertLess(
+            forward_progress((0.0, 0.0, 0.0), (-0.03, 0.0, 0.0)),
+            0.0,
+        )
 
 
 class ApproachPolicyTests(unittest.TestCase):
