@@ -79,12 +79,7 @@ private:
     int line_support = 0;
     double line_confidence = 0.0;
     double line_span_ratio = 0.0;
-    double right_near_x = -1.0;
-    double right_far_x = -1.0;
-    double right_curve_hint_px = 0.0;
-    bool right_curve_active = false;
     double error = 0.0;
-    double proximity_error = 0.0;
     double filtered_error = 0.0;
     double linear = 0.0;
     double angular = 0.0;
@@ -98,9 +93,6 @@ private:
     int support = 0;
     double confidence = 0.0;
     double span_ratio = 0.0;
-    double near_x = -1.0;
-    double far_x = -1.0;
-    double curve_hint_px = 0.0;
   };
 
   struct Segment
@@ -160,15 +152,6 @@ private:
     private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
     private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
-    private_nh_.param("right_curve_hint_px", right_curve_hint_px_, 14.0);
-    private_nh_.param("right_curve_release_px", right_curve_release_px_, 6.0);
-    private_nh_.param("right_curve_confirm_frames",
-                      right_curve_confirm_frames_, 2);
-    private_nh_.param("right_curve_min_angular",
-                      right_curve_min_angular_, 0.12);
-    private_nh_.param("right_curve_hint_gain",
-                      right_curve_hint_gain_, 0.0025);
-    private_nh_.param("right_curve_speed", right_curve_speed_, 0.11);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
     private_nh_.param("white_s_max", white_s_max_, 45);
@@ -406,34 +389,11 @@ private:
     result.line_support = line.support;
     result.line_confidence = line.confidence;
     result.line_span_ratio = line.span_ratio;
-    result.right_near_x = line.near_x;
-    result.right_far_x = line.far_x;
-    result.right_curve_hint_px = line.curve_hint_px;
     result.found = line.found;
     if (!result.found)
-    {
-      right_curve_confirm_count_ = 0;
       return result;
-    }
-
-    if (line.curve_hint_px >= right_curve_hint_px_)
-    {
-      right_curve_confirm_count_ = std::min(
-          right_curve_confirm_count_ + 1,
-          right_curve_confirm_frames_);
-    }
-    else if (line.curve_hint_px <= right_curve_release_px_)
-    {
-      right_curve_confirm_count_ = 0;
-    }
-    result.right_curve_active =
-        right_curve_confirm_count_ >= right_curve_confirm_frames_;
 
     result.error = static_cast<double>(target_right_x_ - result.right_x);
-    result.proximity_error =
-        line.near_x >= 0.0
-            ? static_cast<double>(target_right_x_) - line.near_x
-            : result.error;
     filtered_error_ = (1.0 - error_alpha_) * filtered_error_ + error_alpha_ * result.error;
     const double d_error = filtered_error_ - last_error_;
     last_error_ = filtered_error_;
@@ -451,34 +411,15 @@ private:
       angular *= curve_angular_gain_;
     }
 
-    // As soon as the far end of the right boundary opens to the right, a left
-    // command would send the car away from the bend.  Block that direction on
-    // the first hint and require a minimum right turn after confirmation.
-    if (line.curve_hint_px >= right_curve_hint_px_)
-    {
-      angular = std::min(angular, 0.0);
-      linear = std::min(linear, right_curve_speed_);
-    }
-    if (result.right_curve_active)
-    {
-      const double requested_right = -clampDouble(
-          right_curve_min_angular_ +
-              right_curve_hint_gain_ *
-                  (line.curve_hint_px - right_curve_hint_px_),
-          right_curve_min_angular_, max_right_angular_speed_);
-      angular = std::min(angular, requested_right);
-      linear = std::min(linear, right_curve_speed_);
-    }
-
-    // The bottom/near part of the boundary owns the anti-crossing guard.  A
-    // far-end curve must not falsely trigger a left escape command.
-    if (result.proximity_error >= right_warning_error_px_)
+    // error = target - detected.  A positive error means that the right line
+    // has moved left in the image and the car is getting too close to it.
+    if (filtered_error_ >= right_warning_error_px_)
     {
       result.guard_level = 1;
       linear = std::min(linear, right_guard_speed_);
       angular = std::max(angular, right_guard_away_angular_);
     }
-    if (result.proximity_error >= right_hard_error_px_)
+    if (filtered_error_ >= right_hard_error_px_)
     {
       result.guard_level = 2;
       linear = 0.0;
@@ -512,11 +453,6 @@ private:
       filtered_angular_ = std::max(filtered_angular_, right_guard_away_angular_);
     else if (result.guard_level >= 2)
       filtered_angular_ = std::max(filtered_angular_, right_hard_away_angular_);
-    else if (result.right_curve_active)
-      filtered_angular_ = std::min(filtered_angular_,
-                                   -right_curve_min_angular_);
-    else if (line.curve_hint_px >= right_curve_hint_px_)
-      filtered_angular_ = std::min(filtered_angular_, 0.0);
 
     result.filtered_error = filtered_error_;
     result.linear = linear;
@@ -585,23 +521,6 @@ private:
     }
 
     const auto y_bounds = std::minmax_element(ys.begin(), ys.end());
-    double near_x = weighted_x;
-    double far_x = weighted_x;
-    if (xs.size() >= 5)
-    {
-      const std::size_t side_count =
-          std::min<std::size_t>(3, xs.size() / 2);
-      near_x = 0.0;
-      far_x = 0.0;
-      for (std::size_t i = 0; i < side_count; ++i)
-      {
-        near_x += xs[i];
-        far_x += xs[xs.size() - 1 - i];
-      }
-      near_x /= static_cast<double>(side_count);
-      far_x /= static_cast<double>(side_count);
-    }
-
     result.found = true;
     result.x = clampInt(static_cast<int>(std::round(weighted_x)),
                         0, mask.cols - 1);
@@ -612,9 +531,6 @@ private:
     result.span_ratio =
         (*y_bounds.second - *y_bounds.first) /
         std::max(1.0, static_cast<double>(mask.rows));
-    result.near_x = near_x;
-    result.far_x = far_x;
-    result.curve_hint_px = far_x - near_x;
     return result;
   }
 
@@ -757,10 +673,6 @@ private:
       setStatus("stable_right_tracking_right_hard_guard");
     else if (follow.guard_level == 1)
       setStatus("stable_right_tracking_right_guard");
-    else if (follow.right_curve_active)
-      setStatus("stable_right_tracking_confirmed_right_curve");
-    else if (follow.right_curve_hint_px >= right_curve_hint_px_)
-      setStatus("stable_right_tracking_right_curve_hint");
     else if (std::fabs(follow.filtered_error) > curve_error_threshold_)
       setStatus("stable_right_tracking_curve");
     else
@@ -821,9 +733,8 @@ private:
 
     std::ostringstream line2;
     line2 << "right_x=" << follow.right_x << " err=" << std::fixed << std::setprecision(1)
-          << follow.filtered_error << " near=" << follow.right_near_x
-          << " far=" << follow.right_far_x
-          << " hint=" << follow.right_curve_hint_px
+          << follow.filtered_error << " support=" << follow.line_support
+          << " span=" << std::setprecision(2) << follow.line_span_ratio
           << " guard=" << follow.guard_level;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
@@ -849,12 +760,7 @@ private:
        << " line_support=" << follow.line_support
        << " line_confidence=" << follow.line_confidence
        << " line_span_ratio=" << follow.line_span_ratio
-       << " right_near_x=" << follow.right_near_x
-       << " right_far_x=" << follow.right_far_x
-       << " right_curve_hint_px=" << follow.right_curve_hint_px
-       << " right_curve_active=" << boolText(follow.right_curve_active)
        << " error=" << follow.error
-       << " proximity_error=" << follow.proximity_error
        << " filtered_error=" << follow.filtered_error
        << " guard_level=" << follow.guard_level
        << " cmd_linear=" << last_linear_
@@ -926,12 +832,6 @@ private:
   double right_guard_away_angular_ = 0.10;
   double right_hard_away_angular_ = 0.24;
   double deadband_angular_decay_ = 0.45;
-  double right_curve_hint_px_ = 14.0;
-  double right_curve_release_px_ = 6.0;
-  int right_curve_confirm_frames_ = 2;
-  double right_curve_min_angular_ = 0.12;
-  double right_curve_hint_gain_ = 0.0025;
-  double right_curve_speed_ = 0.11;
 
   double roi_y_start_ratio_ = 0.60;
   int white_s_max_ = 45;
@@ -967,7 +867,6 @@ private:
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
-  int right_curve_confirm_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };
