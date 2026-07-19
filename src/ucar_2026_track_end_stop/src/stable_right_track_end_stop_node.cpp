@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
-#include <numeric>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -109,54 +108,34 @@ private:
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
     private_nh_.param("target_right_x", target_right_x_, 200);
-    private_nh_.param("base_speed", base_speed_, 0.34);
-    private_nh_.param("fast_straight_speed", fast_straight_speed_, 0.46);
-    private_nh_.param("curve_speed", curve_speed_, 0.23);
-    private_nh_.param("medium_curve_speed", medium_curve_speed_, 0.30);
-    private_nh_.param("search_speed", search_speed_, 0.06);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.34);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.12);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.28);
-    private_nh_.param("lost_stop_frames", lost_stop_frames_, 8);
-    private_nh_.param("lost_search_frames", lost_search_frames_, 18);
+    private_nh_.param("base_speed", base_speed_, 0.26);
+    private_nh_.param("curve_speed", curve_speed_, 0.16);
+    private_nh_.param("search_speed", search_speed_, 0.10);
+    private_nh_.param("search_angular_speed", search_angular_speed_, -0.26);
+    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.10);
+    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.18);
     private_nh_.param("kp", kp_, 0.0042);
     private_nh_.param("kd", kd_, 0.0008);
-    private_nh_.param("error_alpha", error_alpha_, 0.24);
-    private_nh_.param("curve_error_threshold", curve_error_threshold_, 52.0);
-    private_nh_.param("medium_curve_error_threshold", medium_curve_error_threshold_, 30.0);
-    private_nh_.param("fast_straight_error_px", fast_straight_error_px_, 18.0);
-    private_nh_.param("fast_straight_derivative_px", fast_straight_derivative_px_, 5.0);
-    private_nh_.param("fast_straight_min_frames", fast_straight_min_frames_, 3);
-    private_nh_.param("fast_straight_angular_limit", fast_straight_angular_limit_, 0.10);
+    private_nh_.param("error_alpha", error_alpha_, 0.18);
+    private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
     private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
-    private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
+    private_nh_.param("steering_deadband_px", steering_deadband_px_, 5.0);
     private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.18);
     private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.68);
-    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.045);
-    private_nh_.param("curve_angular_step", curve_angular_step_, 0.065);
+    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.78);
+    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.50);
+    private_nh_.param("straight_angular_step", straight_angular_step_, 0.04);
+    private_nh_.param("curve_angular_step", curve_angular_step_, 0.08);
     private_nh_.param("right_guard_error_px", right_guard_error_px_, 70.0);
-    private_nh_.param("right_guard_speed", right_guard_speed_, 0.18);
-    private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.38);
-    private_nh_.param("right_x_alpha", right_x_alpha_, 0.28);
-    private_nh_.param("right_x_max_jump_px", right_x_max_jump_px_, 75.0);
-    private_nh_.param("right_line_min_votes", right_line_min_votes_, 3);
-    private_nh_.param("right_line_min_segment_width", right_line_min_segment_width_, 3);
-    private_nh_.param("right_line_max_segment_width", right_line_max_segment_width_, 90);
-    private_nh_.param("right_search_left_limit", right_search_left_limit_, 80);
-    private_nh_.param("right_safe_min_x", right_safe_min_x_, 145);
-    private_nh_.param("right_emergency_min_x", right_emergency_min_x_, 115);
-    private_nh_.param("right_guard_left_angular", right_guard_left_angular_, 0.24);
-    private_nh_.param("right_emergency_left_angular", right_emergency_left_angular_, 0.38);
-    private_nh_.param("right_emergency_speed", right_emergency_speed_, 0.05);
+    private_nh_.param("right_guard_speed", right_guard_speed_, 0.12);
+    private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
     private_nh_.param("white_s_max", white_s_max_, 45);
     private_nh_.param("white_v_min", white_v_min_, 200);
     private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
-    private_nh_.param("min_component_area", min_component_area_, 180.0);
+    private_nh_.param("min_component_area", min_component_area_, 260.0);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
@@ -361,7 +340,6 @@ private:
     result.found = result.right_x >= 0;
     if (!result.found)
       return result;
-    lost_frame_count_ = 0;
 
     result.error = static_cast<double>(target_right_x_ - result.right_x);
     filtered_error_ = (1.0 - error_alpha_) * filtered_error_ + error_alpha_ * result.error;
@@ -375,52 +353,10 @@ private:
     double angular = kp_ * control_error + kd_ * control_derivative;
     double linear = base_speed_;
     const bool in_curve = abs_error > curve_error_threshold_;
-    const bool in_medium_curve = abs_error > medium_curve_error_threshold_;
-
-    // When the car and right boundary are already aligned, do not hesitate:
-    // build a few stable frames, then run at full straight speed. The fast mode
-    // is disabled immediately if the line approaches the safety zone or the
-    // error starts changing quickly.
-    const bool fast_straight_candidate =
-        abs_error <= fast_straight_error_px_ &&
-        std::fabs(d_error) <= fast_straight_derivative_px_ &&
-        result.right_x > right_safe_min_x_ + 18;
-    if (fast_straight_candidate)
-      ++straight_stable_frames_;
-    else
-      straight_stable_frames_ = 0;
-
-    const bool fast_straight = straight_stable_frames_ >= fast_straight_min_frames_;
-    if (fast_straight)
-    {
-      linear = fast_straight_speed_;
-      angular = clampDouble(angular, -fast_straight_angular_limit_, fast_straight_angular_limit_);
-    }
-    else if (in_curve)
+    if (in_curve)
     {
       linear = curve_speed_;
       angular *= curve_angular_gain_;
-    }
-    else if (in_medium_curve)
-    {
-      linear = medium_curve_speed_;
-    }
-
-    // Direct pixel-distance protection: when the right line moves too close
-    // to the image centre, immediately slow down and command a left correction.
-    // This guard has priority over PID and is the final defence against pressing
-    // or crossing the right boundary.
-    if (result.right_x <= right_emergency_min_x_)
-    {
-      linear = std::min(linear, right_emergency_speed_);
-      angular = std::max(angular, right_emergency_left_angular_);
-    }
-    else if (result.right_x <= right_safe_min_x_)
-    {
-      linear = std::min(linear, right_guard_speed_);
-      const double guard_ratio = static_cast<double>(right_safe_min_x_ - result.right_x) /
-                                 std::max(1, right_safe_min_x_ - right_emergency_min_x_);
-      angular = std::max(angular, right_guard_left_angular_ * (0.65 + 0.35 * guard_ratio));
     }
 
     // A large negative error previously received two gain boosts and could
@@ -429,10 +365,7 @@ private:
     if (filtered_error_ < -right_guard_error_px_)
       linear = std::min(linear, right_guard_speed_);
 
-    const bool right_protection_active = result.right_x <= right_safe_min_x_;
-    const double positive_limit = right_protection_active
-                                    ? max_angular_speed_
-                                    : (in_curve ? max_angular_speed_ : max_straight_angular_speed_);
+    const double positive_limit = in_curve ? max_angular_speed_ : max_straight_angular_speed_;
     const double negative_limit = std::min(positive_limit, max_right_angular_speed_);
     angular = clampDouble(angular, -negative_limit, positive_limit);
 
@@ -462,80 +395,37 @@ private:
     return result;
   }
 
-  int findRightLine(const cv::Mat& mask)
+  int findRightLine(const cv::Mat& mask) const
   {
-    // Use many scan rows and segment geometry instead of taking the first white
-    // pixel from only four rows. This rejects glare, isolated noise and wide
-    // horizontal markings while preserving the original right-line strategy.
     const int h = mask.rows;
-    const std::vector<double> row_ratios = {0.22, 0.32, 0.42, 0.52, 0.62,
-                                            0.70, 0.78, 0.86, 0.93};
-    std::vector<int> candidates;
-    const int expected_x = filtered_right_x_ >= 0.0
-                               ? static_cast<int>(filtered_right_x_)
-                               : (last_right_x_ >= 0 ? last_right_x_ : target_right_x_);
-    const int continuity_window = last_right_x_ >= 0
-                                    ? static_cast<int>(right_x_max_jump_px_)
-                                    : mask.cols;
-    const int search_left = clampInt(std::min(right_search_left_limit_,
-                                               expected_x - continuity_window),
-                                     0, mask.cols - 1);
+    std::vector<int> rows = {
+    static_cast<int>(h * 0.35),
+    static_cast<int>(h * 0.50),
+    static_cast<int>(h * 0.65),
+    static_cast<int>(h * 0.80)
+    };
+    std::vector<int> points;
 
-    for (double ratio : row_ratios)
+    for (int y : rows)
     {
-      const int y = clampInt(static_cast<int>(h * ratio), 0, h - 1);
-      const std::vector<Segment> segments = findSegments(mask.row(y));
-      int best_x = -1;
-      double best_score = 1e9;
-      for (const Segment& segment : segments)
+      y = clampInt(y, 0, mask.rows - 1);
+      const uchar* ptr = mask.ptr<uchar>(y);
+      for (int x = mask.cols - 1; x >= 0; --x)
       {
-        if (segment.width < right_line_min_segment_width_ ||
-            segment.width > right_line_max_segment_width_)
-          continue;
-
-        const int center_x = (segment.left + segment.right) / 2;
-        if (center_x < search_left)
-          continue;
-
-        const double continuity = std::fabs(static_cast<double>(center_x - expected_x));
-        if (last_right_x_ >= 0 && continuity > right_x_max_jump_px_)
-          continue;
-
-        // Prefer candidates close to the previous line position. A small bias
-        // toward the right keeps the detector attached to the right boundary.
-        const double score = continuity - 0.035 * center_x;
-        if (score < best_score)
+        if (ptr[x] > 0)
         {
-          best_score = score;
-          best_x = center_x;
+          points.push_back(x);
+          break;
         }
       }
-      if (best_x >= 0)
-        candidates.push_back(best_x);
     }
 
-    if (static_cast<int>(candidates.size()) < right_line_min_votes_)
+    if (points.empty())
       return -1;
 
-    std::sort(candidates.begin(), candidates.end());
-    const int median_x = candidates[candidates.size() / 2];
+    std::sort(points.begin(), points.end());
 
-    // Reject frames whose row observations disagree strongly; these are most
-    // often reflections, crossings or fragmented masks.
-    std::vector<int> deviations;
-    deviations.reserve(candidates.size());
-    for (int x : candidates)
-      deviations.push_back(std::abs(x - median_x));
-    std::sort(deviations.begin(), deviations.end());
-    if (deviations[deviations.size() / 2] > 32)
-      return -1;
-
-    if (filtered_right_x_ < 0.0)
-      filtered_right_x_ = median_x;
-    else
-      filtered_right_x_ = (1.0 - right_x_alpha_) * filtered_right_x_ +
-                          right_x_alpha_ * median_x;
-    return clampInt(static_cast<int>(std::lround(filtered_right_x_)), 0, mask.cols - 1);
+    return points[points.size() / 2];
   }
 
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
@@ -603,28 +493,10 @@ private:
     geometry_msgs::Twist cmd;
     if (!follow.found)
     {
-      ++lost_frame_count_;
-      straight_stable_frames_ = 0;
+      setStatus("stable_right_lost");
+      cmd.linear.x = lost_linear_speed_;
       const double target_angular = last_right_x_ >= 0 ? lost_angular_speed_ : search_angular_speed_;
-
-      // First few missed frames: creep forward while steering right to recover.
-      // Persistent loss: stop translation and rotate-search, preventing the car
-      // from blindly running outside the track.
-      if (lost_frame_count_ <= lost_stop_frames_)
-      {
-        setStatus("stable_right_lost_slow_search");
-        cmd.linear.x = lost_linear_speed_;
-      }
-      else
-      {
-        setStatus("stable_right_lost_rotate_search");
-        cmd.linear.x = 0.0;
-      }
-
-      double search_turn = target_angular;
-      if (lost_frame_count_ > lost_search_frames_)
-        search_turn = search_angular_speed_;
-      cmd.angular.z = clampDouble(search_turn,
+      cmd.angular.z = clampDouble(target_angular,
                                   last_angular_ - curve_angular_step_,
                                   last_angular_ + curve_angular_step_);
       publishCmd(cmd);
@@ -637,8 +509,6 @@ private:
     cmd.angular.z = follow.angular;
     if (follow.filtered_error < -right_guard_error_px_)
       setStatus("stable_right_tracking_right_guard");
-    else if (straight_stable_frames_ >= fast_straight_min_frames_)
-      setStatus("stable_right_tracking_fast_straight");
     else if (std::fabs(follow.filtered_error) > curve_error_threshold_)
       setStatus("stable_right_tracking_curve");
     else
@@ -719,7 +589,6 @@ private:
     ss << "status=" << status_
        << " elapsed=" << std::fixed << std::setprecision(2) << (now - start_time_).toSec()
        << " found=" << boolText(follow.found)
-       << " lost_frames=" << lost_frame_count_
        << " right_x=" << follow.right_x
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
@@ -765,54 +634,34 @@ private:
   double startup_speed_ = 0.45;
 
   int target_right_x_ = 200;
-  double base_speed_ = 0.34;
-  double fast_straight_speed_ = 0.46;
-  double curve_speed_ = 0.23;
-  double medium_curve_speed_ = 0.30;
-  double search_speed_ = 0.06;
+  double base_speed_ = 0.26;
+  double curve_speed_ = 0.16;
+  double search_speed_ = 0.10;
   double search_angular_speed_ = -0.26;
-  double lost_linear_speed_ = 0.12;
-  double lost_angular_speed_ = -0.28;
-  int lost_stop_frames_ = 8;
-  int lost_search_frames_ = 18;
+  double lost_linear_speed_ = 0.10;
+  double lost_angular_speed_ = -0.18;
   double kp_ = 0.0042;
   double kd_ = 0.0008;
-  double error_alpha_ = 0.24;
-  double curve_error_threshold_ = 52.0;
-  double medium_curve_error_threshold_ = 30.0;
-  double fast_straight_error_px_ = 18.0;
-  double fast_straight_derivative_px_ = 5.0;
-  int fast_straight_min_frames_ = 3;
-  double fast_straight_angular_limit_ = 0.10;
+  double error_alpha_ = 0.18;
+  double curve_error_threshold_ = 38.0;
   double curve_angular_gain_ = 1.05;
   double max_angular_speed_ = 0.40;
-  double steering_deadband_px_ = 7.0;
+  double steering_deadband_px_ = 5.0;
   double max_straight_angular_speed_ = 0.18;
   double max_right_angular_speed_ = 0.34;
-  double straight_angular_alpha_ = 0.68;
+  double straight_angular_alpha_ = 0.78;
   double curve_angular_alpha_ = 0.50;
-  double straight_angular_step_ = 0.045;
+  double straight_angular_step_ = 0.04;
   double curve_angular_step_ = 0.08;
   double right_guard_error_px_ = 70.0;
-  double right_guard_speed_ = 0.18;
-  double deadband_angular_decay_ = 0.38;
-  double right_x_alpha_ = 0.28;
-  double right_x_max_jump_px_ = 75.0;
-  int right_line_min_votes_ = 3;
-  int right_line_min_segment_width_ = 3;
-  int right_line_max_segment_width_ = 90;
-  int right_search_left_limit_ = 80;
-  int right_safe_min_x_ = 145;
-  int right_emergency_min_x_ = 115;
-  double right_guard_left_angular_ = 0.24;
-  double right_emergency_left_angular_ = 0.38;
-  double right_emergency_speed_ = 0.05;
+  double right_guard_speed_ = 0.12;
+  double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
   int white_s_max_ = 45;
   int white_v_min_ = 200;
   int morph_kernel_size_ = 5;
-  double min_component_area_ = 180.0;
+  double min_component_area_ = 260.0;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
@@ -832,9 +681,6 @@ private:
   double last_error_ = 0.0;
   double filtered_error_ = 0.0;
   double filtered_angular_ = 0.0;
-  double filtered_right_x_ = -1.0;
-  int lost_frame_count_ = 0;
-  int straight_stable_frames_ = 0;
   int last_right_x_ = -1;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
