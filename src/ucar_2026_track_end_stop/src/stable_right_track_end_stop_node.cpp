@@ -121,13 +121,13 @@ private:
     private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("target_right_x", target_right_x_, 200);
-    private_nh_.param("base_speed", base_speed_, 0.23);
-    private_nh_.param("curve_speed", curve_speed_, 0.14);
-    private_nh_.param("search_speed", search_speed_, 0.055);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.10);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.055);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.10);
+    private_nh_.param("target_right_x", target_right_x_, 270);
+    private_nh_.param("base_speed", base_speed_, 0.20);
+    private_nh_.param("curve_speed", curve_speed_, 0.12);
+    private_nh_.param("search_speed", search_speed_, 0.0);
+    private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
+    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
+    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
@@ -142,11 +142,11 @@ private:
     private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
     private_nh_.param("straight_angular_step", straight_angular_step_, 0.03);
     private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
-    private_nh_.param("right_warning_error_px", right_warning_error_px_, 38.0);
-    private_nh_.param("right_hard_error_px", right_hard_error_px_, 68.0);
-    private_nh_.param("right_guard_speed", right_guard_speed_, 0.12);
-    private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.08);
-    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.20);
+    private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
+    private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
+    private_nh_.param("right_guard_speed", right_guard_speed_, 0.09);
+    private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
+    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
@@ -154,17 +154,26 @@ private:
     private_nh_.param("white_v_min", white_v_min_, 200);
     private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
     private_nh_.param("min_component_area", min_component_area_, 260.0);
-    private_nh_.param("right_min_segment_width", right_min_segment_width_, 2);
-    private_nh_.param("right_max_segment_width", right_max_segment_width_, 95);
-    private_nh_.param("right_min_chain_support", right_min_chain_support_, 7);
-    private_nh_.param("right_max_row_step_px", right_max_row_step_px_, 88.0);
-    private_nh_.param("right_max_missing_rows", right_max_missing_rows_, 1);
-    private_nh_.param("right_min_span_ratio", right_min_span_ratio_, 0.42);
-    private_nh_.param("right_min_confidence", right_min_confidence_, 0.42);
+    private_nh_.param("right_min_contour_length_px",
+                      right_min_contour_length_px_, 135.0);
+    private_nh_.param("right_min_vertical_span_ratio",
+                      right_min_vertical_span_ratio_, 0.20);
+    private_nh_.param("right_min_curve_width_ratio",
+                      right_min_curve_width_ratio_, 0.16);
+    private_nh_.param("right_min_curve_height_ratio",
+                      right_min_curve_height_ratio_, 0.11);
+    private_nh_.param("right_horizontal_reject_width_ratio",
+                      right_horizontal_reject_width_ratio_, 0.44);
+    private_nh_.param("right_horizontal_reject_height_ratio",
+                      right_horizontal_reject_height_ratio_, 0.10);
+    private_nh_.param("right_control_y_ratio", right_control_y_ratio_, 0.78);
+    private_nh_.param("right_min_contour_samples",
+                      right_min_contour_samples_, 4);
+    private_nh_.param("right_min_confidence", right_min_confidence_, 0.36);
     private_nh_.param("right_max_temporal_jump_px",
-                      right_max_temporal_jump_px_, 120.0);
+                      right_max_temporal_jump_px_, 170.0);
     private_nh_.param("right_reacquire_max_jump_px",
-                      right_reacquire_max_jump_px_, 220.0);
+                      right_reacquire_max_jump_px_, 300.0);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
@@ -457,127 +466,134 @@ private:
 
   RightLineResult findRightLine(const cv::Mat& mask) const
   {
-    RightLineResult result;
-    const int h = mask.rows;
-    std::vector<int> rows = {
-      static_cast<int>(h * 0.10),
-      static_cast<int>(h * 0.18),
-      static_cast<int>(h * 0.26),
-      static_cast<int>(h * 0.34),
-      static_cast<int>(h * 0.42),
-      static_cast<int>(h * 0.50),
-      static_cast<int>(h * 0.58),
-      static_cast<int>(h * 0.66),
-      static_cast<int>(h * 0.74),
-      static_cast<int>(h * 0.82),
-      static_cast<int>(h * 0.90),
-      static_cast<int>(h * 0.96)
-    };
-    std::vector<int> row_x(rows.size(), -1);
+    RightLineResult best;
+    double best_score = -1e9;
+    cv::Mat contour_input = mask.clone();
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(contour_input, contours, cv::RETR_EXTERNAL,
+                     cv::CHAIN_APPROX_SIMPLE);
 
-    for (std::size_t i = 0; i < rows.size(); ++i)
+    for (std::size_t contour_index = 0;
+         contour_index < contours.size(); ++contour_index)
     {
-      int y = rows[i];
-      y = clampInt(y, 0, mask.rows - 1);
-      const std::vector<Segment> segments = findSegments(mask.row(y));
-      for (auto it = segments.rbegin(); it != segments.rend(); ++it)
-      {
-        if (it->width < right_min_segment_width_ ||
-            it->width > right_max_segment_width_)
-          continue;
-        if (it->right >= mask.cols - 2)
-          continue;
-        row_x[i] = it->right;
-        break;  // Only the rightmost valid segment can be the right boundary.
-      }
-    }
-
-    std::vector<int> best_chain;
-    int best_first = -1;
-    int best_last = -1;
-    double best_smoothness = 1e9;
-    for (std::size_t start = 0; start < row_x.size(); ++start)
-    {
-      if (row_x[start] < 0)
+      const std::vector<cv::Point>& contour = contours[contour_index];
+      const double contour_length = cv::arcLength(contour, true);
+      if (contour_length < right_min_contour_length_px_)
         continue;
-      std::vector<int> chain(1, row_x[start]);
-      int last_index = static_cast<int>(start);
-      int last_x = row_x[start];
-      int missing_rows = 0;
-      double step_sum = 0.0;
-      for (std::size_t j = start + 1; j < row_x.size(); ++j)
+
+      const cv::Rect box = cv::boundingRect(contour);
+      const double height_ratio =
+          static_cast<double>(box.height) /
+          std::max(1.0, static_cast<double>(mask.rows));
+      const double width_ratio =
+          static_cast<double>(box.width) /
+          std::max(1.0, static_cast<double>(mask.cols));
+
+      // Accept both the tall straight boundary and a wide, visibly curved
+      // boundary at a corner.  Reject a short horizontal parking stripe.
+      const bool straight_shape =
+          height_ratio >= right_min_vertical_span_ratio_;
+      const bool curved_shape =
+          width_ratio >= right_min_curve_width_ratio_ &&
+          height_ratio >= right_min_curve_height_ratio_;
+      const bool horizontal_bar =
+          width_ratio >= right_horizontal_reject_width_ratio_ &&
+          height_ratio <= right_horizontal_reject_height_ratio_;
+      if ((!straight_shape && !curved_shape) || horizontal_bar)
+        continue;
+
+      cv::Mat component = cv::Mat::zeros(mask.size(), CV_8UC1);
+      cv::drawContours(component, contours,
+                       static_cast<int>(contour_index),
+                       cv::Scalar(255), cv::FILLED);
+
+      std::vector<int> sample_x;
+      std::vector<int> sample_y;
+      constexpr int kContourSamples = 9;
+      for (int sample = 0; sample < kContourSamples; ++sample)
       {
-        if (row_x[j] < 0)
+        const int y = clampInt(
+            box.y + (std::max(1, box.height) - 1) * sample /
+                        (kContourSamples - 1),
+            0, mask.rows - 1);
+        const uchar* ptr = component.ptr<uchar>(y);
+        int detected_x = -1;
+        for (int x = std::min(mask.cols - 1, box.x + box.width - 1);
+             x >= std::max(0, box.x); --x)
         {
-          ++missing_rows;
-          if (missing_rows > right_max_missing_rows_)
+          if (ptr[x] > 0)
+          {
+            detected_x = x;
             break;
-          continue;
+          }
         }
-        const double step =
-            std::fabs(static_cast<double>(row_x[j] - last_x));
-        if (step > right_max_row_step_px_)
-          break;
-        chain.push_back(row_x[j]);
-        step_sum += step;
-        last_x = row_x[j];
-        last_index = static_cast<int>(j);
-        missing_rows = 0;
+        if (detected_x >= 0)
+        {
+          sample_x.push_back(detected_x);
+          sample_y.push_back(y);
+        }
+      }
+      if (sample_x.size() <
+          static_cast<std::size_t>(right_min_contour_samples_))
+        continue;
+
+      const int control_y = clampInt(
+          static_cast<int>(mask.rows * right_control_y_ratio_),
+          0, mask.rows - 1);
+      int candidate_x = sample_x.front();
+      int closest_y_distance =
+          std::abs(sample_y.front() - control_y);
+      for (std::size_t i = 1; i < sample_x.size(); ++i)
+      {
+        const int distance = std::abs(sample_y[i] - control_y);
+        if (distance < closest_y_distance)
+        {
+          candidate_x = sample_x[i];
+          closest_y_distance = distance;
+        }
       }
 
-      const double smoothness = chain.size() > 1
-          ? step_sum / static_cast<double>(chain.size() - 1)
-          : 1e9;
-      if (chain.size() > best_chain.size() ||
-          (chain.size() == best_chain.size() &&
-           smoothness < best_smoothness))
+      const double allowed_jump = line_was_lost_
+          ? right_reacquire_max_jump_px_
+          : right_max_temporal_jump_px_;
+      const double temporal_jump = last_right_x_ >= 0
+          ? std::fabs(static_cast<double>(candidate_x - last_right_x_))
+          : 0.0;
+      if (last_right_x_ >= 0 && temporal_jump > allowed_jump)
+        continue;
+
+      const double length_score =
+          clampDouble(contour_length / 420.0, 0.0, 1.0);
+      const double span_ratio =
+          std::max(height_ratio, 0.70 * width_ratio);
+      const double span_score =
+          clampDouble(span_ratio / 0.55, 0.0, 1.0);
+      const double sample_score =
+          static_cast<double>(sample_x.size()) /
+          static_cast<double>(kContourSamples);
+      const double confidence =
+          0.40 * length_score + 0.35 * span_score +
+          0.25 * sample_score;
+      if (confidence < right_min_confidence_)
+        continue;
+
+      // Prefer the rightmost long component, with a continuity bonus from the
+      // previous frame.  No left-line model is ever built or consumed.
+      const double score =
+          0.75 * static_cast<double>(candidate_x) +
+          120.0 * confidence + 0.18 * contour_length -
+          0.20 * temporal_jump;
+      if (score > best_score)
       {
-        best_chain = chain;
-        best_first = static_cast<int>(start);
-        best_last = last_index;
-        best_smoothness = smoothness;
+        best_score = score;
+        best.found = true;
+        best.x = candidate_x;
+        best.support = static_cast<int>(sample_x.size());
+        best.confidence = confidence;
+        best.span_ratio = span_ratio;
       }
     }
-
-    if (best_chain.size() <
-        static_cast<std::size_t>(right_min_chain_support_))
-      return result;
-
-    const double span_ratio =
-        static_cast<double>(rows[best_last] - rows[best_first]) /
-        std::max(1.0, static_cast<double>(h));
-    if (span_ratio < right_min_span_ratio_)
-      return result;
-
-    std::sort(best_chain.begin(), best_chain.end());
-    const int robust_x = best_chain[best_chain.size() / 2];
-    const double support_score =
-        static_cast<double>(best_chain.size()) /
-        static_cast<double>(rows.size());
-    const double smoothness_score = clampDouble(
-        1.0 - best_smoothness / std::max(1.0, right_max_row_step_px_),
-        0.0, 1.0);
-    const double confidence =
-        support_score * (0.65 + 0.35 * smoothness_score);
-    if (confidence < right_min_confidence_)
-      return result;
-
-    // A distant jump is treated as another white object or the other edge,
-    // never as a valid right-boundary reacquisition.
-    const double allowed_jump = line_was_lost_
-        ? right_reacquire_max_jump_px_
-        : right_max_temporal_jump_px_;
-    if (last_right_x_ >= 0 &&
-        std::fabs(static_cast<double>(robust_x - last_right_x_)) >
-            allowed_jump)
-      return result;
-
-    result.found = true;
-    result.x = robust_x;
-    result.support = static_cast<int>(best_chain.size());
-    result.confidence = confidence;
-    result.span_ratio = span_ratio;
-    return result;
+    return best;
   }
 
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
@@ -657,7 +673,7 @@ private:
       }
       else
       {
-        setStatus("stable_right_lost_slow_right_search");
+        setStatus("stable_right_lost_rotate_right_in_place");
         cmd.linear.x = lost_linear_speed_;
         cmd.angular.z = lost_angular_speed_;
       }
@@ -824,13 +840,13 @@ private:
   double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
-  int target_right_x_ = 200;
-  double base_speed_ = 0.23;
-  double curve_speed_ = 0.14;
-  double search_speed_ = 0.055;
-  double search_angular_speed_ = -0.10;
-  double lost_linear_speed_ = 0.055;
-  double lost_angular_speed_ = -0.10;
+  int target_right_x_ = 270;
+  double base_speed_ = 0.20;
+  double curve_speed_ = 0.12;
+  double search_speed_ = 0.0;
+  double search_angular_speed_ = -0.08;
+  double lost_linear_speed_ = 0.0;
+  double lost_angular_speed_ = -0.08;
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
@@ -845,11 +861,11 @@ private:
   double curve_angular_alpha_ = 0.58;
   double straight_angular_step_ = 0.03;
   double curve_angular_step_ = 0.06;
-  double right_warning_error_px_ = 38.0;
-  double right_hard_error_px_ = 68.0;
-  double right_guard_speed_ = 0.12;
-  double right_guard_away_angular_ = 0.08;
-  double right_hard_away_angular_ = 0.20;
+  double right_warning_error_px_ = 28.0;
+  double right_hard_error_px_ = 52.0;
+  double right_guard_speed_ = 0.09;
+  double right_guard_away_angular_ = 0.10;
+  double right_hard_away_angular_ = 0.24;
   double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
@@ -857,15 +873,17 @@ private:
   int white_v_min_ = 200;
   int morph_kernel_size_ = 5;
   double min_component_area_ = 260.0;
-  int right_min_segment_width_ = 2;
-  int right_max_segment_width_ = 95;
-  int right_min_chain_support_ = 7;
-  double right_max_row_step_px_ = 88.0;
-  int right_max_missing_rows_ = 1;
-  double right_min_span_ratio_ = 0.42;
-  double right_min_confidence_ = 0.42;
-  double right_max_temporal_jump_px_ = 120.0;
-  double right_reacquire_max_jump_px_ = 220.0;
+  double right_min_contour_length_px_ = 135.0;
+  double right_min_vertical_span_ratio_ = 0.20;
+  double right_min_curve_width_ratio_ = 0.16;
+  double right_min_curve_height_ratio_ = 0.11;
+  double right_horizontal_reject_width_ratio_ = 0.44;
+  double right_horizontal_reject_height_ratio_ = 0.10;
+  double right_control_y_ratio_ = 0.78;
+  int right_min_contour_samples_ = 4;
+  double right_min_confidence_ = 0.36;
+  double right_max_temporal_jump_px_ = 170.0;
+  double right_reacquire_max_jump_px_ = 300.0;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
