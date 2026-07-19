@@ -144,6 +144,8 @@ private:
                       lost_advance_speed_, 0.10);
     private_nh_.param("lost_turn_right_angular_speed",
                       lost_turn_right_angular_speed_, -0.10);
+    private_nh_.param("lost_white_forward_speed",
+                      lost_white_forward_speed_, 0.08);
     private_nh_.param("lost_white_min_pixels",
                       lost_white_min_pixels_, 120);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
@@ -704,8 +706,15 @@ private:
       }
       if (!follow.found)
       {
-        setStatus("stable_right_white_seen_wait_right_line");
-        publishStop();
+        // The first white pixels usually enter at the top/side of the ROI,
+        // before enough bottom scan rows can form a valid right line.  Keep
+        // the current heading and move slowly until the normal right-line
+        // detector has enough support.  If the white disappears, the branch
+        // above resumes the right turn.
+        setStatus("stable_right_white_seen_forward_to_right_line");
+        cmd.linear.x = lost_white_forward_speed_;
+        cmd.angular.z = 0.0;
+        publishCmd(cmd);
         return;
       }
 
@@ -878,6 +887,7 @@ private:
   double lost_advance_distance_m_ = 0.10;
   double lost_advance_speed_ = 0.10;
   double lost_turn_right_angular_speed_ = -0.10;
+  double lost_white_forward_speed_ = 0.08;
   int lost_white_min_pixels_ = 120;
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
