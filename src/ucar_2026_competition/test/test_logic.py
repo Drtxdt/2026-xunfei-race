@@ -22,6 +22,8 @@ from ucar_2026_competition.logic import (
     parse_category,
     qr_values_from_payload,
     stage_sequence,
+    task4_handoff_required,
+    task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
     trigger_delivery_state,
@@ -122,9 +124,117 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertTrue(events[1]["data"])
 
     def test_state_machine_sequence(self):
-        self.assertEqual(stage_sequence("full"), ("task1", "task2", "task3", "task4", "task5"))
+        self.assertEqual(stage_sequence("full"), ("task1", "task2", "task4", "task5"))
+        self.assertEqual(
+            stage_sequence("full", enable_simulation=True),
+            ("task1", "task2", "task3", "task4", "task5"),
+        )
         self.assertEqual(stage_sequence("task1_task2"), ("task1", "task2"))
+        self.assertEqual(stage_sequence("task3_task4"), ("task3", "task4"))
+        self.assertEqual(
+            stage_sequence("task3_task4", enable_simulation=False),
+            ("task3", "task4"),
+        )
+        self.assertEqual(stage_sequence("task4_task5"), ("task4", "task5"))
         self.assertEqual(stage_sequence("task4"), ("task4",))
+
+    def test_task4_handoff_covers_simulation_enabled_and_disabled_flows(self):
+        self.assertTrue(task4_handoff_required("task2", "task4"))
+        self.assertTrue(task4_handoff_required("task3", "task4"))
+        self.assertFalse(task4_handoff_required("task2", "task3"))
+        self.assertFalse(task4_handoff_required(None, "task4"))
+
+    def test_full_launch_exposes_optional_simulation_parameter(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "full_competition.launch"))
+        root = ET.parse(launch_path).getroot()
+        launch_args = {item.attrib["name"]: item.attrib.get("default")
+                       for item in root.findall("arg")}
+        self.assertEqual(launch_args["enable_simulation"], "false")
+
+        flow_include = next(
+            item for item in root.findall("include")
+            if "flow_node.launch" in item.attrib.get("file", ""))
+        flow_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in flow_include.findall("arg")}
+        self.assertEqual(flow_args["enable_simulation"], "$(arg enable_simulation)")
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "flow_node.launch"))
+        flow_root = ET.parse(flow_path).getroot()
+        flow_launch_args = {item.attrib["name"]: item.attrib.get("default")
+                            for item in flow_root.findall("arg")}
+        self.assertEqual(flow_launch_args["enable_simulation"], "false")
+        flow_params = {item.attrib["name"]: item.attrib.get("value")
+                       for item in flow_root.find("node").findall("param")}
+        self.assertEqual(
+            flow_params["enable_simulation"], "$(arg enable_simulation)")
+
+    def test_task4_start_action_supports_manual_stop_line_start(self):
+        self.assertEqual(task4_start_action(True, False), "detect")
+        self.assertEqual(task4_start_action(False, True), "approach")
+        with self.assertRaises(ValueError):
+            task4_start_action(False, False)
+
+    def test_task4_task5_launch_starts_at_stop_line_and_keeps_one_flow(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "task4_task5.launch"))
+        self.assertTrue(os.path.exists(launch_path), launch_path)
+        root = ET.parse(launch_path).getroot()
+
+        launch_args = {item.attrib["name"]: item.attrib.get("default")
+                       for item in root.findall("arg")}
+        self.assertEqual(launch_args["start_external_voice"], "true")
+
+        core_include = next(
+            item for item in root.findall("include")
+            if "common_core.launch" in item.attrib.get("file", ""))
+        core_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in core_include.findall("arg")}
+        self.assertEqual(core_args["start_nav"], "true")
+        self.assertEqual(core_args["start_camera"], "true")
+        self.assertEqual(core_args["start_speech"], "true")
+
+        flow_include = next(
+            item for item in root.findall("include")
+            if "flow_node.launch" in item.attrib.get("file", ""))
+        flow_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in flow_include.findall("arg")}
+        self.assertEqual(flow_args["start_stage"], "task4_task5")
+        self.assertEqual(flow_args["skip_task4_stop_line_approach"], "true")
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "flow_node.launch"))
+        flow_root = ET.parse(flow_path).getroot()
+        flow_launch_args = {item.attrib["name"]: item.attrib.get("default")
+                            for item in flow_root.findall("arg")}
+        self.assertEqual(
+            flow_launch_args["skip_task4_stop_line_approach"], "false")
+        flow_node = flow_root.find("node")
+        flow_params = {item.attrib["name"]: item.attrib.get("value")
+                       for item in flow_node.findall("param")}
+        self.assertEqual(
+            flow_params["skip_task4_stop_line_approach"],
+            "$(arg skip_task4_stop_line_approach)",
+        )
+
+    def test_task3_task4_launch_preserves_localization(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "task3_task4.launch"))
+        root = ET.parse(launch_path).getroot()
+        core_include = next(
+            item for item in root.findall("include")
+            if "common_core.launch" in item.attrib.get("file", ""))
+        core_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in core_include.findall("arg")}
+        self.assertEqual(core_args["start_nav"], "true")
+        flow_include = next(
+            item for item in root.findall("include")
+            if "flow_node.launch" in item.attrib.get("file", ""))
+        flow_args = {item.attrib["name"]: item.attrib.get("value")
+                     for item in flow_include.findall("arg")}
+        self.assertEqual(flow_args["start_stage"], "task3_task4")
+        self.assertEqual(flow_args["navigator_publish_initial_pose"], "false")
 
     def test_task_handoff_stationary_gate(self):
         self.assertTrue(base_is_stopped(0.005, -0.005, 0.01))

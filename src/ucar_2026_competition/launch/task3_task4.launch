@@ -1,0 +1,36 @@
+<launch>
+  <arg name="debug" default="false" />
+  <arg name="start_external_voice" default="true" />
+  <arg name="target_category" default="" />
+  <arg name="sim_item" default="" />
+  <arg name="sim_workshop" default="" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
+  <arg name="sim_bridge_port" default="26003" />
+  <arg name="traffic_pose_configured" default="true" />
+  <arg name="traffic_x" default="0.3195" />
+  <arg name="traffic_y" default="-3.0" />
+  <arg name="traffic_yaw" default="-1.5596" />
+
+  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
+    <arg name="start_nav" value="true" />
+    <arg name="start_camera" value="true" />
+    <arg name="start_speech" value="true" />
+    <arg name="start_tts" value="$(arg start_external_voice)" />
+    <arg name="start_rviz" value="$(arg debug)" />
+  </include>
+
+  <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
+    <arg name="start_stage" value="task3_task4" />
+    <arg name="debug" value="$(arg debug)" />
+    <arg name="target_category" value="$(arg target_category)" />
+    <arg name="sim_item" value="$(arg sim_item)" />
+    <arg name="sim_workshop" value="$(arg sim_workshop)" />
+    <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+    <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+    <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
+    <arg name="traffic_x" value="$(arg traffic_x)" />
+    <arg name="traffic_y" value="$(arg traffic_y)" />
+    <arg name="traffic_yaw" value="$(arg traffic_yaw)" />
+    <arg name="navigator_publish_initial_pose" value="false" />
+  </include>
+</launch>
