@@ -42,6 +42,7 @@ from ucar_2026_competition.logic import (
     parse_category,
     qr_values_from_payload,
     stage_sequence,
+    task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
     trigger_delivery_state,
@@ -1352,12 +1353,19 @@ class CompetitionFlow:
             self.safe_stop(cancel_navigation=True)
 
     def task4(self):
+        skip_approach = bool_param("~skip_task4_stop_line_approach", False)
         configured = bool_param("~traffic_pose_configured", False)
-        if not configured:
-            raise StageError(
-                "traffic pose is not configured; set ~traffic_x/~traffic_y/~traffic_yaw and ~traffic_pose_configured=true"
-            )
-        self.approach_task4_stop_line()
+        try:
+            start_action = task4_start_action(skip_approach, configured)
+        except ValueError as exc:
+            raise StageError(str(exc))
+        if start_action == "approach":
+            self.approach_task4_stop_line()
+        else:
+            self.safe_stop(cancel_navigation=True)
+            self.publish_status(
+                "task4", "stop_line_ready",
+                "using manually positioned stop-line start; vehicle held stopped")
         self.traffic_decision = ""
         self.red_announced = False
         self.publish_status("task4", "detecting", "waiting for traffic-light consensus")

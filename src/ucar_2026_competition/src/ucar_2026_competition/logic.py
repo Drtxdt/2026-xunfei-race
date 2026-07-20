@@ -82,9 +82,21 @@ def stage_sequence(mode):
         return ("task1", "task2")
     if normalized == "task3_task4":
         return ("task3", "task4")
+    if normalized == "task4_task5":
+        return ("task4", "task5")
     if normalized in ("task1", "task2", "task3", "task4", "task5"):
         return (normalized,)
     raise ValueError("unsupported start_stage: {}".format(mode))
+
+
+def task4_start_action(skip_stop_line_approach, traffic_pose_configured):
+    """Select whether task4 starts at the line or navigates to it."""
+    if bool(skip_stop_line_approach):
+        return "detect"
+    if bool(traffic_pose_configured):
+        return "approach"
+    raise ValueError(
+        "traffic pose is not configured; set traffic coordinates or start at stop line")
 
 
 def base_is_stopped(linear_x, linear_y, angular_z,
