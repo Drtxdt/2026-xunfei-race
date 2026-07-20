@@ -13,6 +13,7 @@
   <arg name="traffic_y" default="0.0" />
   <arg name="traffic_yaw" default="0.0" />
   <arg name="traffic_decision" default="" />
+  <arg name="skip_task4_stop_line_approach" default="false" />
   <arg name="navigator_publish_initial_pose" default="false" />
   <arg name="task2_center_only" default="false" />
   <arg name="max_coverage_anchors" default="0" />
@@ -85,6 +86,7 @@
     <param name="traffic_y" value="$(arg traffic_y)" />
     <param name="traffic_yaw" value="$(arg traffic_yaw)" />
     <param name="traffic_decision" value="$(arg traffic_decision)" />
+    <param name="skip_task4_stop_line_approach" value="$(arg skip_task4_stop_line_approach)" />
     <param name="navigator_publish_initial_pose" value="$(arg navigator_publish_initial_pose)" />
     <param name="task2_center_only" value="$(arg task2_center_only)" />
     <param name="max_coverage_anchors" value="$(arg max_coverage_anchors)" />
