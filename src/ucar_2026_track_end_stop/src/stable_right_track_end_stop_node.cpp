@@ -136,8 +136,8 @@ private:
         static_cast<int>(std::round(kImageCols * 0.5 +
                                     right_line_offset_px_)),
         0, kImageCols - 1);
-    private_nh_.param("base_speed", base_speed_, 0.20);
-    private_nh_.param("curve_speed", curve_speed_, 0.12);
+    private_nh_.param("base_speed", base_speed_, 0.24);
+    private_nh_.param("curve_speed", curve_speed_, 0.15);
     private_nh_.param("search_speed", search_speed_, 0.0);
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
     private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
@@ -159,7 +159,7 @@ private:
     private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
     private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
     private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
-    private_nh_.param("right_guard_speed", right_guard_speed_, 0.09);
+    private_nh_.param("right_guard_speed", right_guard_speed_, 0.11);
     private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
     private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
@@ -871,8 +871,8 @@ private:
 
   double right_line_offset_px_ = 170.0;
   int target_right_x_ = 490;
-  double base_speed_ = 0.20;
-  double curve_speed_ = 0.12;
+  double base_speed_ = 0.24;
+  double curve_speed_ = 0.15;
   double search_speed_ = 0.0;
   double search_angular_speed_ = -0.08;
   double lost_linear_speed_ = 0.0;
@@ -894,7 +894,7 @@ private:
   double curve_angular_step_ = 0.06;
   double right_warning_error_px_ = 28.0;
   double right_hard_error_px_ = 52.0;
-  double right_guard_speed_ = 0.09;
+  double right_guard_speed_ = 0.11;
   double right_guard_away_angular_ = 0.10;
   double right_hard_away_angular_ = 0.24;
   double deadband_angular_decay_ = 0.45;
