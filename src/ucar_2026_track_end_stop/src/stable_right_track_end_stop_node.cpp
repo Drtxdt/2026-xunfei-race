@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
-#include <iterator>
 #include <limits>
 #include <sstream>
 #include <string>
@@ -53,8 +52,8 @@ public:
     start_time_ = ros::Time::now();
     state_start_time_ = start_time_;
     last_detection_time_ = start_time_;
-    state_ = auto_start_ ? State::StartupForward : State::Idle;
-    setStatus(auto_start_ ? "stable_right_startup_forward" : "idle");
+    state_ = auto_start_ ? State::InitialForward20cm : State::Idle;
+    setStatus(auto_start_ ? "initial_forward_20cm" : "idle");
 
     ROS_INFO("stable_right_track_end_stop_node started: image=%s cmd_vel=%s debug=%s",
              image_topic_.c_str(), cmd_vel_topic_.c_str(), debug_image_topic_.c_str());
@@ -64,14 +63,18 @@ private:
   enum class State
   {
     Idle,
-    StartupForward,
+    InitialForward20cm,
+    InitialAlign,
+    InitialForward30cm,
     SearchRightLine,
     Follow,
-    EndDetected,
-    TurnRight,
-    Forward50cm,
-    FinalStop,
-    Finish
+    CornerStop,
+    CornerForward16cm,
+    CornerStopBeforeTurn,
+    CornerTurnRight35deg,
+    CornerStopAfterTurn,
+    CornerForward10cm,
+    WaitForRightLine
   };
 
   struct FollowResult
@@ -83,9 +86,6 @@ private:
     double line_span_ratio = 0.0;
     double error = 0.0;
     double filtered_error = 0.0;
-    double heading_slope = 0.0;
-    double heading_error = 0.0;
-    double heading_angular = 0.0;
     double linear = 0.0;
     double angular = 0.0;
     int guard_level = 0;
@@ -98,8 +98,6 @@ private:
     int support = 0;
     double confidence = 0.0;
     double span_ratio = 0.0;
-    double heading_slope = 0.0;
-    bool heading_valid = false;
   };
 
   struct Segment
@@ -114,6 +112,14 @@ private:
     bool detected = false;
     double best_width_ratio = 0.0;
     double best_y_ratio = 0.0;
+    double corner_angle_deg = 0.0;
+  };
+
+  struct AlignmentResult
+  {
+    bool found = false;
+    double center_error_px = 0.0;
+    double heading_error_px = 0.0;
   };
 
   void loadParams()
@@ -125,8 +131,16 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_time", startup_time_, 2.0);
-    private_nh_.param("startup_speed", startup_speed_, 0.45);
+    private_nh_.param("initial_forward_speed", initial_forward_speed_, 0.20);
+    private_nh_.param("initial_forward_20_distance_m", initial_forward_20_distance_m_, 0.20);
+    private_nh_.param("initial_forward_30_distance_m", initial_forward_30_distance_m_, 0.30);
+    private_nh_.param("align_lateral_kp", align_lateral_kp_, 0.0015);
+    private_nh_.param("align_heading_kp", align_heading_kp_, 0.0020);
+    private_nh_.param("align_max_lateral_speed", align_max_lateral_speed_, 0.08);
+    private_nh_.param("align_max_angular_speed", align_max_angular_speed_, 0.12);
+    private_nh_.param("align_center_tolerance_px", align_center_tolerance_px_, 10.0);
+    private_nh_.param("align_heading_tolerance_px", align_heading_tolerance_px_, 12.0);
+    private_nh_.param("align_confirm_frames", align_confirm_frames_, 5);
 
     private_nh_.param("right_line_offset_px", right_line_offset_px_, 170.0);
     target_right_x_ = clampInt(
@@ -136,26 +150,22 @@ private:
     private_nh_.param("base_speed", base_speed_, 0.20);
     private_nh_.param("curve_speed", curve_speed_, 0.12);
     private_nh_.param("search_speed", search_speed_, 0.0);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.03);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.16);
+    private_nh_.param("search_angular_speed", search_angular_speed_, 0.0);
+    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
+    private_nh_.param("lost_angular_speed", lost_angular_speed_, 0.0);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
-    private_nh_.param("error_alpha", error_alpha_, 0.22);
-    private_nh_.param("curve_error_threshold", curve_error_threshold_, 30.0);
-    private_nh_.param("heading_kp", heading_kp_, 0.0022);
-    private_nh_.param("max_heading_angular", max_heading_angular_, 0.16);
-    private_nh_.param("heading_calibration_frames",
-                      heading_calibration_frames_, 12);
+    private_nh_.param("error_alpha", error_alpha_, 0.15);
+    private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
     private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
     private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
-    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.20);
+    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.15);
     private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.72);
+    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.82);
     private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.045);
+    private_nh_.param("straight_angular_step", straight_angular_step_, 0.03);
     private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
     private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
     private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
@@ -171,8 +181,7 @@ private:
     private_nh_.param("min_component_area", min_component_area_, 260.0);
     right_scan_rows_ = {
         0.95, 0.92, 0.88, 0.84, 0.80,
-        0.75, 0.70, 0.64, 0.58, 0.50,
-        0.42, 0.34};
+        0.75, 0.70, 0.64, 0.58};
     private_nh_.param("right_scan_bottom_weight",
                       right_scan_bottom_weight_, 1.8);
     private_nh_.param("min_line_width_px", min_line_width_px_, 5);
@@ -182,17 +191,24 @@ private:
     private_nh_.param("right_min_scan_support",
                       right_min_scan_support_, 3);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
-    private_nh_.param("max_scan_row_jump_px",
-                      max_scan_row_jump_px_, 110.0);
 
-    private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
+    private_nh_.param("corner_detection_window_s", corner_detection_window_s_, 15.0);
+    private_nh_.param("corner_min_angle_deg", corner_min_angle_deg_, 18.0);
+    private_nh_.param("corner_max_angle_deg", corner_max_angle_deg_, 60.0);
+    private_nh_.param("corner_hough_threshold", corner_hough_threshold_, 22);
+    private_nh_.param("corner_min_line_length_px", corner_min_line_length_px_, 35.0);
+    private_nh_.param("corner_max_line_gap_px", corner_max_line_gap_px_, 18.0);
+    private_nh_.param("corner_join_distance_px", corner_join_distance_px_, 55.0);
+    private_nh_.param("corner_min_join_x_ratio", corner_min_join_x_ratio_, 0.45);
+    private_nh_.param("corner_confirm_frames", corner_confirm_frames_, 3);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
-    private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
-    private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
-    private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
-    private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
-    private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
+    private_nh_.param("corner_stop_hold", corner_stop_hold_, 0.5);
+    private_nh_.param("corner_fast_forward_speed", corner_fast_forward_speed_, 0.30);
+    private_nh_.param("corner_forward_16_distance_m", corner_forward_16_distance_m_, 0.16);
+    private_nh_.param("corner_forward_10_distance_m", corner_forward_10_distance_m_, 0.10);
+    private_nh_.param("corner_turn_right_angle_deg", corner_turn_right_angle_deg_, 35.0);
+    private_nh_.param("corner_turn_angular_speed", corner_turn_angular_speed_, 0.50);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -223,6 +239,7 @@ private:
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
     FollowResult follow;
+    AlignmentResult alignment;
     geometry_msgs::Twist cmd;
 
     switch (state_)
@@ -232,18 +249,69 @@ private:
         publishStop();
         break;
 
-      case State::StartupForward:
-        if ((now - start_time_).toSec() < startup_time_)
+      case State::InitialForward20cm:
+        if ((now - state_start_time_).toSec() <
+            initial_forward_20_distance_m_ / std::max(initial_forward_speed_, 1e-6))
         {
-          setStatus("stable_right_startup_forward");
-          cmd.linear.x = startup_speed_;
+          setStatus("initial_forward_20cm");
+          cmd.linear.x = initial_forward_speed_;
           publishCmd(cmd);
         }
         else
         {
-          ROS_INFO("stable right follow entering search mode");
+          state_ = State::InitialAlign;
+          state_start_time_ = now;
+          hardStop();
+          ROS_INFO("initial 20 cm complete; aligning between left and right lines");
+        }
+        break;
+
+      case State::InitialAlign:
+        alignment = computeInitialAlignment(mask);
+        if (!alignment.found)
+        {
+          align_confirm_count_ = 0;
+          setStatus("initial_align_waiting_for_two_lines");
+          publishStop();
+        }
+        else if (std::fabs(alignment.center_error_px) <= align_center_tolerance_px_ &&
+                 std::fabs(alignment.heading_error_px) <= align_heading_tolerance_px_)
+        {
+          ++align_confirm_count_;
+          setStatus("initial_align_confirming");
+          publishStop();
+          if (align_confirm_count_ >= align_confirm_frames_)
+          {
+            state_ = State::InitialForward30cm;
+            state_start_time_ = now;
+            ROS_INFO("initial centering and parallel alignment confirmed; driving 30 cm");
+          }
+        }
+        else
+        {
+          align_confirm_count_ = 0;
+          setStatus("initial_align_adjusting");
+          cmd.linear.y = clampDouble(-align_lateral_kp_ * alignment.center_error_px,
+                                     -align_max_lateral_speed_, align_max_lateral_speed_);
+          cmd.angular.z = clampDouble(-align_heading_kp_ * alignment.heading_error_px,
+                                      -align_max_angular_speed_, align_max_angular_speed_);
+          publishCmd(cmd);
+        }
+        break;
+
+      case State::InitialForward30cm:
+        if ((now - state_start_time_).toSec() <
+            initial_forward_30_distance_m_ / std::max(initial_forward_speed_, 1e-6))
+        {
+          setStatus("initial_forward_30cm");
+          cmd.linear.x = initial_forward_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
           state_ = State::SearchRightLine;
           state_start_time_ = now;
+          hardStop();
         }
         break;
 
@@ -276,6 +344,8 @@ private:
             line_was_lost_ = false;
             state_ = State::Follow;
             state_start_time_ = now;
+            follow_start_time_ = now;
+            corner_detection_armed_ = true;
             publishFollowCommand(follow);
           }
         }
@@ -283,11 +353,28 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask);
-        if (end_result.detected)
+        if (corner_detection_armed_ &&
+            (now - follow_start_time_).toSec() <= corner_detection_window_s_)
         {
-          ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
+          if (end_result.detected)
+            ++corner_detect_count_;
+          else
+            corner_detect_count_ = 0;
+        }
+        else
+        {
+          corner_detect_count_ = 0;
+        }
+        if (corner_detection_armed_ &&
+            corner_detect_count_ >= corner_confirm_frames_)
+        {
+          ROS_INFO("corner detected in first %.1f s! angle=%.1f deg width_ratio=%.2f y_ratio=%.2f",
+                   corner_detection_window_s_,
+                   end_result.corner_angle_deg,
                    end_result.best_width_ratio, end_result.best_y_ratio);
-          state_ = State::EndDetected;
+          corner_detection_armed_ = false;
+          corner_detect_count_ = 0;
+          state_ = State::CornerStop;
           state_start_time_ = now;
           hardStop();
         }
@@ -297,68 +384,113 @@ private:
         }
         break;
 
-      case State::EndDetected:
-        setStatus("stable_right_end_detected");
+      case State::CornerStop:
+        setStatus("corner_detected_stop");
         hardStop();
-        if ((now - state_start_time_).toSec() >= end_stop_hold_)
+        if ((now - state_start_time_).toSec() >= corner_stop_hold_)
         {
-          state_ = State::TurnRight;
+          state_ = State::CornerForward16cm;
           state_start_time_ = now;
-          ROS_INFO("turning left %.1f deg at %.2f rad/s before parking",
-                   end_turn_left_angle_deg_, end_turn_left_angular_speed_);
         }
         break;
 
-      case State::TurnRight:
+      case State::CornerForward16cm:
       {
-        const double turn_duration = (end_turn_left_angle_deg_ * kPi / 180.0) /
-                                     std::max(end_turn_left_angular_speed_, 1e-6);
-        if ((now - state_start_time_).toSec() < turn_duration)
+        const double duration = corner_forward_16_distance_m_ /
+                                std::max(corner_fast_forward_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
         {
-          setStatus("stable_right_turn_left_align");
-          cmd.angular.z = end_turn_left_angular_speed_;
+          setStatus("corner_fast_forward_16cm");
+          cmd.linear.x = corner_fast_forward_speed_;
           publishCmd(cmd);
         }
         else
         {
-          state_ = State::Forward50cm;
-          state_start_time_ = now;
-          hardStop();
-          ROS_INFO("driving straight forward %.2f m at %.2f m/s after alignment",
-                   end_forward_distance_m_, end_forward_speed_);
-        }
-        break;
-      }
-
-      case State::Forward50cm:
-      {
-        const double forward_duration = end_forward_distance_m_ / std::max(end_forward_speed_, 1e-6);
-        if ((now - state_start_time_).toSec() < forward_duration)
-        {
-          setStatus("stable_right_fast_forward");
-          cmd.linear.x = end_forward_speed_;
-          cmd.angular.z = 0.0;
-          publishCmd(cmd);
-        }
-        else
-        {
-          state_ = State::FinalStop;
+          state_ = State::CornerStopBeforeTurn;
           state_start_time_ = now;
           hardStop();
         }
         break;
       }
 
-      case State::FinalStop:
+      case State::CornerStopBeforeTurn:
+        setStatus("corner_stop_before_right_turn");
         hardStop();
-        setStatus((now - state_start_time_).toSec() >= end_stop_hold_ ? "stable_right_finish" : "stable_right_final_stop");
-        if ((now - state_start_time_).toSec() >= end_stop_hold_)
-          state_ = State::Finish;
+        if ((now - state_start_time_).toSec() >= corner_stop_hold_)
+        {
+          state_ = State::CornerTurnRight35deg;
+          state_start_time_ = now;
+        }
         break;
 
-      case State::Finish:
-        setStatus("stable_right_finish");
+      case State::CornerTurnRight35deg:
+      {
+        const double duration = (corner_turn_right_angle_deg_ * kPi / 180.0) /
+                                std::max(corner_turn_angular_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("corner_turn_right_35deg");
+          cmd.angular.z = -corner_turn_angular_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::CornerStopAfterTurn;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
+
+      case State::CornerStopAfterTurn:
+        setStatus("corner_stop_after_right_turn");
         hardStop();
+        if ((now - state_start_time_).toSec() >= corner_stop_hold_)
+        {
+          state_ = State::CornerForward10cm;
+          state_start_time_ = now;
+        }
+        break;
+
+      case State::CornerForward10cm:
+      {
+        const double duration = corner_forward_10_distance_m_ /
+                                std::max(corner_fast_forward_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("corner_forward_10cm");
+          cmd.linear.x = corner_fast_forward_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::WaitForRightLine;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
+
+      case State::WaitForRightLine:
+        follow = computeFollow(mask);
+        if (!follow.found)
+        {
+          setStatus("wait_for_right_line_no_rotation");
+          publishStop();
+        }
+        else
+        {
+          last_right_x_ = follow.right_x;
+          filtered_error_ = follow.error;
+          last_error_ = follow.error;
+          filtered_angular_ = 0.0;
+          line_was_lost_ = false;
+          reacquire_count_ = 0;
+          state_ = State::Follow;
+          state_start_time_ = now;
+          setStatus("right_line_found_resume_follow");
+          publishFollowCommand(follow);
+        }
         break;
     }
 
@@ -403,7 +535,6 @@ private:
     result.line_support = line.support;
     result.line_confidence = line.confidence;
     result.line_span_ratio = line.span_ratio;
-    result.heading_slope = line.heading_slope;
     result.found = line.found;
     if (!result.found)
       return result;
@@ -418,36 +549,8 @@ private:
     const double control_error = inside_deadband ? 0.0 : filtered_error_;
     const double control_derivative = inside_deadband ? 0.0 : d_error;
     double angular = kp_ * control_error + kd_ * control_derivative;
-
-    // Calibrate the normal perspective slope on the initial straight, then
-    // use slope change as an early heading cue.  In a right bend the upper
-    // part of the right boundary moves right, so dx/dy becomes smaller and
-    // this term commands a negative (right-turn) angular velocity before the
-    // lateral position error grows large.
-    if (line.heading_valid)
-    {
-      if (heading_calibration_count_ < heading_calibration_frames_)
-      {
-        ++heading_calibration_count_;
-        const double n = static_cast<double>(heading_calibration_count_);
-        heading_reference_slope_ +=
-            (line.heading_slope - heading_reference_slope_) / n;
-      }
-      else
-      {
-        result.heading_error =
-            line.heading_slope - heading_reference_slope_;
-        result.heading_angular =
-            clampDouble(heading_kp_ * result.heading_error,
-                        -max_heading_angular_, max_heading_angular_);
-        angular += result.heading_angular;
-      }
-    }
     double linear = base_speed_;
-    const bool heading_active =
-        std::fabs(result.heading_angular) > 0.025;
-    const bool in_curve =
-        abs_error > curve_error_threshold_ || heading_active;
+    const bool in_curve = abs_error > curve_error_threshold_;
     if (in_curve)
     {
       linear = curve_speed_;
@@ -481,9 +584,7 @@ private:
     const double angular_step = in_curve ? curve_angular_step_ : straight_angular_step_;
     filtered_angular_ += clampDouble(filtered_target - filtered_angular_,
                                      -angular_step, angular_step);
-    // A small lateral error does not mean the road is straight.  Preserve the
-    // heading correction when the far part of the line already shows a bend.
-    if (inside_deadband && !heading_active)
+    if (inside_deadband)
     {
       filtered_angular_ *= deadband_angular_decay_;
       if (std::fabs(filtered_angular_) < 0.015)
@@ -511,8 +612,6 @@ private:
     std::vector<double> xs;
     std::vector<double> ys;
     std::vector<double> weights;
-    double previous_center =
-        last_right_x_ >= 0 ? static_cast<double>(last_right_x_) : -1.0;
 
     for (std::size_t i = 0; i < right_scan_rows_.size(); ++i)
     {
@@ -530,35 +629,10 @@ private:
       if (segments.empty())
         continue;
 
-      // Continue along the same physical boundary from the bottom of the
-      // image upward.  Selecting segments.back() independently on every row
-      // allowed the detector to jump from a disappearing right boundary to
-      // the left boundary in a small right bend.
-      auto selected = segments.end();
-      double best_jump = std::numeric_limits<double>::max();
-      for (auto it = segments.begin(); it != segments.end(); ++it)
-      {
-        const double candidate_center =
-            0.5 * static_cast<double>(it->left + it->right);
-        if (previous_center < 0.0)
-        {
-          selected = std::prev(segments.end());
-          break;
-        }
-        const double jump = std::fabs(candidate_center - previous_center);
-        if (jump < best_jump)
-        {
-          best_jump = jump;
-          selected = it;
-        }
-      }
-      if (selected == segments.end() ||
-          (previous_center >= 0.0 && best_jump > max_scan_row_jump_px_))
-        continue;
-
+      // The requested boundary is always the rightmost admissible segment.
+      const Segment& rightmost = segments.back();
       const double center =
-          0.5 * static_cast<double>(selected->left + selected->right);
-      previous_center = center;
+          0.5 * static_cast<double>(rightmost.left + rightmost.right);
       const double bottom_factor =
           static_cast<double>(right_scan_rows_.size() - i) /
           std::max(1.0,
@@ -577,57 +651,19 @@ private:
     double weighted_x = 0.0;
     for (std::size_t i = 0; i < xs.size(); ++i)
     {
-      // Preserve the original lateral target calibration by using the
-      // original near-field rows for x control.  The added far rows are used
-      // for heading estimation only.
-      if (ys[i] >=
-          static_cast<double>(static_cast<int>(mask.rows * 0.58)))
-      {
-        weight_sum += weights[i];
-        weighted_x += xs[i] * weights[i];
-      }
+      weight_sum += weights[i];
+      weighted_x += xs[i] * weights[i];
     }
-    if (weight_sum <= 1e-6)
-      return result;
     weighted_x /= std::max(1e-6, weight_sum);
 
-    // Reject a boundary switch instead of clamping it into a believable fake
-    // position.  A rejected right line enters the right-turn recovery logic.
+    // Reuse the attachment's target-jump limiter: keep tracking a bend
+    // continuously instead of accepting a one-frame jump to another object.
     if (last_right_x_ >= 0)
     {
-      if (std::fabs(weighted_x - last_right_x_) > max_target_jump_px_)
-        return result;
-    }
-
-    // Least-squares slope dx/d(normalized y).  This carries the line heading
-    // information that a single averaged x coordinate cannot represent.
-    if (xs.size() >= 5)
-    {
-      double mean_x = 0.0;
-      double mean_y = 0.0;
-      for (std::size_t i = 0; i < xs.size(); ++i)
-      {
-        mean_x += xs[i];
-        mean_y += ys[i] / std::max(1.0, static_cast<double>(mask.rows));
-      }
-      mean_x /= static_cast<double>(xs.size());
-      mean_y /= static_cast<double>(xs.size());
-
-      double numerator = 0.0;
-      double denominator = 0.0;
-      for (std::size_t i = 0; i < xs.size(); ++i)
-      {
-        const double normalized_y =
-            ys[i] / std::max(1.0, static_cast<double>(mask.rows));
-        numerator += (normalized_y - mean_y) * (xs[i] - mean_x);
-        denominator += (normalized_y - mean_y) *
-                       (normalized_y - mean_y);
-      }
-      if (denominator > 1e-6)
-      {
-        result.heading_slope = numerator / denominator;
-        result.heading_valid = true;
-      }
+      weighted_x = clampDouble(
+          weighted_x,
+          last_right_x_ - max_target_jump_px_,
+          last_right_x_ + max_target_jump_px_);
     }
 
     const auto y_bounds = std::minmax_element(ys.begin(), ys.end());
@@ -644,11 +680,48 @@ private:
     return result;
   }
 
+  AlignmentResult computeInitialAlignment(const cv::Mat& mask) const
+  {
+    AlignmentResult result;
+    const int bottom_y = clampInt(static_cast<int>(mask.rows * 0.90), 0, mask.rows - 1);
+    const int top_y = clampInt(static_cast<int>(mask.rows * 0.55), 0, mask.rows - 1);
+
+    auto linePairAt = [this, &mask](int y, double& left_x, double& right_x) {
+      std::vector<Segment> segments = findSegments(mask.row(y));
+      segments.erase(
+          std::remove_if(
+              segments.begin(), segments.end(),
+              [this](const Segment& segment) {
+                return segment.width > max_line_segment_width_px_;
+              }),
+          segments.end());
+      if (segments.size() < 2)
+        return false;
+      left_x = 0.5 * static_cast<double>(segments.front().left + segments.front().right);
+      right_x = 0.5 * static_cast<double>(segments.back().left + segments.back().right);
+      return left_x < mask.cols * 0.5 && right_x > mask.cols * 0.5;
+    };
+
+    double bottom_left = 0.0;
+    double bottom_right = 0.0;
+    double top_left = 0.0;
+    double top_right = 0.0;
+    if (!linePairAt(bottom_y, bottom_left, bottom_right) ||
+        !linePairAt(top_y, top_left, top_right))
+      return result;
+
+    const double bottom_mid = 0.5 * (bottom_left + bottom_right);
+    const double top_mid = 0.5 * (top_left + top_right);
+    result.found = true;
+    result.center_error_px = bottom_mid - mask.cols * 0.5;
+    result.heading_error_px = top_mid - bottom_mid;
+    return result;
+  }
+
   EndOfTrackResult detectEndOfTrack(const cv::Mat& mask, const ros::Time& now) const
   {
     EndOfTrackResult result;
-    if ((now - start_time_).toSec() < end_enable_delay_)
-      return result;
+    (void)now;
 
     const int y0 = clampInt(static_cast<int>(mask.rows * end_roiYInMask()), 0, mask.rows - 1);
     const int bottom_height = mask.rows - y0;
@@ -671,6 +744,71 @@ private:
           result.best_y_ratio = (roi_y_start_ratio_ + (1.0 - roi_y_start_ratio_) *
                                   (static_cast<double>(y) / std::max(1.0, static_cast<double>(mask.rows))));
           return result;
+        }
+      }
+    }
+
+    // A shallow corner does not necessarily create the very wide horizontal
+    // white segment handled above.  Detect it by finding two sufficiently long
+    // line segments that meet on the right side of the view and measuring their
+    // acute included angle.
+    cv::Mat edges;
+    cv::Canny(mask, edges, 50, 150, 3);
+    std::vector<cv::Vec4i> lines;
+    cv::HoughLinesP(edges, lines, 1.0, kPi / 180.0,
+                    corner_hough_threshold_, corner_min_line_length_px_,
+                    corner_max_line_gap_px_);
+
+    double best_join_distance = corner_join_distance_px_ + 1.0;
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+      const cv::Point2d a1(lines[i][0], lines[i][1]);
+      const cv::Point2d a2(lines[i][2], lines[i][3]);
+      const double angle_a = std::atan2(a2.y - a1.y, a2.x - a1.x);
+
+      for (std::size_t j = i + 1; j < lines.size(); ++j)
+      {
+        const cv::Point2d b1(lines[j][0], lines[j][1]);
+        const cv::Point2d b2(lines[j][2], lines[j][3]);
+        const double angle_b = std::atan2(b2.y - b1.y, b2.x - b1.x);
+        double angle_deg = std::fabs(angle_a - angle_b) * 180.0 / kPi;
+        while (angle_deg >= 180.0)
+          angle_deg -= 180.0;
+        if (angle_deg > 90.0)
+          angle_deg = 180.0 - angle_deg;
+        if (angle_deg < corner_min_angle_deg_ ||
+            angle_deg > corner_max_angle_deg_)
+          continue;
+
+        const cv::Point2d endpoints_a[2] = {a1, a2};
+        const cv::Point2d endpoints_b[2] = {b1, b2};
+        double join_distance = std::numeric_limits<double>::max();
+        cv::Point2d join;
+        for (const cv::Point2d& endpoint_a : endpoints_a)
+        {
+          for (const cv::Point2d& endpoint_b : endpoints_b)
+          {
+            const double distance = cv::norm(endpoint_a - endpoint_b);
+            if (distance < join_distance)
+            {
+              join_distance = distance;
+              join = (endpoint_a + endpoint_b) * 0.5;
+            }
+          }
+        }
+
+        if (join_distance > corner_join_distance_px_ ||
+            join.x < mask.cols * corner_min_join_x_ratio_)
+          continue;
+
+        if (join_distance < best_join_distance)
+        {
+          best_join_distance = join_distance;
+          result.detected = true;
+          result.corner_angle_deg = angle_deg;
+          result.best_y_ratio =
+              roi_y_start_ratio_ + (1.0 - roi_y_start_ratio_) *
+              (join.y / std::max(1.0, static_cast<double>(mask.rows)));
         }
       }
     }
@@ -742,19 +880,14 @@ private:
         // If the last trustworthy observation already showed that the car was
         // close to the right boundary, do not blindly move farther right.
         setStatus("stable_right_lost_last_seen_too_close");
-        cmd.linear.x = lost_linear_speed_;
-        cmd.angular.z =
-            last_angular_ < -0.03 ? lost_angular_speed_
-                                 : right_hard_away_angular_;
+        cmd.linear.x = 0.0;
+        cmd.angular.z = right_hard_away_angular_;
       }
       else
       {
-        setStatus("stable_right_lost_follow_last_turn");
+        setStatus("stable_right_lost_stop_no_rotation");
         cmd.linear.x = lost_linear_speed_;
-        if (last_angular_ > 0.03)
-          cmd.angular.z = std::fabs(lost_angular_speed_);
-        else
-          cmd.angular.z = lost_angular_speed_;
+        cmd.angular.z = lost_angular_speed_;
       }
       publishCmd(cmd);
       return;
@@ -850,8 +983,6 @@ private:
     line2 << "right_x=" << follow.right_x << " err=" << std::fixed << std::setprecision(1)
           << follow.filtered_error << " support=" << follow.line_support
           << " span=" << std::setprecision(2) << follow.line_span_ratio
-          << " slope=" << std::setprecision(1) << follow.heading_slope
-          << " hcmd=" << std::setprecision(2) << follow.heading_angular
           << " guard=" << follow.guard_level;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
 
@@ -879,14 +1010,11 @@ private:
        << " line_span_ratio=" << follow.line_span_ratio
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
-       << " heading_slope=" << follow.heading_slope
-       << " heading_reference=" << heading_reference_slope_
-       << " heading_error=" << follow.heading_error
-       << " heading_angular=" << follow.heading_angular
        << " guard_level=" << follow.guard_level
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
        << " end_detected=" << boolText(end_result.detected)
+       << " corner_angle_deg=" << end_result.corner_angle_deg
        << " end_width_ratio=" << end_result.best_width_ratio
        << " end_y_ratio=" << end_result.best_y_ratio;
     std_msgs::String msg;
@@ -922,33 +1050,38 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_time_ = 2.0;
-  double startup_speed_ = 0.45;
+  double initial_forward_speed_ = 0.20;
+  double initial_forward_20_distance_m_ = 0.20;
+  double initial_forward_30_distance_m_ = 0.30;
+  double align_lateral_kp_ = 0.0015;
+  double align_heading_kp_ = 0.0020;
+  double align_max_lateral_speed_ = 0.08;
+  double align_max_angular_speed_ = 0.12;
+  double align_center_tolerance_px_ = 10.0;
+  double align_heading_tolerance_px_ = 12.0;
+  int align_confirm_frames_ = 5;
 
   double right_line_offset_px_ = 170.0;
   int target_right_x_ = 490;
   double base_speed_ = 0.20;
   double curve_speed_ = 0.12;
   double search_speed_ = 0.0;
-  double search_angular_speed_ = -0.08;
-  double lost_linear_speed_ = 0.03;
-  double lost_angular_speed_ = -0.16;
+  double search_angular_speed_ = 0.0;
+  double lost_linear_speed_ = 0.0;
+  double lost_angular_speed_ = 0.0;
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
-  double error_alpha_ = 0.22;
-  double curve_error_threshold_ = 30.0;
-  double heading_kp_ = 0.0022;
-  double max_heading_angular_ = 0.16;
-  int heading_calibration_frames_ = 12;
+  double error_alpha_ = 0.15;
+  double curve_error_threshold_ = 38.0;
   double curve_angular_gain_ = 1.05;
   double max_angular_speed_ = 0.40;
   double steering_deadband_px_ = 7.0;
-  double max_straight_angular_speed_ = 0.20;
+  double max_straight_angular_speed_ = 0.15;
   double max_right_angular_speed_ = 0.34;
-  double straight_angular_alpha_ = 0.72;
+  double straight_angular_alpha_ = 0.82;
   double curve_angular_alpha_ = 0.58;
-  double straight_angular_step_ = 0.045;
+  double straight_angular_step_ = 0.03;
   double curve_angular_step_ = 0.06;
   double right_warning_error_px_ = 28.0;
   double right_hard_error_px_ = 52.0;
@@ -969,31 +1102,41 @@ private:
   int min_segment_gap_px_ = 10;
   int right_min_scan_support_ = 3;
   double max_target_jump_px_ = 160.0;
-  double max_scan_row_jump_px_ = 110.0;
 
-  double end_enable_delay_ = 3.0;
+  double corner_detection_window_s_ = 15.0;
+  double corner_min_angle_deg_ = 18.0;
+  double corner_max_angle_deg_ = 60.0;
+  int corner_hough_threshold_ = 22;
+  double corner_min_line_length_px_ = 35.0;
+  double corner_max_line_gap_px_ = 18.0;
+  double corner_join_distance_px_ = 55.0;
+  double corner_min_join_x_ratio_ = 0.45;
+  int corner_confirm_frames_ = 3;
   double end_roi_y_start_ratio_ = 0.87;
   double end_min_width_ratio_ = 0.45;
-  double end_stop_hold_ = 1.0;
-  double end_forward_distance_m_ = 0.65;
-  double end_forward_speed_ = 0.17;
-  double end_turn_left_angle_deg_ = 10.0;
-  double end_turn_left_angular_speed_ = 0.50;
+  double corner_stop_hold_ = 0.5;
+  double corner_fast_forward_speed_ = 0.30;
+  double corner_forward_16_distance_m_ = 0.16;
+  double corner_forward_10_distance_m_ = 0.10;
+  double corner_turn_right_angle_deg_ = 35.0;
+  double corner_turn_angular_speed_ = 0.50;
 
   State state_ = State::Idle;
   ros::Time start_time_;
   ros::Time state_start_time_;
   ros::Time last_detection_time_;
+  ros::Time follow_start_time_;
   std::string status_ = "idle";
 
   double last_error_ = 0.0;
   double filtered_error_ = 0.0;
   double filtered_angular_ = 0.0;
-  double heading_reference_slope_ = 0.0;
-  int heading_calibration_count_ = 0;
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
   int reacquire_count_ = 0;
+  int align_confirm_count_ = 0;
+  bool corner_detection_armed_ = false;
+  int corner_detect_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
 };
