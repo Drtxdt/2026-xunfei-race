@@ -2,8 +2,11 @@
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
   <arg name="target_category" default="" />
+  <arg name="sim_target_category" default="$(arg target_category)" />
   <arg name="target_item" default="" />
   <arg name="target_workshop" default="" />
+  <arg name="sim_item" default="" />
+  <arg name="sim_workshop" default="" />
   <arg name="navigator_publish_initial_pose" default="true" />
   <arg name="center_only" default="false" />
   <arg name="max_coverage_anchors" default="0" />
@@ -69,8 +72,11 @@
     <arg name="start_stage" value="task2" />
     <arg name="debug" value="$(arg debug)" />
     <arg name="target_category" value="$(arg target_category)" />
+    <arg name="sim_target_category" value="$(arg sim_target_category)" />
     <arg name="target_item" value="$(arg target_item)" />
     <arg name="target_workshop" value="$(arg target_workshop)" />
+    <arg name="sim_item" value="$(arg sim_item)" />
+    <arg name="sim_workshop" value="$(arg sim_workshop)" />
     <arg name="navigator_publish_initial_pose" value="$(arg navigator_publish_initial_pose)" />
     <arg name="task2_center_only" value="$(arg center_only)" />
     <arg name="max_coverage_anchors" value="$(arg max_coverage_anchors)" />

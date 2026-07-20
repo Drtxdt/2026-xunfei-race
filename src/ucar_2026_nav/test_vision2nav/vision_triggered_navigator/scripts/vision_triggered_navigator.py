@@ -42,6 +42,7 @@ from navigator_logic import (
     parking_footprint_margins,
     parking_goal_from_wall,
     ray_segment_intersection,
+    rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
     should_skip_coverage_anchor,
@@ -130,7 +131,11 @@ class VisionTriggeredNavigator(object):
         self.coverage_rotation_min_progress = max(0.0, float(rospy.get_param(
             "~coverage_rotation_min_progress", 0.03)))
         self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
-            "~coverage_rotation_max_yaw_deg", 90.0))))
+            "~coverage_rotation_max_yaw_deg", 45.0))))
+        self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
+            "~coverage_rotation_min_clearance", 0.30)))
+        self.coverage_rotation_scan_max_age = max(0.1, float(rospy.get_param(
+            "~coverage_rotation_scan_max_age_sec", 0.5)))
         self.coverage_goal_retry_count = max(0, int(rospy.get_param(
             "~coverage_goal_retry_count", 1)))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
@@ -328,6 +333,7 @@ class VisionTriggeredNavigator(object):
         self.odom_received_at = 0.0
         rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=10)
         self.scan_front_min = None
+        self.scan_nearest_min = None
         self.scan_wall_points = []
         self.scan_received_at = 0.0
         rospy.Subscriber(self.scan_topic, LaserScan, self._scan_cb, queue_size=1)
@@ -409,6 +415,7 @@ class VisionTriggeredNavigator(object):
     def _scan_cb(self, msg):
         """Store the nearest range and front-sector points in base coordinates."""
         nearest = None
+        all_around_nearest = None
         wall_points = []
         angle = float(msg.angle_min)
         for value in msg.ranges:
@@ -417,6 +424,9 @@ class VisionTriggeredNavigator(object):
             if (math.isfinite(distance) and
                     distance >= float(msg.range_min) and
                     distance <= float(msg.range_max)):
+                all_around_nearest = (
+                    distance if all_around_nearest is None
+                    else min(all_around_nearest, distance))
                 if abs(base_angle) <= self.scan_front_half_angle:
                     nearest = distance if nearest is None else min(nearest, distance)
                 if abs(base_angle) <= self.parking_wall_fit_half_angle:
@@ -427,8 +437,17 @@ class VisionTriggeredNavigator(object):
                     ))
             angle += float(msg.angle_increment)
         self.scan_front_min = nearest
+        self.scan_nearest_min = all_around_nearest
         self.scan_wall_points = wall_points
         self.scan_received_at = rospy.get_time()
+
+    def _rotation_clearance_is_safe(self):
+        return rotation_clearance_is_safe(
+            self.scan_nearest_min,
+            rospy.get_time() - self.scan_received_at,
+            self.coverage_rotation_min_clearance,
+            self.coverage_rotation_scan_max_age,
+        )
 
     def _publish_status(self, status):
         """发布简洁、稳定的流程状态，供比赛总控监听。"""
@@ -692,6 +711,15 @@ class VisionTriggeredNavigator(object):
             if not self._odom_is_fresh():
                 self.cmd_vel_pub.publish(Twist())
                 return False
+            if not self._rotation_clearance_is_safe():
+                self.cmd_vel_pub.publish(Twist())
+                self._publish_status("coverage_rotation_blocked_clearance")
+                rospy.logwarn(
+                    "[vision_triggered_navigator] refusing anchor yaw rotation: "
+                    "nearest lidar obstacle=%s required=%.2fm.",
+                    self.scan_nearest_min,
+                    self.coverage_rotation_min_clearance)
+                return False
             error = normalize_angle(target[2] - self.odom_yaw)
             if abs(error) <= self.coverage_anchor_yaw_tolerance:
                 self._hold_stopped(self.coverage_anchor_yaw_hold)
@@ -950,6 +978,15 @@ class VisionTriggeredNavigator(object):
         for step_index, step_angle in enumerate(steps, 1):
             if self.triggered:
                 self.cmd_vel_pub.publish(Twist())
+                return True
+            if not self._rotation_clearance_is_safe():
+                self.cmd_vel_pub.publish(Twist())
+                self._publish_status("coverage_scan_skipped_clearance")
+                rospy.logwarn(
+                    "[vision_triggered_navigator] skipping in-place sweep: "
+                    "nearest lidar obstacle=%s required=%.2fm.",
+                    self.scan_nearest_min,
+                    self.coverage_rotation_min_clearance)
                 return True
             start_pose = self._get_robot_pose(self.base_frame)
             if start_pose is None:

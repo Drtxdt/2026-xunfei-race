@@ -197,6 +197,50 @@ def parse_category(text):
     return None
 
 
+def parse_task1_categories(text):
+    """Parse the physical and simulation categories from the official command."""
+    compact = "".join(str(text or "").split()).lower()
+    marker_positions = [
+        compact.find(marker)
+        for marker in (
+            "仿真环境", "仿真", "模拟环境", "虚拟环境", "simulation", "sim"
+        )
+        if compact.find(marker) >= 0
+    ]
+    if not marker_positions:
+        return parse_category(compact), None
+    split_at = min(marker_positions)
+    return parse_category(compact[:split_at]), parse_category(compact[split_at:])
+
+
+def parse_task_categories(text):
+    """Backward-compatible name used by the earlier dual-category branch."""
+    return parse_task1_categories(text)
+
+
+def build_task1_instruction(pickup_category, sim_category):
+    pickup = CATEGORY_LABELS.get(pickup_category)
+    simulation = CATEGORY_LABELS.get(sim_category)
+    if not pickup or not simulation:
+        raise ValueError("both task1 categories are required")
+    return (
+        "小飞小飞，前往物品领取区，取得{}类，放置在对应仓库，"
+        "并领取仿真环境中需要的{}类放置在对应仓库"
+    ).format(pickup[0], simulation[0])
+
+
+def task2_delivery_targets(pickup, simulation):
+    """Return ordered workshop visits, omitting a duplicate second workshop."""
+    pickup = tuple(pickup)
+    simulation = tuple(simulation)
+    if len(pickup) != 3 or len(simulation) != 3:
+        raise ValueError("task2 delivery targets require category, item and workshop")
+    visits = [("physical",) + pickup]
+    if pickup[0] != simulation[0]:
+        visits.append(("simulation",) + simulation)
+    return tuple(visits)
+
+
 def normalize_category(value):
     text = str(value or "").strip().lower()
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)

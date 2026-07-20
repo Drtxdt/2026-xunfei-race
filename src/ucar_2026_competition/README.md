@@ -22,8 +22,8 @@ bash run_competition.sh --debug
 
 ```bash
 roslaunch ucar_2026_competition task1.launch
-roslaunch ucar_2026_competition task2.launch target_category:=food target_item:=苹果 target_workshop:=食品加工车间
-roslaunch ucar_2026_competition task3.launch target_category:=food sim_item:=苹果 sim_workshop:=食品加工车间 sim_bridge_host:=192.168.1.20
+roslaunch ucar_2026_competition task2.launch target_category:=daily target_item:=牙膏 target_workshop:=日用品加工车间 sim_target_category:=food sim_item:=香蕉 sim_workshop:=食品加工车间
+roslaunch ucar_2026_competition task3.launch sim_target_category:=food sim_item:=香蕉 sim_workshop:=食品加工车间 sim_bridge_host:=192.168.1.20
 roslaunch ucar_2026_competition task4.launch traffic_pose_configured:=true traffic_x:="$TRAFFIC_X" traffic_y:="$TRAFFIC_Y" traffic_yaw:="$TRAFFIC_YAW"
 roslaunch ucar_2026_competition task5.launch traffic_decision:=left
 ```

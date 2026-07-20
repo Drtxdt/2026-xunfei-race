@@ -12,6 +12,7 @@ if PACKAGE_SRC not in sys.path:
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
     base_is_stopped,
+    build_task1_instruction,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -20,8 +21,10 @@ from ucar_2026_competition.logic import (
     normalize_category,
     normalize_angle,
     parse_category,
+    parse_task1_categories,
     qr_values_from_payload,
     stage_sequence,
+    task2_delivery_targets,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -55,6 +58,34 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(parse_category("取得日用品"), "daily")
         self.assertEqual(parse_category("请取得电子产品类"), "electronics")
         self.assertEqual(parse_category("取得电子产品"), "electronics")
+
+    def test_official_task1_command_keeps_physical_and_simulation_targets(self):
+        command = (
+            "小飞小飞，前往物品领取区，取得日用品类，放置在对应仓库，"
+            "并领取仿真环境中需要的食品类放置在对应仓库"
+        )
+        self.assertEqual(parse_task1_categories(command), ("daily", "food"))
+        self.assertEqual(
+            build_task1_instruction("daily", "food"), command)
+
+    def test_task2_visits_physical_then_distinct_simulation_workshop(self):
+        self.assertEqual(
+            task2_delivery_targets(
+                ("daily", "牙膏", "日用品加工车间"),
+                ("food", "香蕉", "食品加工车间"),
+            ),
+            (
+                ("physical", "daily", "牙膏", "日用品加工车间"),
+                ("simulation", "food", "香蕉", "食品加工车间"),
+            ),
+        )
+        self.assertEqual(
+            task2_delivery_targets(
+                ("daily", "牙膏", "日用品加工车间"),
+                ("daily", "牙膏", "日用品加工车间"),
+            ),
+            (("physical", "daily", "牙膏", "日用品加工车间"),),
+        )
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")
@@ -150,7 +181,7 @@ class CompetitionLogicTest(unittest.TestCase):
         root = ET.parse(launch_path).getroot()
         launch_args = {item.attrib["name"]: item.attrib.get("default")
                        for item in root.findall("arg")}
-        self.assertEqual(launch_args["enable_simulation"], "false")
+        self.assertEqual(launch_args["enable_simulation"], "true")
 
         flow_include = next(
             item for item in root.findall("include")
@@ -164,11 +195,16 @@ class CompetitionLogicTest(unittest.TestCase):
         flow_root = ET.parse(flow_path).getroot()
         flow_launch_args = {item.attrib["name"]: item.attrib.get("default")
                             for item in flow_root.findall("arg")}
-        self.assertEqual(flow_launch_args["enable_simulation"], "false")
+        self.assertEqual(flow_launch_args["enable_simulation"], "true")
         flow_params = {item.attrib["name"]: item.attrib.get("value")
                        for item in flow_root.find("node").findall("param")}
         self.assertEqual(
             flow_params["enable_simulation"], "$(arg enable_simulation)")
+        self.assertEqual(
+            flow_params["sim_target_category"], "$(arg sim_target_category)")
+        self.assertEqual(
+            flow_params["coverage_rotation_min_clearance"],
+            "$(arg coverage_rotation_min_clearance)")
 
     def test_task4_start_action_supports_manual_stop_line_start(self):
         self.assertEqual(task4_start_action(True, False), "detect")
