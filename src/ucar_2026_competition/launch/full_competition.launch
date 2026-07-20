@@ -1,6 +1,7 @@
 <launch>
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
+  <arg name="enable_simulation" default="false" />
   <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
   <arg name="sim_bridge_port" default="26003" />
   <arg name="traffic_pose_configured" default="true" />
@@ -54,6 +55,7 @@
   <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
     <arg name="start_stage" value="full" />
     <arg name="debug" value="$(arg debug)" />
+    <arg name="enable_simulation" value="$(arg enable_simulation)" />
     <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
     <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
     <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />

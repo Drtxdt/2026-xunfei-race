@@ -42,6 +42,7 @@ from ucar_2026_competition.logic import (
     parse_category,
     qr_values_from_payload,
     stage_sequence,
+    task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
@@ -67,6 +68,7 @@ def bool_param(name, default=False):
 class CompetitionFlow:
     def __init__(self):
         self.mode = rospy.get_param("~start_stage", "full").strip().lower()
+        self.enable_simulation = bool_param("~enable_simulation", False)
         self.debug = bool_param("~debug", False)
         self.aborted = threading.Event()
         self.resume_event = threading.Event()
@@ -586,10 +588,11 @@ class CompetitionFlow:
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
 
-    def task3_task4_handoff(self):
-        """Resume physical navigation without resetting the random factory pose."""
+    def production_task4_handoff(self, source_stage):
+        """Resume physical navigation without resetting the current factory pose."""
+        source_stage = str(source_stage or "task3").strip().lower()
         self.publish_status(
-            "task3", "task4_handoff",
+            source_stage, "task4_handoff",
             "preserving AMCL pose and preparing physical navigation")
         self.safe_stop(cancel_navigation=True)
         timeout = float(rospy.get_param(
@@ -618,15 +621,15 @@ class CompetitionFlow:
             rospy.sleep(0.05)
         else:
             raise StageError(
-                "task3->task4 handoff did not reach {:.1f}s stationary idle state".format(
-                    stable_required))
+                "{}->task4 handoff did not reach {:.1f}s stationary idle state".format(
+                    source_stage, stable_required))
 
         try:
             rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
             rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
         except (rospy.ROSException, rospy.ServiceException) as exc:
             raise StageError(
-                "task3->task4 costmap refresh failed: {}".format(exc))
+                "{}->task4 costmap refresh failed: {}".format(source_stage, exc))
         cleared_at = time.monotonic()
         refresh_deadline = cleared_at + 2.0
         while time.monotonic() < refresh_deadline and not rospy.is_shutdown():
@@ -639,10 +642,11 @@ class CompetitionFlow:
             rospy.sleep(0.05)
         else:
             raise StageError(
-                "task3->task4 costmap refresh produced no fresh scan/costmap snapshot")
+                "{}->task4 costmap refresh produced no fresh scan/costmap snapshot".format(
+                    source_stage))
         self.safe_stop(cancel_navigation=True)
         self.publish_status(
-            "task3", "task4_handoff_ready",
+            source_stage, "task4_handoff_ready",
             "current AMCL pose preserved; fresh costmap; task4 may navigate")
 
     def start_child(self, key, package, launch_file, args=None):
@@ -1446,11 +1450,15 @@ class CompetitionFlow:
                 "task5": self.task5,
             }
             previous_stage = None
-            for stage in stage_sequence(self.mode):
+            for stage in stage_sequence(self.mode, self.enable_simulation):
                 if previous_stage == "task1" and stage == "task2":
                     self.run_stage("task1", self.task1_task2_handoff)
-                if previous_stage == "task3" and stage == "task4":
-                    self.run_stage("task3", self.task3_task4_handoff)
+                if task4_handoff_required(previous_stage, stage):
+                    source_stage = previous_stage
+                    self.run_stage(
+                        source_stage,
+                        lambda: self.production_task4_handoff(source_stage),
+                    )
                 self.run_stage(stage, handlers[stage])
                 previous_stage = stage
             self.publish_status("competition", "completed", "requested flow completed")

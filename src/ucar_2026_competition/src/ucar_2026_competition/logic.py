@@ -74,10 +74,12 @@ class DirectedYawAccumulator:
         return self.progress
 
 
-def stage_sequence(mode):
+def stage_sequence(mode, enable_simulation=False):
     normalized = str(mode or "").strip().lower()
     if normalized == "full":
-        return ("task1", "task2", "task3", "task4", "task5")
+        if bool(enable_simulation):
+            return ("task1", "task2", "task3", "task4", "task5")
+        return ("task1", "task2", "task4", "task5")
     if normalized == "task1_task2":
         return ("task1", "task2")
     if normalized == "task3_task4":
@@ -87,6 +89,12 @@ def stage_sequence(mode):
     if normalized in ("task1", "task2", "task3", "task4", "task5"):
         return (normalized,)
     raise ValueError("unsupported start_stage: {}".format(mode))
+
+
+def task4_handoff_required(previous_stage, current_stage):
+    """Require a stationary localization handoff from production to task4."""
+    return (str(current_stage or "").strip().lower() == "task4" and
+            str(previous_stage or "").strip().lower() in ("task2", "task3"))
 
 
 def task4_start_action(skip_stop_line_approach, traffic_pose_configured):
