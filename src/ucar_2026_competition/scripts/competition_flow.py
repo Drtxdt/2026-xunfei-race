@@ -929,7 +929,7 @@ class CompetitionFlow:
         sweep_angle = abs(
             float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(225.0)))
         )
-        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.2)))
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
