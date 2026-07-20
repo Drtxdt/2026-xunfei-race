@@ -38,10 +38,12 @@ from ucar_2026_competition.logic import (
     DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
+    normalize_angle,
     normalize_category,
     parse_category,
     parse_task_categories,
     qr_values_from_payload,
+    split_rotation_steps,
     stage_sequence,
     task4_handoff_required,
     task4_start_action,
@@ -120,6 +122,13 @@ class CompetitionFlow:
         self.qr_navigation_result = None
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
+        self.task1_instruction = ""
+        self.task1_llm_generation = 0
+        self.task1_llm_thread = None
+        self.task1_llm_done = threading.Event()
+        self.task1_llm_result = None
+        self.task1_llm_error = ""
+        self.task1_llm_items = []
         self.base_twist = None
         self.handoff_scan_received_at = 0.0
         self.handoff_costmap_received_at = 0.0
@@ -341,6 +350,7 @@ class CompetitionFlow:
                 if key not in self.qr_items:
                     self.qr_items[key] = result
                     rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+        self._start_task1_reasoning_async()
 
     def _qr_odom_cb(self, msg):
         q = msg.pose.pose.orientation
@@ -856,82 +866,236 @@ class CompetitionFlow:
             self.check_abort()
             self._check_qr_decoder()
             self._fresh_qr_odom_yaw(stale_sec)
-            if self._qr_count() >= expected_count:
-                return True
             rospy.sleep(0.05)
         return self._qr_count() >= expected_count
 
-    def scan_qr_at_current_pose(self, status_state):
-        """Rotate one odometry-closed-loop revolution with stable decode pauses."""
-        expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.20)))
-        step_angle = abs(
-            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
+    def _rotate_qr_step(
+        self,
+        angle,
+        speed,
+        direction,
+        stale_sec,
+        scan_deadline,
+        step_margin,
+    ):
+        tracker = DirectedYawAccumulator(direction=direction)
+        tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
+        step_deadline = min(
+            scan_deadline,
+            time.monotonic() + angle / speed + step_margin,
         )
-        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
+        twist = Twist()
+        twist.angular.z = speed * direction
+        while tracker.progress < angle and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            if time.monotonic() >= step_deadline:
+                raise StageError(
+                    "QR scan failed to rotate {:.1f} degrees before step timeout".format(
+                        math.degrees(angle)
+                    )
+                )
+            yaw = self._fresh_qr_odom_yaw(stale_sec)
+            if tracker.update(yaw) >= angle:
+                break
+            self.cmd_pub.publish(twist)
+            rospy.sleep(0.05)
+        self.safe_stop()
+
+    def _return_qr_to_yaw(self, target_yaw, speed, tolerance, stale_sec, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            current_yaw = self._fresh_qr_odom_yaw(stale_sec)
+            error = normalize_angle(target_yaw - current_yaw)
+            if abs(error) <= tolerance:
+                self.safe_stop()
+                return
+            twist = Twist()
+            twist.angular.z = speed if error > 0.0 else -speed
+            self.cmd_pub.publish(twist)
+            rospy.sleep(0.05)
+        self.safe_stop()
+        raise StageError("QR scan failed to return to its original final yaw")
+
+    def scan_qr_at_current_pose(self, status_state):
+        """Scan through 270 degrees, then restore the original final yaw."""
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.60)))
+        step_angle = abs(
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(30.0)))
+        )
+        sweep_angle = abs(
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(270.0)))
+        )
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
         step_margin = float(
             rospy.get_param("~qr_scan_step_timeout_margin_sec", 2.0)
         )
-        if speed <= 0.0 or step_angle <= 0.0 or stale_sec <= 0.0:
+        final_tolerance = abs(float(
+            rospy.get_param("~qr_final_yaw_tolerance_rad", math.radians(2.0))
+        ))
+        if (
+            speed <= 0.0
+            or step_angle <= 0.0
+            or sweep_angle <= 0.0
+            or sweep_angle >= 2.0 * math.pi
+            or stale_sec <= 0.0
+            or final_tolerance <= 0.0
+        ):
             raise StageError("QR scan motion parameters must be positive")
 
-        total_steps = int(math.ceil((2.0 * math.pi) / step_angle))
+        steps = split_rotation_steps(sweep_angle, step_angle)
         scan_deadline = time.monotonic() + scan_timeout
         self.publish_status(
             "task1",
             status_state,
-            "step scan start: count={}/{} steps={}".format(
-                self._qr_count(), expected_count, total_steps
+            "step scan start: count={}/{} sweep={:.0f}deg steps={}".format(
+                self._qr_count(),
+                expected_count,
+                math.degrees(sweep_angle),
+                len(steps),
             ),
         )
-        self._wait_for_qr_odom(odom_wait_sec, stale_sec)
-        if self._settle_for_qr(settle_sec, expected_count, scan_deadline, stale_sec):
-            return True
+        initial_yaw = self._wait_for_qr_odom(odom_wait_sec, stale_sec)
+        self._settle_for_qr(
+            settle_sec, expected_count, scan_deadline, stale_sec
+        )
 
-        twist = Twist()
-        twist.angular.z = speed
-        tracker = DirectedYawAccumulator(direction=1.0)
-        for _ in range(total_steps):
-            if self._qr_count() >= expected_count:
-                self.safe_stop()
-                return True
-            if time.monotonic() >= scan_deadline:
-                self.safe_stop()
-                return False
-
-            tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
-            step_deadline = time.monotonic() + step_angle / speed + step_margin
-            while tracker.progress < step_angle and not rospy.is_shutdown():
-                self.check_abort()
-                self._check_qr_decoder()
-                if self._qr_count() >= expected_count:
-                    self.safe_stop()
-                    return True
-                if time.monotonic() >= scan_deadline:
-                    self.safe_stop()
-                    return False
-                if time.monotonic() >= step_deadline:
-                    raise StageError(
-                        "QR scan failed to rotate {:.1f} degrees before step timeout".format(
-                            math.degrees(step_angle)
-                        )
-                    )
-                yaw = self._fresh_qr_odom_yaw(stale_sec)
-                if tracker.update(yaw) >= step_angle:
-                    break
-                self.cmd_pub.publish(twist)
-                rospy.sleep(0.05)
-
-            if self._settle_for_qr(
+        for index, angle in enumerate(steps, start=1):
+            self._rotate_qr_step(
+                angle,
+                speed,
+                1.0,
+                stale_sec,
+                scan_deadline,
+                step_margin,
+            )
+            self.publish_status(
+                "task1",
+                status_state,
+                "scan stop {}/{}: yaw step {:.0f}deg, hold {:.1f}s".format(
+                    index,
+                    len(steps),
+                    math.degrees(angle),
+                    settle_sec,
+                ),
+            )
+            self._settle_for_qr(
                 settle_sec, expected_count, scan_deadline, stale_sec
-            ):
-                return True
+            )
 
-        self.safe_stop()
+        self.publish_status(
+            "task1",
+            "qr_returning_final_yaw",
+            "270-degree scan complete; returning to the original final yaw",
+        )
+        final_timeout = (2.0 * math.pi - sweep_angle) / speed + step_margin + 1.0
+        self._return_qr_to_yaw(
+            initial_yaw,
+            speed,
+            final_tolerance,
+            stale_sec,
+            final_timeout,
+        )
+        self._settle_for_qr(
+            settle_sec,
+            expected_count,
+            time.monotonic() + settle_sec + 0.1,
+            stale_sec,
+        )
         return self._qr_count() >= expected_count
+
+    def _reset_task1_reasoning(self, instruction):
+        with self.lock:
+            self.task1_llm_generation += 1
+            self.task1_instruction = str(instruction or "").strip()
+            self.task1_llm_thread = None
+            self.task1_llm_done = threading.Event()
+            self.task1_llm_result = None
+            self.task1_llm_error = ""
+            self.task1_llm_items = []
+
+    def _start_task1_reasoning_async(self):
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        with self.lock:
+            if (
+                self.task1_llm_thread is not None
+                or not self.task1_instruction
+                or len(self.qr_items) < expected_count
+            ):
+                return False
+            items = list(self.qr_items.values())[:expected_count]
+            if len(items) < 3:
+                return False
+            instruction = self.task1_instruction
+            generation = self.task1_llm_generation
+            done_event = self.task1_llm_done
+            worker = threading.Thread(
+                target=self._task1_reasoning_worker,
+                args=(generation, done_event, items, instruction),
+                name="task1-llm-reasoning",
+                daemon=True,
+            )
+            self.task1_llm_thread = worker
+            self.task1_llm_items = items
+        self.publish_status(
+            "task1",
+            "reasoning_during_qr_scan",
+            "three QR items collected; Spark X2 reasoning started in parallel",
+        )
+        worker.start()
+        return True
+
+    def _task1_reasoning_worker(self, generation, done_event, items, instruction):
+        result = None
+        error = ""
+        service = rospy.get_param(
+            "~llm_service", "/smart_factory_llm/reason_pickup_order"
+        )
+        try:
+            rospy.wait_for_service(service, timeout=15.0)
+            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
+                items[0], items[1], items[2], instruction
+            )
+            if not result.success:
+                error = "LLM reasoning failed: {}".format(result.error_message)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            error = "LLM service failed: {}".format(exc)
+        except Exception as exc:
+            error = "LLM reasoning worker failed: {}".format(exc)
+        with self.lock:
+            if generation != self.task1_llm_generation:
+                return
+            self.task1_llm_result = result
+            self.task1_llm_error = error
+        done_event.set()
+
+    def _wait_task1_reasoning(self):
+        with self.lock:
+            done_event = self.task1_llm_done
+        if not done_event.is_set():
+            self.publish_status(
+                "task1",
+                "waiting_reasoning_at_final_yaw",
+                "vehicle is at the final yaw; waiting for Spark X2",
+            )
+        while not done_event.wait(0.1):
+            self.check_abort()
+            self.safe_stop()
+        with self.lock:
+            result = self.task1_llm_result
+            error = self.task1_llm_error
+            items = list(self.task1_llm_items)
+        if error:
+            raise StageError(error)
+        if result is None:
+            raise StageError("LLM reasoning completed without a result")
+        return result, items
 
     # ------------------------------ stages ------------------------------
     def task1(self):
@@ -964,6 +1128,7 @@ class CompetitionFlow:
 
         with self.lock:
             self.qr_items.clear()
+        self._reset_task1_reasoning(instruction)
         try:
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
             self.qr_collecting = True
@@ -1007,19 +1172,8 @@ class CompetitionFlow:
             self.stop_child("qr_decoder")
             self.safe_stop(cancel_navigation=True)
 
-        with self.lock:
-            items = list(self.qr_items.values())[:3]
-        service = rospy.get_param("~llm_service", "/smart_factory_llm/reason_pickup_order")
-        self.publish_status("task1", "reasoning", "calling Spark X2")
-        try:
-            rospy.wait_for_service(service, timeout=15.0)
-            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
-                items[0], items[1], items[2], instruction
-            )
-        except (rospy.ROSException, rospy.ServiceException) as exc:
-            raise StageError("LLM service failed: {}".format(exc))
-        if not result.success:
-            raise StageError("LLM reasoning failed: {}".format(result.error_message))
+        self._start_task1_reasoning_async()
+        result, items = self._wait_task1_reasoning()
         if normalize_category(result.pickup_major) != self.category:
             raise StageError("LLM physical category does not match voice category")
         if normalize_category(result.sim_major) != self.sim_category:
