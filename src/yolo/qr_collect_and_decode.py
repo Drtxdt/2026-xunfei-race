@@ -13,7 +13,9 @@ import time
 import json
 import argparse
 import sys
+import threading
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlparse
 
 import cv2
@@ -60,12 +62,18 @@ class QRCollectAndDecode:
         self.last_publish_time = 0.0
         self.last_decode_time = 0.0
         self.url_cache = {}
+        self.url_lock = threading.RLock()
+        self.publish_lock = threading.Lock()
+        self.pending_urls = set()
+        self.url_next_allowed = {}
+        self.fetch_executor = ThreadPoolExecutor(max_workers=3)
         self.decode_interval = max(0.0, float(args.decode_interval))
         self.decode_scales = self.parse_decode_scales(args.decode_scales)
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         self.pub = rospy.Publisher(args.pub_topic, String, queue_size=10)
         self.sub = rospy.Subscriber(args.topic, Image, self.image_cb, queue_size=1)
+        rospy.on_shutdown(lambda: self.fetch_executor.shutdown(wait=False))
 
         rospy.loginfo("QR image topic: %s", args.topic)
         rospy.loginfo("QR images save to: %s", self.out_dir)
@@ -113,26 +121,12 @@ class QRCollectAndDecode:
                         "error": None
                     }
                     if self.args.fetch and self.is_url(text):
-                        item["api"] = self.resolve_qr_url(text)
-                        if item["api"] and item["api"].get("code") == 200:
-                            item["ok"] = True
-                            item["result"] = item["api"].get("result")
-                        elif item["api"]:
-                            item["error"] = "api_code_not_200"
+                        self.schedule_url_resolution(text)
+                        continue
                     results.append(item)
 
-                payload = {
-                    "stamp": now,
-                    "count": len(results),
-                    "items": results
-                }
-                text_payload = json.dumps(payload, ensure_ascii=False)
-
-                if text_payload != self.last_publish_text or now - self.last_publish_time > self.args.repeat_period:
-                    rospy.loginfo("QR decoded: %s", text_payload)
-                    self.pub.publish(String(data=text_payload))
-                    self.last_publish_text = text_payload
-                    self.last_publish_time = now
+                if results:
+                    self.publish_results(results, now)
 
                 if self.args.save_on_detect:
                     self.save_image(img, prefix="qr_detect")
@@ -143,6 +137,50 @@ class QRCollectAndDecode:
 
         except Exception as e:
             rospy.logerr("image_cb error: %s", str(e))
+
+    def schedule_url_resolution(self, url):
+        now = time.time()
+        with self.url_lock:
+            if url in self.pending_urls or now < self.url_next_allowed.get(url, 0.0):
+                return
+            self.pending_urls.add(url)
+        self.fetch_executor.submit(self.resolve_and_publish_url, url)
+
+    def resolve_and_publish_url(self, url):
+        started_at = time.monotonic()
+        try:
+            api_result = self.resolve_qr_url(url)
+            item = {
+                "raw": url,
+                "api": api_result,
+                "ok": bool(api_result and api_result.get("code") == 200),
+                "result": api_result.get("result") if api_result else None,
+                "error": None,
+            }
+            if api_result and api_result.get("code") != 200:
+                item["error"] = "api_code_not_200"
+            rospy.loginfo(
+                "QR URL resolved in %.1fms: %s -> %s",
+                (time.monotonic() - started_at) * 1000.0,
+                url,
+                item["result"],
+            )
+            self.publish_results([item], time.time())
+        except Exception as exc:
+            rospy.logwarn("QR URL resolution failed: %s -> %s", url, exc)
+        finally:
+            with self.url_lock:
+                self.pending_urls.discard(url)
+                self.url_next_allowed[url] = time.time() + self.args.repeat_period
+
+    def publish_results(self, results, stamp):
+        payload = {"stamp": stamp, "count": len(results), "items": results}
+        text_payload = json.dumps(payload, ensure_ascii=False)
+        with self.publish_lock:
+            rospy.loginfo("QR decoded: %s", text_payload)
+            self.pub.publish(String(data=text_payload))
+            self.last_publish_text = text_payload
+            self.last_publish_time = stamp
 
     def decode_qr(self, img):
         texts = []
@@ -215,12 +253,14 @@ class QRCollectAndDecode:
             return {"code": -1, "result": None, "error": str(e)}
 
     def fetch_cached_url(self, url):
-        if url in self.url_cache:
-            return self.url_cache[url]
+        with self.url_lock:
+            if url in self.url_cache:
+                return self.url_cache[url]
 
         result = self.fetch_url(url)
         if result and result.get("code") == 200:
-            self.url_cache[url] = result
+            with self.url_lock:
+                self.url_cache[url] = result
             rospy.loginfo("QR URL cached: %s -> %s", url, result.get("result"))
         return result
 

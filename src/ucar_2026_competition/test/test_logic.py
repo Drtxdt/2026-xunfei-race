@@ -47,10 +47,10 @@ class CompetitionLogicTest(unittest.TestCase):
                     continue
                 key, value = line.split(":", 1)
                 config[key.strip()] = value.strip()
-        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.30)
+        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.35)
         self.assertAlmostEqual(
-            float(config["qr_scan_step_angle_rad"]), math.radians(20.0))
-        self.assertEqual(float(config["qr_scan_settle_sec"]), 0.6)
+            float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
+        self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
 
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)

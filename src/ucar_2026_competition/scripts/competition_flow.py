@@ -121,6 +121,11 @@ class CompetitionFlow:
 
         self.qr_items = OrderedDict()
         self.qr_collecting = False
+        self.task1_instruction = ""
+        self.task1_reasoning_started = False
+        self.task1_reasoning_result = None
+        self.task1_reasoning_error = ""
+        self.task1_reasoning_done = threading.Event()
         self.qr_navigation_watching = False
         self.qr_navigation_goal_id = ""
         self.qr_navigation_result = None
@@ -340,11 +345,77 @@ class CompetitionFlow:
             payload = json.loads(msg.data)
         except Exception:
             return
+        accepted = False
         for key, result in qr_values_from_payload(payload):
             with self.lock:
                 if key not in self.qr_items:
                     self.qr_items[key] = result
+                    accepted = True
                     rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+        if accepted:
+            self._start_task1_reasoning_if_ready()
+
+    def _start_task1_reasoning_if_ready(self):
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        with self.lock:
+            if (self.task1_reasoning_started or
+                    len(self.qr_items) < expected_count or
+                    not self.task1_instruction):
+                return False
+            items = list(self.qr_items.values())[:expected_count]
+            instruction = self.task1_instruction
+            self.task1_reasoning_started = True
+        rospy.loginfo(
+            "Task1 pipeline: starting Spark while QR scan teardown continues: %s",
+            ", ".join(items),
+        )
+        threading.Thread(
+            target=self._task1_reasoning_worker,
+            args=(items, instruction),
+            name="task1-spark-reasoning",
+            daemon=True,
+        ).start()
+        return True
+
+    def _task1_reasoning_worker(self, items, instruction):
+        started_at = time.monotonic()
+        service = rospy.get_param(
+            "~llm_service", "/smart_factory_llm/reason_pickup_order")
+        result = None
+        error = ""
+        try:
+            rospy.wait_for_service(service, timeout=15.0)
+            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
+                items[0], items[1], items[2], instruction
+            )
+        except (rospy.ROSException, rospy.ServiceException, IndexError) as exc:
+            error = "LLM service failed: {}".format(exc)
+        with self.lock:
+            self.task1_reasoning_result = result
+            self.task1_reasoning_error = error
+        rospy.loginfo(
+            "Task1 pipeline: Spark finished in %.3fs success=%s",
+            time.monotonic() - started_at,
+            bool(result and result.success and not error),
+        )
+        self.task1_reasoning_done.set()
+
+    def _wait_for_task1_reasoning(self):
+        timeout = max(1.0, float(rospy.get_param(
+            "~task1_reasoning_timeout_sec", 200.0)))
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            if self.task1_reasoning_done.wait(0.05):
+                with self.lock:
+                    error = self.task1_reasoning_error
+                    result = self.task1_reasoning_result
+                if error:
+                    raise StageError(error)
+                if result is None:
+                    raise StageError("LLM reasoning completed without a response")
+                return result
+        raise StageError("LLM reasoning timed out after {:.1f}s".format(timeout))
 
     def _qr_odom_cb(self, msg):
         q = msg.pose.pose.orientation
@@ -1076,7 +1147,13 @@ class CompetitionFlow:
 
         with self.lock:
             self.qr_items.clear()
+            self.task1_instruction = instruction
+            self.task1_reasoning_started = False
+            self.task1_reasoning_result = None
+            self.task1_reasoning_error = ""
+            self.task1_reasoning_done.clear()
         try:
+            qr_scan_started_at = time.monotonic()
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
             self.qr_collecting = True
             completed = self.scan_qr_at_current_pose("scanning_qr_primary")
@@ -1112,7 +1189,8 @@ class CompetitionFlow:
             self.publish_status(
                 "task1",
                 "qr_scan_completed",
-                "collected {} unique QR items".format(self._qr_count()),
+                "collected {} unique QR items in {:.3f}s".format(
+                    self._qr_count(), time.monotonic() - qr_scan_started_at),
             )
         finally:
             self.qr_collecting = False
@@ -1121,15 +1199,10 @@ class CompetitionFlow:
 
         with self.lock:
             items = list(self.qr_items.values())[:3]
-        service = rospy.get_param("~llm_service", "/smart_factory_llm/reason_pickup_order")
-        self.publish_status("task1", "reasoning", "calling Spark X2")
-        try:
-            rospy.wait_for_service(service, timeout=15.0)
-            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
-                items[0], items[1], items[2], instruction
-            )
-        except (rospy.ROSException, rospy.ServiceException) as exc:
-            raise StageError("LLM service failed: {}".format(exc))
+        self._start_task1_reasoning_if_ready()
+        self.publish_status(
+            "task1", "reasoning", "waiting for pipelined Spark X2 result")
+        result = self._wait_for_task1_reasoning()
         if not result.success:
             raise StageError("LLM reasoning failed: {}".format(result.error_message))
         if normalize_category(result.pickup_major) != self.category:
