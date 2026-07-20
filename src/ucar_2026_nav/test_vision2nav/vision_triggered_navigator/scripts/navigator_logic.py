@@ -310,18 +310,6 @@ def coverage_position_needs_yaw_alignment(distance, yaw_error,
             abs(float(yaw_error)) > abs(float(yaw_tolerance)))
 
 
-def should_retry_coverage_goal(result, rotation_stall, timed_out,
-                               attempt, retry_count, aborted_status=4):
-    """Retry one exact anchor after recoverable move_base failures."""
-    if int(attempt) >= max(0, int(retry_count)):
-        return False
-    try:
-        aborted = int(result) == int(aborted_status)
-    except (TypeError, ValueError):
-        aborted = False
-    return bool(rotation_stall) or bool(timed_out) or aborted
-
-
 def coverage_timeout_decision(elapsed, window_progress,
                               soft_timeout=25.0, hard_timeout=40.0,
                               minimum_progress=0.03):
