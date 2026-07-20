@@ -95,6 +95,15 @@ private:
     double span_ratio = 0.0;
   };
 
+  struct LineCandidate
+  {
+    int support = 0;
+    double weighted_x = 0.0;
+    double weight_sum = 0.0;
+    double min_y = 0.0;
+    double max_y = 0.0;
+  };
+
   struct Segment
   {
     int left = 0;
@@ -132,6 +141,7 @@ private:
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
     private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
     private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
+    private_nh_.param("lost_guard_frames", lost_guard_frames_, 3);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
@@ -170,6 +180,8 @@ private:
     private_nh_.param("right_min_scan_support",
                       right_min_scan_support_, 3);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
+    private_nh_.param("right_candidate_min_x_ratio",
+                      right_candidate_min_x_ratio_, 0.42);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
@@ -463,73 +475,118 @@ private:
   RightLineResult findRightLine(const cv::Mat& mask) const
   {
     RightLineResult result;
-    std::vector<double> xs;
-    std::vector<double> ys;
-    std::vector<double> weights;
+
+    // Keep every disconnected white marking separate.  The former
+    // row-by-row "rightmost segment" method could take low scan points from
+    // the old road and high scan points from the road after the right turn,
+    // then average them into a fictitious line in the middle of the image.
+    cv::Mat labels;
+    const int component_count =
+        cv::connectedComponents(mask, labels, 8, CV_32S);
+    if (component_count <= 1)
+      return result;
+
+    std::vector<LineCandidate> candidates(component_count);
 
     for (std::size_t i = 0; i < right_scan_rows_.size(); ++i)
     {
       const int y = clampInt(
           static_cast<int>(mask.rows * right_scan_rows_[i]),
           0, mask.rows - 1);
-      std::vector<Segment> segments = findSegments(mask.row(y));
-      segments.erase(
-          std::remove_if(
-              segments.begin(), segments.end(),
-              [this](const Segment& segment) {
-                return segment.width > max_line_segment_width_px_;
-              }),
-          segments.end());
-      if (segments.empty())
-        continue;
-
-      // The requested boundary is always the rightmost admissible segment.
-      const Segment& rightmost = segments.back();
-      const double center =
-          0.5 * static_cast<double>(rightmost.left + rightmost.right);
       const double bottom_factor =
           static_cast<double>(right_scan_rows_.size() - i) /
           std::max(1.0,
                    static_cast<double>(right_scan_rows_.size() - 1));
       const double weight =
           1.0 + bottom_factor * (right_scan_bottom_weight_ - 1.0);
-      xs.push_back(center);
-      ys.push_back(static_cast<double>(y));
-      weights.push_back(weight);
+
+      const int* label_row = labels.ptr<int>(y);
+      int x = 0;
+      while (x < labels.cols)
+      {
+        const int label = label_row[x];
+        if (label == 0)
+        {
+          ++x;
+          continue;
+        }
+
+        const int left = x;
+        while (x < labels.cols && label_row[x] == label)
+          ++x;
+        const int right = x - 1;
+        const int width = right - left + 1;
+        if (width < min_line_width_px_ ||
+            width > max_line_segment_width_px_)
+          continue;
+
+        LineCandidate& candidate = candidates[label];
+        const double center =
+            0.5 * static_cast<double>(left + right);
+        candidate.weighted_x += center * weight;
+        candidate.weight_sum += weight;
+        if (candidate.support == 0)
+        {
+          candidate.min_y = static_cast<double>(y);
+          candidate.max_y = static_cast<double>(y);
+        }
+        else
+        {
+          candidate.min_y =
+              std::min(candidate.min_y, static_cast<double>(y));
+          candidate.max_y =
+              std::max(candidate.max_y, static_cast<double>(y));
+        }
+        ++candidate.support;
+      }
     }
 
-    if (xs.size() < static_cast<std::size_t>(right_min_scan_support_))
+    const double min_candidate_x =
+        mask.cols * right_candidate_min_x_ratio_;
+    const LineCandidate* best = nullptr;
+    double best_x = -1.0;
+    for (int label = 1; label < component_count; ++label)
+    {
+      const LineCandidate& candidate = candidates[label];
+      if (candidate.support < right_min_scan_support_ ||
+          candidate.weight_sum <= 0.0)
+        continue;
+
+      const double candidate_x =
+          candidate.weighted_x / candidate.weight_sum;
+      if (candidate_x < min_candidate_x)
+        continue;
+
+      // A large jump is not "fixed" by clamping: clamping manufactures a
+      // plausible coordinate for the wrong line.  Reject it and let the
+      // existing lost-line right-search behaviour find the true boundary.
+      if (last_right_x_ >= 0 &&
+          std::fabs(candidate_x - last_right_x_) >
+              max_target_jump_px_)
+        continue;
+
+      // Among continuous, sufficiently supported components, explicitly
+      // choose the rightmost one.  At the traffic-light right turn this keeps
+      // the new road's right edge and ignores the diagonal old-road marking.
+      if (candidate_x > best_x)
+      {
+        best_x = candidate_x;
+        best = &candidate;
+      }
+    }
+
+    if (best == nullptr)
       return result;
 
-    double weight_sum = 0.0;
-    double weighted_x = 0.0;
-    for (std::size_t i = 0; i < xs.size(); ++i)
-    {
-      weight_sum += weights[i];
-      weighted_x += xs[i] * weights[i];
-    }
-    weighted_x /= std::max(1e-6, weight_sum);
-
-    // Reuse the attachment's target-jump limiter: keep tracking a bend
-    // continuously instead of accepting a one-frame jump to another object.
-    if (last_right_x_ >= 0)
-    {
-      weighted_x = clampDouble(
-          weighted_x,
-          last_right_x_ - max_target_jump_px_,
-          last_right_x_ + max_target_jump_px_);
-    }
-
-    const auto y_bounds = std::minmax_element(ys.begin(), ys.end());
     result.found = true;
-    result.x = clampInt(static_cast<int>(std::round(weighted_x)),
+    result.x = clampInt(static_cast<int>(std::round(best_x)),
                         0, mask.cols - 1);
-    result.support = static_cast<int>(xs.size());
+    result.support = best->support;
     result.confidence =
-        static_cast<double>(xs.size()) /
+        static_cast<double>(best->support) /
         std::max(1.0, static_cast<double>(right_scan_rows_.size()));
     result.span_ratio =
-        (*y_bounds.second - *y_bounds.first) /
+        (best->max_y - best->min_y) /
         std::max(1.0, static_cast<double>(mask.rows));
     return result;
   }
@@ -627,11 +684,15 @@ private:
     {
       line_was_lost_ = true;
       reacquire_count_ = 0;
-      if (filtered_error_ >= right_warning_error_px_)
+      ++lost_frame_count_;
+      if (filtered_error_ >= right_warning_error_px_ &&
+          lost_frame_count_ <= lost_guard_frames_)
       {
         // If the last trustworthy observation already showed that the car was
-        // close to the right boundary, do not blindly move farther right.
-        setStatus("stable_right_lost_last_seen_too_close");
+        // close to the right boundary, briefly move away.  This guard must be
+        // bounded: while the line is absent filtered_error_ cannot update, so
+        // an unbounded condition here locks the vehicle into a left spin.
+        setStatus("stable_right_lost_brief_left_guard");
         cmd.linear.x = 0.0;
         cmd.angular.z = right_hard_away_angular_;
       }
@@ -645,6 +706,7 @@ private:
       return;
     }
 
+    lost_frame_count_ = 0;
     if (line_was_lost_)
     {
       ++reacquire_count_;
@@ -763,6 +825,7 @@ private:
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
        << " guard_level=" << follow.guard_level
+       << " lost_frames=" << lost_frame_count_
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
        << " end_detected=" << boolText(end_result.detected)
@@ -812,6 +875,7 @@ private:
   double search_angular_speed_ = -0.08;
   double lost_linear_speed_ = 0.0;
   double lost_angular_speed_ = -0.08;
+  int lost_guard_frames_ = 3;
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
@@ -845,6 +909,7 @@ private:
   int min_segment_gap_px_ = 10;
   int right_min_scan_support_ = 3;
   double max_target_jump_px_ = 160.0;
+  double right_candidate_min_x_ratio_ = 0.42;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
@@ -866,6 +931,7 @@ private:
   double filtered_angular_ = 0.0;
   int last_right_x_ = -1;
   bool line_was_lost_ = false;
+  int lost_frame_count_ = 0;
   int reacquire_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
