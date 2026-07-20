@@ -7,9 +7,10 @@ status_topic: /stable_right_track_end_stop/status
 debug_image_topic: /stable_right_track_end_stop/debug_image
 debug_info_topic: /stable_right_track_end_stop/debug_info
 
-# Conservative straight entry from the task4 stop line.
+# Open-loop straight entry from the task4 stop line. Vision steering is not
+# used until this nominal distance has been completed.
 auto_start: true
-startup_time: 1.0
+startup_distance_m: 0.60
 startup_speed: 0.12
 
 # Right-boundary tracking. The desired right line is 200 px to the right of

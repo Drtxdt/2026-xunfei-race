@@ -118,8 +118,10 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_time", startup_time_, 1.0);
+    private_nh_.param("startup_distance_m", startup_distance_m_, 0.60);
     private_nh_.param("startup_speed", startup_speed_, 0.12);
+    startup_distance_m_ = std::max(0.0, startup_distance_m_);
+    startup_speed_ = std::max(0.0, startup_speed_);
 
     private_nh_.param("right_line_offset_px", right_line_offset_px_, 200.0);
     target_right_x_ = clampInt(
@@ -223,19 +225,34 @@ private:
         break;
 
       case State::StartupForward:
-        if ((now - start_time_).toSec() < startup_time_)
+      {
+        if (!startup_motion_started_)
+        {
+          startup_motion_started_ = true;
+          state_start_time_ = now;
+          ROS_INFO("stable right entry driving straight %.2f m at %.2f m/s",
+                   startup_distance_m_, startup_speed_);
+        }
+
+        const double startup_duration =
+            startup_distance_m_ / std::max(startup_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < startup_duration)
         {
           setStatus("stable_right_startup_forward");
           cmd.linear.x = startup_speed_;
+          cmd.angular.z = 0.0;
           publishCmd(cmd);
         }
         else
         {
-          ROS_INFO("stable right follow entering search mode");
+          ROS_INFO("stable right %.2f m entry complete; entering rightmost-line search",
+                   startup_distance_m_);
           state_ = State::SearchRightLine;
           state_start_time_ = now;
+          hardStop();
         }
         break;
+      }
 
       case State::SearchRightLine:
         follow = computeFollow(mask);
@@ -814,8 +831,9 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_time_ = 1.0;
+  double startup_distance_m_ = 0.60;
   double startup_speed_ = 0.12;
+  bool startup_motion_started_ = false;
 
   double right_line_offset_px_ = 200.0;
   int target_right_x_ = 520;

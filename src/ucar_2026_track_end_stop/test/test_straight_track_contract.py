@@ -35,6 +35,9 @@ class StraightTrackContractTest(unittest.TestCase):
     def test_straight_config_is_fail_safe_and_tracks_right_boundary(self):
         self.assertTrue(CONFIG_PATH.exists(), str(CONFIG_PATH))
         config = CONFIG_PATH.read_text(encoding="utf-8")
+        self.assertIn("startup_distance_m: 0.60", config)
+        self.assertIn("startup_speed: 0.12", config)
+        self.assertNotIn("startup_time:", config)
         self.assertIn("right_line_offset_px: 200", config)
         self.assertIn("lost_timeout: 0.80", config)
         self.assertIn("lost_linear_speed: 0.06", config)
@@ -45,6 +48,17 @@ class StraightTrackContractTest(unittest.TestCase):
         source = SOURCE_PATH.read_text(encoding="utf-8")
         self.assertIn("const Segment& rightmost = segments.back();", source)
         self.assertNotIn("heading_angular", source)
+        self.assertIn('private_nh_.param("startup_distance_m"', source)
+        self.assertNotIn('private_nh_.param("startup_time"', source)
+        self.assertIn(
+            "startup_distance_m_ / std::max(startup_speed_, 1e-6)",
+            source,
+        )
+        self.assertIn("cmd.angular.z = 0.0;", source)
+        self.assertIn(
+            'state_ = State::SearchRightLine;\n          state_start_time_ = now;\n          hardStop();',
+            source,
+        )
         self.assertIn('private_nh_.param("lost_timeout"', source)
         self.assertIn('private_nh_.param("stop_on_lost"', source)
         self.assertIn('setStatus("stable_right_lost_stop")', source)
