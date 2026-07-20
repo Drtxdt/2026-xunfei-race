@@ -44,4 +44,11 @@ roslaunch factory_sign_ocr_test factory_sign_ocr_test.launch
 # 真 OCR 推荐使用这个 厂牌测试 以这个为准
  roslaunch factory_sign_ppocr_rknn_test factory_sign_ppocr_rknn_test.launch recognition_mode:=ppocr_rknn_system
 
+#==================
+# 所有流程启动，无仿真
+roslaunch ucar_2026_competition full_competition.launch
 
+# 带仿真的启动
+roslaunch ucar_2026_competition full_competition.launch \
+  enable_simulation:=true \
+  sim_bridge_host:=192.168.x.x
