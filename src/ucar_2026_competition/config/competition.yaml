@@ -2,21 +2,21 @@
 # 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
 # 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
 qr_navigation_timeout_sec: 120.0
-# 停转扫描：保持原扫码起始位姿，沿原方向扫描270度。
-# 每次快速转30度后停车0.3秒；最后继续快速回到起始朝向（原代码最终姿态）。
+# 停转扫描：保持原扫码起始位姿，只执行一轮九步扫描，不再前往备用点扫第二轮。
+# 每次快速转25度后停车0.2秒，共225度；最后继续快速回到起始朝向（原代码最终姿态）。
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
-qr_scan_angular_speed: 0.60
-qr_scan_step_angle_rad: 0.5235987755982988
-qr_scan_total_angle_rad: 4.71238898038469
-qr_scan_settle_sec: 0.3
+qr_scan_angular_speed: 0.80
+qr_scan_step_angle_rad: 0.4363323129985824
+qr_scan_total_angle_rad: 3.9269908169872414
+qr_scan_settle_sec: 0.2
 qr_final_yaw_tolerance_rad: 0.03490658503988659
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
 qr_expected_count: 3
-# 第一圈不足三个时，使用现有 move_base 前往二维码区中间标定点。
-qr_fallback_enabled: true
+# 单轮扫描不足三个码时直接报错并等待恢复，不再移动到备用点重复扫码。
+qr_fallback_enabled: false
 qr_fallback_navigation_timeout_sec: 45.0
 qr_fallback_goal:
   x: -1.4643

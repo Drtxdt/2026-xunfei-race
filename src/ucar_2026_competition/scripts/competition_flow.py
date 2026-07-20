@@ -920,16 +920,16 @@ class CompetitionFlow:
         raise StageError("QR scan failed to return to its original final yaw")
 
     def scan_qr_at_current_pose(self, status_state):
-        """Scan through 270 degrees, then restore the original final yaw."""
+        """Run one nine-stop scan pass, then restore the original final yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.60)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
         step_angle = abs(
-            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(30.0)))
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(25.0)))
         )
         sweep_angle = abs(
-            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(270.0)))
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(225.0)))
         )
-        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.2)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
@@ -992,7 +992,9 @@ class CompetitionFlow:
         self.publish_status(
             "task1",
             "qr_returning_final_yaw",
-            "270-degree scan complete; returning to the original final yaw",
+            "{:.0f}-degree scan complete; returning to the original final yaw".format(
+                math.degrees(sweep_angle)
+            ),
         )
         final_timeout = (2.0 * math.pi - sweep_angle) / speed + step_margin + 1.0
         self._return_qr_to_yaw(
@@ -1019,6 +1021,42 @@ class CompetitionFlow:
             self.task1_llm_result = None
             self.task1_llm_error = ""
             self.task1_llm_items = []
+
+    def _factory_ocr_args(self):
+        return {
+            "start_camera": False,
+            "start_competition_speech": False,
+            "start_viewer": self.debug,
+            "recognition_mode": "ppocr_rknn_system",
+            "target_category": self.category,
+            "enable_speech": False,
+            "required": True,
+        }
+
+    def _factory_ocr_is_running(self):
+        proc = self.children.get("factory_ocr")
+        return proc is not None and proc.poll() is None
+
+    def _prewarm_factory_ocr_for_task2(self):
+        if "task2" not in stage_sequence(self.mode, self.enable_simulation):
+            return False
+        if self._factory_ocr_is_running():
+            return True
+        self.ocr_target = self.category
+        self.ocr_filter.reset()
+        self.ocr_last_message_at = 0.0
+        self.publish_status(
+            "task1",
+            "prewarming_factory_ocr",
+            "starting warehouse OCR while Spark X2 is reasoning",
+        )
+        self.start_child(
+            "factory_ocr",
+            "factory_sign_ppocr_rknn_test",
+            "factory_sign_ppocr_rknn_test.launch",
+            self._factory_ocr_args(),
+        )
+        return True
 
     def _start_task1_reasoning_async(self):
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
@@ -1049,6 +1087,7 @@ class CompetitionFlow:
             "three QR items collected; Spark X2 reasoning started in parallel",
         )
         worker.start()
+        self._prewarm_factory_ocr_for_task2()
         return True
 
     def _task1_reasoning_worker(self, generation, done_event, items, instruction):
@@ -1134,31 +1173,10 @@ class CompetitionFlow:
             self.qr_collecting = True
             completed = self.scan_qr_at_current_pose("scanning_qr_primary")
 
-            if not completed and bool_param("~qr_fallback_enabled", True):
-                self.qr_collecting = False
-                self.safe_stop(cancel_navigation=True)
-                fallback = rospy.get_param(
-                    "~qr_fallback_goal",
-                    {"x": -1.4643, "y": -0.1390, "yaw": 1.5834},
-                )
-                self.navigate(
-                    fallback["x"],
-                    fallback["y"],
-                    fallback.get("yaw", 1.5834),
-                    "task1",
-                    timeout_sec=float(
-                        rospy.get_param("~qr_fallback_navigation_timeout_sec", 45.0)
-                    ),
-                    status_state="qr_repositioning",
-                )
-                self.safe_stop(cancel_navigation=True)
-                self.qr_collecting = True
-                completed = self.scan_qr_at_current_pose("scanning_qr_fallback")
-
             expected_count = int(rospy.get_param("~qr_expected_count", 3))
             if not completed or self._qr_count() < expected_count:
                 raise StageError(
-                    "QR scan exhausted two poses: got {}/{} unique item(s)".format(
+                    "single QR scan pass got {}/{} unique item(s)".format(
                         self._qr_count(), expected_count
                     )
                 )
@@ -1208,9 +1226,11 @@ class CompetitionFlow:
             raise StageError("task2 target_item is missing")
         center_only = bool_param("~task2_center_only", False)
 
+        ocr_prewarmed = self._factory_ocr_is_running()
         self.ocr_target = self.category
-        self.ocr_filter.reset()
-        self.ocr_last_message_at = 0.0
+        if not ocr_prewarmed:
+            self.ocr_filter.reset()
+            self.ocr_last_message_at = 0.0
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -1219,20 +1239,19 @@ class CompetitionFlow:
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
-            self.start_child(
-                "factory_ocr",
-                "factory_sign_ppocr_rknn_test",
-                "factory_sign_ppocr_rknn_test.launch",
-                {
-                    "start_camera": False,
-                    "start_competition_speech": False,
-                    "start_viewer": self.debug,
-                    "recognition_mode": "ppocr_rknn_system",
-                    "target_category": self.category,
-                    "enable_speech": False,
-                    "required": True,
-                },
-            )
+            if not ocr_prewarmed:
+                self.start_child(
+                    "factory_ocr",
+                    "factory_sign_ppocr_rknn_test",
+                    "factory_sign_ppocr_rknn_test.launch",
+                    self._factory_ocr_args(),
+                )
+            else:
+                self.publish_status(
+                    "task2",
+                    "ocr_prewarmed",
+                    "reusing warehouse OCR started during Spark X2 reasoning",
+                )
             self.publish_status("task2", "waiting_ocr", "waiting for first OCR result before motion")
             ocr_ready_deadline = time.time() + float(
                 rospy.get_param("~ocr_ready_timeout_sec", 12.0))
