@@ -28,6 +28,17 @@ roslaunch ucar_2026_competition task4.launch traffic_pose_configured:=true traff
 roslaunch ucar_2026_competition task5.launch traffic_decision:=left
 ```
 
+任务4与任务5可从停止线前连续联调。启动前应将小车车头朝向交通灯，
+车头距停止线不超过10cm，且车轮不得压线或越线：
+
+```bash
+roslaunch ucar_2026_competition task4_task5.launch debug:=true
+```
+
+该入口不会导航到停止线，也不会再次向前靠线。启动后车辆保持停车并识别交通灯；
+红灯时继续停车，确认左转、右转或直行后自动播报决策、启动对应巡线控制器，
+到达任务5终点后停车并播报“任务完成”。关闭调试画面时可省略 `debug:=true`。
+
 任务1完成后直接联调任务2（复用同一导航栈、相机和AMCL，不重新发布初始位姿）：
 
 ```bash

@@ -1,0 +1,7 @@
+<launch>
+  <include file="$(find yolo)/launch/traffic_capture_x11.launch">
+    <arg name="session" value="session_03_dim" />
+    <arg name="class_name" value="background" />
+    <arg name="max_images" value="110" />
+  </include>
+</launch>

@@ -22,6 +22,7 @@
   <exec_depend>factory_sign_ppocr_rknn_test</exec_depend>
   <exec_depend>simple_navigator</exec_depend>
   <exec_depend>ucar_2026_track_end_stop</exec_depend>
+  <exec_depend>ucar_2026_strict_mission</exec_depend>
   <exec_depend>ucar_2026_traffic_light_rknn_test</exec_depend>
   <exec_depend>ucar_nav</exec_depend>
   <exec_depend>usb_cam</exec_depend>

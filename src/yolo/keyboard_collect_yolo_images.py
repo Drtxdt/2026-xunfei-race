@@ -28,12 +28,52 @@ import termios
 import select
 import argparse
 import threading
+import json
+from datetime import datetime
+from pathlib import Path
 
 import cv2
 import rospy
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import Twist
+
+
+VALID_CAPTURE_CLASSES = (
+    'green_left',
+    'green_right',
+    'green_straight',
+    'red_light',
+    'background',
+)
+
+
+def record_capture_run(args):
+    """Append reproducibility metadata without mixing legacy ROS workspaces."""
+    root = Path(os.path.expanduser(args.output)).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_path = root / '_capture_manifest.json'
+    data = {'runs': []}
+    if manifest_path.is_file():
+        try:
+            loaded = json.loads(manifest_path.read_text(encoding='utf-8'))
+            if isinstance(loaded, dict) and isinstance(loaded.get('runs'), list):
+                data = loaded
+        except Exception as exc:
+            rospy.logwarn("Ignoring invalid capture manifest %s: %s", manifest_path, exc)
+    data['runs'].append({
+        'started_at': datetime.now().astimezone().isoformat(),
+        'class_name': args.cls,
+        'topic': args.topic,
+        'cmd_topic': args.cmd_topic,
+        'interval_sec': args.interval,
+        'max_images': args.max_images,
+        'flip': bool(args.flip),
+        'output': str(root),
+    })
+    temp_path = manifest_path.with_suffix('.json.tmp')
+    temp_path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    os.replace(str(temp_path), str(manifest_path))
 
 
 class KeyboardDatasetCollector:
@@ -91,6 +131,7 @@ class KeyboardDatasetCollector:
   ESC / Ctrl+C : 退出并停车
 
 建议：先按 P 暂停，摆好目标后再按 P 开始。采集过程中用 WASD 缓慢变换距离和角度。
+红绿灯方向数据默认禁止水平翻转；左右箭头会因翻转交换语义。
 ==========================================================
 """.format(
             cls=self.args.cls,
@@ -126,6 +167,18 @@ class KeyboardDatasetCollector:
         path = os.path.join(self.out_dir, filename)
         ok = cv2.imwrite(path, img)
         if ok:
+            if self.args.cls == 'background':
+                label_path = os.path.splitext(path)[0] + '.txt'
+                try:
+                    with open(label_path, 'w'):
+                        pass
+                except OSError as exc:
+                    rospy.logerr("Failed to create empty background label %s: %s", label_path, exc)
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+                    return False
             self.count += 1
             self.last_save_time = now
             rospy.loginfo("saved %-45s total=%d", filename, self.count)
@@ -260,7 +313,10 @@ def main():
     parser.add_argument('--linear', type=float, default=None, help='基础线速度，建议0.03~0.06')
     parser.add_argument('--angular', type=float, default=None, help='基础角速度，建议0.15~0.25')
     parser.add_argument('--rate', type=float, default=None, help='控制循环频率')
-    parser.add_argument('--flip', action='store_true', default=None, help='是否水平翻转图片')
+    parser.add_argument('--flip', action='store_true', default=None,
+                        help='危险兼容参数；红绿灯左右方向数据禁止使用')
+    parser.add_argument('--allow-horizontal-flip', action='store_true', default=None,
+                        help='明确允许水平翻转；红绿灯四分类数据禁止使用')
     parser.add_argument('--start-paused', action='store_true', default=None, help='启动后先暂停保存，按P开始')
     cli, _ = parser.parse_known_args()
 
@@ -280,12 +336,31 @@ def main():
         angular=float(_resolve_arg('angular', cli.angular) or 0.18),
         rate=float(_resolve_arg('rate', cli.rate) or 20.0),
         flip=bool(_resolve_arg('flip', cli.flip) or False),
+        allow_horizontal_flip=bool(
+            _resolve_arg('allow_horizontal_flip', cli.allow_horizontal_flip) or False
+        ),
         start_paused=bool(_resolve_arg('start_paused', cli.start_paused) or False),
     )
 
+    if args.cls not in VALID_CAPTURE_CLASSES:
+        rospy.logfatal(
+            "Unsupported --cls=%s. Expected one of: %s",
+            args.cls,
+            ', '.join(VALID_CAPTURE_CLASSES),
+        )
+        return 2
+    if args.flip and not args.allow_horizontal_flip:
+        rospy.logfatal(
+            "Horizontal flip is blocked for traffic-light capture because it swaps left/right semantics. "
+            "Use flip=false. Only pass --allow-horizontal-flip for a deliberately mirrored end-to-end pipeline."
+        )
+        return 2
+
+    record_capture_run(args)
     node = KeyboardDatasetCollector(args)
     node.loop()
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
