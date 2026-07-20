@@ -40,6 +40,7 @@ from ucar_2026_competition.logic import (
     TRACK_CONFIG,
     normalize_category,
     parse_category,
+    parse_task_categories,
     qr_values_from_payload,
     stage_sequence,
     task4_handoff_required,
@@ -104,6 +105,7 @@ class CompetitionFlow:
         self.voice_wakeup_generation = 0
         self.question = ""
         self.category = normalize_category(rospy.get_param("~target_category", ""))
+        self.sim_category = normalize_category(rospy.get_param("~sim_category", ""))
         self.task1_result = {
             "pickup_item": rospy.get_param("~target_item", "").strip(),
             "pickup_workshop": rospy.get_param("~target_workshop", "").strip(),
@@ -205,15 +207,25 @@ class CompetitionFlow:
 
     def _question_cb(self, msg):
         question = msg.data.strip()
-        parsed = parse_category(question)
+        physical_category, sim_category = parse_task_categories(question)
         with self.lock:
             if not self.voice_listening or self.voice_command_ack_in_progress:
                 rospy.logwarn("ignoring /question outside active voice window: %s", question)
                 return
-            if not parsed:
-                rospy.logwarn("ignoring voice text without a target category: %s", question)
+            if not physical_category or not sim_category:
+                rospy.logwarn("ignoring incomplete dual-category command: %s", question)
                 self.publish_status(
-                    "task1", "listening_command", "ignored non-command speech: {}".format(question)
+                    "task1",
+                    "listening_command",
+                    "waiting for physical and simulation categories: {}".format(question),
+                )
+                return
+            if physical_category == sim_category:
+                rospy.logwarn("ignoring command with identical categories: %s", question)
+                self.publish_status(
+                    "task1",
+                    "listening_command",
+                    "physical and simulation categories must be different",
                 )
                 return
             self.question = question
@@ -221,7 +233,7 @@ class CompetitionFlow:
             self.voice_command_ack_in_progress = True
         threading.Thread(
             target=self._finish_voice_command,
-            args=(parsed, question),
+            args=(physical_category, sim_category, question),
             name="voice-command-handshake",
             daemon=True,
         ).start()
@@ -282,17 +294,22 @@ class CompetitionFlow:
         except Exception as exc:
             self._set_voice_handshake_error(exc)
 
-    def _finish_voice_command(self, parsed, question):
+    def _finish_voice_command(self, physical_category, sim_category, question):
         try:
             with self.voice_transition_lock:
                 self._stop_voice_listening()
                 reply = rospy.get_param("~voice_command_reply", "好的").strip() or "好的"
                 self.publish_status(
-                    "task1", "command_ack", "category={} reply={}".format(parsed, reply)
+                    "task1",
+                    "command_ack",
+                    "physical={} simulation={} reply={}".format(
+                        physical_category, sim_category, reply
+                    ),
                 )
                 self.announce("custom", text=reply)
                 with self.lock:
-                    self.category = parsed
+                    self.category = physical_category
+                    self.sim_category = sim_category
                     self.voice_command_acknowledged = True
                     self.voice_command_ack_in_progress = False
                 self.publish_status(
@@ -305,7 +322,12 @@ class CompetitionFlow:
         with self.lock:
             if self.voice_handshake_error:
                 raise StageError(self.voice_handshake_error)
-            return self.wakeup_received and self.voice_command_acknowledged and self.category
+            return (
+                self.wakeup_received
+                and self.voice_command_acknowledged
+                and self.category
+                and self.sim_category
+            )
 
     def _qr_cb(self, msg):
         if not self.qr_collecting:
@@ -928,7 +950,13 @@ class CompetitionFlow:
         self.wait_loop(0, self._voice_command_ready)
 
         category_name = CATEGORY_LABELS[self.category][0]
-        instruction = "请取得{}类产品，仿真环境也统一取得{}类产品".format(category_name, category_name)
+        sim_category_name = CATEGORY_LABELS[self.sim_category][0]
+        instruction = self.question.strip()
+        if not instruction:
+            instruction = "请取得{}类产品，并领取仿真环境中需要的{}类产品".format(
+                category_name,
+                sim_category_name,
+            )
         self.navigate_to_qr_area()
         # The configured simple_navigator goal has completed, but explicitly
         # revoke all navigation authority before this node can rotate the base.
@@ -994,13 +1022,17 @@ class CompetitionFlow:
             raise StageError("LLM reasoning failed: {}".format(result.error_message))
         if normalize_category(result.pickup_major) != self.category:
             raise StageError("LLM physical category does not match voice category")
-        if normalize_category(result.sim_major) != self.category:
+        if normalize_category(result.sim_major) != self.sim_category:
             raise StageError("LLM simulation category does not match voice category")
+        if normalize_category(result.pickup_major) == normalize_category(result.sim_major):
+            raise StageError("LLM returned the same category for physical and simulation")
 
         self.task1_result = {
             "qr_items": items,
             "category": self.category,
             "category_name": category_name,
+            "sim_category": self.sim_category,
+            "sim_category_name": sim_category_name,
             "pickup_item": result.pickup_item,
             "pickup_major": result.pickup_major,
             "pickup_workshop": result.pickup_workshop,
@@ -1231,8 +1263,8 @@ class CompetitionFlow:
         self.publish_status("task2", "completed", "target factory reached")
 
     def task3(self):
-        if not self.category:
-            raise StageError("task3 target_category is missing")
+        if not self.sim_category:
+            raise StageError("task3 sim_category is missing")
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
         if not host:
@@ -1250,7 +1282,11 @@ class CompetitionFlow:
         done_received = False
         done_received_at = 0.0
         try:
-            request = {"command": "start", "target": self.category, "request_id": request_id}
+            request = {
+                "command": "start",
+                "target": self.sim_category,
+                "request_id": request_id,
+            }
             sock.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
             self.publish_status("task3", "running", "simulation task started")
             decoder = JsonLineBuffer()
@@ -1295,7 +1331,10 @@ class CompetitionFlow:
         if not result_text.startswith("SUCCESS:"):
             raise StageError("simulation completed without a success result")
         item = self.task1_result.get("sim_item") or self.task1_result.get("pickup_item")
-        workshop = self.task1_result.get("sim_workshop") or CATEGORY_LABELS[self.category][1]
+        workshop = (
+            self.task1_result.get("sim_workshop")
+            or CATEGORY_LABELS[self.sim_category][1]
+        )
         if not item:
             raise StageError("task3 sim_item is missing")
         self.announce("task3", item=item, workshop=workshop)

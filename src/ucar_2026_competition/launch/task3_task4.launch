@@ -1,7 +1,7 @@
 <launch>
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
-  <arg name="target_category" default="" />
+  <arg name="sim_category" default="" />
   <arg name="sim_item" default="" />
   <arg name="sim_workshop" default="" />
   <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
@@ -22,7 +22,7 @@
   <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
     <arg name="start_stage" value="task3_task4" />
     <arg name="debug" value="$(arg debug)" />
-    <arg name="target_category" value="$(arg target_category)" />
+    <arg name="sim_category" value="$(arg sim_category)" />
     <arg name="sim_item" value="$(arg sim_item)" />
     <arg name="sim_workshop" value="$(arg sim_workshop)" />
     <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
