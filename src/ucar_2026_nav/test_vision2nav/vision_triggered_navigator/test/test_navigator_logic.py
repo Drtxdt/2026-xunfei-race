@@ -33,6 +33,7 @@ from navigator_logic import (
     parking_footprint_inside,
     parking_goal_from_wall,
     ray_segment_intersection,
+    should_retry_coverage_goal,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -140,7 +141,8 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
         os.path.dirname(__file__), "..", "config",
         "vision_triggered_navigator.yaml"))
     with open(config_path, "r", encoding="utf-8") as stream:
-        configured = yaml.safe_load(stream)["patrol_points"]
+        config = yaml.safe_load(stream)
+    configured = config["patrol_points"]
     assert [exact_observation_target(point) for point in configured] == calibrated
     assert [[(rotation["direction"], rotation["duration"])
              for rotation in point["rotations"]] for point in configured] == [
@@ -154,6 +156,8 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
         [("left", 4.0)],
         [("left", 4.0)],
     ]
+    assert config["coverage_anchor_position_tolerance"] == 0.25
+    assert config["coverage_anchor_yaw_hold_sec"] == 0.10
 
 
 def test_only_known_lethal_cost_skips_a_coverage_anchor():
@@ -179,6 +183,15 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
     assert coverage_position_needs_yaw_alignment(0.15, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.151, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
+
+
+def test_coverage_goal_retries_recoverable_failures_once():
+    assert should_retry_coverage_goal(4, False, False, 0, 1)
+    assert should_retry_coverage_goal(0, True, False, 0, 1)
+    assert should_retry_coverage_goal(0, False, True, 0, 1)
+    assert not should_retry_coverage_goal(3, False, False, 0, 1)
+    assert not should_retry_coverage_goal(4, False, False, 1, 1)
+    assert not should_retry_coverage_goal(None, False, False, 0, 1)
 
 
 def test_recenter_requires_a_fresh_target_sample_before_motion():

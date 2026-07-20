@@ -45,6 +45,7 @@ from navigator_logic import (
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
+    should_retry_coverage_goal,
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_pose_reached,
@@ -360,6 +361,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_timed_out = False
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
+        self.coverage_rotation_blocked = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
@@ -696,6 +698,7 @@ class VisionTriggeredNavigator(object):
 
     def _align_coverage_anchor_yaw(self, map_pose):
         """Finish only the calibrated anchor heading with odometry, not TEB."""
+        self.coverage_rotation_blocked = False
         odom_frame = self.odom_frame_from_msg or self.odom_frame
         target = self._transform_map_pose(odom_frame, map_pose)
         if target is None:
@@ -713,6 +716,7 @@ class VisionTriggeredNavigator(object):
                 return False
             if not self._rotation_clearance_is_safe():
                 self.cmd_vel_pub.publish(Twist())
+                self.coverage_rotation_blocked = True
                 self._publish_status("coverage_rotation_blocked_clearance")
                 rospy.logwarn(
                     "[vision_triggered_navigator] refusing anchor yaw rotation: "
@@ -1135,6 +1139,19 @@ class VisionTriggeredNavigator(object):
                 if self.triggered:
                     self.cmd_vel_pub.publish(Twist())
                     return "triggered"
+                if self.coverage_rotation_blocked:
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] anchor %d yaw is blocked; "
+                        "hold the current safe view for OCR, then clear costmaps.",
+                        patrol_idx + 1)
+                    self._hold_scan_step(
+                        "anchor {} blocked heading".format(patrol_idx + 1),
+                        rospy.get_time() - max(self.target_bbox_stale,
+                                               self.target_category_stale))
+                    if self.triggered:
+                        return "triggered"
+                    self._clear_costmaps_and_wait()
+                    return "skipped_rotation_blocked"
                 rospy.logerr(
                     "[vision_triggered_navigator] 精确锚点%d的odom航向闭环失败.",
                     patrol_idx + 1)
@@ -1142,8 +1159,13 @@ class VisionTriggeredNavigator(object):
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
-            if (self.current_goal_rotation_stall and
-                    attempt < self.coverage_goal_retry_count):
+            if should_retry_coverage_goal(
+                    result,
+                    self.current_goal_rotation_stall,
+                    self.current_goal_timed_out,
+                    attempt,
+                    self.coverage_goal_retry_count,
+                    actionlib.GoalStatus.ABORTED):
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
                     return "skipped_failed"

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import sys
 import unittest
@@ -34,6 +35,22 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_competition_config_uses_faster_safe_qr_scan(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = {}
+            for line in stream:
+                line = line.split("#", 1)[0].strip()
+                if not line or ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                config[key.strip()] = value.strip()
+        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.30)
+        self.assertAlmostEqual(
+            float(config["qr_scan_step_angle_rad"]), math.radians(20.0))
+        self.assertEqual(float(config["qr_scan_settle_sec"]), 0.6)
+
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)
         self.assertAlmostEqual(normalize_angle(-0.25), -0.25)
