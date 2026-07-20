@@ -246,6 +246,28 @@ def normalize_category(value):
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)
 
 
+def scan_sector_min(ranges, angle_min, angle_increment, center_angle,
+                    half_angle, range_min=0.0, range_max=float("inf")):
+    """Return the nearest finite lidar sample in a wrapped angular sector."""
+    if not ranges or abs(float(angle_increment)) <= 1e-12:
+        return None
+    center_angle = float(center_angle)
+    half_angle = abs(float(half_angle))
+    lower = max(0.0, float(range_min))
+    upper = float(range_max)
+    nearest = None
+    for index, value in enumerate(ranges):
+        value = float(value)
+        if not math.isfinite(value) or value < lower or value > upper:
+            continue
+        angle = float(angle_min) + index * float(angle_increment)
+        if abs(normalize_angle(angle - center_angle)) > half_angle:
+            continue
+        if nearest is None or value < nearest:
+            nearest = value
+    return nearest
+
+
 def qr_values_from_payload(payload):
     values = []
     for entry in payload.get("items", []):

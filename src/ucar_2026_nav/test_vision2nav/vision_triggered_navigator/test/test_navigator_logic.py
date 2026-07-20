@@ -18,6 +18,7 @@ from navigator_logic import (
     coverage_motion_is_rotation_stall,
     coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
+    cyclic_coverage_order,
     costmap_value_at,
     docking_command,
     docking_pose_errors,
@@ -68,6 +69,16 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
     latched, accepted = latch_trigger(latched)
     assert latched and not accepted
+
+
+def test_second_search_starts_nearest_and_preserves_cyclic_route():
+    points = [
+        {"x": 0.0, "y": 0.0},
+        {"x": 1.0, "y": 0.0},
+        {"x": 2.0, "y": 0.0},
+        {"x": 3.0, "y": 0.0},
+    ]
+    assert cyclic_coverage_order(points, 2.1, 0.0) == [2, 3, 0, 1]
 
 
 def test_measured_quadrilateral_wall_normals_point_inward():

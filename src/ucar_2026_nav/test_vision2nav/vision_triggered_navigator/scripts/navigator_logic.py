@@ -27,6 +27,21 @@ def rotation_clearance_is_safe(nearest_range, scan_age, min_clearance,
             float(nearest_range) >= abs(float(min_clearance)))
 
 
+def cyclic_coverage_order(points, robot_x, robot_y):
+    """Start at the nearest anchor while preserving the calibrated cycle."""
+    if not points:
+        return []
+    nearest = min(
+        range(len(points)),
+        key=lambda index: (
+            (float(points[index]["x"]) - float(robot_x)) ** 2 +
+            (float(points[index]["y"]) - float(robot_y)) ** 2,
+            index,
+        ),
+    )
+    return list(range(nearest, len(points))) + list(range(0, nearest))
+
+
 def build_quadrilateral_walls(corners):
     """Build measured wall segments with inward unit normals.
 

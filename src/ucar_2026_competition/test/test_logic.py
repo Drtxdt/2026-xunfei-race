@@ -24,6 +24,7 @@ from ucar_2026_competition.logic import (
     parse_category,
     parse_task1_categories,
     qr_values_from_payload,
+    scan_sector_min,
     stage_sequence,
     task2_delivery_targets,
     task4_handoff_required,
@@ -103,6 +104,26 @@ class CompetitionLogicTest(unittest.TestCase):
             ),
             (("physical", "daily", "牙膏", "日用品加工车间"),),
         )
+
+    def test_rear_lidar_sector_ignores_front_and_invalid_samples(self):
+        ranges = [float("inf")] * 8
+        ranges[0] = 0.10
+        ranges[4] = 0.42
+        ranges[5] = float("nan")
+        self.assertAlmostEqual(
+            scan_sector_min(
+                ranges, 0.0, math.pi / 4.0, math.pi, math.pi / 4.0,
+                0.05, 8.0),
+            0.42,
+        )
+
+    def test_task2_config_requires_lidar_guarded_inter_visit_exit(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            content = stream.read()
+        self.assertIn("task2_inter_visit_reverse_distance_m: 0.32", content)
+        self.assertIn("task2_inter_visit_rear_clearance_m: 0.28", content)
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")

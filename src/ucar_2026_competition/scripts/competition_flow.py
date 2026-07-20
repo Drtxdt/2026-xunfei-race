@@ -42,6 +42,7 @@ from ucar_2026_competition.logic import (
     normalize_category,
     parse_task1_categories,
     qr_values_from_payload,
+    scan_sector_min,
     stage_sequence,
     task2_delivery_targets,
     task4_handoff_required,
@@ -126,8 +127,13 @@ class CompetitionFlow:
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
         self.base_twist = None
+        self.base_pose = None
         self.handoff_scan_received_at = 0.0
+        self.rear_scan_min = None
         self.handoff_costmap_received_at = 0.0
+        self.task2_inter_visit_rear_half_angle = math.radians(max(
+            1.0, float(rospy.get_param(
+                "~task2_inter_visit_rear_half_angle_deg", 30.0))))
         self.ocr_target = None
         self.ocr_last_message_at = 0.0
         self.ocr_filter = TemporalTargetFilter(
@@ -354,10 +360,25 @@ class CompetitionFlow:
                 float(msg.twist.twist.linear.y),
                 float(msg.twist.twist.angular.z),
             )
+            self.base_pose = (
+                float(msg.pose.pose.position.x),
+                float(msg.pose.pose.position.y),
+                yaw,
+            )
 
-    def _handoff_scan_cb(self, _msg):
+    def _handoff_scan_cb(self, msg):
+        nearest = scan_sector_min(
+            msg.ranges,
+            msg.angle_min,
+            msg.angle_increment,
+            math.pi,
+            self.task2_inter_visit_rear_half_angle,
+            msg.range_min,
+            msg.range_max,
+        )
         with self.lock:
             self.handoff_scan_received_at = time.monotonic()
+            self.rear_scan_min = nearest
 
     def _handoff_costmap_cb(self, _msg):
         with self.lock:
@@ -607,6 +628,102 @@ class CompetitionFlow:
         self.publish_status(
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
+
+    def task2_inter_visit_handoff(self):
+        """Back out of the first wall-facing bay before searching again."""
+        distance = max(0.0, float(rospy.get_param(
+            "~task2_inter_visit_reverse_distance_m", 0.32)))
+        speed = abs(float(rospy.get_param(
+            "~task2_inter_visit_reverse_speed_mps", 0.08)))
+        min_clearance = max(0.0, float(rospy.get_param(
+            "~task2_inter_visit_rear_clearance_m", 0.28)))
+        stale_sec = max(0.1, float(rospy.get_param(
+            "~task2_inter_visit_sensor_stale_sec", 0.5)))
+        timeout = max(1.0, float(rospy.get_param(
+            "~task2_inter_visit_timeout_sec", 7.0)))
+        if distance <= 0.0 or speed <= 0.0:
+            raise StageError("task2 inter-visit reverse parameters must be positive")
+
+        self.publish_status(
+            "task2", "leaving_physical_factory",
+            "backing out of the first parking bay before the second search")
+        self.safe_stop(cancel_navigation=True)
+        ready_deadline = time.monotonic() + 2.0
+        start_pose = None
+        while time.monotonic() < ready_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                odom_age = time.monotonic() - self.qr_odom_received_at
+                scan_age = time.monotonic() - self.handoff_scan_received_at
+                pose = self.base_pose
+                rear_min = self.rear_scan_min
+            if (pose is not None and rear_min is not None and
+                    odom_age <= stale_sec and scan_age <= stale_sec):
+                start_pose = pose
+                break
+            rospy.sleep(0.05)
+        if start_pose is None:
+            raise StageError("task2 inter-visit exit has no fresh odom/rear lidar")
+
+        deadline = time.monotonic() + timeout
+        moved = 0.0
+        command = Twist()
+        command.linear.x = -speed
+        try:
+            rate = rospy.Rate(20)
+            while time.monotonic() < deadline and not rospy.is_shutdown():
+                self.check_abort()
+                with self.lock:
+                    odom_age = time.monotonic() - self.qr_odom_received_at
+                    scan_age = time.monotonic() - self.handoff_scan_received_at
+                    pose = self.base_pose
+                    rear_min = self.rear_scan_min
+                if (pose is None or rear_min is None or
+                        odom_age > stale_sec or scan_age > stale_sec):
+                    raise StageError(
+                        "task2 inter-visit exit lost fresh odom/rear lidar")
+                moved = math.hypot(
+                    pose[0] - start_pose[0], pose[1] - start_pose[1])
+                if moved >= distance:
+                    break
+                if rear_min <= min_clearance:
+                    raise StageError(
+                        "task2 inter-visit rear path blocked at {:.3f}m".format(
+                            rear_min))
+                self.cmd_pub.publish(command)
+                rate.sleep()
+            else:
+                raise StageError(
+                    "task2 inter-visit exit timed out after moving {:.3f}m".format(
+                        moved))
+        finally:
+            self.safe_stop(cancel_navigation=True)
+
+        self.publish_status(
+            "task2", "refreshing_second_search",
+            "left first bay by {:.3f}m; refreshing navigation costmaps".format(
+                moved))
+        try:
+            rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
+            rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError(
+                "task2 second-search costmap refresh failed: {}".format(exc))
+        cleared_at = time.monotonic()
+        refresh_deadline = cleared_at + 2.0
+        while time.monotonic() < refresh_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                scan_fresh = self.handoff_scan_received_at > cleared_at
+                costmap_fresh = self.handoff_costmap_received_at > cleared_at
+            if scan_fresh and costmap_fresh:
+                self.publish_status(
+                    "task2", "second_search_ready",
+                    "vehicle clear of first bay; fresh costmap available")
+                return
+            rospy.sleep(0.05)
+        raise StageError(
+            "task2 second-search refresh produced no fresh scan/costmap snapshot")
 
     def production_task4_handoff(self, source_stage):
         """Resume physical navigation without resetting the current factory pose."""
@@ -1098,6 +1215,9 @@ class CompetitionFlow:
                         bool_param("~navigator_publish_initial_pose", False)),
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
+                    "coverage_start_nearest": phase == "simulation",
+                    "coverage_abort_fail_fast_count": (
+                        2 if phase == "simulation" else 0),
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.30),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
@@ -1281,7 +1401,9 @@ class CompetitionFlow:
             (self.sim_category, sim_item, sim_workshop),
         )
         self.task2_announcement_completed = False
-        for phase, category, item, workshop in visits:
+        for visit_index, (phase, category, item, workshop) in enumerate(visits):
+            if visit_index > 0:
+                self.task2_inter_visit_handoff()
             self._navigate_factory_target(
                 category, item, workshop, phase, announce=(phase == "physical")
             )

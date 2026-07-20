@@ -30,6 +30,8 @@ feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频�
 
 # 任务2覆盖优先模式（launch默认关闭，只有比赛任务2显式开启）。
 coverage_search_mode: false
+coverage_start_nearest: false
+coverage_abort_fail_fast_count: 0
 target_topic: "/vision/target"
 # 精确锚点先执行25秒软时限；仍在有效接近时最多延长到40秒。
 coverage_goal_soft_timeout_sec: 25.0

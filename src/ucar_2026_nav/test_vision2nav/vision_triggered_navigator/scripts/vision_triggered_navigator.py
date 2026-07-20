@@ -24,6 +24,7 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
+    cyclic_coverage_order,
     coverage_motion_is_rotation_stall,
     coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
@@ -147,6 +148,10 @@ class VisionTriggeredNavigator(object):
         self.coverage_anchor_yaw_timeout = max(1.0, float(rospy.get_param(
             "~coverage_anchor_yaw_timeout_sec", 20.0)))
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
+        self.coverage_start_nearest = rospy.get_param(
+            "~coverage_start_nearest", False)
+        self.coverage_abort_fail_fast_count = max(0, int(rospy.get_param(
+            "~coverage_abort_fail_fast_count", 0)))
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
         self.coverage_scan_step_angle = math.radians(max(
@@ -1161,6 +1166,8 @@ class VisionTriggeredNavigator(object):
                 "[vision_triggered_navigator] 精确锚点%d导航未成功(state=%s timeout=%s rotation_stall=%s)，不生成替代坐标，进入下一原始点.",
                 patrol_idx + 1, str(result), self.current_goal_timed_out,
                 self.current_goal_rotation_stall)
+            if result == actionlib.GoalStatus.ABORTED:
+                return "aborted"
             return "skipped_failed"
         if not self._wait_navigation_idle():
             self.cmd_vel_pub.publish(Twist())
@@ -2040,7 +2047,32 @@ class VisionTriggeredNavigator(object):
         coverage_count = len(self.patrol_points)
         if self.max_coverage_anchors > 0:
             coverage_count = min(coverage_count, self.max_coverage_anchors)
+        coverage_order = list(range(len(self.patrol_points)))
+        if self.coverage_search_mode and self.coverage_start_nearest:
+            current_pose = None
+            pose_deadline = rospy.get_time() + 2.0
+            while not rospy.is_shutdown() and rospy.get_time() < pose_deadline:
+                current_pose = self._get_robot_pose(self.base_frame)
+                if current_pose is not None:
+                    break
+                rospy.sleep(0.05)
+            if current_pose is None:
+                self.cmd_vel_pub.publish(Twist())
+                self._publish_status("failed")
+                rospy.logerr(
+                    "[vision_triggered_navigator] cannot select nearest second-search "
+                    "anchor because the current map pose is unavailable.")
+                return
+            coverage_order = cyclic_coverage_order(
+                self.patrol_points, current_pose[0], current_pose[1])
+            rospy.loginfo(
+                "[vision_triggered_navigator] second search starts at nearest anchor %d; "
+                "cyclic order=%s.",
+                coverage_order[0] + 1,
+                ",".join(str(index + 1) for index in coverage_order),
+            )
         coverage_position = 0
+        consecutive_aborts = 0
 
         while not rospy.is_shutdown():
             # 一旦被触发，立即切换到视觉阶段
@@ -2058,7 +2090,7 @@ class VisionTriggeredNavigator(object):
                         self._publish_status("failed")
                         break
 
-                    point_idx = coverage_position
+                    point_idx = coverage_order[coverage_position]
                     point = self.patrol_points[point_idx]
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",
@@ -2067,7 +2099,20 @@ class VisionTriggeredNavigator(object):
                     if outcome == "triggered":
                         state = "VISION"
                         continue
+                    if outcome == "aborted":
+                        consecutive_aborts += 1
+                    else:
+                        consecutive_aborts = 0
                     coverage_position += 1
+                    if (self.coverage_abort_fail_fast_count > 0 and
+                            consecutive_aborts >= self.coverage_abort_fail_fast_count):
+                        self.cmd_vel_pub.publish(Twist())
+                        rospy.logerr(
+                            "[vision_triggered_navigator] move_base aborted %d consecutive "
+                            "second-search anchors; stopping instead of falsely processing "
+                            "the remaining anchors.", consecutive_aborts)
+                        self._publish_status("failed")
+                        break
                     continue
 
                 if patrol_idx >= len(self.patrol_points):
