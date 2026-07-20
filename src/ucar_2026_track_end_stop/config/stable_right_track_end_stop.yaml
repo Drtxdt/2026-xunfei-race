@@ -1,0 +1,84 @@
+# Straight route: follow only the rightmost white boundary.
+
+# Topics
+image_topic: /usb_cam/image_raw
+cmd_vel_topic: /cmd_vel
+status_topic: /stable_right_track_end_stop/status
+debug_image_topic: /stable_right_track_end_stop/debug_image
+debug_info_topic: /stable_right_track_end_stop/debug_info
+
+# Conservative straight entry from the task4 stop line.
+auto_start: true
+startup_time: 1.0
+startup_speed: 0.12
+
+# Right-boundary tracking. The desired right line is 200 px to the right of
+# the image center, matching the proven right-route controller geometry.
+right_line_offset_px: 200
+right_scan_bottom_weight: 1.8
+right_min_scan_support: 3
+min_line_width_px: 5
+max_line_segment_width_px: 90
+min_segment_gap_px: 10
+max_target_jump_px: 160
+
+# Motion control
+base_speed: 0.20
+curve_speed: 0.12
+search_speed: 0.06
+search_angular_speed: 0.00
+lost_timeout: 0.80
+lost_linear_speed: 0.06
+lost_angular_speed: 0.00
+stop_on_lost: true
+reacquire_confirm_frames: 3
+
+kp: 0.0042
+kd: 0.0014
+error_alpha: 0.35
+curve_error_threshold: 45.0
+curve_angular_gain: 1.05
+max_angular_speed: 0.55
+steering_deadband_px: 7.0
+max_straight_angular_speed: 0.30
+max_right_angular_speed: 0.55
+straight_angular_alpha: 0.55
+curve_angular_alpha: 0.45
+straight_angular_step: 0.08
+curve_angular_step: 0.12
+deadband_angular_decay: 0.45
+
+# If the right boundary moves left in the image, the vehicle is too close to
+# it. Slow down and steer left before the wheel can cross the line.
+right_warning_error_px: 60.0
+right_hard_error_px: 100.0
+right_guard_speed: 0.08
+right_guard_away_angular: 0.18
+right_hard_away_angular: 0.35
+
+# Use the same full-frame scan geometry and white thresholds as the working
+# right-route controller. No left line or inferred center line is consulted.
+roi_y_start_ratio: 0.0
+white_s_max: 85
+white_v_min: 155
+morph_kernel_size: 5
+min_component_area: 80.0
+
+# End line and parking sequence, matching the left/right controllers.
+end_enable_delay: 3.0
+end_roi_y_start_ratio: 0.87
+end_min_width_ratio: 0.45
+end_stop_hold: 1.0
+end_forward_distance_m: 0.65
+end_forward_speed: 0.17
+end_turn_left_angle_deg: 10.0
+end_turn_left_angular_speed: 0.50
+
+# Debug relay
+compressed_debug_topic: /stable_right_track_end_stop/debug_image/compressed
+compressed_raw_topic: /stable_right_track_end_stop/raw_image/compressed
+debug_relay_status_topic: /stable_right_track_end_stop/debug_relay/status
+jpeg_quality: 75
+debug_resize_width: 0
+debug_max_publish_fps: 12.0
+publish_raw_compressed: true
