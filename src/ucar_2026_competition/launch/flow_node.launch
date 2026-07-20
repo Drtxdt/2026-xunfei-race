@@ -1,5 +1,6 @@
 <launch>
   <arg name="start_stage" default="full" />
+  <arg name="enable_simulation" default="false" />
   <arg name="debug" default="false" />
   <arg name="target_category" default="" />
   <arg name="target_item" default="" />
@@ -73,6 +74,7 @@
         name="competition_flow" output="screen" required="true">
     <rosparam command="load" file="$(find ucar_2026_competition)/config/competition.yaml" />
     <param name="start_stage" value="$(arg start_stage)" />
+    <param name="enable_simulation" value="$(arg enable_simulation)" />
     <param name="debug" value="$(arg debug)" />
     <param name="target_category" value="$(arg target_category)" />
     <param name="target_item" value="$(arg target_item)" />
