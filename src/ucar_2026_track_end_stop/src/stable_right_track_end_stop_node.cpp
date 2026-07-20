@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -180,8 +181,6 @@ private:
     private_nh_.param("right_min_scan_support",
                       right_min_scan_support_, 3);
     private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
-    private_nh_.param("right_candidate_min_x_ratio",
-                      right_candidate_min_x_ratio_, 0.42);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
@@ -541,10 +540,9 @@ private:
       }
     }
 
-    const double min_candidate_x =
-        mask.cols * right_candidate_min_x_ratio_;
     const LineCandidate* best = nullptr;
     double best_x = -1.0;
+    double best_distance = std::numeric_limits<double>::max();
     for (int label = 1; label < component_count; ++label)
     {
       const LineCandidate& candidate = candidates[label];
@@ -554,8 +552,6 @@ private:
 
       const double candidate_x =
           candidate.weighted_x / candidate.weight_sum;
-      if (candidate_x < min_candidate_x)
-        continue;
 
       // A large jump is not "fixed" by clamping: clamping manufactures a
       // plausible coordinate for the wrong line.  Reject it and let the
@@ -565,11 +561,17 @@ private:
               max_target_jump_px_)
         continue;
 
-      // Among continuous, sufficiently supported components, explicitly
-      // choose the rightmost one.  At the traffic-light right turn this keeps
-      // the new road's right edge and ignores the diagonal old-road marking.
-      if (candidate_x > best_x)
+      // Preserve the original tracking pixel: once a right boundary has been
+      // acquired, choose the connected component nearest to its previous raw
+      // position.  Only at startup, when no previous pixel exists, retain the
+      // original rightmost-line preference.
+      const double distance =
+          last_right_x_ >= 0
+              ? std::fabs(candidate_x - last_right_x_)
+              : -candidate_x;
+      if (distance < best_distance)
       {
+        best_distance = distance;
         best_x = candidate_x;
         best = &candidate;
       }
@@ -909,7 +911,6 @@ private:
   int min_segment_gap_px_ = 10;
   int right_min_scan_support_ = 3;
   double max_target_jump_px_ = 160.0;
-  double right_candidate_min_x_ratio_ = 0.42;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
