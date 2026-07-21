@@ -946,7 +946,7 @@ class CompetitionFlow:
         raise StageError("QR scan failed to return to its original final yaw")
 
     def scan_qr_at_current_pose(self, status_state):
-        """Sweep 210 degrees forward and backward, then restore the final yaw."""
+        """Probe 30 degrees in reverse, reset, sweep forward, then restore yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
         speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.70)))
         final_speed = abs(float(
@@ -984,9 +984,10 @@ class CompetitionFlow:
         self.publish_status(
             "task1",
             status_state,
-            "bidirectional step scan start: count={}/{} sweep={:.0f}deg x2 steps={}".format(
+            "scan start: count={}/{} reverse_probe={:.0f}deg forward_sweep={:.0f}deg steps={}".format(
                 self._qr_count(),
                 expected_count,
+                math.degrees(step_angle),
                 math.degrees(sweep_angle),
                 len(steps),
             ),
@@ -996,35 +997,64 @@ class CompetitionFlow:
             settle_sec, expected_count, scan_deadline, stale_sec
         )
 
-        for pass_name, direction in (("forward", 1.0), ("reverse", -1.0)):
-            for index, angle in enumerate(steps, start=1):
-                self._rotate_qr_step(
-                    angle,
-                    speed,
-                    direction,
-                    stale_sec,
-                    scan_deadline,
-                    step_margin,
-                )
-                self.publish_status(
-                    "task1",
-                    status_state,
-                    "{} scan stop {}/{}: yaw step {:.0f}deg, hold {:.1f}s".format(
-                        pass_name,
-                        index,
-                        len(steps),
-                        math.degrees(angle),
-                        settle_sec,
-                    ),
-                )
-                self._settle_for_qr(
-                    settle_sec, expected_count, scan_deadline, stale_sec
-                )
+        self._rotate_qr_step(
+            step_angle,
+            speed,
+            -1.0,
+            stale_sec,
+            scan_deadline,
+            step_margin,
+        )
+        self.publish_status(
+            "task1",
+            status_state,
+            "reverse probe {:.0f}deg complete; hold {:.1f}s".format(
+                math.degrees(step_angle), settle_sec
+            ),
+        )
+        self._settle_for_qr(
+            settle_sec, expected_count, scan_deadline, stale_sec
+        )
+        self.publish_status(
+            "task1",
+            "qr_returning_initial_yaw",
+            "reverse probe complete; quickly returning to scan initial yaw",
+        )
+        self._return_qr_to_yaw(
+            initial_yaw,
+            final_speed,
+            final_tolerance,
+            stale_sec,
+            step_angle / final_speed + step_margin + 1.0,
+        )
+
+        for index, angle in enumerate(steps, start=1):
+            self._rotate_qr_step(
+                angle,
+                speed,
+                1.0,
+                stale_sec,
+                scan_deadline,
+                step_margin,
+            )
+            self.publish_status(
+                "task1",
+                status_state,
+                "forward scan stop {}/{}: yaw step {:.0f}deg, hold {:.1f}s".format(
+                    index,
+                    len(steps),
+                    math.degrees(angle),
+                    settle_sec,
+                ),
+            )
+            self._settle_for_qr(
+                settle_sec, expected_count, scan_deadline, stale_sec
+            )
 
         self.publish_status(
             "task1",
             "qr_returning_final_yaw",
-            "{:.0f}-degree forward/reverse scan complete; correcting final yaw".format(
+            "{:.0f}-degree forward scan complete; returning to final yaw at maximum speed".format(
                 math.degrees(sweep_angle)
             ),
         )
