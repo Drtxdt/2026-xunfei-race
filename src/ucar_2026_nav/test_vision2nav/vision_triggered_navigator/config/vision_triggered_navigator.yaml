@@ -40,6 +40,9 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
 coverage_goal_retry_count: 1
+coverage_start_anchor: 1
+coverage_end_anchor: 9
+preferred_observation_anchor: 0
 coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
@@ -157,9 +160,8 @@ patrol_points:
 
   - x: -1.6613
     y: -2.2796
-    yaw: -3.1404
+    yaw: 1.6428
     rotations:
-      - {direction: "right", duration: 3.0}
       - {direction: "left", duration: 3.5}
 
   - x: -1.6846
@@ -170,16 +172,14 @@ patrol_points:
 
   - x: -0.6965
     y: -2.8239
-    yaw: -1.5594
+    yaw: -3.0594
     rotations:
-      - {direction: "right", duration: 3.0}
       - {direction: "left", duration: 3.0}
 
   - x: 1.2660
     y: -2.8863
-    yaw: -1.5443
+    yaw: -3.0443
     rotations:
-      - {direction: "right", duration: 3.0}
       - {direction: "left", duration: 3.0}
 
   - x: 2.3356

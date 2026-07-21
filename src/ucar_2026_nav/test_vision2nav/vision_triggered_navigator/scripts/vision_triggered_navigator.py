@@ -131,8 +131,8 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_min_progress", 0.03)))
         self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
             "~coverage_rotation_max_yaw_deg", 90.0))))
-        self.coverage_goal_retry_count = max(0, int(rospy.get_param(
-            "~coverage_goal_retry_count", 1)))
+        self.coverage_goal_retry_count = min(1, max(0, int(rospy.get_param(
+            "~coverage_goal_retry_count", 1))))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
             "~coverage_anchor_position_tolerance", 0.15)))
         self.coverage_anchor_yaw_tolerance = math.radians(abs(float(rospy.get_param(
@@ -306,6 +306,12 @@ class VisionTriggeredNavigator(object):
 
         # 巡航点与结束点
         self.patrol_points = rospy.get_param("~patrol_points", [])
+        self.coverage_start_anchor = max(1, int(rospy.get_param(
+            "~coverage_start_anchor", 1)))
+        self.coverage_end_anchor = max(1, int(rospy.get_param(
+            "~coverage_end_anchor", len(self.patrol_points))))
+        self.preferred_observation_anchor = max(0, int(rospy.get_param(
+            "~preferred_observation_anchor", 0)))
         self.end_goal = rospy.get_param("~end_goal",
                                         {"x": 0.3195, "y": -3.2703, "yaw": -1.5596})
 
@@ -318,6 +324,10 @@ class VisionTriggeredNavigator(object):
         self.cmd_vel_pub = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
         self.status_pub = rospy.Publisher(
             self.status_topic, String, queue_size=10, latch=True)
+        self.coverage_state_pub = rospy.Publisher(
+            "/vision_triggered_navigator/coverage_state",
+            String, queue_size=10, latch=True)
+        self.active_coverage_anchor = 0
 
         self.costmap = None
         self.costmap_received_at = 0.0
@@ -433,6 +443,23 @@ class VisionTriggeredNavigator(object):
     def _publish_status(self, status):
         """发布简洁、稳定的流程状态，供比赛总控监听。"""
         self.status_pub.publish(String(data=status))
+
+    def _publish_coverage_state(self, anchor, state, **details):
+        """Publish the active calibrated observation anchor for resumable search."""
+        pose = self._get_robot_pose(self.base_frame)
+        payload = {
+            "anchor": int(anchor),
+            "state": str(state),
+            "stamp": rospy.get_time(),
+        }
+        payload.update(details)
+        if pose is not None:
+            payload["pose"] = {
+                "x": float(pose[0]),
+                "y": float(pose[1]),
+                "yaw": float(pose[2]),
+            }
+        self.coverage_state_pub.publish(String(data=json.dumps(payload)))
 
     def _accept_trigger(self, source):
         """Idempotently latch a target trigger and cancel active navigation."""
@@ -974,6 +1001,10 @@ class VisionTriggeredNavigator(object):
                 if self.target_payload_at > handled_candidate_at:
                     handled_candidate_at = self.target_payload_at
                     self.cmd_vel_pub.publish(Twist())
+                    self._publish_coverage_state(
+                        self.active_coverage_anchor, "scanning",
+                        scan_step=step_index, scan_steps=len(steps),
+                        candidate_hold=True)
                     rospy.loginfo(
                         "[vision_triggered_navigator] 步进%d/%d转动中捕获目标候选，立即停车确认.",
                         step_index, len(steps))
@@ -1018,6 +1049,10 @@ class VisionTriggeredNavigator(object):
             rospy.loginfo(
                 "[vision_triggered_navigator] 步进%d/%d到位 heading=%.1fdeg，停车识别.",
                 step_index, len(steps), heading)
+            self._publish_coverage_state(
+                self.active_coverage_anchor, "scanning",
+                scan_step=step_index, scan_steps=len(steps),
+                candidate_hold=False)
             self._hold_scan_step(
                 "步进{}/{}".format(step_index, len(steps)), step_started)
         return True
@@ -1072,13 +1107,26 @@ class VisionTriggeredNavigator(object):
         x, y, yaw = exact_observation_target(point)
         if self.triggered:
             return "triggered"
+        self.active_coverage_anchor = patrol_idx + 1
+        self._publish_coverage_state(patrol_idx + 1, "navigating")
 
-        known, max_cost, _blocked = self._coverage_pose_cost(x, y)
-        if should_skip_coverage_anchor(known, max_cost, self.lethal_cost):
+        for occupancy_attempt in range(2):
+            known, max_cost, _blocked = self._coverage_pose_cost(x, y)
+            if not should_skip_coverage_anchor(known, max_cost, self.lethal_cost):
+                break
             self.cmd_vel_pub.publish(Twist())
+            if occupancy_attempt == 0:
+                self._publish_status("coverage_goal_retry")
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 精确锚点%d被锥桶占据(cost=%d)，清图后仅复查一次.",
+                    patrol_idx + 1, max_cost)
+                if not self._clear_costmaps_and_wait():
+                    return "skipped_blocked"
+                continue
             rospy.logwarn(
-                "[vision_triggered_navigator] 精确锚点%d footprint被锥桶占据(cost=%d)，仅跳过该原始点: (%.4f, %.4f, %.4f).",
+                "[vision_triggered_navigator] 精确锚点%d复查后仍被占据(cost=%d)，跳过且不再重访: (%.4f, %.4f, %.4f).",
                 patrol_idx + 1, max_cost, x, y, yaw)
+            self._publish_coverage_state(patrol_idx + 1, "skipped_blocked")
             return "skipped_blocked"
 
         rospy.loginfo(
@@ -1105,14 +1153,13 @@ class VisionTriggeredNavigator(object):
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
-            if (self.current_goal_rotation_stall and
-                    attempt < self.coverage_goal_retry_count):
+            if attempt < self.coverage_goal_retry_count:
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
                     return "skipped_failed"
                 self._publish_status("coverage_goal_retry")
                 rospy.logwarn(
-                    "[vision_triggered_navigator] 精确锚点%d清理costmap后仅重试同一标定坐标一次.",
+                    "[vision_triggered_navigator] 精确锚点%d导航失败，清理costmap后仅重试同一标定坐标一次.",
                     patrol_idx + 1)
                 if not self._clear_costmaps_and_wait():
                     return "skipped_failed"
@@ -1133,6 +1180,7 @@ class VisionTriggeredNavigator(object):
             return "skipped_failed"
 
         self.cmd_vel_pub.publish(Twist())
+        self._publish_coverage_state(patrol_idx + 1, "initial_hold")
         initial_hold_at = rospy.get_time()
         self._hold_scan_step(
             "锚点{}初始朝向".format(patrol_idx + 1),
@@ -1140,6 +1188,7 @@ class VisionTriggeredNavigator(object):
                                   self.coverage_scan_dwell))
         if self.triggered:
             return "triggered"
+        self._publish_coverage_state(patrol_idx + 1, "scanning")
         if not self.perform_rotations(point.get("rotations", [])):
             self.cmd_vel_pub.publish(Twist())
             rospy.logwarn(
@@ -1151,6 +1200,7 @@ class VisionTriggeredNavigator(object):
         rospy.loginfo(
             "[vision_triggered_navigator] coverage anchor=%d state=covered exact=true",
             patrol_idx + 1)
+        self._publish_coverage_state(patrol_idx + 1, "covered")
         return "covered"
 
     def _odom_is_fresh(self):
@@ -2000,9 +2050,19 @@ class VisionTriggeredNavigator(object):
 
         state = "PATROL"
         patrol_idx = 0
-        coverage_count = len(self.patrol_points)
+        if self.preferred_observation_anchor > 0:
+            coverage_order = [self.preferred_observation_anchor - 1]
+        else:
+            start_index = min(len(self.patrol_points), self.coverage_start_anchor) - 1
+            end_index = min(len(self.patrol_points), self.coverage_end_anchor) - 1
+            coverage_order = (list(range(start_index, end_index + 1))
+                              if end_index >= start_index else [])
+        coverage_order = [index for index in coverage_order
+                          if 0 <= index < len(self.patrol_points)]
+        coverage_count = len(coverage_order)
         if self.max_coverage_anchors > 0:
             coverage_count = min(coverage_count, self.max_coverage_anchors)
+            coverage_order = coverage_order[:coverage_count]
         coverage_position = 0
 
         while not rospy.is_shutdown():
@@ -2021,7 +2081,7 @@ class VisionTriggeredNavigator(object):
                         self._publish_status("failed")
                         break
 
-                    point_idx = coverage_position
+                    point_idx = coverage_order[coverage_position]
                     point = self.patrol_points[point_idx]
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",

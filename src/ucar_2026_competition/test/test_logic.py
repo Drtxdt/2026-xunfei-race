@@ -22,6 +22,7 @@ from ucar_2026_competition.logic import (
     parse_category,
     parse_task_categories,
     qr_values_from_payload,
+    second_factory_search_plan,
     stage_sequence,
     task4_handoff_required,
     task4_start_action,
@@ -172,6 +173,25 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertTrue(task4_handoff_required("task3", "task4"))
         self.assertFalse(task4_handoff_required("task2", "task3"))
         self.assertFalse(task4_handoff_required(None, "task4"))
+
+    def test_second_factory_prefers_memory_then_unvisited_anchors(self):
+        observations = {"daily": {"anchor": 3}}
+        self.assertEqual(
+            second_factory_search_plan("food", "daily", observations, 7),
+            ("preferred", 1, 3),
+        )
+        self.assertEqual(
+            second_factory_search_plan("food", "electronics", observations, 7),
+            ("remaining", 7, 0),
+        )
+        self.assertEqual(
+            second_factory_search_plan("food", "food", observations, 7),
+            ("already_parked", 0, 0),
+        )
+        self.assertEqual(
+            second_factory_search_plan("food", "electronics", observations, 10),
+            ("unavailable", 10, 0),
+        )
 
     def test_full_launch_exposes_optional_simulation_parameter(self):
         launch_path = os.path.abspath(os.path.join(

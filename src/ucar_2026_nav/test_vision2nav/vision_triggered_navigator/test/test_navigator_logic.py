@@ -3,6 +3,7 @@
 import math
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 import yaml
 import pytest
@@ -113,10 +114,10 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     calibrated = [
         (-1.6499, -1.7735, 1.0417),
-        (-1.6613, -2.2796, -3.1404),
+        (-1.6613, -2.2796, 1.6428),
         (-1.6846, -2.7856, -3.1176),
-        (-0.6965, -2.8239, -1.5594),
-        (1.2660, -2.8863, -1.5443),
+        (-0.6965, -2.8239, -3.0594),
+        (1.2660, -2.8863, -3.0443),
         (2.3356, -2.7417, -2.1786),
         (2.3471, -1.6090, -0.8607),
         (1.2641, -1.6452, 0.8530),
@@ -137,15 +138,23 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     assert [[(rotation["direction"], rotation["duration"])
              for rotation in point["rotations"]] for point in configured] == [
         [("left", 4.5)],
-        [("right", 3.0), ("left", 3.5)],
+        [("left", 3.5)],
         [("left", 4.5)],
-        [("right", 3.0), ("left", 3.0)],
-        [("right", 3.0), ("left", 3.0)],
+        [("left", 3.0)],
+        [("left", 3.0)],
         [("left", 4.5)],
         [("left", 4.5)],
         [("left", 4.0)],
         [("left", 4.0)],
     ]
+    assert all(len(point["rotations"]) == 1 for point in configured)
+    # Anchors 2/4/5 start at the old right-most heading and sweep left once,
+    # preserving the old visible angular interval without traversing it twice.
+    old_yaws = [-3.1404, -1.5594, -1.5443]
+    new_yaws = [configured[index]["yaw"] for index in (1, 3, 4)]
+    for old_yaw, new_yaw in zip(old_yaws, new_yaws):
+        assert math.isclose(normalize_angle(old_yaw - 1.5), new_yaw,
+                            abs_tol=1e-4)
 
 
 def test_only_known_lethal_cost_skips_a_coverage_anchor():
@@ -153,6 +162,33 @@ def test_only_known_lethal_cost_skips_a_coverage_anchor():
     assert not should_skip_coverage_anchor(True, 252, 253)
     assert should_skip_coverage_anchor(True, 253, 253)
     assert should_skip_coverage_anchor(True, 254, 253)
+
+
+def test_resumable_coverage_interface_and_single_retry_defaults():
+    config_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "config",
+        "vision_triggered_navigator.yaml"))
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["coverage_goal_retry_count"] == 1
+    assert config["coverage_start_anchor"] == 1
+    assert config["coverage_end_anchor"] == 9
+    assert config["preferred_observation_anchor"] == 0
+
+    launch_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "launch",
+        "vision_triggered_navigator.launch"))
+    root = ET.parse(launch_path).getroot()
+    launch_args = {item.attrib["name"] for item in root.findall("arg")}
+    for name in ("coverage_start_anchor", "coverage_end_anchor",
+                 "preferred_observation_anchor"):
+        assert name in launch_args
+    params = {item.attrib["name"]: item.attrib.get("value")
+              for item in root.find("node").findall("param")}
+    assert params["coverage_start_anchor"] == "$(arg coverage_start_anchor)"
+    assert params["coverage_end_anchor"] == "$(arg coverage_end_anchor)"
+    assert params["preferred_observation_anchor"] == \
+        "$(arg preferred_observation_anchor)"
 
 
 def test_coverage_goal_soft_timeout_extends_only_with_recent_progress():

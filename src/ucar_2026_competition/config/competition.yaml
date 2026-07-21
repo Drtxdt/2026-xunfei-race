@@ -99,6 +99,14 @@ coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0
 
+# 现实车间停车后，先带后向雷达保护倒出，再继续仿真车间搜索。
+task2_inter_visit_reverse_distance_m: 0.32
+task2_inter_visit_reverse_speed_mps: 0.08
+task2_inter_visit_rear_clearance_m: 0.28
+task2_inter_visit_rear_half_angle_deg: 30.0
+task2_inter_visit_sensor_stale_sec: 0.5
+task2_inter_visit_timeout_sec: 7.0
+
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003
 sim_timeout_sec: 900.0

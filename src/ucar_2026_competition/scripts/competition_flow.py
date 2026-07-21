@@ -41,6 +41,7 @@ from ucar_2026_competition.logic import (
     normalize_category,
     parse_task_categories,
     qr_values_from_payload,
+    second_factory_search_plan,
     stage_sequence,
     task4_handoff_required,
     task4_start_action,
@@ -132,14 +133,38 @@ class CompetitionFlow:
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
         self.base_twist = None
+        self.base_pose = None
         self.handoff_scan_received_at = 0.0
+        self.rear_scan_min = None
         self.handoff_costmap_received_at = 0.0
+        self.task2_inter_visit_rear_half_angle = math.radians(max(
+            1.0, float(rospy.get_param(
+                "~task2_inter_visit_rear_half_angle_deg", 30.0))))
         self.ocr_target = None
         self.ocr_last_message_at = 0.0
         self.ocr_filter = TemporalTargetFilter(
             rospy.get_param("~ocr_required_hits", 2),
             rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
+        self.factory_observation_filters = {
+            category: TemporalTargetFilter(
+                rospy.get_param("~ocr_required_hits", 2),
+                rospy.get_param("~ocr_evidence_window_sec", 1.5),
+            )
+            for category in CATEGORY_LABELS
+        }
+        saved_observations = rospy.get_param(
+            "/competition/factory_observations", {})
+        self.factory_observations = (
+            saved_observations if isinstance(saved_observations, dict) else {})
+        self.coverage_state = {}
+        self.coverage_state_received_at = 0.0
+        self.next_coverage_anchor = int(rospy.get_param(
+            "/competition/next_coverage_anchor", 1))
+        self.parked_factory_category = normalize_category(rospy.get_param(
+            "/competition/parked_factory_category", ""))
+        self.task2_search_initialized = False
+        self.inter_visit_exit_completed = False
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -183,6 +208,10 @@ class CompetitionFlow:
         )
         rospy.Subscriber(
             "/vision_triggered_navigator/status", String, self._navigator_cb, queue_size=20
+        )
+        rospy.Subscriber(
+            "/vision_triggered_navigator/coverage_state", String,
+            self._coverage_state_cb, queue_size=20
         )
         rospy.Subscriber(
             "/traffic_light_rknn_test/detections", String, self._traffic_cb, queue_size=20
@@ -384,10 +413,28 @@ class CompetitionFlow:
                 float(msg.twist.twist.linear.y),
                 float(msg.twist.twist.angular.z),
             )
+            self.base_pose = (
+                float(msg.pose.pose.position.x),
+                float(msg.pose.pose.position.y),
+                yaw,
+            )
 
-    def _handoff_scan_cb(self, _msg):
+    def _handoff_scan_cb(self, msg):
+        nearest = None
+        angle = float(msg.angle_min)
+        for value in msg.ranges:
+            distance = float(value)
+            rear_error = abs(math.atan2(
+                math.sin(angle - math.pi), math.cos(angle - math.pi)))
+            if (rear_error <= self.task2_inter_visit_rear_half_angle and
+                    math.isfinite(distance) and
+                    distance >= float(msg.range_min) and
+                    distance <= float(msg.range_max)):
+                nearest = distance if nearest is None else min(nearest, distance)
+            angle += float(msg.angle_increment)
         with self.lock:
             self.handoff_scan_received_at = time.monotonic()
+            self.rear_scan_min = nearest
 
     def _handoff_costmap_cb(self, _msg):
         with self.lock:
@@ -415,6 +462,37 @@ class CompetitionFlow:
         except Exception:
             return
         self.ocr_last_message_at = time.monotonic()
+        now = time.monotonic()
+        observation_confirmations = {
+            candidate: target_filter.push(candidate, category, now)
+            for candidate, target_filter in self.factory_observation_filters.items()
+        }
+        if category in observation_confirmations and payload.get("target_bbox"):
+            confirmed_observation = observation_confirmations[category]
+            with self.lock:
+                coverage = dict(self.coverage_state)
+                coverage_age = now - self.coverage_state_received_at
+            anchor = int(coverage.get("anchor", 0) or 0)
+            observation_state = coverage.get("state", "")
+            if (confirmed_observation and anchor > 0 and coverage_age <= 30.0 and
+                    observation_state in ("initial_hold", "scanning")):
+                observation = {
+                    "anchor": anchor,
+                    "state": coverage.get("state", ""),
+                    "pose": coverage.get("pose", {}),
+                    "scan_step": coverage.get("scan_step", 0),
+                    "scan_steps": coverage.get("scan_steps", 0),
+                    "observed_at": time.time(),
+                }
+                with self.lock:
+                    is_new_observation = category not in self.factory_observations
+                    if is_new_observation:
+                        self.factory_observations[category] = observation
+                if is_new_observation:
+                    self._persist_factory_search_state()
+                    rospy.loginfo(
+                        "remembered factory sign category=%s anchor=%d",
+                        category, anchor)
         if category == self.ocr_target and payload.get("target_bbox"):
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
@@ -451,6 +529,33 @@ class CompetitionFlow:
         if status != self.navigator_status:
             rospy.loginfo("task2 navigator status: %s", status)
         self.navigator_status = status
+
+    def _coverage_state_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            anchor = int(payload.get("anchor", 0))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return
+        if anchor <= 0:
+            return
+        with self.lock:
+            self.coverage_state = payload
+            self.coverage_state_received_at = time.monotonic()
+            if payload.get("state") == "covered":
+                self.next_coverage_anchor = max(self.next_coverage_anchor, anchor + 1)
+        if payload.get("state") == "covered":
+            self._persist_factory_search_state()
+
+    def _persist_factory_search_state(self):
+        with self.lock:
+            observations = dict(self.factory_observations)
+            next_anchor = int(self.next_coverage_anchor)
+        rospy.set_param("/competition/factory_observations", observations)
+        rospy.set_param("/competition/next_coverage_anchor", next_anchor)
+        self.task1_result["factory_observations"] = observations
+        self.task1_result["next_coverage_anchor"] = next_anchor
+        self.result_pub.publish(String(data=json.dumps(
+            self.task1_result, ensure_ascii=False)))
 
     def _deliver_target_trigger(self):
         """Deliver one OCR lock through a synchronous service and wait for status ACK."""
@@ -637,6 +742,94 @@ class CompetitionFlow:
         self.publish_status(
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
+
+    def task2_inter_visit_handoff(self):
+        """Back safely out of the physical delivery bay before the sim visit."""
+        distance = max(0.0, float(rospy.get_param(
+            "~task2_inter_visit_reverse_distance_m", 0.32)))
+        speed = abs(float(rospy.get_param(
+            "~task2_inter_visit_reverse_speed_mps", 0.08)))
+        min_clearance = max(0.0, float(rospy.get_param(
+            "~task2_inter_visit_rear_clearance_m", 0.28)))
+        stale_sec = max(0.1, float(rospy.get_param(
+            "~task2_inter_visit_sensor_stale_sec", 0.5)))
+        timeout = max(1.0, float(rospy.get_param(
+            "~task2_inter_visit_timeout_sec", 7.0)))
+        if distance <= 0.0 or speed <= 0.0:
+            raise StageError("task2 inter-visit reverse parameters must be positive")
+
+        self.publish_status(
+            "task3", "leaving_physical_factory",
+            "backing out before navigating to the simulation factory")
+        self.safe_stop(cancel_navigation=True)
+        ready_deadline = time.monotonic() + 2.0
+        start_pose = None
+        while time.monotonic() < ready_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                odom_age = time.monotonic() - self.qr_odom_received_at
+                scan_age = time.monotonic() - self.handoff_scan_received_at
+                pose = self.base_pose
+                rear_min = self.rear_scan_min
+            if (pose is not None and rear_min is not None and
+                    odom_age <= stale_sec and scan_age <= stale_sec):
+                start_pose = pose
+                break
+            rospy.sleep(0.05)
+        if start_pose is None:
+            raise StageError("inter-visit exit has no fresh odom/rear lidar")
+
+        deadline = time.monotonic() + timeout
+        moved = 0.0
+        command = Twist()
+        command.linear.x = -speed
+        try:
+            rate = rospy.Rate(20)
+            while time.monotonic() < deadline and not rospy.is_shutdown():
+                self.check_abort()
+                with self.lock:
+                    odom_age = time.monotonic() - self.qr_odom_received_at
+                    scan_age = time.monotonic() - self.handoff_scan_received_at
+                    pose = self.base_pose
+                    rear_min = self.rear_scan_min
+                if (pose is None or rear_min is None or
+                        odom_age > stale_sec or scan_age > stale_sec):
+                    raise StageError("inter-visit exit lost fresh odom/rear lidar")
+                moved = math.hypot(
+                    pose[0] - start_pose[0], pose[1] - start_pose[1])
+                if moved >= distance:
+                    break
+                if rear_min <= min_clearance:
+                    raise StageError(
+                        "inter-visit rear path blocked at {:.3f}m".format(rear_min))
+                self.cmd_pub.publish(command)
+                rate.sleep()
+            else:
+                raise StageError(
+                    "inter-visit exit timed out after moving {:.3f}m".format(moved))
+        finally:
+            self.safe_stop(cancel_navigation=True)
+
+        try:
+            rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
+            rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError("second-search costmap refresh failed: {}".format(exc))
+        cleared_at = time.monotonic()
+        refresh_deadline = cleared_at + 2.0
+        while time.monotonic() < refresh_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                scan_fresh = self.handoff_scan_received_at > cleared_at
+                costmap_fresh = self.handoff_costmap_received_at > cleared_at
+            if scan_fresh and costmap_fresh:
+                self.inter_visit_exit_completed = True
+                self.publish_status(
+                    "task3", "second_search_ready",
+                    "physical bay cleared; second factory navigation may start")
+                return
+            rospy.sleep(0.05)
+        raise StageError("second-search refresh produced no fresh scan/costmap")
 
     def production_task4_handoff(self, source_stage):
         """Resume physical navigation without resetting the current factory pose."""
@@ -1090,20 +1283,20 @@ class CompetitionFlow:
         self.announce("task1", text=announcement_full)
         self.publish_status("task1", "completed", "voice, QR and reasoning completed")
 
-    def task2(self):
-        if not self.pickup_category:
-            raise StageError("task2 pickup_category is missing")
-        item = self.task1_result.get("pickup_item")
-        workshop = (
-            self.task1_result.get("pickup_workshop")
-            or CATEGORY_LABELS[self.pickup_category][1]
-        )
-        if not item:
-            raise StageError("task2 target_item is missing")
+    def _navigate_factory_target(self, category, item, workshop, phase,
+                                 start_anchor=1, preferred_anchor=0,
+                                 announce=False):
+        if not category:
+            raise StageError("{} factory category is missing".format(phase))
         center_only = bool_param("~task2_center_only", False)
 
-        self.ocr_target = self.pickup_category
+        self.ocr_target = category
         self.ocr_filter.reset()
+        for target_filter in self.factory_observation_filters.values():
+            target_filter.reset()
+        with self.lock:
+            self.coverage_state = {}
+            self.coverage_state_received_at = 0.0
         self.ocr_last_message_at = 0.0
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
@@ -1111,7 +1304,9 @@ class CompetitionFlow:
         self.trigger_service_accepted = False
         self.trigger_acknowledged = False
         self.navigator_status = ""
-        self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
+        self.publish_status(
+            phase, "searching",
+            "searching {} factory from anchor {}".format(category, start_anchor))
         try:
             self.start_child(
                 "factory_ocr",
@@ -1122,7 +1317,7 @@ class CompetitionFlow:
                     "start_competition_speech": False,
                     "start_viewer": self.debug,
                     "recognition_mode": "ppocr_rknn_system",
-                    "target_category": self.pickup_category,
+                    "target_category": category,
                     "enable_speech": False,
                     "required": True,
                 },
@@ -1153,6 +1348,10 @@ class CompetitionFlow:
                         bool_param("~navigator_publish_initial_pose", False)),
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
+                    "coverage_start_anchor": max(1, int(start_anchor)),
+                    "coverage_end_anchor": 9,
+                    "preferred_observation_anchor": max(
+                        0, int(preferred_anchor)),
                     "target_center_steering_sign": rospy.get_param(
                         "~target_center_steering_sign", -1.0),
                     "camera_boresight_yaw_offset": rospy.get_param(
@@ -1294,9 +1493,9 @@ class CompetitionFlow:
             self.publish_status("task2", "center_test_completed", "target centering test completed")
             return
         self.safe_stop(cancel_navigation=True)
-        announcement_required = task2_announcement_required(
+        announcement_required = announce and task2_announcement_required(
             self.navigator_status, self.task2_announcement_completed)
-        if not self.task2_announcement_completed and not announcement_required:
+        if announce and not self.task2_announcement_completed and not announcement_required:
             raise StageError(
                 "refusing task2 announcement before confirmed arrived state")
         if announcement_required:
@@ -1308,11 +1507,83 @@ class CompetitionFlow:
             self.publish_status(
                 "task2", "announcement_completed",
                 "task2 announcement service completed")
-        self.publish_status("task2", "completed", "target factory reached")
+        self.parked_factory_category = category
+        rospy.set_param("/competition/parked_factory_category", category)
+        self.publish_status(phase, "factory_reached", "target factory reached")
+
+    def task2(self):
+        if not self.pickup_category:
+            raise StageError("task2 pickup_category is missing")
+        item = self.task1_result.get("pickup_item")
+        workshop = (
+            self.task1_result.get("pickup_workshop")
+            or CATEGORY_LABELS[self.pickup_category][1]
+        )
+        if not item:
+            raise StageError("task2 target_item is missing")
+        if not self.task2_search_initialized:
+            self.factory_observations = {}
+            self.next_coverage_anchor = 1
+            self.parked_factory_category = None
+            rospy.set_param("/competition/factory_observations", {})
+            rospy.set_param("/competition/next_coverage_anchor", 1)
+            rospy.set_param("/competition/parked_factory_category", "")
+            for target_filter in self.factory_observation_filters.values():
+                target_filter.reset()
+            self.task2_search_initialized = True
+        self.task2_announcement_completed = False
+        saved_physical = self.factory_observations.get(self.pickup_category, {})
+        preferred_physical_anchor = int(saved_physical.get("anchor", 0) or 0)
+        self._navigate_factory_target(
+            self.pickup_category, item, workshop, "task2",
+            start_anchor=max(1, int(self.next_coverage_anchor)),
+            preferred_anchor=preferred_physical_anchor, announce=True)
+        self.inter_visit_exit_completed = False
+        observation = self.factory_observations.get(self.pickup_category, {})
+        physical_anchor = int(observation.get("anchor", 0) or 0)
+        if physical_anchor > 0:
+            self.next_coverage_anchor = min(10, physical_anchor + 1)
+        self._persist_factory_search_state()
+        self.publish_status(
+            "task2", "completed",
+            "physical delivery announced; factory observations persisted")
 
     def task3(self):
         if not self.sim_category:
             raise StageError("task3 sim_category is missing")
+        sim_item = self.task1_result.get("sim_item")
+        sim_workshop = (
+            self.task1_result.get("sim_workshop")
+            or CATEGORY_LABELS[self.sim_category][1]
+        )
+        search_action, start_anchor, preferred_anchor = second_factory_search_plan(
+            self.parked_factory_category,
+            self.sim_category,
+            self.factory_observations,
+            self.next_coverage_anchor,
+        )
+        if search_action != "already_parked":
+            if search_action == "unavailable":
+                raise StageError(
+                    "simulation factory was not remembered and no unvisited anchors remain")
+            starts_from_delivery_bay = (
+                bool(self.parked_factory_category) or
+                self.mode in ("task3", "task3_task4")
+            )
+            if (starts_from_delivery_bay and
+                    not self.inter_visit_exit_completed):
+                self.task2_inter_visit_handoff()
+            self._navigate_factory_target(
+                self.sim_category, sim_item, sim_workshop, "task3",
+                start_anchor=start_anchor,
+                preferred_anchor=preferred_anchor,
+                announce=False,
+            )
+        else:
+            self.publish_status(
+                "task3", "simulation_factory_already_reached",
+                "vehicle is already parked at the simulation factory")
+
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
         if not host:
@@ -1378,10 +1649,9 @@ class CompetitionFlow:
                 pass
         if not result_text.startswith("SUCCESS:"):
             raise StageError("simulation completed without a success result")
-        item = self.task1_result.get("sim_item")
+        item = sim_item
         workshop = (
-            self.task1_result.get("sim_workshop")
-            or CATEGORY_LABELS[self.sim_category][1]
+            sim_workshop
         )
         if not item:
             raise StageError("task3 sim_item is missing")

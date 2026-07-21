@@ -17,6 +17,9 @@
   <arg name="camera_boresight_yaw_offset" default="0.0" />
   <arg name="center_only" default="false" />
   <arg name="max_coverage_anchors" default="0" />
+  <arg name="coverage_start_anchor" default="1" />
+  <arg name="coverage_end_anchor" default="9" />
+  <arg name="preferred_observation_anchor" default="0" />
   <arg name="vision_offset" default="0.4" />
   <arg name="coverage_scan_step_deg" default="20.0" />
   <arg name="coverage_scan_angular_speed" default="0.35" />
@@ -87,6 +90,9 @@
     <param name="camera_boresight_yaw_offset" value="$(arg camera_boresight_yaw_offset)" />
     <param name="center_only" value="$(arg center_only)" />
     <param name="max_coverage_anchors" value="$(arg max_coverage_anchors)" />
+    <param name="coverage_start_anchor" value="$(arg coverage_start_anchor)" />
+    <param name="coverage_end_anchor" value="$(arg coverage_end_anchor)" />
+    <param name="preferred_observation_anchor" value="$(arg preferred_observation_anchor)" />
     <param name="vision_offset" value="$(arg vision_offset)" />
     <param name="coverage_scan_step_deg" value="$(arg coverage_scan_step_deg)" />
     <param name="coverage_scan_angular_speed" value="$(arg coverage_scan_angular_speed)" />

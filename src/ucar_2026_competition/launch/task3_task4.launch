@@ -8,7 +8,7 @@
   <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
   <arg name="sim_bridge_port" default="26003" />
   <arg name="traffic_pose_configured" default="true" />
-  <arg name="traffic_x" default="0.2195" />
+  <arg name="traffic_x" default="0.2495" />
   <arg name="traffic_y" default="-3.0" />
   <arg name="traffic_yaw" default="-1.5708" />
 

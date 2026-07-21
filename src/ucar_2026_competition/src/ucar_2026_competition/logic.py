@@ -97,6 +97,29 @@ def task4_handoff_required(previous_stage, current_stage):
             str(previous_stage or "").strip().lower() in ("task2", "task3"))
 
 
+def second_factory_search_plan(parked_category, sim_category, observations,
+                               next_anchor, final_anchor=9):
+    """Select the safe physical action required before starting simulation."""
+    parked = normalize_category(parked_category)
+    target = normalize_category(sim_category)
+    if target and parked == target:
+        return "already_parked", 0, 0
+    observation = (observations or {}).get(target, {}) if target else {}
+    try:
+        preferred = int(observation.get("anchor", 0) or 0)
+    except (TypeError, ValueError):
+        preferred = 0
+    if 1 <= preferred <= int(final_anchor):
+        return "preferred", 1, preferred
+    try:
+        start = max(1, int(next_anchor))
+    except (TypeError, ValueError):
+        start = 1
+    if start <= int(final_anchor):
+        return "remaining", start, 0
+    return "unavailable", start, 0
+
+
 def task4_start_action(skip_stop_line_approach, traffic_pose_configured):
     """Select whether task4 starts at the line or navigates to it."""
     if bool(skip_stop_line_approach):

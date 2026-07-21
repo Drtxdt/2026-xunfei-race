@@ -24,7 +24,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
 
 class TrafficStagingPoseConfigTests(unittest.TestCase):
     def test_all_competition_entrypoints_share_calibrated_staging_pose(self):
-        expected = ("0.2195", "-3.0", "-1.5708")
+        expected = ("0.2495", "-3.0", "-1.5708")
         competition_launch = PACKAGE_ROOT.parent / "ucar_2026_competition" / "launch"
 
         for launch_name in ("task3_task4.launch", "full_competition.launch"):
