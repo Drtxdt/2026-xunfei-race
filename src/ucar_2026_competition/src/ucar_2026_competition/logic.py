@@ -268,6 +268,20 @@ def scan_sector_min(ranges, angle_min, angle_increment, center_angle,
     return nearest
 
 
+def split_rotation_steps(total_angle, step_angle):
+    """Split a positive rotation into exact bounded steps without overshooting."""
+    remaining = max(0.0, float(total_angle))
+    step_angle = float(step_angle)
+    if step_angle <= 0.0:
+        raise ValueError("step_angle must be positive")
+    steps = []
+    while remaining > 1e-9:
+        current = min(step_angle, remaining)
+        steps.append(current)
+        remaining -= current
+    return tuple(steps)
+
+
 def qr_values_from_payload(payload):
     values = []
     for entry in payload.get("items", []):

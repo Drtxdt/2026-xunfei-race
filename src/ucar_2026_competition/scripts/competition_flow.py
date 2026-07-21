@@ -44,6 +44,7 @@ from ucar_2026_competition.logic import (
     parse_task1_categories,
     qr_values_from_payload,
     scan_sector_min,
+    split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
     task4_handoff_required,
