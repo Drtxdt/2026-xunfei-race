@@ -173,6 +173,21 @@ def staging_pose_reached(current_pose, goal_pose,
             yaw_error <= abs(float(yaw_tolerance)))
 
 
+def staging_success_can_handoff(move_base_succeeded, position_error,
+                                yaw_error, position_tolerance=0.15,
+                                yaw_tolerance=0.10):
+    """Allow a successful planner goal to hand control to lidar docking.
+
+    The planner is responsible only for reaching the safe staging area.  The
+    physical wall fit remains responsible for the final normal distance, so a
+    planner success inside its usual tolerance must not be mistaken for the
+    final parking pose.
+    """
+    return (bool(move_base_succeeded) and
+            float(position_error) <= abs(float(position_tolerance)) and
+            abs(float(yaw_error)) <= abs(float(yaw_tolerance)))
+
+
 def fit_wall_line(points, min_points=12, min_span=0.25,
                   max_residual=0.015):
     """Robustly fit a front wall in base coordinates without numpy.

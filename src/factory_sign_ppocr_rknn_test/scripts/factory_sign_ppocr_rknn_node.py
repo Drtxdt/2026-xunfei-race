@@ -903,6 +903,19 @@ class FactorySignPPOCRRknnNode:
         target_center_x = None
         target_center_y = None
         now = time.time()
+        # Expire an old lock before consuming this frame.  Expiring it after a
+        # new direct OCR hit would erase the first hit of the new two-frame
+        # confirmation sequence and make relocking impossible after prewarm.
+        previous_tracking_age = (now - self.track_last_confirmed_at
+                                 if self.track_last_confirmed_at > 0.0
+                                 else -1.0)
+        if previous_tracking_age > self.target_track_timeout:
+            self.tracked_category = None
+            self.tracked_box = []
+            self.track_pending_category = None
+            self.track_pending_hits = 0
+            self.track_last_confirmed_at = 0.0
+            self.track_last_update_at = 0.0
         frame_height, frame_width = frame.shape[:2]
         mapped_candidates = [
             map_box_to_frame(box, self.last_roi_box,
@@ -946,8 +959,6 @@ class FactorySignPPOCRRknnNode:
         if tracking_age > self.target_track_timeout:
             self.tracked_category = None
             self.tracked_box = []
-            self.track_pending_category = None
-            self.track_pending_hits = 0
         if target_box:
             target_center_x = sum(point[0] for point in target_box) / len(target_box)
             target_center_y = sum(point[1] for point in target_box) / len(target_box)

@@ -52,6 +52,7 @@ from navigator_logic import (
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_pose_reached,
+    staging_success_can_handoff,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
     wall_fit_matches_expected,
@@ -222,6 +223,9 @@ class VisionTriggeredNavigator(object):
             "~parking_staging_timeout_sec", 20.0)))
         self.parking_staging_acceptance = max(0.01, float(rospy.get_param(
             "~parking_staging_position_tolerance", 0.10)))
+        self.parking_staging_handoff_acceptance = max(
+            self.parking_staging_acceptance, float(rospy.get_param(
+                "~parking_staging_handoff_position_tolerance", 0.15)))
         self.parking_staging_yaw_tolerance = abs(float(rospy.get_param(
             "~parking_staging_yaw_tolerance", 0.10)))
         self.parking_staging_watchdog_window = max(0.5, float(rospy.get_param(
@@ -1709,10 +1713,23 @@ class VisionTriggeredNavigator(object):
 
             state = self.move_base_client.get_state()
             if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
-                failure_reason = (
-                    "move_base预停点提前结束(state=%s distance=%.3f yaw_error=%.3f)" %
-                    (str(state), distance if pose is not None else float("nan"),
-                     yaw_error if pose is not None else float("nan")))
+                if (pose is not None and staging_success_can_handoff(
+                        state == actionlib.GoalStatus.SUCCEEDED,
+                        distance, yaw_error,
+                        self.parking_staging_handoff_acceptance,
+                        self.parking_staging_yaw_tolerance)):
+                    reached = True
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] move_base在预停区成功: "
+                        "map误差=%.3fm/%.3frad；交由激光墙面拟合完成%.3fm终距.",
+                        distance, yaw_error,
+                        max(self.parking_min_wall_distance,
+                            self.parking_goal_offset + self.parking_normal_offset))
+                else:
+                    failure_reason = (
+                        "move_base预停点提前结束(state=%s distance=%.3f yaw_error=%.3f)" %
+                        (str(state), distance if pose is not None else float("nan"),
+                         yaw_error if pose is not None else float("nan")))
                 break
             if rospy.get_time() - started >= self.parking_staging_timeout:
                 failure_reason = "预停点导航超过%.1fs" % self.parking_staging_timeout
@@ -1804,6 +1821,7 @@ class VisionTriggeredNavigator(object):
         rospy.loginfo(
             "[vision_triggered_navigator] 锁定墙面停泊 frame=%s tangent_target=(%.4f,%.4f) wall_distance=%.3f",
             odom_frame, target[0], target[1], desired_wall_distance)
+        self._publish_status("parking_wall_distance_acquiring")
 
         deadline = rospy.get_time() + self.parking_docking_timeout
         stable_since = None

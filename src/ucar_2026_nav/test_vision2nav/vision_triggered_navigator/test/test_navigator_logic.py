@@ -42,6 +42,7 @@ from navigator_logic import (
     rotation_clearance_is_safe,
     rotation_swept_radius,
     staging_pose_reached,
+    staging_success_can_handoff,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
     should_skip_coverage_anchor,
@@ -469,6 +470,13 @@ def test_staging_requires_position_and_heading_together():
     assert staging_pose_reached((1.08, 2.0, 0.58), goal, 0.10, 0.10)
     assert not staging_pose_reached((1.11, 2.0, 0.5), goal, 0.10, 0.10)
     assert not staging_pose_reached((1.0, 2.0, 0.61), goal, 0.10, 0.10)
+
+
+def test_logged_planner_success_hands_final_distance_to_lidar_docking():
+    assert staging_success_can_handoff(True, 0.126, 0.060, 0.15, 0.10)
+    assert not staging_success_can_handoff(True, 0.151, 0.060, 0.15, 0.10)
+    assert not staging_success_can_handoff(True, 0.126, 0.101, 0.15, 0.10)
+    assert not staging_success_can_handoff(False, 0.126, 0.060, 0.15, 0.10)
 
 
 def test_wall_frame_controller_honors_deadband_and_phase_order():
