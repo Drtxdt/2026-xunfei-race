@@ -18,6 +18,7 @@ from navigator_logic import (
     center_step_angle,
     coverage_motion_is_rotation_stall,
     coverage_position_needs_yaw_alignment,
+    coverage_retry_allowed,
     coverage_timeout_decision,
     costmap_value_at,
     docking_command,
@@ -32,6 +33,7 @@ from navigator_logic import (
     normalize_angle,
     parking_footprint_margins,
     parking_footprint_inside,
+    parking_rotation_stall_can_verify,
     parking_goal_from_wall,
     ray_segment_intersection,
     scan_dwell_deadline,
@@ -164,6 +166,14 @@ def test_only_known_lethal_cost_skips_a_coverage_anchor():
     assert should_skip_coverage_anchor(True, 254, 253)
 
 
+def test_coverage_retry_requires_rotation_stall_and_known_clear_footprint():
+    assert coverage_retry_allowed(True, 0, 1, True, 252, 253)
+    assert not coverage_retry_allowed(False, 0, 1, True, 0, 253)
+    assert not coverage_retry_allowed(True, 1, 1, True, 0, 253)
+    assert not coverage_retry_allowed(True, 0, 1, False, -1, 253)
+    assert not coverage_retry_allowed(True, 0, 1, True, 253, 253)
+
+
 def test_resumable_coverage_interface_and_single_retry_defaults():
     config_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "config",
@@ -171,6 +181,10 @@ def test_resumable_coverage_interface_and_single_retry_defaults():
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     assert config["coverage_goal_retry_count"] == 1
+    assert config["coverage_obstacle_recheck_timeout_sec"] == 2.0
+    assert config["parking_rotation_watchdog_window_sec"] == 0.6
+    assert config["parking_rotation_min_progress_deg"] == 0.5
+    assert config["parking_rotation_deadband_yaw_tolerance"] == 0.06
     assert config["coverage_start_anchor"] == 1
     assert config["coverage_end_anchor"] == 9
     assert config["preferred_observation_anchor"] == 0
@@ -335,6 +349,29 @@ def test_docking_aligns_before_forward_motion_and_limits_every_axis():
         (0.015, -0.02, 0.035), 0.015, 0.02, 0.035)
     assert not docking_within_tolerance(
         (0.016, 0.0, 0.0), 0.015, 0.02, 0.035)
+
+
+def test_parking_rotation_deadband_only_hands_near_final_pose_to_validation():
+    assert parking_rotation_stall_can_verify(
+        (0.009, 0.012, -0.035), 0.015, 0.02, 0.06)
+    assert not parking_rotation_stall_can_verify(
+        (0.016, 0.012, -0.035), 0.015, 0.02, 0.06)
+    assert not parking_rotation_stall_can_verify(
+        (0.009, 0.021, -0.035), 0.015, 0.02, 0.06)
+    assert not parking_rotation_stall_can_verify(
+        (0.009, 0.012, -0.061), 0.015, 0.02, 0.06)
+
+
+def test_navigation_source_never_clears_costmaps_for_coverage_retry():
+    source_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(source_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "/move_base/clear_costmaps" not in source
+    assert "_clear_costmaps_and_wait" not in source
+    assert "parking_rotation_deadband_verifying" in source
+    assert "parking_verifying" in source
 
 
 def test_staging_watchdog_detects_rotation_without_translation():

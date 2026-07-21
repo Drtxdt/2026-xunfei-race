@@ -40,6 +40,8 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
 coverage_goal_retry_count: 1
+# 占点或旋转停滞时只被动等待新雷达/costmap，禁止清图。
+coverage_obstacle_recheck_timeout_sec: 2.0
 coverage_start_anchor: 1
 coverage_end_anchor: 9
 preferred_observation_anchor: 0
@@ -105,6 +107,10 @@ parking_dock_normal_tolerance: 0.015
 parking_dock_tangent_tolerance: 0.02
 parking_dock_yaw_tolerance: 0.035
 parking_dock_stable_sec: 0.5
+# 底盘小角速度死区只允许转入完整停泊验证，不直接判定到达。
+parking_rotation_watchdog_window_sec: 0.6
+parking_rotation_min_progress_deg: 0.5
+parking_rotation_deadband_yaw_tolerance: 0.06
 parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15
 # ydlidar.launch中laser_frame位于base_link前方0.08m；安全阈值以base中心墙距解释。

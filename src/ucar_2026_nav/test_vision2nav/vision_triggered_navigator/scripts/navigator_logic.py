@@ -277,6 +277,21 @@ def docking_within_tolerance(errors, normal_tolerance,
             yaw_error <= abs(float(yaw_tolerance)))
 
 
+def parking_rotation_stall_can_verify(errors, normal_tolerance,
+                                      tangent_tolerance,
+                                      deadband_yaw_tolerance):
+    """Allow a stationary near-final pose to proceed to footprint validation.
+
+    This does not declare arrival.  It only handles a base rotation deadband
+    after translation has converged and the remaining heading error is small.
+    """
+    normal_error, tangent_error, yaw_error = [
+        abs(float(value)) for value in errors]
+    return (normal_error <= abs(float(normal_tolerance)) and
+            tangent_error <= abs(float(tangent_tolerance)) and
+            yaw_error <= abs(float(deadband_yaw_tolerance)))
+
+
 def staging_motion_is_rotation_stall(distance_moved, yaw_accumulated,
                                      minimum_distance=0.03,
                                      maximum_yaw=math.radians(45.0)):
@@ -407,6 +422,15 @@ def exact_observation_target(point):
 def should_skip_coverage_anchor(cost_known, max_cost, lethal_cost=253):
     """Only a known lethal/inscribed footprint cost may skip an anchor."""
     return bool(cost_known) and int(max_cost) >= int(lethal_cost)
+
+
+def coverage_retry_allowed(rotation_stall, attempt, retry_count,
+                           cost_known, max_cost, lethal_cost=253):
+    """Retry only a proven rotation stall on a known-clear fresh footprint."""
+    return (bool(rotation_stall) and
+            int(attempt) < max(0, int(retry_count)) and
+            bool(cost_known) and
+            int(max_cost) < int(lethal_cost))
 
 
 def costmap_value_at(data, width, height, resolution,
