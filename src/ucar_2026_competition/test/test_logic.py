@@ -128,6 +128,8 @@ class CompetitionLogicTest(unittest.TestCase):
             content = stream.read()
         self.assertIn("task2_inter_visit_reverse_distance_m: 0.32", content)
         self.assertIn("task2_inter_visit_rear_clearance_m: 0.28", content)
+        self.assertIn(
+            "task2_second_search_abort_fail_fast_count: 0", content)
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")

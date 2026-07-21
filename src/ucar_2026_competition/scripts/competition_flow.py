@@ -1340,7 +1340,9 @@ class CompetitionFlow:
                     "coverage_search_mode": True,
                     "coverage_start_nearest": phase == "simulation",
                     "coverage_abort_fail_fast_count": (
-                        2 if phase == "simulation" else 0),
+                        max(0, int(rospy.get_param(
+                            "~task2_second_search_abort_fail_fast_count", 0)))
+                        if phase == "simulation" else 0),
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.30),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
