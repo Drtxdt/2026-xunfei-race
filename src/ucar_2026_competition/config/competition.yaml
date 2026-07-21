@@ -2,7 +2,8 @@
 # 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
 # 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
 qr_navigation_timeout_sec: 120.0
-# 停转扫描：20度一档，停车0.6秒取稳定帧；一处最多转一整圈。
+# 停转扫描：保持原扫码起始位姿，只执行一轮九步扫描，不再前往备用点扫第二轮。
+# 每次快速转25度后停车0.3秒，共225度；最后继续快速回到起始朝向（原代码最终姿态）。
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
