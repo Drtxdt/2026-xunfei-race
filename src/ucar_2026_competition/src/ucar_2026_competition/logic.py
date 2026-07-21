@@ -77,9 +77,10 @@ class DirectedYawAccumulator:
 def stage_sequence(mode, enable_simulation=False):
     normalized = str(mode or "").strip().lower()
     if normalized == "full":
-        if bool(enable_simulation):
-            return ("task1", "task2", "task3", "task4", "task5")
-        return ("task1", "task2", "task4", "task5")
+        # Task 3 always includes the physical second-factory visit.  The
+        # simulation flag only controls the optional external bridge inside
+        # task3; it must never remove the physical stage from the race.
+        return ("task1", "task2", "task3", "task4", "task5")
     if normalized == "task1_task2":
         return ("task1", "task2")
     if normalized == "task3_task4":

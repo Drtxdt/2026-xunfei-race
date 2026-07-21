@@ -127,6 +127,11 @@ class CompetitionFlow:
 
         self.qr_items = OrderedDict()
         self.qr_collecting = False
+        self.task1_reasoning_event = threading.Event()
+        self.task1_reasoning_result = None
+        self.task1_reasoning_error = None
+        self.task1_reasoning_started = False
+        self.task1_reasoning_generation = 0
         self.qr_navigation_watching = False
         self.qr_navigation_goal_id = ""
         self.qr_navigation_result = None
@@ -178,6 +183,7 @@ class CompetitionFlow:
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
         self.strict_mission_status = {}
+        self.last_strict_mission_diagnostic = None
         self.track_status = {}
 
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
@@ -617,6 +623,21 @@ class CompetitionFlow:
             payload = json.loads(msg.data)
             if isinstance(payload, dict):
                 self.strict_mission_status = payload
+                diagnostic = (
+                    payload.get("state"), payload.get("approach_state"),
+                    payload.get("detail"), payload.get("error"),
+                )
+                if diagnostic != self.last_strict_mission_diagnostic:
+                    self.last_strict_mission_diagnostic = diagnostic
+                    rospy.loginfo(
+                        "task4 strict mission: state=%s approach=%s detail=%s error=%s",
+                        diagnostic[0], diagnostic[1], diagnostic[2], diagnostic[3])
+                    forwarded_state = str(
+                        diagnostic[1] or diagnostic[0] or "strict_mission").lower()
+                    self.publish_status(
+                        "task4", forwarded_state,
+                        str(diagnostic[2] or "strict mission state changed"),
+                        str(diagnostic[3] or ""))
         except Exception:
             return
 
@@ -1085,11 +1106,11 @@ class CompetitionFlow:
     def scan_qr_at_current_pose(self, status_state):
         """Rotate one odometry-closed-loop revolution with stable decode pauses."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.20)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.25)))
         step_angle = abs(
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
         )
-        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.4)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
@@ -1154,6 +1175,85 @@ class CompetitionFlow:
         self.safe_stop()
         return self._qr_count() >= expected_count
 
+    def _start_task1_reasoning(self, items, instruction):
+        """Start the single immutable Spark request for the three QR items."""
+        with self.lock:
+            if self.task1_reasoning_started:
+                return
+            self.task1_reasoning_started = True
+            self.task1_reasoning_result = None
+            self.task1_reasoning_error = None
+            generation = self.task1_reasoning_generation
+            request_event = self.task1_reasoning_event
+        frozen_items = tuple(items)
+
+        def worker():
+            try:
+                service = rospy.get_param(
+                    "~llm_service", "/smart_factory_llm/reason_pickup_order")
+                rospy.wait_for_service(service, timeout=15.0)
+                result = rospy.ServiceProxy(service, ReasonPickupOrder)(
+                    frozen_items[0], frozen_items[1], frozen_items[2], instruction)
+                with self.lock:
+                    if generation == self.task1_reasoning_generation:
+                        self.task1_reasoning_result = result
+            except Exception as exc:
+                with self.lock:
+                    if generation == self.task1_reasoning_generation:
+                        self.task1_reasoning_error = exc
+            finally:
+                request_event.set()
+
+        threading.Thread(
+            target=worker, name="task1-spark-reasoning", daemon=True).start()
+        self.publish_status(
+            "task1", "reasoning",
+            "three QR items frozen; Spark request started while decoder stops")
+
+    def _wait_task1_reasoning(self):
+        timeout = float(rospy.get_param("~llm_reasoning_timeout_sec", 90.0))
+        deadline = time.monotonic() + timeout
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            self.check_abort()
+            if self.task1_reasoning_event.wait(0.05):
+                break
+        else:
+            raise StageError("LLM reasoning timed out after {:.1f}s".format(timeout))
+        with self.lock:
+            error = self.task1_reasoning_error
+            result = self.task1_reasoning_result
+        if error is not None:
+            raise StageError("LLM service failed: {}".format(error))
+        if result is None:
+            raise StageError("LLM service returned no result")
+        return result
+
+    def _prewarm_task2_ocr(self):
+        """Load the OCR model during task1 speech without granting motion."""
+        stages = stage_sequence(self.mode, self.enable_simulation)
+        if "task2" not in stages or not self.pickup_category:
+            return
+        proc = self.children.get("factory_ocr")
+        if proc is not None and proc.poll() is None:
+            return
+        self.ocr_target = None
+        self.start_child(
+            "factory_ocr", "factory_sign_ppocr_rknn_test",
+            "factory_sign_ppocr_rknn_test.launch",
+            {
+                "start_camera": False,
+                "start_competition_speech": False,
+                "start_viewer": self.debug,
+                "recognition_mode": "ppocr_rknn_system",
+                "target_category": self.pickup_category,
+                "enable_speech": False,
+                "required": True,
+            },
+        )
+        self.publish_status(
+            "task1", "task2_ocr_prewarming",
+            "factory OCR model loading during task1 announcement; navigation remains stopped")
+
     # ------------------------------ stages ------------------------------
     def task1(self):
         with self.lock:
@@ -1182,6 +1282,12 @@ class CompetitionFlow:
 
         with self.lock:
             self.qr_items.clear()
+            self.task1_reasoning_generation += 1
+            self.task1_reasoning_started = False
+            self.task1_reasoning_result = None
+            self.task1_reasoning_error = None
+            self.task1_reasoning_event = threading.Event()
+        items = None
         try:
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
             self.qr_collecting = True
@@ -1215,6 +1321,12 @@ class CompetitionFlow:
                         self._qr_count(), expected_count
                     )
                 )
+            with self.lock:
+                items = tuple(list(self.qr_items.values())[:expected_count])
+            if len(items) != expected_count:
+                raise StageError("QR snapshot changed before it could be frozen")
+            self.safe_stop(cancel_navigation=True)
+            self._start_task1_reasoning(items, instruction)
             self.publish_status(
                 "task1",
                 "qr_scan_completed",
@@ -1225,17 +1337,7 @@ class CompetitionFlow:
             self.stop_child("qr_decoder")
             self.safe_stop(cancel_navigation=True)
 
-        with self.lock:
-            items = list(self.qr_items.values())[:3]
-        service = rospy.get_param("~llm_service", "/smart_factory_llm/reason_pickup_order")
-        self.publish_status("task1", "reasoning", "calling Spark X2")
-        try:
-            rospy.wait_for_service(service, timeout=15.0)
-            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
-                items[0], items[1], items[2], instruction
-            )
-        except (rospy.ROSException, rospy.ServiceException) as exc:
-            raise StageError("LLM service failed: {}".format(exc))
+        result = self._wait_task1_reasoning()
         if not result.success:
             raise StageError("LLM reasoning failed: {}".format(result.error_message))
         if normalize_category(result.pickup_major) != self.pickup_category:
@@ -1264,7 +1366,7 @@ class CompetitionFlow:
         )
 
         self.task1_result = {
-            "qr_items": items,
+            "qr_items": list(items),
             "category": self.pickup_category,
             "category_name": pickup_category_name,
             "pickup_category": self.pickup_category,
@@ -1280,6 +1382,7 @@ class CompetitionFlow:
             "announcement": announcement_full,
         }
         self.result_pub.publish(String(data=json.dumps(self.task1_result, ensure_ascii=False)))
+        self._prewarm_task2_ocr()
         self.announce("task1", text=announcement_full)
         self.publish_status("task1", "completed", "voice, QR and reasoning completed")
 
@@ -1308,20 +1411,24 @@ class CompetitionFlow:
             phase, "searching",
             "searching {} factory from anchor {}".format(category, start_anchor))
         try:
-            self.start_child(
-                "factory_ocr",
-                "factory_sign_ppocr_rknn_test",
-                "factory_sign_ppocr_rknn_test.launch",
-                {
-                    "start_camera": False,
-                    "start_competition_speech": False,
-                    "start_viewer": self.debug,
-                    "recognition_mode": "ppocr_rknn_system",
-                    "target_category": category,
-                    "enable_speech": False,
-                    "required": True,
-                },
-            )
+            ocr_proc = self.children.get("factory_ocr")
+            if ocr_proc is not None and ocr_proc.poll() is None:
+                rospy.loginfo("reusing task1-prewarmed factory OCR process")
+            else:
+                self.start_child(
+                    "factory_ocr",
+                    "factory_sign_ppocr_rknn_test",
+                    "factory_sign_ppocr_rknn_test.launch",
+                    {
+                        "start_camera": False,
+                        "start_competition_speech": False,
+                        "start_viewer": self.debug,
+                        "recognition_mode": "ppocr_rknn_system",
+                        "target_category": category,
+                        "enable_speech": False,
+                        "required": True,
+                    },
+                )
             self.publish_status("task2", "waiting_ocr", "waiting for first OCR result before motion")
             ocr_ready_deadline = time.time() + float(
                 rospy.get_param("~ocr_ready_timeout_sec", 12.0))
@@ -1556,6 +1663,8 @@ class CompetitionFlow:
             self.task1_result.get("sim_workshop")
             or CATEGORY_LABELS[self.sim_category][1]
         )
+        if not sim_item:
+            raise StageError("task3 sim_item is missing")
         search_action, start_anchor, preferred_anchor = second_factory_search_plan(
             self.parked_factory_category,
             self.sim_category,
@@ -1583,6 +1692,16 @@ class CompetitionFlow:
             self.publish_status(
                 "task3", "simulation_factory_already_reached",
                 "vehicle is already parked at the simulation factory")
+
+        if not self.enable_simulation:
+            self.publish_status(
+                "task3", "simulation_bridge_skipped",
+                "second factory parking confirmed; external simulation is disabled")
+            self.announce("task3", item=sim_item, workshop=sim_workshop)
+            self.publish_status(
+                "task3", "completed",
+                "physical simulation-factory visit completed without external bridge")
+            return
 
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
@@ -1649,13 +1768,7 @@ class CompetitionFlow:
                 pass
         if not result_text.startswith("SUCCESS:"):
             raise StageError("simulation completed without a success result")
-        item = sim_item
-        workshop = (
-            sim_workshop
-        )
-        if not item:
-            raise StageError("task3 sim_item is missing")
-        self.announce("task3", item=item, workshop=workshop)
+        self.announce("task3", item=sim_item, workshop=sim_workshop)
         self.publish_status("task3", "completed", result_text)
 
     def approach_task4_stop_line(self):

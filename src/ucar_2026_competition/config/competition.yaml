@@ -2,16 +2,17 @@
 # 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
 # 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
 qr_navigation_timeout_sec: 120.0
-# 停转扫描：20度一档，停车0.6秒取稳定帧；一处最多转一整圈。
+# 停转扫描：20度一档，保守提速并缩短停看；一处最多转一整圈。
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
-qr_scan_angular_speed: 0.20
+qr_scan_angular_speed: 0.25
 qr_scan_step_angle_rad: 0.3490658503988659
-qr_scan_settle_sec: 0.6
+qr_scan_settle_sec: 0.4
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
 qr_expected_count: 3
+llm_reasoning_timeout_sec: 90.0
 # 第一圈不足三个时，使用现有 move_base 前往二维码区中间标定点。
 qr_fallback_enabled: true
 qr_fallback_navigation_timeout_sec: 45.0

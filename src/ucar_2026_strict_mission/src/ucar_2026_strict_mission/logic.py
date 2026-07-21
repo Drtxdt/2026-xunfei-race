@@ -37,6 +37,28 @@ def forward_progress(start_pose, current_pose):
     return delta_x * math.cos(start_yaw) + delta_y * math.sin(start_yaw)
 
 
+def classify_line_observation(row_ratio, calibration_min, calibration_max):
+    """Classify a trusted line relative to the calibrated image range."""
+    if row_ratio is None:
+        return "missing"
+    row = float(row_ratio)
+    if row < float(calibration_min):
+        return "far_visible"
+    if row > float(calibration_max):
+        return "too_close"
+    return "calibrated"
+
+
+def far_line_has_progress(start_ratio, current_ratio, odom_progress,
+                          min_ratio_progress, min_odom_progress):
+    """Accept either visible image advance or odometry advance."""
+    ratio_progress = float(current_ratio) - float(start_ratio)
+    return (
+        ratio_progress >= float(min_ratio_progress)
+        or float(odom_progress) >= float(min_odom_progress)
+    )
+
+
 def lowest_horizontal_band(row_occupancies, min_occupancy, max_band_rows,
                            min_band_rows=2):
     """Return the lowest credible wide horizontal band as (start, end)."""
@@ -84,6 +106,14 @@ class DistanceCalibration:
             raise ValueError("distance must decrease as the line moves down the image")
         self._points = parsed
         self._rows = rows
+
+    @property
+    def min_row_ratio(self):
+        return self._rows[0]
+
+    @property
+    def max_row_ratio(self):
+        return self._rows[-1]
 
     def distance_for_ratio(self, row_ratio):
         row = float(row_ratio)

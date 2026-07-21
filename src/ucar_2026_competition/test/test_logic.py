@@ -154,7 +154,10 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertTrue(events[1]["data"])
 
     def test_state_machine_sequence(self):
-        self.assertEqual(stage_sequence("full"), ("task1", "task2", "task4", "task5"))
+        self.assertEqual(
+            stage_sequence("full"),
+            ("task1", "task2", "task3", "task4", "task5"),
+        )
         self.assertEqual(
             stage_sequence("full", enable_simulation=True),
             ("task1", "task2", "task3", "task4", "task5"),
@@ -167,6 +170,44 @@ class CompetitionLogicTest(unittest.TestCase):
         )
         self.assertEqual(stage_sequence("task4_task5"), ("task4", "task5"))
         self.assertEqual(stage_sequence("task4"), ("task4",))
+
+    def test_task3_flag_only_gates_external_bridge(self):
+        source_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(source_path, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        task3_source = source[source.index("    def task3(self):"):
+                              source.index("    def approach_task4_stop_line(self):")]
+        self.assertLess(
+            task3_source.index("if not self.enable_simulation:"),
+            task3_source.index('host = rospy.get_param("~sim_bridge_host"'),
+        )
+        self.assertIn("simulation_bridge_skipped", task3_source)
+        self.assertIn('self.announce("task3"', task3_source)
+
+    def test_qr_scan_timing_and_async_reasoning_contract(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config_text = stream.read()
+        self.assertIn("qr_scan_angular_speed: 0.25", config_text)
+        self.assertIn("qr_scan_step_angle_rad: 0.3490658503988659", config_text)
+        self.assertIn("qr_scan_settle_sec: 0.4", config_text)
+
+        source_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(source_path, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        task1_source = source[source.index("    def task1(self):"):
+                              source.index("    def _navigate_factory_target(")]
+        self.assertLess(
+            task1_source.index("self._start_task1_reasoning(items, instruction)"),
+            task1_source.index('self.stop_child("qr_decoder")'),
+        )
+        self.assertLess(
+            task1_source.index("self._prewarm_task2_ocr()"),
+            task1_source.index('self.announce("task1"'),
+        )
 
     def test_task4_handoff_covers_simulation_enabled_and_disabled_flows(self):
         self.assertTrue(task4_handoff_required("task2", "task4"))
@@ -242,12 +283,22 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("sim_category", {
             item.attrib["name"] for item in task3_root.findall("arg")
         })
+        task3_args = {
+            item.attrib["name"]: item.attrib.get("default")
+            for item in task3_root.findall("arg")
+        }
+        self.assertEqual(task3_args["enable_simulation"], "true")
         task3_task4_root = ET.parse(
             os.path.join(launch_dir, "task3_task4.launch")
         ).getroot()
         self.assertIn("sim_category", {
             item.attrib["name"] for item in task3_task4_root.findall("arg")
         })
+        task3_task4_args = {
+            item.attrib["name"]: item.attrib.get("default")
+            for item in task3_task4_root.findall("arg")
+        }
+        self.assertEqual(task3_task4_args["enable_simulation"], "true")
 
     def test_task4_start_action_supports_manual_stop_line_start(self):
         self.assertEqual(task4_start_action(True, False), "detect")

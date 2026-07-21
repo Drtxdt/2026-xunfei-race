@@ -41,6 +41,10 @@
   "speed_medium": 0.06,
   "speed_near": 0.05,
   "speed_creep": 0.045,
+  "line_far_approach_speed": 0.06,
+  "line_far_progress_timeout_sec": 3.0,
+  "line_far_min_ratio_progress": 0.01,
+  "line_far_min_odom_progress": 0.03,
 
   "line_roi_start_ratio": 0.45,
   "white_s_max": 85,

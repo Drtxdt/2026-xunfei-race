@@ -14,6 +14,8 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    classify_line_observation,
+    far_line_has_progress,
     forward_progress,
     lowest_horizontal_band,
     track_launch_for_decision,
@@ -79,6 +81,42 @@ class DistanceCalibrationTests(unittest.TestCase):
         calibration = DistanceCalibration([[0.50, 0.40], [0.90, 0.08]])
         self.assertIsNone(calibration.distance_for_ratio(0.45))
         self.assertIsNone(calibration.distance_for_ratio(0.95))
+
+    def test_exposes_calibration_bounds_for_observation_classification(self):
+        calibration = DistanceCalibration([[0.50, 0.40], [0.90, 0.08]])
+        self.assertEqual(calibration.min_row_ratio, 0.50)
+        self.assertEqual(calibration.max_row_ratio, 0.90)
+
+
+class LineObservationTests(unittest.TestCase):
+    def test_classifies_all_four_stop_line_observations(self):
+        self.assertEqual(classify_line_observation(None, 0.55, 0.94), "missing")
+        self.assertEqual(classify_line_observation(0.50, 0.55, 0.94), "far_visible")
+        self.assertEqual(classify_line_observation(0.75, 0.55, 0.94), "calibrated")
+        self.assertEqual(classify_line_observation(0.96, 0.55, 0.94), "too_close")
+
+    def test_far_progress_accepts_image_or_odometry_and_rejects_stall(self):
+        self.assertTrue(far_line_has_progress(0.48, 0.50, 0.0, 0.01, 0.03))
+        self.assertTrue(far_line_has_progress(0.48, 0.481, 0.04, 0.01, 0.03))
+        self.assertFalse(far_line_has_progress(0.48, 0.485, 0.02, 0.01, 0.03))
+
+    def test_launch_and_config_expose_far_line_safety_parameters(self):
+        launch_root = ET.parse(
+            str(PACKAGE_ROOT / "launch" / "strict_mission.launch")
+        ).getroot()
+        launch_args = {
+            item.attrib["name"]: item.attrib.get("default")
+            for item in launch_root.findall("arg")
+        }
+        self.assertEqual(launch_args["line_far_approach_speed"], "0.06")
+        self.assertIn("line_far_progress_timeout_sec", launch_args)
+        self.assertIn("line_far_min_ratio_progress", launch_args)
+        self.assertIn("line_far_min_odom_progress", launch_args)
+        with (PACKAGE_ROOT / "config" / "strict_mission.yaml").open(
+                "r", encoding="utf-8") as stream:
+            config = json.load(stream)
+        self.assertEqual(config["line_far_approach_speed"], 0.06)
+        self.assertEqual(config["final_advance_m"], 0.12)
 
 
 class OdometryProgressTests(unittest.TestCase):

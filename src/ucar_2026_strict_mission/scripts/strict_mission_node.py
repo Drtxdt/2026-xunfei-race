@@ -26,6 +26,8 @@ from ucar_2026_strict_mission.logic import (
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    classify_line_observation,
+    far_line_has_progress,
     lowest_horizontal_band,
     forward_progress,
     track_launch_for_decision,
@@ -52,6 +54,12 @@ class StrictMissionNode:
         self.last_image_at = 0.0
         self.line_missing_since = None
         self.last_distance_m = None
+        self.approach_state = "idle"
+        self.skip_final_advance = False
+        self.too_close_hits = 0
+        self.far_progress_started_at = None
+        self.far_progress_start_ratio = None
+        self.far_progress_start_pose = None
         self.odom_pose = None
         self.odom_received_at = 0.0
         self.traffic_hits = 0
@@ -87,6 +95,21 @@ class StrictMissionNode:
             self.target_min_m,
             self.target_max_m,
         )
+        self.stop_confirm_frames = max(
+            1, int(rospy.get_param("~stop_confirm_frames", 5)))
+        self.line_far_approach_speed = float(rospy.get_param(
+            "~line_far_approach_speed", 0.06))
+        self.line_far_progress_timeout_sec = float(rospy.get_param(
+            "~line_far_progress_timeout_sec", 3.0))
+        self.line_far_min_ratio_progress = float(rospy.get_param(
+            "~line_far_min_ratio_progress", 0.01))
+        self.line_far_min_odom_progress = float(rospy.get_param(
+            "~line_far_min_odom_progress", 0.03))
+        if (self.line_far_approach_speed <= 0.0 or
+                self.line_far_progress_timeout_sec <= 0.0 or
+                self.line_far_min_ratio_progress < 0.0 or
+                self.line_far_min_odom_progress < 0.0):
+            raise ValueError("far stop-line approach parameters are invalid")
 
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
         self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/cmd_vel")
@@ -147,23 +170,49 @@ class StrictMissionNode:
             extra["error"] = self.fault_reason
         payload = {
             "state": self.state,
+            "approach_state": self.approach_state,
             "detail": detail,
             "distance_m": self.last_distance_m,
             "decision": self.selected_decision,
             "stamp": rospy.Time.now().to_sec(),
         }
         payload.update(extra)
-        self.status_pub.publish(String(
-            data=json.dumps(payload, ensure_ascii=False, sort_keys=True)))
+        try:
+            self.status_pub.publish(String(
+                data=json.dumps(payload, ensure_ascii=False, sort_keys=True)))
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
 
     def publish_stop(self):
-        self.cmd_pub.publish(Twist())
+        try:
+            self.cmd_pub.publish(Twist())
+        except rospy.ROSException:
+            if not rospy.is_shutdown():
+                raise
+
+    def reset_far_progress(self):
+        self.far_progress_started_at = None
+        self.far_progress_start_ratio = None
+        self.far_progress_start_pose = None
+
+    def log_line_diagnostic(self, classification, bottom_ratio=None,
+                            distance=None, speed=0.0, reason=""):
+        rospy.loginfo_throttle(
+            0.75,
+            "strict stop line: class=%s ratio=%s distance=%s speed=%.3f reason=%s",
+            classification,
+            "none" if bottom_ratio is None else "{:.4f}".format(bottom_ratio),
+            "none" if distance is None else "{:.3f}m".format(distance),
+            float(speed), reason or "-")
 
     def set_fault(self, reason):
         with self.lock:
             if self.state in TERMINAL_STATES:
                 return
             self.state = "FAULT"
+            if "progress" in str(reason).lower():
+                self.approach_state = "line_progress_fault"
             self.fault_reason = str(reason)
             self.shutdown_event.set()
         self.move_base.cancel_all_goals()
@@ -294,14 +343,95 @@ class StrictMissionNode:
             self.set_fault("cv_bridge failed: {}".format(exc))
             return
         bottom_ratio, mask, box = self.detect_stop_line(frame)
-        if bottom_ratio is None:
+        classification = classify_line_observation(
+            bottom_ratio,
+            self.calibration.min_row_ratio,
+            self.calibration.max_row_ratio,
+        )
+        if classification == "missing":
             self.publish_stop()
             self.band_filter.reset()
+            self.too_close_hits = 0
+            self.reset_far_progress()
+            self.approach_state = "missing"
             if self.line_missing_since is None:
                 self.line_missing_since = now
-            self.publish_status("stop line not trusted; holding stop")
+            self.publish_status(
+                "stop line not trusted; holding stop",
+                reject_reason="no trusted white stop line")
+            self.log_line_diagnostic("missing", reason="no trusted white stop line")
             return
         self.line_missing_since = None
+        if classification == "far_visible":
+            self.band_filter.reset()
+            self.too_close_hits = 0
+            self.approach_state = "far_line_approach"
+            with self.lock:
+                current_pose = self.odom_pose
+            if self.far_progress_started_at is None:
+                self.far_progress_started_at = now
+                self.far_progress_start_ratio = bottom_ratio
+                self.far_progress_start_pose = current_pose
+            elapsed = now - self.far_progress_started_at
+            odom_progress = 0.0
+            if self.far_progress_start_pose is not None and current_pose is not None:
+                odom_progress = forward_progress(
+                    self.far_progress_start_pose, current_pose)
+            ratio_progress = bottom_ratio - self.far_progress_start_ratio
+            if elapsed >= self.line_far_progress_timeout_sec:
+                if not far_line_has_progress(
+                        self.far_progress_start_ratio, bottom_ratio,
+                        odom_progress, self.line_far_min_ratio_progress,
+                        self.line_far_min_odom_progress):
+                    self.publish_stop()
+                    self.approach_state = "line_progress_fault"
+                    self.set_fault(
+                        "far stop-line approach made no image or odometry progress")
+                    return
+                self.far_progress_started_at = now
+                self.far_progress_start_ratio = bottom_ratio
+                self.far_progress_start_pose = current_pose
+            command = Twist()
+            command.linear.x = self.line_far_approach_speed
+            self.cmd_pub.publish(command)
+            self.publish_status(
+                "trusted line is far; conservative visual approach",
+                line_bottom_ratio=bottom_ratio,
+                commanded_speed_mps=command.linear.x,
+                ratio_progress=ratio_progress,
+                odom_progress_m=odom_progress,
+            )
+            self.log_line_diagnostic(
+                "far_visible", bottom_ratio, speed=command.linear.x,
+                reason="above calibrated image range")
+            return
+        self.reset_far_progress()
+        if classification == "too_close":
+            self.publish_stop()
+            self.band_filter.reset()
+            self.approach_state = "line_too_close_stop"
+            self.too_close_hits += 1
+            self.publish_status(
+                "line is closer than calibration; holding stop",
+                line_bottom_ratio=bottom_ratio,
+                confirm_hits=self.too_close_hits,
+                final_advance_skipped=True,
+            )
+            self.log_line_diagnostic(
+                "too_close", bottom_ratio, reason="below nearest calibration point")
+            if self.too_close_hits >= self.stop_confirm_frames:
+                with self.lock:
+                    self.skip_final_advance = True
+                    self.state = "FINAL_ADVANCE"
+                    self.parked_event.set()
+                self.publish_status(
+                    "too-close line confirmed; final advance disabled",
+                    line_bottom_ratio=bottom_ratio,
+                    final_advance_skipped=True,
+                )
+            return
+        self.too_close_hits = 0
+        self.approach_state = "calibrated_line_approach"
         distance = self.calibration.distance_for_ratio(bottom_ratio)
         self.last_distance_m = distance
         if distance is None:
@@ -315,6 +445,8 @@ class StrictMissionNode:
         command = Twist()
         command.linear.x = self.policy.command_for_distance(distance)
         self.cmd_pub.publish(command)
+        self.log_line_diagnostic(
+            "calibrated", bottom_ratio, distance, command.linear.x)
         if self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
@@ -510,6 +642,7 @@ class StrictMissionNode:
             self.publish_stop()
             with self.lock:
                 self.state = "APPROACH_LINE"
+                self.approach_state = "missing"
                 self.last_image_at = time.monotonic()
             self.publish_status("visual stop-line approach armed")
             self.wait_event(
@@ -517,7 +650,13 @@ class StrictMissionNode:
                 float(rospy.get_param("~line_approach_timeout_sec", 75.0)),
                 "strict line approach",
             )
-            self.final_advance()
+            if self.skip_final_advance:
+                self.publish_stop()
+                self.publish_status(
+                    "final advance skipped because the line was already too close",
+                    final_advance_skipped=True)
+            else:
+                self.final_advance()
             with self.lock:
                 self.state = "STOP_CONFIRM"
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))
@@ -567,8 +706,11 @@ class StrictMissionNode:
             self.move_base.cancel_all_goals()
         except Exception:
             pass
-        for _ in range(10):
-            self.publish_stop()
+        for _ in range(3):
+            try:
+                self.publish_stop()
+            except rospy.ROSException:
+                break
         if self.track_process and self.track_process.poll() is None:
             self.track_process.terminate()
             try:
