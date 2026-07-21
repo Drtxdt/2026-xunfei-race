@@ -263,7 +263,7 @@ class VisionTriggeredNavigator(object):
         self.scan_front_half_angle = math.radians(abs(float(rospy.get_param(
             "~scan_front_half_angle_deg", 15.0))))
         self.parking_recenter_tolerance = abs(float(rospy.get_param(
-            "~parking_recenter_tolerance", 0.04)))
+            "~parking_recenter_tolerance", 0.08)))
         self.parking_recenter_timeout = max(1.0, float(rospy.get_param(
             "~parking_recenter_timeout_sec", 8.0)))
         self.parking_recenter_initial_wait = max(0.0, float(rospy.get_param(
@@ -1304,7 +1304,8 @@ class VisionTriggeredNavigator(object):
 
     def _center_visual_target(self, tolerance=None, timeout=None,
                               state="target_centering",
-                              failure_state="centering_failed"):
+                              failure_state="centering_failed",
+                              required_hits=None, max_step=None):
         """Center the OCR box with stop-look odometry-closed-loop angular steps."""
         if not self.coverage_search_mode:
             return True
@@ -1312,6 +1313,10 @@ class VisionTriggeredNavigator(object):
                      else abs(float(tolerance)))
         timeout = (self.target_center_timeout if timeout is None
                    else max(0.1, float(timeout)))
+        required_hits = (self.target_center_required_hits
+                         if required_hits is None
+                         else max(1, int(required_hits)))
+        max_step = None if max_step is None else abs(float(max_step))
         self._publish_status(state)
         if not self._wait_navigation_idle():
             return self._centering_failure(
@@ -1347,8 +1352,8 @@ class VisionTriggeredNavigator(object):
                     centered_hits += 1
                     rospy.loginfo(
                         "[vision_triggered_navigator] target centered error=%.3f hits=%d/%d",
-                        self.target_error, centered_hits, self.target_center_required_hits)
-                if centered_hits >= self.target_center_required_hits:
+                        self.target_error, centered_hits, required_hits)
+                if centered_hits >= required_hits:
                     self._hold_stopped(self.target_center_settle)
                     return True
                 if not self._wait_fresh_target(last_centered_stamp, min(
@@ -1369,6 +1374,8 @@ class VisionTriggeredNavigator(object):
             )
             if force_fine_step:
                 step_angle = min(step_angle, self.target_center_fine_step)
+            if max_step is not None:
+                step_angle = min(step_angle, max_step)
             direction = (1.0 if steering_sign >= 0.0 else -1.0) * math.copysign(
                 1.0, before_error)
             rospy.loginfo(
@@ -2226,23 +2233,30 @@ class VisionTriggeredNavigator(object):
                     break
                 self._publish_status("parking_recenter")
                 if self._wait_for_initial_recenter_target():
-                    # Once corrective motion begins, losing the target remains
-                    # a hard failure because the original ray is no longer
-                    # guaranteed to match the changed heading.
-                    if not self._center_visual_target(
+                    recentered = self._center_visual_target(
                             tolerance=self.parking_recenter_tolerance,
                             timeout=self.parking_recenter_timeout,
                             state="parking_recenter",
-                            failure_state="parking_recenter_failed"):
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    # A completed close-range recenter may refine the tangent.
-                    goal = self.compute_vision_goal()
-                    if goal is None:
-                        self._publish_status("parking_recenter_failed")
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    gx, gy, gyaw = goal
+                            failure_state="parking_recenter_degraded",
+                            required_hits=1,
+                            max_step=self.target_center_fine_step)
+                    if recentered:
+                        # A stable close-range sample may refine the tangent.
+                        refined_goal = self.compute_vision_goal()
+                        if refined_goal is not None:
+                            goal = refined_goal
+                            gx, gy, gyaw = goal
+                        else:
+                            self._publish_status("parking_recenter_degraded")
+                            rospy.logwarn(
+                                "[vision_triggered_navigator] close-range OCR ray "
+                                "did not intersect a wall; retaining the first "
+                                "locked wall target for lidar docking.")
+                    else:
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] close-range OCR recenter "
+                            "was unstable; retaining the first locked wall target "
+                            "and continuing with lidar wall-fit docking.")
                 else:
                     self._publish_status("parking_recenter_skipped")
                     rospy.logwarn(
