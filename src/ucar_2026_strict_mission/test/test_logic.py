@@ -14,6 +14,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ConsecutiveBandFilter,
     DistanceCalibration,
     forward_progress,
+    line_alignment_command,
     lowest_horizontal_band,
     track_launch_for_decision,
     traffic_decision_from_payload,
@@ -142,6 +143,35 @@ class StopLineDetectionTests(unittest.TestCase):
         occupancies[50] = 0.9
         occupancies[70:90] = [0.9] * 20
         self.assertIsNone(lowest_horizontal_band(occupancies, 0.45, 12))
+
+
+class StopLineAlignmentTests(unittest.TestCase):
+    def command(self, angle, center):
+        return line_alignment_command(
+            angle, center, 0.05, 0.06,
+            0.8, 0.16, -1.0,
+            0.10, 0.045, -1.0,
+        )
+
+    def test_corrects_yaw_before_lateral_or_forward_motion(self):
+        mode, lateral, yaw, aligned = self.command(0.20, 0.30)
+        self.assertEqual(mode, "yaw")
+        self.assertEqual(lateral, 0.0)
+        self.assertLess(yaw, 0.0)
+        self.assertFalse(aligned)
+
+    def test_corrects_lateral_error_only_after_yaw_is_aligned(self):
+        mode, lateral, yaw, aligned = self.command(0.01, 0.30)
+        self.assertEqual(mode, "lateral")
+        self.assertLess(lateral, 0.0)
+        self.assertEqual(yaw, 0.0)
+        self.assertFalse(aligned)
+
+    def test_allows_forward_motion_only_when_fully_aligned(self):
+        self.assertEqual(
+            self.command(0.01, 0.02),
+            ("forward", 0.0, 0.0, True),
+        )
 
 
 if __name__ == "__main__":

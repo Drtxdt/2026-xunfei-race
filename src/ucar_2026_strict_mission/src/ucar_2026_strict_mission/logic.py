@@ -201,3 +201,36 @@ def valid_stop_line_geometry(
         and fill >= float(min_fill_ratio)
         and bottom >= float(min_bottom_ratio)
     )
+
+
+def line_alignment_command(
+    angle_error_rad,
+    center_error_ratio,
+    yaw_tolerance_rad,
+    center_tolerance_ratio,
+    yaw_kp,
+    yaw_limit,
+    yaw_sign,
+    lateral_kp,
+    lateral_limit,
+    lateral_sign,
+):
+    """Return (mode, lateral_mps, yaw_rps, aligned) for stop-line alignment."""
+    angle = float(angle_error_rad)
+    center = float(center_error_ratio)
+    yaw_tolerance = float(yaw_tolerance_rad)
+    center_tolerance = float(center_tolerance_ratio)
+    if yaw_tolerance <= 0.0 or center_tolerance <= 0.0:
+        raise ValueError("line alignment tolerances must be positive")
+    if float(yaw_limit) <= 0.0 or float(lateral_limit) <= 0.0:
+        raise ValueError("line alignment speed limits must be positive")
+    if abs(angle) > yaw_tolerance:
+        yaw = float(yaw_sign) * float(yaw_kp) * angle
+        yaw = max(-float(yaw_limit), min(float(yaw_limit), yaw))
+        return "yaw", 0.0, yaw, False
+    if abs(center) > center_tolerance:
+        lateral = float(lateral_sign) * float(lateral_kp) * center
+        lateral = max(
+            -float(lateral_limit), min(float(lateral_limit), lateral))
+        return "lateral", lateral, 0.0, False
+    return "forward", 0.0, 0.0, True

@@ -12,7 +12,6 @@ import time
 
 import actionlib
 import cv2
-import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
@@ -26,8 +25,8 @@ from ucar_2026_strict_mission.logic import (
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
-    lowest_horizontal_band,
     forward_progress,
+    line_alignment_command,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -239,19 +238,33 @@ class StrictMissionNode:
         contours, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
+        max_abs_angle = max(1.0, float(rospy.get_param(
+            "~line_max_abs_angle_deg", 35.0)))
         for contour in contours:
             x, y, box_width, box_height = cv2.boundingRect(contour)
             if box_width <= 0 or box_height <= 0:
                 continue
             area = float(cv2.contourArea(contour))
-            width_ratio = float(box_width) / float(width)
-            height_ratio = float(box_height) / float(height)
-            fill_ratio = area / float(box_width * box_height)
             bottom_ratio = float(y0 + y + box_height) / float(height)
+            rect = cv2.minAreaRect(contour)
+            (center_x, _center_y), (rect_width, rect_height), angle_deg = rect
+            long_side = max(float(rect_width), float(rect_height))
+            short_side = min(float(rect_width), float(rect_height))
+            if long_side <= 0.0 or short_side <= 0.0:
+                continue
+            oriented_width_ratio = long_side / float(width)
+            oriented_height_ratio = short_side / float(height)
+            oriented_fill_ratio = area / (long_side * short_side)
+            if rect_width < rect_height:
+                angle_deg += 90.0
+            while angle_deg > 90.0:
+                angle_deg -= 180.0
+            while angle_deg <= -90.0:
+                angle_deg += 180.0
             if valid_stop_line_geometry(
-                width_ratio,
-                height_ratio,
-                fill_ratio,
+                oriented_width_ratio,
+                oriented_height_ratio,
+                oriented_fill_ratio,
                 bottom_ratio,
                 min_width_ratio=float(rospy.get_param(
                     "~line_min_width_ratio", 0.45)),
@@ -260,27 +273,23 @@ class StrictMissionNode:
                 min_fill_ratio=float(rospy.get_param(
                     "~line_min_fill_ratio", 0.55)),
                 min_bottom_ratio=roi_start,
-            ):
+            ) and abs(angle_deg) <= max_abs_angle:
+                center_error = (
+                    float(center_x) - 0.5 * float(width)
+                ) / (0.5 * float(width))
                 candidates.append((
-                    width_ratio * bottom_ratio,
+                    oriented_width_ratio * bottom_ratio
+                    * (1.0 - 0.5 * abs(angle_deg) / max_abs_angle),
                     bottom_ratio,
                     (x, y0 + y, box_width, box_height),
+                    center_error,
+                    math.radians(angle_deg),
                 ))
         if not candidates:
-            row_occupancies = np.count_nonzero(mask, axis=1) / float(width)
-            band = lowest_horizontal_band(
-                row_occupancies,
-                float(rospy.get_param("~line_min_width_ratio", 0.45)),
-                int(round(height * float(rospy.get_param(
-                    "~line_max_height_ratio", 0.12)))),
-            )
-            if band is None:
-                return None, mask, None
-            start, end = band
-            bottom_ratio = float(y0 + end + 1) / float(height)
-            return bottom_ratio, mask, (0, y0 + start, width, end - start + 1)
-        _, bottom_ratio, box = max(candidates, key=lambda item: item[0])
-        return bottom_ratio, mask, box
+            return None, mask, None, None, None
+        _, bottom_ratio, box, center_error, angle_rad = max(
+            candidates, key=lambda item: item[0])
+        return bottom_ratio, mask, box, center_error, angle_rad
 
     def image_callback(self, msg):
         now = time.monotonic()
@@ -293,7 +302,8 @@ class StrictMissionNode:
         except CvBridgeError as exc:
             self.set_fault("cv_bridge failed: {}".format(exc))
             return
-        bottom_ratio, mask, box = self.detect_stop_line(frame)
+        bottom_ratio, mask, box, center_error, angle_error = \
+            self.detect_stop_line(frame)
         if bottom_ratio is None:
             self.publish_stop()
             self.band_filter.reset()
@@ -312,10 +322,34 @@ class StrictMissionNode:
                 line_bottom_ratio=bottom_ratio,
             )
             return
+        alignment_state, lateral_speed, yaw_speed, aligned = \
+            line_alignment_command(
+                angle_error,
+                center_error,
+                math.radians(float(rospy.get_param(
+                    "~line_yaw_tolerance_deg", 3.0))),
+                float(rospy.get_param(
+                    "~line_center_tolerance_ratio", 0.06)),
+                float(rospy.get_param("~line_yaw_kp", 0.8)),
+                float(rospy.get_param("~line_yaw_max_speed", 0.16)),
+                float(rospy.get_param("~line_yaw_command_sign", -1.0)),
+                float(rospy.get_param("~line_lateral_kp", 0.10)),
+                float(rospy.get_param(
+                    "~line_lateral_max_speed", 0.045)),
+                float(rospy.get_param(
+                    "~line_lateral_command_sign", -1.0)),
+            )
         command = Twist()
-        command.linear.x = self.policy.command_for_distance(distance)
+        if alignment_state == "yaw":
+            command.angular.z = yaw_speed
+            self.band_filter.reset()
+        elif alignment_state == "lateral":
+            command.linear.y = lateral_speed
+            self.band_filter.reset()
+        else:
+            command.linear.x = self.policy.command_for_distance(distance)
         self.cmd_pub.publish(command)
-        if self.band_filter.push(distance):
+        if aligned and self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
                 self.state = "FINAL_ADVANCE"
@@ -328,7 +362,12 @@ class StrictMissionNode:
             self.publish_status(
                 "closed-loop line approach",
                 line_bottom_ratio=bottom_ratio,
+                line_center_error_ratio=center_error,
+                line_angle_deg=math.degrees(angle_error),
+                alignment_state=alignment_state,
                 commanded_speed_mps=command.linear.x,
+                commanded_lateral_mps=command.linear.y,
+                commanded_yaw_rps=command.angular.z,
             )
         if box is not None and self.debug_pub.get_num_connections() > 0:
             x, y, box_width, box_height = box
@@ -339,6 +378,13 @@ class StrictMissionNode:
             cv2.putText(
                 frame, "distance={:.3f}m".format(distance), (15, 35),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2,
+            )
+            cv2.putText(
+                frame,
+                "angle={:+.1f} center={:+.2f} {}".format(
+                    math.degrees(angle_error), center_error, alignment_state),
+                (15, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.65,
+                (0, 0, 255), 2,
             )
             self.debug_pub.publish(
                 self.bridge.cv2_to_imgmsg(frame, encoding="bgr8"))
