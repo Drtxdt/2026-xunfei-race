@@ -45,6 +45,18 @@ def normalize_angle(angle):
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def ocr_geometry_matches_target(observed_category, target_category,
+                                bbox_source="", tracked_category=""):
+    """Allow detector-only geometry only after the same target was OCR-locked."""
+    observed = normalize_category(observed_category)
+    target = normalize_category(target_category)
+    tracked = normalize_category(tracked_category)
+    return bool(target and (
+        observed == target or
+        (str(bbox_source or "") == "detector_tracked" and
+         tracked == target)))
+
+
 class DirectedYawAccumulator:
     """Accumulate odometry yaw progress while handling the +/-pi wrap."""
 

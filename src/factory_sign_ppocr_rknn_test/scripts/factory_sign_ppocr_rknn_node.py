@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import json
+import math
 import os
 import re
 import time
@@ -129,6 +130,7 @@ class RecognitionResult:
     evidence: str = ""
     view_scale: float = 1.0
     candidate_count: int = 0
+    candidate_boxes: List[List[List[float]]] = field(default_factory=list)
 
 
 @dataclass
@@ -219,6 +221,65 @@ def select_category_box(texts: Sequence[OCRText], category: Optional[str], class
         return None
     matches.sort(key=lambda value: (value[0], value[1]), reverse=True)
     return matches[0][2]
+
+
+def _box_geometry(box):
+    """Return center, axis-aligned size and aspect for a quadrilateral."""
+    if not box or len(box) != 4:
+        return None
+    xs = [float(point[0]) for point in box]
+    ys = [float(point[1]) for point in box]
+    width = max(xs) - min(xs)
+    height = max(ys) - min(ys)
+    if width <= 1e-6 or height <= 1e-6:
+        return None
+    return (
+        sum(xs) / 4.0,
+        sum(ys) / 4.0,
+        width,
+        height,
+        width / height,
+    )
+
+
+def associate_tracked_box(previous_box, candidate_boxes, image_width,
+                          max_center_jump_ratio=0.25):
+    """Associate one detector box without using its OCR text.
+
+    Geometry-only association is deliberately conservative: candidates with
+    implausible centre motion, area change or aspect change are rejected.  The
+    returned score is diagnostic only and must never be used as category
+    evidence.
+    """
+    previous = _box_geometry(previous_box)
+    if previous is None:
+        return None, 0.0
+    px, py, pw, ph, pa = previous
+    maximum_jump = max(1.0, abs(float(image_width)) *
+                       max(0.0, float(max_center_jump_ratio)))
+    best = None
+    for box in candidate_boxes or []:
+        current = _box_geometry(box)
+        if current is None:
+            continue
+        cx, cy, cw, ch, ca = current
+        jump = math.hypot(cx - px, cy - py)
+        if jump > maximum_jump:
+            continue
+        area_ratio = (cw * ch) / max(1e-6, pw * ph)
+        aspect_ratio = ca / max(1e-6, pa)
+        if not (0.40 <= area_ratio <= 2.50 and
+                0.50 <= aspect_ratio <= 2.00):
+            continue
+        center_score = max(0.0, 1.0 - jump / maximum_jump)
+        size_score = math.exp(-abs(math.log(area_ratio)))
+        shape_score = math.exp(-abs(math.log(aspect_ratio)))
+        score = 0.60 * center_score + 0.25 * size_score + 0.15 * shape_score
+        if best is None or score > best[0]:
+            best = (score, box)
+    if best is None:
+        return None, 0.0
+    return best[1], float(best[0])
 
 
 class VoteWindow:
@@ -433,6 +494,7 @@ class PPOCRRknnRecognizer:
                 det_ms=det_ms,
                 rec_ms=rec_ms,
                 candidate_count=len(candidates),
+                candidate_boxes=[candidate.box for candidate in candidates],
             )
         except Exception as exc:
             return RecognitionResult(
@@ -699,6 +761,12 @@ class FactorySignPPOCRRknnNode:
 
         self.cooldown_sec = float(rospy.get_param("~cooldown_sec", 5.0))
         self.classifier = FactorySignKeywordClassifier()
+        self.target_track_timeout = max(0.1, float(rospy.get_param(
+            "~target_track_timeout_sec", 2.0)))
+        self.target_track_max_center_jump_ratio = max(0.01, float(
+            rospy.get_param("~target_track_max_center_jump_ratio", 0.25)))
+        self.target_track_confirm_frames = max(2, int(rospy.get_param(
+            "~target_track_confirm_frames", 2)))
 
         self.recognizer = self._create_recognizer()
 
@@ -722,6 +790,12 @@ class FactorySignPPOCRRknnNode:
         self.last_roi_box = (0, 0, 0, 0)
         self.last_ocr_scale_factor = 1.0
         self.last_debug_publish_at = 0.0
+        self.track_pending_category = None
+        self.track_pending_hits = 0
+        self.tracked_category = None
+        self.tracked_box = []
+        self.track_last_confirmed_at = 0.0
+        self.track_last_update_at = 0.0
         self.shutdown_requested = False
         self.resources_released = False
 
@@ -824,14 +898,59 @@ class FactorySignPPOCRRknnNode:
         spoken = self._maybe_speak(confirmed) if confirmed and self.enable_speech else False
         target_item = select_category_box(result.texts, confirmed, self.classifier)
         target_box = []
+        target_bbox_source = ""
+        tracking_score = 0.0
         target_center_x = None
         target_center_y = None
+        now = time.time()
+        frame_height, frame_width = frame.shape[:2]
+        mapped_candidates = [
+            map_box_to_frame(box, self.last_roi_box,
+                             self.last_ocr_scale_factor)
+            for box in result.candidate_boxes
+            if box and len(box) == 4
+        ]
         if target_item is not None:
             target_box = map_box_to_frame(
                 target_item.box, self.last_roi_box, self.last_ocr_scale_factor)
+            target_bbox_source = "ocr_confirmed"
+            tracking_score = 1.0
+            if confirmed == self.track_pending_category:
+                self.track_pending_hits += 1
+            else:
+                self.track_pending_category = confirmed
+                self.track_pending_hits = 1
+            if (self.tracked_category == confirmed or
+                    self.track_pending_hits >= self.target_track_confirm_frames):
+                self.tracked_category = confirmed
+                self.tracked_box = target_box
+                self.track_last_confirmed_at = now
+                self.track_last_update_at = now
+        else:
+            tracking_age = (now - self.track_last_confirmed_at
+                            if self.track_last_confirmed_at > 0.0
+                            else float("inf"))
+            if (self.tracked_category and self.tracked_box and
+                    not confirmed and
+                    tracking_age <= self.target_track_timeout):
+                associated, tracking_score = associate_tracked_box(
+                    self.tracked_box, mapped_candidates, frame_width,
+                    self.target_track_max_center_jump_ratio)
+                if associated is not None:
+                    target_box = associated
+                    target_bbox_source = "detector_tracked"
+                    self.tracked_box = associated
+                    self.track_last_update_at = now
+        tracking_age = (now - self.track_last_confirmed_at
+                        if self.track_last_confirmed_at > 0.0 else -1.0)
+        if tracking_age > self.target_track_timeout:
+            self.tracked_category = None
+            self.tracked_box = []
+            self.track_pending_category = None
+            self.track_pending_hits = 0
+        if target_box:
             target_center_x = sum(point[0] for point in target_box) / len(target_box)
             target_center_y = sum(point[1] for point in target_box) / len(target_box)
-        frame_height, frame_width = frame.shape[:2]
         self.result_pub.publish(self.String(data=json.dumps({
             "category": confirmed or "",
             "workshop": CATEGORY_NAMES.get(confirmed, ""),
@@ -843,6 +962,10 @@ class FactorySignPPOCRRknnNode:
             "raw_text": result.raw_text,
             "match_debug": result.match_debug,
             "target_bbox": target_box,
+            "target_bbox_source": target_bbox_source,
+            "tracked_category": self.tracked_category or "",
+            "tracking_age_sec": float(tracking_age),
+            "tracking_score": float(tracking_score),
             "target_center_x": target_center_x,
             "target_center_y": target_center_y,
             "image_width": int(frame_width),
@@ -851,7 +974,7 @@ class FactorySignPPOCRRknnNode:
             "stamp": time.time(),
         }, ensure_ascii=False)))
         self.rospy.loginfo(
-            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f evidence=%s view=%.2f candidates=%d match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
+            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f evidence=%s view=%.2f candidates=%d match=%s texts=%s decision=%s bbox_source=%s tracked=%s track_age=%.2f track_score=%.2f spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
             result.raw_text,
             result.category,
             result.confidence,
@@ -861,6 +984,10 @@ class FactorySignPPOCRRknnNode:
             result.match_debug,
             self._texts_debug(result.texts),
             confirmed,
+            target_bbox_source or "none",
+            self.tracked_category or "none",
+            tracking_age,
+            tracking_score,
             spoken,
             result.elapsed_ms,
             result.det_ms,

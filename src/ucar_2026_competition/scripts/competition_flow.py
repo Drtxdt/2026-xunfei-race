@@ -39,6 +39,7 @@ from ucar_2026_competition.logic import (
     JsonLineBuffer,
     TRACK_CONFIG,
     normalize_category,
+    ocr_geometry_matches_target,
     parse_task_categories,
     qr_values_from_payload,
     second_factory_search_plan,
@@ -499,7 +500,11 @@ class CompetitionFlow:
                     rospy.loginfo(
                         "remembered factory sign category=%s anchor=%d",
                         category, anchor)
-        if category == self.ocr_target and payload.get("target_bbox"):
+        bbox_source = str(payload.get("target_bbox_source", ""))
+        tracked_category = normalize_category(payload.get("tracked_category"))
+        geometry_matches_target = ocr_geometry_matches_target(
+            category, self.ocr_target, bbox_source, tracked_category)
+        if geometry_matches_target and payload.get("target_bbox"):
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
             self.ocr_target, category, time.monotonic())
@@ -1246,6 +1251,10 @@ class CompetitionFlow:
                 "start_viewer": self.debug,
                 "recognition_mode": "ppocr_rknn_system",
                 "target_category": self.pickup_category,
+                "target_track_timeout_sec": rospy.get_param(
+                    "~target_track_timeout_sec", 2.0),
+                "target_track_max_center_jump_ratio": rospy.get_param(
+                    "~target_track_max_center_jump_ratio", 0.25),
                 "enable_speech": False,
                 "required": True,
             },
@@ -1425,6 +1434,10 @@ class CompetitionFlow:
                         "start_viewer": self.debug,
                         "recognition_mode": "ppocr_rknn_system",
                         "target_category": category,
+                        "target_track_timeout_sec": rospy.get_param(
+                            "~target_track_timeout_sec", 2.0),
+                        "target_track_max_center_jump_ratio": rospy.get_param(
+                            "~target_track_max_center_jump_ratio", 0.25),
                         "enable_speech": False,
                         "required": True,
                     },
@@ -1540,6 +1553,12 @@ class CompetitionFlow:
                         "~target_center_max_speed", 0.35),
                     "target_center_timeout_sec": rospy.get_param(
                         "~target_center_timeout_sec", 12.0),
+                    "target_reacquire_timeout_sec": rospy.get_param(
+                        "~target_reacquire_timeout_sec", 2.0),
+                    "rotation_swept_clearance_margin_m": rospy.get_param(
+                        "~rotation_swept_clearance_margin_m", 0.06),
+                    "rotation_scan_stale_sec": rospy.get_param(
+                        "~rotation_scan_stale_sec", 0.5),
                     "coverage_scan_step_deg": rospy.get_param(
                         "~coverage_scan_step_deg", 20.0),
                     "coverage_scan_angular_speed": rospy.get_param(
@@ -1574,7 +1593,9 @@ class CompetitionFlow:
                 if self.navigator_status == "failed":
                     raise StageError("factory navigation failed")
                 if self.navigator_status in (
-                        "centering_failed", "parking_staging_failed",
+                        "centering_failed", "centering_reacquire_failed",
+                        "centering_rotation_blocked",
+                        "parking_staging_failed",
                         "parking_recenter_failed", "parking_wall_fit_failed",
                         "parking_docking_failed", "parking_validation_failed",
                         "coverage_recovery_disable_failed"):

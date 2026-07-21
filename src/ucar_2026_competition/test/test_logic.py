@@ -18,6 +18,7 @@ from ucar_2026_competition.logic import (
     TRACK_CONFIG,
     TemporalTargetFilter,
     normalize_category,
+    ocr_geometry_matches_target,
     normalize_angle,
     parse_category,
     parse_task_categories,
@@ -33,6 +34,16 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_detector_tracking_geometry_never_becomes_category_evidence(self):
+        self.assertTrue(ocr_geometry_matches_target(
+            "", "electronics", "detector_tracked", "electronics"))
+        self.assertFalse(ocr_geometry_matches_target(
+            "", "electronics", "detector_tracked", "daily"))
+        self.assertFalse(ocr_geometry_matches_target(
+            "", "electronics", "ocr_confirmed", "electronics"))
+        self.assertTrue(ocr_geometry_matches_target(
+            "electronic", "electronics", "ocr_confirmed", ""))
+
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)
         self.assertAlmostEqual(normalize_angle(-0.25), -0.25)

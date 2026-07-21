@@ -68,6 +68,7 @@ target_center_tolerance: 0.08
 target_center_required_hits: 2
 target_center_timeout_sec: 12.0
 target_bbox_stale_sec: 0.8
+target_reacquire_timeout_sec: 2.0
 target_center_min_speed: 0.08
 target_center_max_speed: 0.18
 target_center_steering_sign: -1.0
@@ -137,6 +138,9 @@ parking_validation_margin: 0.01
 parking_required_margin: 0.02
 footprint_half_length: 0.171
 footprint_half_width: 0.128
+# 原地旋转使用完整矩形车身的外接圆，再留6cm锥桶安全余量。
+rotation_swept_clearance_margin_m: 0.06
+rotation_scan_stale_sec: 0.5
 local_planner_reconfigure_ns: /move_base/TebLocalPlannerROS
 
 # 自转参数

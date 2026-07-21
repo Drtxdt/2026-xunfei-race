@@ -35,9 +35,12 @@ from navigator_logic import (
     parking_footprint_inside,
     parking_rotation_stall_can_verify,
     parking_goal_from_wall,
+    nearest_rotation_obstacle,
     ray_segment_intersection,
     scan_dwell_deadline,
     sensor_is_fresh,
+    rotation_clearance_is_safe,
+    rotation_swept_radius,
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
@@ -48,6 +51,20 @@ from navigator_logic import (
     wall_fit_is_continuous,
     wall_frame_docking_command,
 )
+
+
+def test_rotation_sweep_uses_full_body_diagonal_plus_margin():
+    radius = rotation_swept_radius(0.171, 0.128, 0.06)
+    assert radius == pytest.approx(0.2736, abs=0.001)
+    for angle in (0.0, math.pi / 2.0, math.pi):
+        point = (0.27 * math.cos(angle), 0.27 * math.sin(angle))
+        assert not rotation_clearance_is_safe([point], radius)
+    assert rotation_clearance_is_safe([(0.30, 0.0)], radius)
+
+
+def test_rotation_clearance_fails_closed_without_valid_scan_points():
+    assert nearest_rotation_obstacle([]) is None
+    assert not rotation_clearance_is_safe([], 0.274)
 
 
 MEASURED_CORNERS = [
@@ -188,6 +205,9 @@ def test_resumable_coverage_interface_and_single_retry_defaults():
     assert config["coverage_start_anchor"] == 1
     assert config["coverage_end_anchor"] == 9
     assert config["preferred_observation_anchor"] == 0
+    assert config["target_reacquire_timeout_sec"] == 2.0
+    assert config["rotation_swept_clearance_margin_m"] == 0.06
+    assert config["rotation_scan_stale_sec"] == 0.5
 
     launch_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "launch",
@@ -195,7 +215,10 @@ def test_resumable_coverage_interface_and_single_retry_defaults():
     root = ET.parse(launch_path).getroot()
     launch_args = {item.attrib["name"] for item in root.findall("arg")}
     for name in ("coverage_start_anchor", "coverage_end_anchor",
-                 "preferred_observation_anchor"):
+                 "preferred_observation_anchor",
+                 "target_reacquire_timeout_sec",
+                 "rotation_swept_clearance_margin_m",
+                 "rotation_scan_stale_sec"):
         assert name in launch_args
     params = {item.attrib["name"]: item.attrib.get("value")
               for item in root.find("node").findall("param")}
@@ -371,7 +394,11 @@ def test_navigation_source_never_clears_costmaps_for_coverage_retry():
     assert "/move_base/clear_costmaps" not in source
     assert "_clear_costmaps_and_wait" not in source
     assert "parking_rotation_deadband_verifying" in source
+    assert 'self._publish_status("target_centered")' in source
+    assert 'self._publish_status("parking_docking")' in source
     assert "parking_verifying" in source
+    assert source.index('self._publish_status("parking_verifying")') < \
+        source.index('self._publish_status("arrived")')
 
 
 def test_staging_watchdog_detects_rotation_without_translation():

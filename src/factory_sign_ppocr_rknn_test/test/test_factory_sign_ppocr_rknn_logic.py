@@ -13,9 +13,42 @@ from factory_sign_ppocr_rknn_node import (
     OCRText,
     PPOCRRknnRecognizer,
     VoteWindow,
+    associate_tracked_box,
     map_box_to_frame,
     parse_view_scales,
 )
+
+
+def _box(cx, cy, width, height):
+    return [
+        [cx - width / 2.0, cy - height / 2.0],
+        [cx + width / 2.0, cy - height / 2.0],
+        [cx + width / 2.0, cy + height / 2.0],
+        [cx - width / 2.0, cy + height / 2.0],
+    ]
+
+
+def test_detector_tracking_associates_nearby_same_shape_box():
+    previous = _box(300, 200, 180, 45)
+    expected = _box(325, 202, 175, 46)
+    distractor = _box(80, 100, 80, 80)
+    matched, score = associate_tracked_box(
+        previous, [distractor, expected], 640, 0.25)
+    assert matched == expected
+    assert score > 0.75
+
+
+def test_detector_tracking_rejects_jump_size_and_shape_changes():
+    previous = _box(300, 200, 180, 45)
+    candidates = [
+        _box(500, 200, 180, 45),
+        _box(310, 200, 40, 40),
+        _box(310, 200, 420, 35),
+    ]
+    matched, score = associate_tracked_box(
+        previous, candidates, 640, 0.25)
+    assert matched is None
+    assert score == 0.0
 
 
 def test_keyword_classifier_maps_requested_categories():

@@ -360,6 +360,33 @@ def sensor_is_fresh(received_at, now, timeout):
             float(now) - received_at <= max(0.0, float(timeout)))
 
 
+def rotation_swept_radius(half_length, half_width, clearance_margin=0.0):
+    """Return the radius occupied by a rectangular base during an in-place turn."""
+    return (math.hypot(abs(float(half_length)), abs(float(half_width))) +
+            max(0.0, float(clearance_margin)))
+
+
+def nearest_rotation_obstacle(points):
+    """Return ``(distance, angle)`` for the closest finite base-frame point."""
+    nearest = None
+    for point in points or []:
+        if len(point) < 2:
+            continue
+        x, y = float(point[0]), float(point[1])
+        if not math.isfinite(x) or not math.isfinite(y):
+            continue
+        distance = math.hypot(x, y)
+        if nearest is None or distance < nearest[0]:
+            nearest = (distance, math.atan2(y, x))
+    return nearest
+
+
+def rotation_clearance_is_safe(points, swept_radius):
+    """Require every observed obstacle to remain outside the rotation sweep."""
+    nearest = nearest_rotation_obstacle(points)
+    return nearest is not None and nearest[0] > max(0.0, float(swept_radius))
+
+
 def lidar_base_wall_distance(raw_distance, forward_offset):
     """Convert a forward laser range to an equivalent base-centre wall range.
 

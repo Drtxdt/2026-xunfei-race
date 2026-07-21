@@ -27,6 +27,9 @@ box_padding_y: 0.35
 small_crop_retry: true
 small_crop_max_height: 20
 target_category: ""
+target_track_timeout_sec: 2.0
+target_track_max_center_jump_ratio: 0.25
+target_track_confirm_frames: 2
 
 # Image preprocessing
 roi_scale: 0.80
