@@ -328,6 +328,9 @@ class CompetitionLogicTest(unittest.TestCase):
         launch_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "launch", "task1_task2.launch"))
         root = ET.parse(launch_path).getroot()
+        docking_timeout_arg = root.find("arg[@name='parking_docking_timeout_sec']")
+        self.assertIsNotNone(docking_timeout_arg)
+        self.assertEqual(docking_timeout_arg.attrib.get("default"), "25.0")
         flow_include = next(
             item for item in root.findall("include")
             if "flow_node.launch" in item.attrib.get("file", ""))

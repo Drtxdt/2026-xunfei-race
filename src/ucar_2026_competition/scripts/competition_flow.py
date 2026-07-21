@@ -1365,7 +1365,7 @@ class CompetitionFlow:
                     "parking_staging_yaw_tolerance": rospy.get_param(
                         "~parking_staging_yaw_tolerance", 0.10),
                     "parking_docking_timeout_sec": rospy.get_param(
-                        "~parking_docking_timeout_sec", 15.0),
+                        "~parking_docking_timeout_sec", 25.0),
                     "parking_dock_max_x": rospy.get_param(
                         "~parking_dock_max_x", 0.10),
                     "parking_dock_max_y": rospy.get_param(

@@ -232,7 +232,7 @@ class VisionTriggeredNavigator(object):
         self.parking_staging_max_rotation = math.radians(abs(float(rospy.get_param(
             "~parking_staging_max_rotation_deg", 45.0))))
         self.parking_docking_timeout = max(1.0, float(rospy.get_param(
-            "~parking_docking_timeout_sec", 15.0)))
+            "~parking_docking_timeout_sec", 25.0)))
         self.parking_dock_max_x = abs(float(rospy.get_param(
             "~parking_dock_max_x", 0.10)))
         self.parking_dock_max_y = abs(float(rospy.get_param(

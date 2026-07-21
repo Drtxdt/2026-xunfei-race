@@ -8,7 +8,7 @@
   <arg name="parking_staging_timeout_sec" default="20.0" />
   <arg name="parking_staging_position_tolerance" default="0.10" />
   <arg name="parking_staging_yaw_tolerance" default="0.10" />
-  <arg name="parking_docking_timeout_sec" default="15.0" />
+  <arg name="parking_docking_timeout_sec" default="25.0" />
   <arg name="parking_dock_min_yaw" default="0.15" />
   <arg name="parking_recenter_tolerance" default="0.04" />
   <arg name="parking_recenter_timeout_sec" default="8.0" />
