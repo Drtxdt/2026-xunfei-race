@@ -20,7 +20,7 @@ import rospy
 import websocket
 from std_msgs.msg import String, UInt8MultiArray
 
-from ucar_2026_competition.logic import parse_category
+from ucar_2026_competition.logic import parse_category, parse_task_categories
 
 
 class FixedCommandIat:
@@ -196,11 +196,23 @@ class FixedCommandIat:
                 if text:
                     segments[sn] = text
                     full_text = "".join(segments[key] for key in sorted(segments))
-                    category = self._publish_text(full_text, data.get("status") == 2)
-                    if category and not accepted.is_set():
+                    is_final = data.get("status") == 2
+                    self._publish_text(full_text, is_final)
+                    physical, simulation = parse_task_categories(full_text)
+                    command_complete = (
+                        is_final
+                        and physical is not None
+                        and simulation is not None
+                        and physical != simulation
+                    )
+                    if command_complete and not accepted.is_set():
                         accepted.set()
                         self.question_pub.publish(String(data=full_text))
-                        rospy.loginfo("fixed command accepted: category=%s", category)
+                        rospy.loginfo(
+                            "fixed command accepted: physical=%s simulation=%s",
+                            physical,
+                            simulation,
+                        )
                 if data.get("status") == 2:
                     break
         except (ValueError, websocket.WebSocketException, OSError) as exc:

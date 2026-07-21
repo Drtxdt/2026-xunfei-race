@@ -38,9 +38,12 @@ from ucar_2026_competition.logic import (
     DirectedYawAccumulator,
     JsonLineBuffer,
     TRACK_CONFIG,
+    normalize_angle,
     normalize_category,
     parse_category,
+    parse_task_categories,
     qr_values_from_payload,
+    split_rotation_steps,
     stage_sequence,
     task4_handoff_required,
     task4_start_action,
@@ -104,6 +107,7 @@ class CompetitionFlow:
         self.voice_wakeup_generation = 0
         self.question = ""
         self.category = normalize_category(rospy.get_param("~target_category", ""))
+        self.sim_category = normalize_category(rospy.get_param("~sim_category", ""))
         self.task1_result = {
             "pickup_item": rospy.get_param("~target_item", "").strip(),
             "pickup_workshop": rospy.get_param("~target_workshop", "").strip(),
@@ -118,6 +122,13 @@ class CompetitionFlow:
         self.qr_navigation_result = None
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
+        self.task1_instruction = ""
+        self.task1_llm_generation = 0
+        self.task1_llm_thread = None
+        self.task1_llm_done = threading.Event()
+        self.task1_llm_result = None
+        self.task1_llm_error = ""
+        self.task1_llm_items = []
         self.base_twist = None
         self.handoff_scan_received_at = 0.0
         self.handoff_costmap_received_at = 0.0
@@ -205,15 +216,25 @@ class CompetitionFlow:
 
     def _question_cb(self, msg):
         question = msg.data.strip()
-        parsed = parse_category(question)
+        physical_category, sim_category = parse_task_categories(question)
         with self.lock:
             if not self.voice_listening or self.voice_command_ack_in_progress:
                 rospy.logwarn("ignoring /question outside active voice window: %s", question)
                 return
-            if not parsed:
-                rospy.logwarn("ignoring voice text without a target category: %s", question)
+            if not physical_category or not sim_category:
+                rospy.logwarn("ignoring incomplete dual-category command: %s", question)
                 self.publish_status(
-                    "task1", "listening_command", "ignored non-command speech: {}".format(question)
+                    "task1",
+                    "listening_command",
+                    "waiting for physical and simulation categories: {}".format(question),
+                )
+                return
+            if physical_category == sim_category:
+                rospy.logwarn("ignoring command with identical categories: %s", question)
+                self.publish_status(
+                    "task1",
+                    "listening_command",
+                    "physical and simulation categories must be different",
                 )
                 return
             self.question = question
@@ -221,7 +242,7 @@ class CompetitionFlow:
             self.voice_command_ack_in_progress = True
         threading.Thread(
             target=self._finish_voice_command,
-            args=(parsed, question),
+            args=(physical_category, sim_category, question),
             name="voice-command-handshake",
             daemon=True,
         ).start()
@@ -282,17 +303,22 @@ class CompetitionFlow:
         except Exception as exc:
             self._set_voice_handshake_error(exc)
 
-    def _finish_voice_command(self, parsed, question):
+    def _finish_voice_command(self, physical_category, sim_category, question):
         try:
             with self.voice_transition_lock:
                 self._stop_voice_listening()
                 reply = rospy.get_param("~voice_command_reply", "好的").strip() or "好的"
                 self.publish_status(
-                    "task1", "command_ack", "category={} reply={}".format(parsed, reply)
+                    "task1",
+                    "command_ack",
+                    "physical={} simulation={} reply={}".format(
+                        physical_category, sim_category, reply
+                    ),
                 )
                 self.announce("custom", text=reply)
                 with self.lock:
-                    self.category = parsed
+                    self.category = physical_category
+                    self.sim_category = sim_category
                     self.voice_command_acknowledged = True
                     self.voice_command_ack_in_progress = False
                 self.publish_status(
@@ -305,7 +331,12 @@ class CompetitionFlow:
         with self.lock:
             if self.voice_handshake_error:
                 raise StageError(self.voice_handshake_error)
-            return self.wakeup_received and self.voice_command_acknowledged and self.category
+            return (
+                self.wakeup_received
+                and self.voice_command_acknowledged
+                and self.category
+                and self.sim_category
+            )
 
     def _qr_cb(self, msg):
         if not self.qr_collecting:
@@ -319,6 +350,7 @@ class CompetitionFlow:
                 if key not in self.qr_items:
                     self.qr_items[key] = result
                     rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+        self._start_task1_reasoning_async()
 
     def _qr_odom_cb(self, msg):
         q = msg.pose.pose.orientation
@@ -834,82 +866,275 @@ class CompetitionFlow:
             self.check_abort()
             self._check_qr_decoder()
             self._fresh_qr_odom_yaw(stale_sec)
-            if self._qr_count() >= expected_count:
-                return True
             rospy.sleep(0.05)
         return self._qr_count() >= expected_count
 
-    def scan_qr_at_current_pose(self, status_state):
-        """Rotate one odometry-closed-loop revolution with stable decode pauses."""
-        expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.20)))
-        step_angle = abs(
-            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
+    def _rotate_qr_step(
+        self,
+        angle,
+        speed,
+        direction,
+        stale_sec,
+        scan_deadline,
+        step_margin,
+    ):
+        tracker = DirectedYawAccumulator(direction=direction)
+        tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
+        step_deadline = min(
+            scan_deadline,
+            time.monotonic() + angle / speed + step_margin,
         )
-        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
+        twist = Twist()
+        twist.angular.z = speed * direction
+        while tracker.progress < angle and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            if time.monotonic() >= step_deadline:
+                raise StageError(
+                    "QR scan failed to rotate {:.1f} degrees before step timeout".format(
+                        math.degrees(angle)
+                    )
+                )
+            yaw = self._fresh_qr_odom_yaw(stale_sec)
+            if tracker.update(yaw) >= angle:
+                break
+            self.cmd_pub.publish(twist)
+            rospy.sleep(0.05)
+        self.safe_stop()
+
+    def _return_qr_to_yaw(self, target_yaw, speed, tolerance, stale_sec, timeout):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            current_yaw = self._fresh_qr_odom_yaw(stale_sec)
+            error = normalize_angle(target_yaw - current_yaw)
+            if abs(error) <= tolerance:
+                self.safe_stop()
+                return
+            twist = Twist()
+            twist.angular.z = speed if error > 0.0 else -speed
+            self.cmd_pub.publish(twist)
+            rospy.sleep(0.05)
+        self.safe_stop()
+        raise StageError("QR scan failed to return to its original final yaw")
+
+    def scan_qr_at_current_pose(self, status_state):
+        """Run one nine-stop scan pass, then restore the original final yaw."""
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
+        step_angle = abs(
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(25.0)))
+        )
+        sweep_angle = abs(
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(225.0)))
+        )
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
         step_margin = float(
             rospy.get_param("~qr_scan_step_timeout_margin_sec", 2.0)
         )
-        if speed <= 0.0 or step_angle <= 0.0 or stale_sec <= 0.0:
+        final_tolerance = abs(float(
+            rospy.get_param("~qr_final_yaw_tolerance_rad", math.radians(2.0))
+        ))
+        if (
+            speed <= 0.0
+            or step_angle <= 0.0
+            or sweep_angle <= 0.0
+            or sweep_angle >= 2.0 * math.pi
+            or stale_sec <= 0.0
+            or final_tolerance <= 0.0
+        ):
             raise StageError("QR scan motion parameters must be positive")
 
-        total_steps = int(math.ceil((2.0 * math.pi) / step_angle))
+        steps = split_rotation_steps(sweep_angle, step_angle)
         scan_deadline = time.monotonic() + scan_timeout
         self.publish_status(
             "task1",
             status_state,
-            "step scan start: count={}/{} steps={}".format(
-                self._qr_count(), expected_count, total_steps
+            "step scan start: count={}/{} sweep={:.0f}deg steps={}".format(
+                self._qr_count(),
+                expected_count,
+                math.degrees(sweep_angle),
+                len(steps),
             ),
         )
-        self._wait_for_qr_odom(odom_wait_sec, stale_sec)
-        if self._settle_for_qr(settle_sec, expected_count, scan_deadline, stale_sec):
-            return True
+        initial_yaw = self._wait_for_qr_odom(odom_wait_sec, stale_sec)
+        self._settle_for_qr(
+            settle_sec, expected_count, scan_deadline, stale_sec
+        )
 
-        twist = Twist()
-        twist.angular.z = speed
-        tracker = DirectedYawAccumulator(direction=1.0)
-        for _ in range(total_steps):
-            if self._qr_count() >= expected_count:
-                self.safe_stop()
-                return True
-            if time.monotonic() >= scan_deadline:
-                self.safe_stop()
-                return False
-
-            tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
-            step_deadline = time.monotonic() + step_angle / speed + step_margin
-            while tracker.progress < step_angle and not rospy.is_shutdown():
-                self.check_abort()
-                self._check_qr_decoder()
-                if self._qr_count() >= expected_count:
-                    self.safe_stop()
-                    return True
-                if time.monotonic() >= scan_deadline:
-                    self.safe_stop()
-                    return False
-                if time.monotonic() >= step_deadline:
-                    raise StageError(
-                        "QR scan failed to rotate {:.1f} degrees before step timeout".format(
-                            math.degrees(step_angle)
-                        )
-                    )
-                yaw = self._fresh_qr_odom_yaw(stale_sec)
-                if tracker.update(yaw) >= step_angle:
-                    break
-                self.cmd_pub.publish(twist)
-                rospy.sleep(0.05)
-
-            if self._settle_for_qr(
+        for index, angle in enumerate(steps, start=1):
+            self._rotate_qr_step(
+                angle,
+                speed,
+                1.0,
+                stale_sec,
+                scan_deadline,
+                step_margin,
+            )
+            self.publish_status(
+                "task1",
+                status_state,
+                "scan stop {}/{}: yaw step {:.0f}deg, hold {:.1f}s".format(
+                    index,
+                    len(steps),
+                    math.degrees(angle),
+                    settle_sec,
+                ),
+            )
+            self._settle_for_qr(
                 settle_sec, expected_count, scan_deadline, stale_sec
-            ):
-                return True
+            )
 
-        self.safe_stop()
+        self.publish_status(
+            "task1",
+            "qr_returning_final_yaw",
+            "{:.0f}-degree scan complete; returning to the original final yaw".format(
+                math.degrees(sweep_angle)
+            ),
+        )
+        final_timeout = (2.0 * math.pi - sweep_angle) / speed + step_margin + 1.0
+        self._return_qr_to_yaw(
+            initial_yaw,
+            speed,
+            final_tolerance,
+            stale_sec,
+            final_timeout,
+        )
+        self._settle_for_qr(
+            settle_sec,
+            expected_count,
+            time.monotonic() + settle_sec + 0.1,
+            stale_sec,
+        )
         return self._qr_count() >= expected_count
+
+    def _reset_task1_reasoning(self, instruction):
+        with self.lock:
+            self.task1_llm_generation += 1
+            self.task1_instruction = str(instruction or "").strip()
+            self.task1_llm_thread = None
+            self.task1_llm_done = threading.Event()
+            self.task1_llm_result = None
+            self.task1_llm_error = ""
+            self.task1_llm_items = []
+
+    def _factory_ocr_args(self):
+        return {
+            "start_camera": False,
+            "start_competition_speech": False,
+            "start_viewer": self.debug,
+            "recognition_mode": "ppocr_rknn_system",
+            "target_category": self.category,
+            "enable_speech": False,
+            "required": True,
+        }
+
+    def _factory_ocr_is_running(self):
+        proc = self.children.get("factory_ocr")
+        return proc is not None and proc.poll() is None
+
+    def _prewarm_factory_ocr_for_task2(self):
+        if "task2" not in stage_sequence(self.mode, self.enable_simulation):
+            return False
+        if self._factory_ocr_is_running():
+            return True
+        self.ocr_target = self.category
+        self.ocr_filter.reset()
+        self.ocr_last_message_at = 0.0
+        self.publish_status(
+            "task1",
+            "prewarming_factory_ocr",
+            "starting warehouse OCR while Spark X2 is reasoning",
+        )
+        self.start_child(
+            "factory_ocr",
+            "factory_sign_ppocr_rknn_test",
+            "factory_sign_ppocr_rknn_test.launch",
+            self._factory_ocr_args(),
+        )
+        return True
+
+    def _start_task1_reasoning_async(self):
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        with self.lock:
+            if (
+                self.task1_llm_thread is not None
+                or not self.task1_instruction
+                or len(self.qr_items) < expected_count
+            ):
+                return False
+            items = list(self.qr_items.values())[:expected_count]
+            if len(items) < 3:
+                return False
+            instruction = self.task1_instruction
+            generation = self.task1_llm_generation
+            done_event = self.task1_llm_done
+            worker = threading.Thread(
+                target=self._task1_reasoning_worker,
+                args=(generation, done_event, items, instruction),
+                name="task1-llm-reasoning",
+                daemon=True,
+            )
+            self.task1_llm_thread = worker
+            self.task1_llm_items = items
+        self.publish_status(
+            "task1",
+            "reasoning_during_qr_scan",
+            "three QR items collected; Spark X2 reasoning started in parallel",
+        )
+        worker.start()
+        self._prewarm_factory_ocr_for_task2()
+        return True
+
+    def _task1_reasoning_worker(self, generation, done_event, items, instruction):
+        result = None
+        error = ""
+        service = rospy.get_param(
+            "~llm_service", "/smart_factory_llm/reason_pickup_order"
+        )
+        try:
+            rospy.wait_for_service(service, timeout=15.0)
+            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
+                items[0], items[1], items[2], instruction
+            )
+            if not result.success:
+                error = "LLM reasoning failed: {}".format(result.error_message)
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            error = "LLM service failed: {}".format(exc)
+        except Exception as exc:
+            error = "LLM reasoning worker failed: {}".format(exc)
+        with self.lock:
+            if generation != self.task1_llm_generation:
+                return
+            self.task1_llm_result = result
+            self.task1_llm_error = error
+        done_event.set()
+
+    def _wait_task1_reasoning(self):
+        with self.lock:
+            done_event = self.task1_llm_done
+        if not done_event.is_set():
+            self.publish_status(
+                "task1",
+                "waiting_reasoning_at_final_yaw",
+                "vehicle is at the final yaw; waiting for Spark X2",
+            )
+        while not done_event.wait(0.1):
+            self.check_abort()
+            self.safe_stop()
+        with self.lock:
+            result = self.task1_llm_result
+            error = self.task1_llm_error
+            items = list(self.task1_llm_items)
+        if error:
+            raise StageError(error)
+        if result is None:
+            raise StageError("LLM reasoning completed without a result")
+        return result, items
 
     # ------------------------------ stages ------------------------------
     def task1(self):
@@ -928,7 +1153,13 @@ class CompetitionFlow:
         self.wait_loop(0, self._voice_command_ready)
 
         category_name = CATEGORY_LABELS[self.category][0]
-        instruction = "请取得{}类产品，仿真环境也统一取得{}类产品".format(category_name, category_name)
+        sim_category_name = CATEGORY_LABELS[self.sim_category][0]
+        instruction = self.question.strip()
+        if not instruction:
+            instruction = "请取得{}类产品，并领取仿真环境中需要的{}类产品".format(
+                category_name,
+                sim_category_name,
+            )
         self.navigate_to_qr_area()
         # The configured simple_navigator goal has completed, but explicitly
         # revoke all navigation authority before this node can rotate the base.
@@ -936,36 +1167,16 @@ class CompetitionFlow:
 
         with self.lock:
             self.qr_items.clear()
+        self._reset_task1_reasoning(instruction)
         try:
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
             self.qr_collecting = True
             completed = self.scan_qr_at_current_pose("scanning_qr_primary")
 
-            if not completed and bool_param("~qr_fallback_enabled", True):
-                self.qr_collecting = False
-                self.safe_stop(cancel_navigation=True)
-                fallback = rospy.get_param(
-                    "~qr_fallback_goal",
-                    {"x": -1.4643, "y": -0.1390, "yaw": 1.5834},
-                )
-                self.navigate(
-                    fallback["x"],
-                    fallback["y"],
-                    fallback.get("yaw", 1.5834),
-                    "task1",
-                    timeout_sec=float(
-                        rospy.get_param("~qr_fallback_navigation_timeout_sec", 45.0)
-                    ),
-                    status_state="qr_repositioning",
-                )
-                self.safe_stop(cancel_navigation=True)
-                self.qr_collecting = True
-                completed = self.scan_qr_at_current_pose("scanning_qr_fallback")
-
             expected_count = int(rospy.get_param("~qr_expected_count", 3))
             if not completed or self._qr_count() < expected_count:
                 raise StageError(
-                    "QR scan exhausted two poses: got {}/{} unique item(s)".format(
+                    "single QR scan pass got {}/{} unique item(s)".format(
                         self._qr_count(), expected_count
                     )
                 )
@@ -979,28 +1190,21 @@ class CompetitionFlow:
             self.stop_child("qr_decoder")
             self.safe_stop(cancel_navigation=True)
 
-        with self.lock:
-            items = list(self.qr_items.values())[:3]
-        service = rospy.get_param("~llm_service", "/smart_factory_llm/reason_pickup_order")
-        self.publish_status("task1", "reasoning", "calling Spark X2")
-        try:
-            rospy.wait_for_service(service, timeout=15.0)
-            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
-                items[0], items[1], items[2], instruction
-            )
-        except (rospy.ROSException, rospy.ServiceException) as exc:
-            raise StageError("LLM service failed: {}".format(exc))
-        if not result.success:
-            raise StageError("LLM reasoning failed: {}".format(result.error_message))
+        self._start_task1_reasoning_async()
+        result, items = self._wait_task1_reasoning()
         if normalize_category(result.pickup_major) != self.category:
             raise StageError("LLM physical category does not match voice category")
-        if normalize_category(result.sim_major) != self.category:
+        if normalize_category(result.sim_major) != self.sim_category:
             raise StageError("LLM simulation category does not match voice category")
+        if normalize_category(result.pickup_major) == normalize_category(result.sim_major):
+            raise StageError("LLM returned the same category for physical and simulation")
 
         self.task1_result = {
             "qr_items": items,
             "category": self.category,
             "category_name": category_name,
+            "sim_category": self.sim_category,
+            "sim_category_name": sim_category_name,
             "pickup_item": result.pickup_item,
             "pickup_major": result.pickup_major,
             "pickup_workshop": result.pickup_workshop,
@@ -1022,9 +1226,11 @@ class CompetitionFlow:
             raise StageError("task2 target_item is missing")
         center_only = bool_param("~task2_center_only", False)
 
+        ocr_prewarmed = self._factory_ocr_is_running()
         self.ocr_target = self.category
-        self.ocr_filter.reset()
-        self.ocr_last_message_at = 0.0
+        if not ocr_prewarmed:
+            self.ocr_filter.reset()
+            self.ocr_last_message_at = 0.0
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -1033,20 +1239,19 @@ class CompetitionFlow:
         self.navigator_status = ""
         self.publish_status("task2", "searching", "searching target factory sign with existing 9-point navigation")
         try:
-            self.start_child(
-                "factory_ocr",
-                "factory_sign_ppocr_rknn_test",
-                "factory_sign_ppocr_rknn_test.launch",
-                {
-                    "start_camera": False,
-                    "start_competition_speech": False,
-                    "start_viewer": self.debug,
-                    "recognition_mode": "ppocr_rknn_system",
-                    "target_category": self.category,
-                    "enable_speech": False,
-                    "required": True,
-                },
-            )
+            if not ocr_prewarmed:
+                self.start_child(
+                    "factory_ocr",
+                    "factory_sign_ppocr_rknn_test",
+                    "factory_sign_ppocr_rknn_test.launch",
+                    self._factory_ocr_args(),
+                )
+            else:
+                self.publish_status(
+                    "task2",
+                    "ocr_prewarmed",
+                    "reusing warehouse OCR started during Spark X2 reasoning",
+                )
             self.publish_status("task2", "waiting_ocr", "waiting for first OCR result before motion")
             ocr_ready_deadline = time.time() + float(
                 rospy.get_param("~ocr_ready_timeout_sec", 12.0))
@@ -1231,8 +1436,8 @@ class CompetitionFlow:
         self.publish_status("task2", "completed", "target factory reached")
 
     def task3(self):
-        if not self.category:
-            raise StageError("task3 target_category is missing")
+        if not self.sim_category:
+            raise StageError("task3 sim_category is missing")
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
         if not host:
@@ -1250,7 +1455,11 @@ class CompetitionFlow:
         done_received = False
         done_received_at = 0.0
         try:
-            request = {"command": "start", "target": self.category, "request_id": request_id}
+            request = {
+                "command": "start",
+                "target": self.sim_category,
+                "request_id": request_id,
+            }
             sock.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
             self.publish_status("task3", "running", "simulation task started")
             decoder = JsonLineBuffer()
@@ -1295,7 +1504,10 @@ class CompetitionFlow:
         if not result_text.startswith("SUCCESS:"):
             raise StageError("simulation completed without a success result")
         item = self.task1_result.get("sim_item") or self.task1_result.get("pickup_item")
-        workshop = self.task1_result.get("sim_workshop") or CATEGORY_LABELS[self.category][1]
+        workshop = (
+            self.task1_result.get("sim_workshop")
+            or CATEGORY_LABELS[self.sim_category][1]
+        )
         if not item:
             raise StageError("task3 sim_item is missing")
         self.announce("task3", item=item, workshop=workshop)
