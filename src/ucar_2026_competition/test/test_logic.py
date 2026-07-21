@@ -51,6 +51,10 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertAlmostEqual(
             float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
         self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
+        self.assertEqual(float(config["qr_decoder_warmup_sec"]), 1.2)
+        self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 3.0)
+        self.assertAlmostEqual(
+            float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
 
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)

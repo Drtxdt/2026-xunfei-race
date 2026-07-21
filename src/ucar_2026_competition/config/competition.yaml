@@ -9,6 +9,12 @@ qr_odom_wait_sec: 2.0
 qr_scan_angular_speed: 0.35
 qr_scan_step_angle_rad: 0.5235987755982988
 qr_scan_settle_sec: 0.3
+# Give the camera/decoder one stable frame window before the first marker moves.
+qr_decoder_warmup_sec: 1.2
+# URL resolution is asynchronous and can outlive the final rotation step.
+qr_scan_result_grace_sec: 3.2
+# If exactly one marker is still missing, revisit only the opening 120-degree arc.
+qr_scan_extra_sweep_angle_rad: 2.0943951023931953
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
 qr_expected_count: 3

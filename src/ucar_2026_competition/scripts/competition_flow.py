@@ -1048,13 +1048,26 @@ class CompetitionFlow:
         return self._qr_count() >= expected_count
 
     def scan_qr_at_current_pose(self, status_state):
-        """Rotate one odometry-closed-loop revolution with stable decode pauses."""
+        """Scan one revolution, then drain async results and optionally sweep again."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
         speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.20)))
         step_angle = abs(
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
         )
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
+        warmup_sec = max(
+            settle_sec,
+            float(rospy.get_param("~qr_decoder_warmup_sec", 1.2)),
+        )
+        result_grace_sec = max(
+            0.0, float(rospy.get_param("~qr_scan_result_grace_sec", 3.2))
+        )
+        extra_sweep_angle = max(
+            0.0,
+            float(rospy.get_param(
+                "~qr_scan_extra_sweep_angle_rad", math.radians(120.0)
+            )),
+        )
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
@@ -1074,49 +1087,86 @@ class CompetitionFlow:
             ),
         )
         self._wait_for_qr_odom(odom_wait_sec, stale_sec)
-        if self._settle_for_qr(settle_sec, expected_count, scan_deadline, stale_sec):
+        if self._settle_for_qr(warmup_sec, expected_count, scan_deadline, stale_sec):
             return True
 
         twist = Twist()
         twist.angular.z = speed
         tracker = DirectedYawAccumulator(direction=1.0)
-        for _ in range(total_steps):
-            if self._qr_count() >= expected_count:
-                self.safe_stop()
-                return True
-            if time.monotonic() >= scan_deadline:
-                self.safe_stop()
-                return False
-
-            tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
-            step_deadline = time.monotonic() + step_angle / speed + step_margin
-            while tracker.progress < step_angle and not rospy.is_shutdown():
-                self.check_abort()
-                self._check_qr_decoder()
+        def rotate_steps(step_count):
+            for _ in range(step_count):
                 if self._qr_count() >= expected_count:
                     self.safe_stop()
                     return True
                 if time.monotonic() >= scan_deadline:
                     self.safe_stop()
                     return False
-                if time.monotonic() >= step_deadline:
-                    raise StageError(
-                        "QR scan failed to rotate {:.1f} degrees before step timeout".format(
-                            math.degrees(step_angle)
-                        )
-                    )
-                yaw = self._fresh_qr_odom_yaw(stale_sec)
-                if tracker.update(yaw) >= step_angle:
-                    break
-                self.cmd_pub.publish(twist)
-                rospy.sleep(0.05)
 
+                tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
+                step_deadline = time.monotonic() + step_angle / speed + step_margin
+                while tracker.progress < step_angle and not rospy.is_shutdown():
+                    self.check_abort()
+                    self._check_qr_decoder()
+                    if self._qr_count() >= expected_count:
+                        self.safe_stop()
+                        return True
+                    if time.monotonic() >= scan_deadline:
+                        self.safe_stop()
+                        return False
+                    if time.monotonic() >= step_deadline:
+                        raise StageError(
+                            "QR scan failed to rotate {:.1f} degrees before step timeout".format(
+                                math.degrees(step_angle)
+                            )
+                        )
+                    yaw = self._fresh_qr_odom_yaw(stale_sec)
+                    if tracker.update(yaw) >= step_angle:
+                        break
+                    self.cmd_pub.publish(twist)
+                    rospy.sleep(0.05)
+
+                if self._settle_for_qr(
+                    settle_sec, expected_count, scan_deadline, stale_sec
+                ):
+                    return True
+            return self._qr_count() >= expected_count
+
+        if rotate_steps(total_steps):
+            return True
+
+        self.safe_stop()
+        self.publish_status(
+            "task1",
+            status_state,
+            "primary revolution finished: count={}/{}; draining async QR results".format(
+                self._qr_count(), expected_count
+            ),
+        )
+        if self._settle_for_qr(
+            result_grace_sec, expected_count, scan_deadline, stale_sec
+        ):
+            return True
+
+        # A decoder that starts on the first visible marker can miss that marker
+        # while OpenCV and the HTTP worker warm up. Revisit only the opening arc
+        # instead of spending another complete revolution at the same pose.
+        if self._qr_count() == expected_count - 1 and extra_sweep_angle > 0.0:
+            extra_steps = int(math.ceil(extra_sweep_angle / step_angle))
+            self.publish_status(
+                "task1",
+                status_state,
+                "one QR missing after first revolution; extra sweep steps={}".format(
+                    extra_steps
+                ),
+            )
+            if rotate_steps(extra_steps):
+                return True
+            self.safe_stop()
             if self._settle_for_qr(
-                settle_sec, expected_count, scan_deadline, stale_sec
+                result_grace_sec, expected_count, scan_deadline, stale_sec
             ):
                 return True
 
-        self.safe_stop()
         return self._qr_count() >= expected_count
 
     # ------------------------------ stages ------------------------------
