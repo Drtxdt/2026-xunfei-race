@@ -188,6 +188,14 @@ def staging_success_can_handoff(move_base_succeeded, position_error,
             abs(float(yaw_error)) <= abs(float(yaw_tolerance)))
 
 
+def parking_goal_after_optional_recenter(initial_goal, recenter_succeeded,
+                                         refined_goal=None):
+    """Keep the original wall goal when close-range OCR recenter is unreliable."""
+    if recenter_succeeded and refined_goal is not None:
+        return tuple(float(value) for value in refined_goal)
+    return tuple(float(value) for value in initial_goal)
+
+
 def fit_wall_line(points, min_points=12, min_span=0.25,
                   max_residual=0.015):
     """Robustly fit a front wall in base coordinates without numpy.

@@ -33,6 +33,7 @@ from navigator_logic import (
     normalize_angle,
     parking_footprint_margins,
     parking_footprint_inside,
+    parking_goal_after_optional_recenter,
     parking_rotation_stall_can_verify,
     parking_goal_from_wall,
     nearest_rotation_obstacle,
@@ -477,6 +478,16 @@ def test_logged_planner_success_hands_final_distance_to_lidar_docking():
     assert not staging_success_can_handoff(True, 0.151, 0.060, 0.15, 0.10)
     assert not staging_success_can_handoff(True, 0.126, 0.101, 0.15, 0.10)
     assert not staging_success_can_handoff(False, 0.126, 0.060, 0.15, 0.10)
+
+
+def test_failed_close_recenter_keeps_original_wall_goal_for_lidar_docking():
+    initial = (-1.9636, -2.5732, -3.1360)
+    noisy_refinement = (-2.20, -2.80, 2.95)
+    assert parking_goal_after_optional_recenter(
+        initial, False, noisy_refinement) == initial
+    assert parking_goal_after_optional_recenter(
+        initial, True, noisy_refinement) == noisy_refinement
+    assert parking_goal_after_optional_recenter(initial, True, None) == initial
 
 
 def test_wall_frame_controller_honors_deadband_and_phase_order():

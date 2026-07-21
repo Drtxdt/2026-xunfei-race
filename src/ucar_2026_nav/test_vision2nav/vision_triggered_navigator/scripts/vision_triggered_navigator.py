@@ -41,6 +41,7 @@ from navigator_logic import (
     latch_trigger,
     normalize_angle,
     parking_footprint_margins,
+    parking_goal_after_optional_recenter,
     parking_rotation_stall_can_verify,
     parking_goal_from_wall,
     nearest_rotation_obstacle,
@@ -1480,6 +1481,9 @@ class VisionTriggeredNavigator(object):
         reversed_once = False
         must_improve_after_reverse = False
         reacquire_used = False
+        reacquire_failure_state = (
+            "centering_reacquire_failed"
+            if failure_state == "centering_failed" else failure_state)
 
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             age = rospy.get_time() - self.target_payload_at
@@ -1487,7 +1491,7 @@ class VisionTriggeredNavigator(object):
                 if reacquire_used:
                     return self._centering_failure(
                         "目标框再次丢失，单次恢复预算已用尽.",
-                        "centering_reacquire_failed")
+                        reacquire_failure_state)
                 reacquire_used = True
                 previous_stamp = self.target_payload_at
                 self._publish_status("centering_reacquiring")
@@ -1498,7 +1502,7 @@ class VisionTriggeredNavigator(object):
                     return self._centering_failure(
                         "目标框丢失且%.1fs内未重新捕获." %
                         self.target_reacquire_timeout,
-                        "centering_reacquire_failed")
+                        reacquire_failure_state)
                 continue
             if not self._odom_is_fresh():
                 return self._centering_failure(
@@ -1551,7 +1555,7 @@ class VisionTriggeredNavigator(object):
                 if reacquire_used:
                     return self._centering_failure(
                         "步进后未收到新框且单次恢复预算已用尽.",
-                        "centering_reacquire_failed")
+                        reacquire_failure_state)
                 reacquire_used = True
                 self._publish_status("centering_reacquiring")
                 rospy.logwarn(
@@ -1561,7 +1565,7 @@ class VisionTriggeredNavigator(object):
                     return self._centering_failure(
                         "回到上一个可信航向时旋转受阻或底盘无响应.",
                         self.last_direct_rotation_failure or
-                        "centering_reacquire_failed")
+                        reacquire_failure_state)
                 self._hold_stopped(self.target_center_settle)
                 if not self._wait_fresh_target(
                         before_stamp,
@@ -1569,7 +1573,7 @@ class VisionTriggeredNavigator(object):
                             self.target_reacquire_timeout)):
                     return self._centering_failure(
                         "已回到可信航向但仍未捕获目标框.",
-                        "centering_reacquire_failed")
+                        reacquire_failure_state)
                 continue
 
             after_error = float(self.target_error)
@@ -2395,6 +2399,7 @@ class VisionTriggeredNavigator(object):
                     rospy.logerr("[vision_triggered_navigator] 视觉目标计算失败.")
                     self._publish_status("failed")
                     break
+                initial_parking_goal = (gx, gy, gyaw)
                 staging_goal = self.compute_staging_goal()
                 if staging_goal is None:
                     self._publish_status("parking_staging_failed")
@@ -2407,23 +2412,23 @@ class VisionTriggeredNavigator(object):
                     break
                 self._publish_status("parking_recenter")
                 if self._wait_for_initial_recenter_target():
-                    # Once corrective motion begins, losing the target remains
-                    # a hard failure because the original ray is no longer
-                    # guaranteed to match the changed heading.
-                    if not self._center_visual_target(
-                            tolerance=self.parking_recenter_tolerance,
-                            timeout=self.parking_recenter_timeout,
-                            state="parking_recenter",
-                            failure_state="parking_recenter_failed"):
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    # A completed close-range recenter may refine the tangent.
-                    goal = self.compute_vision_goal()
-                    if goal is None:
-                        self._publish_status("parking_recenter_failed")
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    gx, gy, gyaw = goal
+                    recenter_succeeded = self._center_visual_target(
+                        tolerance=self.parking_recenter_tolerance,
+                        timeout=self.parking_recenter_timeout,
+                        state="parking_recenter",
+                        failure_state="parking_recenter_advisory_failed")
+                    refined_goal = (self.compute_vision_goal()
+                                    if recenter_succeeded else None)
+                    gx, gy, gyaw = parking_goal_after_optional_recenter(
+                        initial_parking_goal, recenter_succeeded, refined_goal)
+                    if not recenter_succeeded or refined_goal is None:
+                        self._publish_status("parking_recenter_fallback")
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 近距OCR复核未可靠收敛；"
+                            "保留首次厂牌射线的切向目标，改由激光墙法向完成航向和%.3fm墙距闭环.",
+                            max(self.parking_min_wall_distance,
+                                self.parking_goal_offset +
+                                self.parking_normal_offset))
                 else:
                     self._publish_status("parking_recenter_skipped")
                     rospy.logwarn(
