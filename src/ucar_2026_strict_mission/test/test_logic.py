@@ -4,6 +4,7 @@ import json
 import pathlib
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 
 
 PACKAGE_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -19,6 +20,50 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     traffic_decision_from_payload,
     valid_stop_line_geometry,
 )
+
+
+class TrafficStagingPoseConfigTests(unittest.TestCase):
+    def test_all_competition_entrypoints_share_calibrated_staging_pose(self):
+        expected = ("0.2695", "-3.0", "-1.5708")
+        competition_launch = PACKAGE_ROOT.parent / "ucar_2026_competition" / "launch"
+
+        for launch_name in ("task3_task4.launch", "full_competition.launch"):
+            root = ET.parse(str(competition_launch / launch_name)).getroot()
+            args = {
+                item.attrib["name"]: item.attrib.get("default")
+                for item in root.findall("arg")
+            }
+            self.assertEqual(
+                (args["traffic_x"], args["traffic_y"], args["traffic_yaw"]),
+                expected,
+            )
+
+        strict_root = ET.parse(str(PACKAGE_ROOT / "launch" / "strict_mission.launch")).getroot()
+        strict_args = {
+            item.attrib["name"]: item.attrib.get("default")
+            for item in strict_root.findall("arg")
+        }
+        self.assertEqual(
+            (
+                strict_args["traffic_staging_x"],
+                strict_args["traffic_staging_y"],
+                strict_args["traffic_staging_yaw"],
+            ),
+            expected,
+        )
+
+        with (PACKAGE_ROOT / "config" / "strict_mission.yaml").open(
+            "r", encoding="utf-8"
+        ) as stream:
+            config = json.load(stream)
+        self.assertEqual(
+            (
+                str(config["traffic_staging_x"]),
+                str(config["traffic_staging_y"]),
+                str(config["traffic_staging_yaw"]),
+            ),
+            expected,
+        )
 
 
 class DistanceCalibrationTests(unittest.TestCase):

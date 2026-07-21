@@ -8,9 +8,9 @@
 
   "traffic_pose_configured": true,
   "traffic_frame": "map",
-  "traffic_staging_x": 0.3195,
+  "traffic_staging_x": 0.2695,
   "traffic_staging_y": -3.0,
-  "traffic_staging_yaw":  -1.5596,
+  "traffic_staging_yaw": -1.5708,
   "navigation_timeout_sec": 120.0,
 
   "auto_start_on_warehouse_status": false,
