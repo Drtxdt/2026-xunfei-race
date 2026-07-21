@@ -59,7 +59,68 @@ SYSTEM_PROMPT = """你是第21届全国大学生智能汽车竞赛「讯飞智�
 announcement 句式必须与赛题一致：
 - announcement_physical 必须以「取得」开头，包含「属于」「应放置在」，车间为上述三个全名之一。
 - announcement_simulation 必须以「仿真环境中取得」开头（中间不要逗号），同样包含「属于」「应放置在」。
+- 物品领取区和仿真环境的目标大类允许相同，也允许不同，必须分别按语音上下文填写。
+- 两个目标大类相同时 pickup_item 和 sim_item 允许相同；目标大类不同时两个货品必须不同。
+- 当某个大类在三个二维码中只有一个候选时必须选该候选。
 """
+
+
+CATEGORY_DATA = {
+    "food": ("食品大类", "食品加工车间"),
+    "daily": ("日用品大类", "日用品加工车间"),
+    "electronics": ("电子产品大类", "电子产品生产车间"),
+}
+
+
+def _normalize_major(value: Any) -> Optional[str]:
+    compact = "".join(str(value or "").split()).lower()
+    if "日用品" in compact or "daily" in compact:
+        return "daily"
+    if "电子产品" in compact or "electronics" in compact or "electronic" in compact:
+        return "electronics"
+    if "食品" in compact or "food" in compact:
+        return "food"
+    return None
+
+
+def _parse_task1_categories(voice: str) -> Tuple[Optional[str], Optional[str]]:
+    compact = "".join(str(voice or "").split()).lower()
+    positions = [
+        compact.find(marker)
+        for marker in (
+            "仿真环境", "仿真", "模拟环境", "虚拟环境", "simulation", "sim"
+        )
+        if compact.find(marker) >= 0
+    ]
+    if not positions:
+        return _normalize_major(compact), None
+    split_at = min(positions)
+    return _normalize_major(compact[:split_at]), _normalize_major(compact[split_at:])
+
+
+def _validate_selection(data: Dict[str, Any], items: List[str],
+                        pickup_category: str, sim_category: str) -> str:
+    pickup_item = str(data.get("pickup_item") or "").strip()
+    sim_item = str(data.get("sim_item") or "").strip()
+    if pickup_item not in items or sim_item not in items:
+        return "pickup_item/sim_item 必须逐字来自三个二维码候选"
+    if pickup_category != sim_category and pickup_item == sim_item:
+        return "实体与仿真目标类别不同时不能选择同一个货品"
+    if _normalize_major(data.get("pickup_major")) != pickup_category:
+        return "pickup_major 与实体领取类别不一致"
+    if _normalize_major(data.get("sim_major")) != sim_category:
+        return "sim_major 与仿真领取类别不一致"
+    return ""
+
+
+def _canonicalize_result(data: Dict[str, Any], pickup_category: str,
+                         sim_category: str) -> Dict[str, Any]:
+    data = dict(data)
+    data["pickup_major"], data["pickup_workshop"] = CATEGORY_DATA[pickup_category]
+    data["sim_major"], data["sim_workshop"] = CATEGORY_DATA[sim_category]
+    data["announcement_physical"] = ""
+    data["announcement_simulation"] = ""
+    return data
 
 
 def _strip_code_fence(text: str) -> str:
@@ -208,6 +269,10 @@ def _handle_request(req: ReasonPickupOrderRequest) -> ReasonPickupOrderResponse:
     if not voice:
         res.error_message = "voice_instruction 不能为空"
         return res
+    pickup_category, sim_category = _parse_task1_categories(voice)
+    if not pickup_category or not sim_category:
+        res.error_message = "语音指令必须分别包含实体领取类别和仿真领取类别"
+        return res
 
     api_password = rospy.get_param("~api_password", os.environ.get("XF_SPARK_API_PASSWORD", ""))
     base_url = rospy.get_param("spark_base_url", "https://spark-api-open.xf-yun.com/x2/chat/completions")
@@ -221,18 +286,43 @@ def _handle_request(req: ReasonPickupOrderRequest) -> ReasonPickupOrderResponse:
         return res
 
     user_prompt = _build_user_prompt(items, voice)
-    try:
-        content = client.chat(SYSTEM_PROMPT, user_prompt)
-    except Exception as e:  # noqa: BLE001
-        rospy.logerr("Spark 调用失败: %s", e)
-        res.error_message = str(e)
-        return res
-
-    res.raw_model_reply = content
-    try:
-        data = _parse_llm_json(content)
-    except Exception as e:  # noqa: BLE001
-        res.error_message = "解析模型 JSON 失败: {}".format(e)
+    data = None
+    validation_error = ""
+    for attempt in range(2):
+        prompt = user_prompt
+        if attempt:
+            item_relation = (
+                "两个货品允许相同"
+                if pickup_category == sim_category
+                else "两个货品不得相同"
+            )
+            prompt += (
+                "\n\n上一轮结果校验失败：{}。请重新推理，实体目标必须是{}，"
+                "仿真目标必须是{}；{}，只输出完整 JSON。"
+            ).format(
+                validation_error,
+                CATEGORY_DATA[pickup_category][0],
+                CATEGORY_DATA[sim_category][0],
+                item_relation,
+            )
+        try:
+            content = client.chat(SYSTEM_PROMPT, prompt)
+            res.raw_model_reply = content
+            candidate = _parse_llm_json(content)
+        except Exception as e:  # noqa: BLE001
+            rospy.logerr("Spark 调用或 JSON 解析失败: %s", e)
+            validation_error = str(e)
+            continue
+        validation_error = _validate_selection(
+            candidate, items, pickup_category, sim_category
+        )
+        if not validation_error:
+            data = _canonicalize_result(
+                candidate, pickup_category, sim_category
+            )
+            break
+    if data is None:
+        res.error_message = "模型结果两次校验失败: {}".format(validation_error)
         return res
 
     hint = (data.get("err_hint") or "").strip()

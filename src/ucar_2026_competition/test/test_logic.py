@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import sys
 import unittest
@@ -12,6 +13,7 @@ if PACKAGE_SRC not in sys.path:
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
     base_is_stopped,
+    build_task1_instruction,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -20,10 +22,12 @@ from ucar_2026_competition.logic import (
     normalize_category,
     normalize_angle,
     parse_category,
-    parse_task_categories,
+    parse_task1_categories,
     qr_values_from_payload,
+    scan_sector_min,
     split_rotation_steps,
     stage_sequence,
+    task2_delivery_targets,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -33,6 +37,33 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_competition_config_uses_faster_safe_qr_scan(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = {}
+            for line in stream:
+                line = line.split("#", 1)[0].strip()
+                if not line or ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                config[key.strip()] = value.strip()
+        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.35)
+        self.assertAlmostEqual(
+            float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
+        self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
+        self.assertEqual(float(config["qr_decoder_warmup_sec"]), 1.2)
+        self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 3.0)
+        self.assertAlmostEqual(
+            float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
+        self.assertGreaterEqual(
+            int(config["coverage_navigation_candidate_pause_count"]), 1)
+        self.assertGreaterEqual(
+            float(config["coverage_candidate_hold_sec"]), 1.0)
+        self.assertGreaterEqual(
+            float(config["coverage_scan_max_dwell_sec"]),
+            float(config["coverage_candidate_hold_sec"]))
+
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)
         self.assertAlmostEqual(normalize_angle(-0.25), -0.25)
@@ -68,36 +99,55 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(parse_category("请取得电子产品类"), "electronics")
         self.assertEqual(parse_category("取得电子产品"), "electronics")
 
-    def test_parse_two_different_task_categories(self):
-        physical, simulation = parse_task_categories(
-            "小飞小飞，取得食品类放到对应仓库，"
-            "并领取仿真环境中需要的日用品类放到对应仓库"
+    def test_official_task1_command_keeps_physical_and_simulation_targets(self):
+        command = (
+            "小飞小飞，前往物品领取区，取得日用品类，放置在对应仓库，"
+            "并领取仿真环境中需要的食品类放置在对应仓库"
         )
-        self.assertEqual(physical, "food")
-        self.assertEqual(simulation, "daily")
+        self.assertEqual(parse_task1_categories(command), ("daily", "food"))
+        self.assertEqual(
+            build_task1_instruction("daily", "food"), command)
 
-    def test_dual_category_command_waits_for_simulation_part(self):
-        physical, simulation = parse_task_categories("请取得电子产品类")
-        self.assertEqual(physical, "electronics")
-        self.assertIsNone(simulation)
+    def test_task2_visits_physical_then_distinct_simulation_workshop(self):
+        self.assertEqual(
+            task2_delivery_targets(
+                ("daily", "牙膏", "日用品加工车间"),
+                ("food", "香蕉", "食品加工车间"),
+            ),
+            (
+                ("physical", "daily", "牙膏", "日用品加工车间"),
+                ("simulation", "food", "香蕉", "食品加工车间"),
+            ),
+        )
+        self.assertEqual(
+            task2_delivery_targets(
+                ("daily", "牙膏", "日用品加工车间"),
+                ("daily", "牙膏", "日用品加工车间"),
+            ),
+            (("physical", "daily", "牙膏", "日用品加工车间"),),
+        )
 
-    def test_dual_category_parser_handles_all_pairs(self):
-        cases = [
-            ("食品", "日用品", "food", "daily"),
-            ("食品", "电子产品", "food", "electronics"),
-            ("日用品", "食品", "daily", "food"),
-            ("日用品", "电子产品", "daily", "electronics"),
-            ("电子产品", "食品", "electronics", "food"),
-            ("电子产品", "日用品", "electronics", "daily"),
-        ]
-        for physical_name, sim_name, expected_phy, expected_sim in cases:
-            text = "取得{}类，仿真环境取得{}类".format(
-                physical_name, sim_name
-            )
-            self.assertEqual(
-                parse_task_categories(text),
-                (expected_phy, expected_sim),
-            )
+    def test_rear_lidar_sector_ignores_front_and_invalid_samples(self):
+        ranges = [float("inf")] * 8
+        ranges[0] = 0.10
+        ranges[4] = 0.42
+        ranges[5] = float("nan")
+        self.assertAlmostEqual(
+            scan_sector_min(
+                ranges, 0.0, math.pi / 4.0, math.pi, math.pi / 4.0,
+                0.05, 8.0),
+            0.42,
+        )
+
+    def test_task2_config_requires_lidar_guarded_inter_visit_exit(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            content = stream.read()
+        self.assertIn("task2_inter_visit_reverse_distance_m: 0.32", content)
+        self.assertIn("task2_inter_visit_rear_clearance_m: 0.28", content)
+        self.assertIn(
+            "task2_second_search_abort_fail_fast_count: 0", content)
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")
@@ -193,7 +243,7 @@ class CompetitionLogicTest(unittest.TestCase):
         root = ET.parse(launch_path).getroot()
         launch_args = {item.attrib["name"]: item.attrib.get("default")
                        for item in root.findall("arg")}
-        self.assertEqual(launch_args["enable_simulation"], "false")
+        self.assertEqual(launch_args["enable_simulation"], "true")
 
         flow_include = next(
             item for item in root.findall("include")
@@ -207,11 +257,16 @@ class CompetitionLogicTest(unittest.TestCase):
         flow_root = ET.parse(flow_path).getroot()
         flow_launch_args = {item.attrib["name"]: item.attrib.get("default")
                             for item in flow_root.findall("arg")}
-        self.assertEqual(flow_launch_args["enable_simulation"], "false")
+        self.assertEqual(flow_launch_args["enable_simulation"], "true")
         flow_params = {item.attrib["name"]: item.attrib.get("value")
                        for item in flow_root.find("node").findall("param")}
         self.assertEqual(
             flow_params["enable_simulation"], "$(arg enable_simulation)")
+        self.assertEqual(
+            flow_params["sim_target_category"], "$(arg sim_target_category)")
+        self.assertEqual(
+            flow_params["coverage_rotation_min_clearance"],
+            "$(arg coverage_rotation_min_clearance)")
 
     def test_task4_start_action_supports_manual_stop_line_start(self):
         self.assertEqual(task4_start_action(True, False), "detect")
@@ -293,6 +348,9 @@ class CompetitionLogicTest(unittest.TestCase):
         launch_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "launch", "task1_task2.launch"))
         root = ET.parse(launch_path).getroot()
+        docking_timeout_arg = root.find("arg[@name='parking_docking_timeout_sec']")
+        self.assertIsNotNone(docking_timeout_arg)
+        self.assertEqual(docking_timeout_arg.attrib.get("default"), "25.0")
         flow_include = next(
             item for item in root.findall("include")
             if "flow_node.launch" in item.attrib.get("file", ""))
