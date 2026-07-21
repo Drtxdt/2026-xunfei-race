@@ -197,6 +197,24 @@ def parse_category(text):
     return None
 
 
+def parse_task_categories(text):
+    """Parse the independent physical and simulation targets from one command."""
+    compact = "".join(str(text or "").split()).lower()
+    marker_index = compact.find("仿真环境")
+    marker_length = len("仿真环境")
+    if marker_index < 0:
+        marker_index = compact.find("仿真")
+        marker_length = len("仿真")
+    if marker_index < 0:
+        return None, None
+
+    pickup_category = parse_category(compact[:marker_index])
+    sim_category = parse_category(compact[marker_index + marker_length:])
+    if not pickup_category or not sim_category:
+        return None, None
+    return pickup_category, sim_category
+
+
 def normalize_category(value):
     text = str(value or "").strip().lower()
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)

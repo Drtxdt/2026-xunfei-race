@@ -3,6 +3,8 @@
   <arg name="enable_simulation" default="false" />
   <arg name="debug" default="false" />
   <arg name="target_category" default="" />
+  <arg name="pickup_category" default="" />
+  <arg name="sim_category" default="" />
   <arg name="target_item" default="" />
   <arg name="target_workshop" default="" />
   <arg name="sim_item" default="" />
@@ -77,6 +79,8 @@
     <param name="enable_simulation" value="$(arg enable_simulation)" />
     <param name="debug" value="$(arg debug)" />
     <param name="target_category" value="$(arg target_category)" />
+    <param name="pickup_category" value="$(arg pickup_category)" />
+    <param name="sim_category" value="$(arg sim_category)" />
     <param name="target_item" value="$(arg target_item)" />
     <param name="target_workshop" value="$(arg target_workshop)" />
     <param name="sim_item" value="$(arg sim_item)" />

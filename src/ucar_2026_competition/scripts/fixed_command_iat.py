@@ -20,7 +20,7 @@ import rospy
 import websocket
 from std_msgs.msg import String, UInt8MultiArray
 
-from ucar_2026_competition.logic import parse_category
+from ucar_2026_competition.logic import parse_task_categories
 
 
 class FixedCommandIat:
@@ -156,15 +156,17 @@ class FixedCommandIat:
         return json.dumps(payload, separators=(",", ":"))
 
     def _publish_text(self, text, final=False):
-        category = parse_category(text)
+        pickup_category, sim_category = parse_task_categories(text)
         payload = {
             "stamp": time.time(),
             "text": text,
-            "category": category or "",
+            "category": pickup_category or "",
+            "pickup_category": pickup_category or "",
+            "sim_category": sim_category or "",
             "final": bool(final),
         }
         self.text_pub.publish(String(data=json.dumps(payload, ensure_ascii=False)))
-        return category
+        return pickup_category, sim_category
 
     def _receive(self, ws, done, accepted):
         segments = {}
@@ -196,11 +198,19 @@ class FixedCommandIat:
                 if text:
                     segments[sn] = text
                     full_text = "".join(segments[key] for key in sorted(segments))
-                    category = self._publish_text(full_text, data.get("status") == 2)
-                    if category and not accepted.is_set():
+                    final = data.get("status") == 2
+                    pickup_category, sim_category = self._publish_text(full_text, final)
+                    if final and pickup_category and sim_category and not accepted.is_set():
                         accepted.set()
                         self.question_pub.publish(String(data=full_text))
-                        rospy.loginfo("fixed command accepted: category=%s", category)
+                        rospy.loginfo(
+                            "fixed command accepted: pickup_category=%s sim_category=%s",
+                            pickup_category,
+                            sim_category,
+                        )
+                    elif final:
+                        self.question_pub.publish(String(data=full_text))
+                        rospy.logwarn("fixed command incomplete: %s", full_text)
                 if data.get("status") == 2:
                     break
         except (ValueError, websocket.WebSocketException, OSError) as exc:

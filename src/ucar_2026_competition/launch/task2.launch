@@ -2,6 +2,7 @@
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
   <arg name="target_category" default="" />
+  <arg name="pickup_category" default="" />
   <arg name="target_item" default="" />
   <arg name="target_workshop" default="" />
   <arg name="navigator_publish_initial_pose" default="true" />
@@ -69,6 +70,7 @@
     <arg name="start_stage" value="task2" />
     <arg name="debug" value="$(arg debug)" />
     <arg name="target_category" value="$(arg target_category)" />
+    <arg name="pickup_category" value="$(arg pickup_category)" />
     <arg name="target_item" value="$(arg target_item)" />
     <arg name="target_workshop" value="$(arg target_workshop)" />
     <arg name="navigator_publish_initial_pose" value="$(arg navigator_publish_initial_pose)" />

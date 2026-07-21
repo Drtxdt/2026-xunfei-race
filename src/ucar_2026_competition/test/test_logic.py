@@ -20,6 +20,7 @@ from ucar_2026_competition.logic import (
     normalize_category,
     normalize_angle,
     parse_category,
+    parse_task_categories,
     qr_values_from_payload,
     stage_sequence,
     task4_handoff_required,
@@ -55,6 +56,34 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(parse_category("取得日用品"), "daily")
         self.assertEqual(parse_category("请取得电子产品类"), "electronics")
         self.assertEqual(parse_category("取得电子产品"), "electronics")
+
+    def test_voice_physical_and_simulation_categories_are_independent(self):
+        labels = {
+            "food": "食品",
+            "daily": "日用品",
+            "electronics": "电子产品",
+        }
+        for pickup_category, pickup_label in labels.items():
+            for sim_category, sim_label in labels.items():
+                command = (
+                    "前往物品领取区，取得{}，放置在对应仓库，"
+                    "并领取仿真环境中需要的{}放置在对应仓库"
+                ).format(pickup_label, sim_label)
+                self.assertEqual(
+                    parse_task_categories(command),
+                    (pickup_category, sim_category),
+                )
+
+    def test_voice_requires_both_categories_and_simulation_clause(self):
+        self.assertEqual(parse_task_categories("取得食品"), (None, None))
+        self.assertEqual(
+            parse_task_categories("取得食品，并进入仿真环境"),
+            (None, None),
+        )
+        self.assertEqual(
+            parse_task_categories("仿真环境中需要日用品"),
+            (None, None),
+        )
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")
@@ -169,6 +198,36 @@ class CompetitionLogicTest(unittest.TestCase):
                        for item in flow_root.find("node").findall("param")}
         self.assertEqual(
             flow_params["enable_simulation"], "$(arg enable_simulation)")
+
+    def test_flow_and_segment_launches_expose_separate_categories(self):
+        launch_dir = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch"))
+
+        flow_root = ET.parse(os.path.join(launch_dir, "flow_node.launch")).getroot()
+        flow_args = {item.attrib["name"] for item in flow_root.findall("arg")}
+        self.assertIn("pickup_category", flow_args)
+        self.assertIn("sim_category", flow_args)
+        flow_params = {
+            item.attrib["name"]: item.attrib.get("value")
+            for item in flow_root.find("node").findall("param")
+        }
+        self.assertEqual(flow_params["pickup_category"], "$(arg pickup_category)")
+        self.assertEqual(flow_params["sim_category"], "$(arg sim_category)")
+
+        task2_root = ET.parse(os.path.join(launch_dir, "task2.launch")).getroot()
+        self.assertIn("pickup_category", {
+            item.attrib["name"] for item in task2_root.findall("arg")
+        })
+        task3_root = ET.parse(os.path.join(launch_dir, "task3.launch")).getroot()
+        self.assertIn("sim_category", {
+            item.attrib["name"] for item in task3_root.findall("arg")
+        })
+        task3_task4_root = ET.parse(
+            os.path.join(launch_dir, "task3_task4.launch")
+        ).getroot()
+        self.assertIn("sim_category", {
+            item.attrib["name"] for item in task3_task4_root.findall("arg")
+        })
 
     def test_task4_start_action_supports_manual_stop_line_start(self):
         self.assertEqual(task4_start_action(True, False), "detect")
