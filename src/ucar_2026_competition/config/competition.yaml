@@ -7,8 +7,8 @@ qr_navigation_timeout_sec: 120.0
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
-qr_scan_angular_speed: 0.50
-qr_final_return_angular_speed: 0.70
+qr_scan_angular_speed: 0.30
+qr_final_return_angular_speed: 1.20
 qr_final_return_min_angular_speed: 0.25
 qr_final_return_slowdown_angle_rad: 0.4363323129985824
 qr_scan_step_angle_rad: 0.3490658503988659

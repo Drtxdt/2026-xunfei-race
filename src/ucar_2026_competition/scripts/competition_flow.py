@@ -948,9 +948,9 @@ class CompetitionFlow:
     def scan_qr_at_current_pose(self, status_state):
         """Run one ten-stop scan pass, then restore the original final yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.50)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.30)))
         final_speed = abs(float(
-            rospy.get_param("~qr_final_return_angular_speed", 0.70)
+            rospy.get_param("~qr_final_return_angular_speed", 1.20)
         ))
         step_angle = abs(
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
