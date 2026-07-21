@@ -356,8 +356,7 @@ class CompetitionFlow:
                     self.qr_items[key] = result
                     rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
         if self._qr_count() >= 1:
-            self._start_task3_async()
-            self._prewarm_task2_stack()
+            self._prewarm_task2_navigator()
         self._start_task1_reasoning_async()
 
     def _qr_odom_cb(self, msg):
@@ -539,6 +538,7 @@ class CompetitionFlow:
 
     def pause_and_retry(self, stage, error):
         self.safe_stop(cancel_navigation=True)
+        rospy.logerr("competition %s paused because: %s", stage, error)
         self.publish_status(stage, "paused", "call /competition/resume after fixing it", str(error))
         self.resume_event.clear()
         while not rospy.is_shutdown() and not self.resume_event.wait(0.2):
@@ -946,17 +946,17 @@ class CompetitionFlow:
         raise StageError("QR scan failed to return to its original final yaw")
 
     def scan_qr_at_current_pose(self, status_state):
-        """Run one ten-stop scan pass, then restore the original final yaw."""
+        """Run the first-version nine-stop scan, then restore the final yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.30)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.60)))
         final_speed = abs(float(
             rospy.get_param("~qr_final_return_angular_speed", 1.20)
         ))
         step_angle = abs(
-            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(30.0)))
         )
         sweep_angle = abs(
-            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(200.0)))
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(270.0)))
         )
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
@@ -1183,35 +1183,59 @@ class CompetitionFlow:
         proc = self.children.get("factory_ocr")
         return proc is not None and proc.poll() is None
 
+    def _task2_is_enabled(self):
+        return "task2" in stage_sequence(self.mode, self.enable_simulation)
+
+    def _prewarm_task2_navigator(self):
+        """Start warehouse navigation in a paused state without moving the car."""
+        if not self._task2_is_enabled():
+            return False
+        navigator = self.children.get("factory_navigator")
+        if navigator is not None and navigator.poll() is None:
+            return True
+        self.publish_status(
+            "task1",
+            "prewarming_navigation",
+            "first QR accepted; warehouse navigator is starting in paused state",
+        )
+        self.start_child(
+            "factory_navigator",
+            "vision_triggered_navigator",
+            "vision_triggered_navigator.launch",
+            self._factory_navigator_args(
+                bool_param("~task2_center_only", False),
+                True,
+            ),
+        )
+        return True
+
+    def _prewarm_task2_ocr(self):
+        """Start warehouse recognition only after all QR results are available."""
+        if not self._task2_is_enabled():
+            return False
+        if self._factory_ocr_is_running():
+            return True
+        self.ocr_target = self.category
+        self.ocr_filter.reset()
+        self.ocr_last_message_at = 0.0
+        self.publish_status(
+            "task1",
+            "prewarming_factory_ocr",
+            "three QR items collected; prewarming warehouse OCR",
+        )
+        self.start_child(
+            "factory_ocr",
+            "factory_sign_ppocr_rknn_test",
+            "factory_sign_ppocr_rknn_test.launch",
+            self._factory_ocr_args(),
+        )
+        return True
+
     def _prewarm_task2_stack(self):
         if "task2" not in stage_sequence(self.mode, self.enable_simulation):
             return False
-        if not self._factory_ocr_is_running():
-            self.ocr_target = self.category
-            self.ocr_filter.reset()
-            self.ocr_last_message_at = 0.0
-            self.publish_status(
-                "task1",
-                "prewarming_task2",
-                "first QR accepted; prewarming warehouse OCR and navigator",
-            )
-            self.start_child(
-                "factory_ocr",
-                "factory_sign_ppocr_rknn_test",
-                "factory_sign_ppocr_rknn_test.launch",
-                self._factory_ocr_args(),
-            )
-        navigator = self.children.get("factory_navigator")
-        if navigator is None or navigator.poll() is not None:
-            self.start_child(
-                "factory_navigator",
-                "vision_triggered_navigator",
-                "vision_triggered_navigator.launch",
-                self._factory_navigator_args(
-                    bool_param("~task2_center_only", False),
-                    True,
-                ),
-            )
+        self._prewarm_task2_navigator()
+        self._prewarm_task2_ocr()
         return True
 
     def _wait_task2_prewarm_ready(self):
@@ -1672,8 +1696,8 @@ class CompetitionFlow:
             self.task3_thread = worker
         self.publish_status(
             "task3",
-            "starting_from_first_qr",
-            "first QR accepted; starting simulation task in parallel",
+            "starting_at_simulation_stage",
+            "simulation stage reached; starting simulation task",
         )
         worker.start()
         return True
@@ -1702,7 +1726,7 @@ class CompetitionFlow:
                 (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
             )
             self.publish_status(
-                "task3", "running_parallel", "simulation task started from first QR"
+                "task3", "running", "simulation task started at simulation stage"
             )
             decoder = JsonLineBuffer()
             deadline = time.time() + timeout
@@ -1730,7 +1754,7 @@ class CompetitionFlow:
                     value = event.get("data")
                     if event_type == "state":
                         state_text = str(value or "")
-                        self.publish_status("task3", "running_parallel", state_text)
+                        self.publish_status("task3", "running", state_text)
                         if state_text.startswith("FAILED:"):
                             raise StageError(state_text)
                     elif event_type == "result":
@@ -1770,8 +1794,8 @@ class CompetitionFlow:
         if not self.task3_done.is_set():
             self.publish_status(
                 "task3",
-                "waiting_parallel_result",
-                "simulation was started from the first QR; waiting for completion",
+                "waiting_result",
+                "simulation task started; waiting for completion",
             )
         while not self.task3_done.wait(0.1):
             self.check_abort()
