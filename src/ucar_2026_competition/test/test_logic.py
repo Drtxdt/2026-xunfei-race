@@ -50,15 +50,15 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertAlmostEqual(tracker.update(0.19), 0.2)
         self.assertAlmostEqual(tracker.update(0.21), 0.21)
 
-    def test_qr_scan_splits_225_degrees_into_nine_25_degree_steps(self):
+    def test_qr_scan_splits_210_degrees_into_seven_30_degree_steps(self):
         steps = split_rotation_steps(
-            1.25 * 3.141592653589793,
-            5.0 * 3.141592653589793 / 36.0,
+            7.0 * 3.141592653589793 / 6.0,
+            3.141592653589793 / 6.0,
         )
-        self.assertEqual(len(steps), 9)
+        self.assertEqual(len(steps), 7)
         for step in steps:
-            self.assertAlmostEqual(step, 5.0 * 3.141592653589793 / 36.0)
-        self.assertAlmostEqual(sum(steps), 1.25 * 3.141592653589793)
+            self.assertAlmostEqual(step, 3.141592653589793 / 6.0)
+        self.assertAlmostEqual(sum(steps), 7.0 * 3.141592653589793 / 6.0)
 
     def test_voice_category(self):
         self.assertEqual(parse_category("小飞小飞，请取得食品类"), "food")
@@ -187,13 +187,13 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(task4_handoff_required("task2", "task3"))
         self.assertFalse(task4_handoff_required(None, "task4"))
 
-    def test_full_launch_exposes_optional_simulation_parameter(self):
+    def test_full_launch_enables_parallel_simulation_by_default(self):
         launch_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "launch", "full_competition.launch"))
         root = ET.parse(launch_path).getroot()
         launch_args = {item.attrib["name"]: item.attrib.get("default")
                        for item in root.findall("arg")}
-        self.assertEqual(launch_args["enable_simulation"], "false")
+        self.assertEqual(launch_args["enable_simulation"], "true")
 
         flow_include = next(
             item for item in root.findall("include")
@@ -207,7 +207,7 @@ class CompetitionLogicTest(unittest.TestCase):
         flow_root = ET.parse(flow_path).getroot()
         flow_launch_args = {item.attrib["name"]: item.attrib.get("default")
                             for item in flow_root.findall("arg")}
-        self.assertEqual(flow_launch_args["enable_simulation"], "false")
+        self.assertEqual(flow_launch_args["enable_simulation"], "true")
         flow_params = {item.attrib["name"]: item.attrib.get("value")
                        for item in flow_root.find("node").findall("param")}
         self.assertEqual(

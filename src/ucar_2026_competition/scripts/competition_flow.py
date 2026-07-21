@@ -129,6 +129,10 @@ class CompetitionFlow:
         self.task1_llm_result = None
         self.task1_llm_error = ""
         self.task1_llm_items = []
+        self.task3_thread = None
+        self.task3_done = threading.Event()
+        self.task3_result_text = ""
+        self.task3_error = ""
         self.base_twist = None
         self.handoff_scan_received_at = 0.0
         self.handoff_costmap_received_at = 0.0
@@ -148,6 +152,7 @@ class CompetitionFlow:
         self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
         self.navigator_status = ""
         self.task2_announcement_completed = False
+        self.task1_task2_handoff_prepared = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
         self.red_announced = False
         self.strict_mission_status = {}
@@ -350,6 +355,9 @@ class CompetitionFlow:
                 if key not in self.qr_items:
                     self.qr_items[key] = result
                     rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
+        if self._qr_count() >= 1:
+            self._start_task3_async()
+            self._prewarm_task2_stack()
         self._start_task1_reasoning_async()
 
     def _qr_odom_cb(self, msg):
@@ -681,7 +689,11 @@ class CompetitionFlow:
             source_stage, "task4_handoff_ready",
             "current AMCL pose preserved; fresh costmap; task4 may navigate")
 
-    def start_child(self, key, package, launch_file, args=None):
+    def start_child(self, key, package, launch_file, args=None, reuse_running=False):
+        existing = self.children.get(key)
+        if reuse_running and existing is not None and existing.poll() is None:
+            rospy.loginfo("reusing prewarmed child: %s", key)
+            return existing
         self.stop_child(key)
         command = ["roslaunch", package, launch_file]
         for name, value in (args or {}).items():
@@ -903,6 +915,14 @@ class CompetitionFlow:
         self.safe_stop()
 
     def _return_qr_to_yaw(self, target_yaw, speed, tolerance, stale_sec, timeout):
+        min_speed = min(speed, abs(float(
+            rospy.get_param("~qr_final_return_min_angular_speed", 0.25)
+        )))
+        slowdown_angle = max(tolerance, abs(float(
+            rospy.get_param(
+                "~qr_final_return_slowdown_angle_rad", math.radians(25.0)
+            )
+        )))
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not rospy.is_shutdown():
             self.check_abort()
@@ -912,22 +932,31 @@ class CompetitionFlow:
             if abs(error) <= tolerance:
                 self.safe_stop()
                 return
+            command_speed = speed
+            if abs(error) < slowdown_angle:
+                command_speed = max(
+                    min_speed,
+                    speed * abs(error) / slowdown_angle,
+                )
             twist = Twist()
-            twist.angular.z = speed if error > 0.0 else -speed
+            twist.angular.z = command_speed if error > 0.0 else -command_speed
             self.cmd_pub.publish(twist)
             rospy.sleep(0.05)
         self.safe_stop()
         raise StageError("QR scan failed to return to its original final yaw")
 
     def scan_qr_at_current_pose(self, status_state):
-        """Run one nine-stop scan pass, then restore the original final yaw."""
+        """Run one seven-stop scan pass, then restore the original final yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 1.00)))
+        final_speed = abs(float(
+            rospy.get_param("~qr_final_return_angular_speed", 1.20)
+        ))
         step_angle = abs(
-            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(25.0)))
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(30.0)))
         )
         sweep_angle = abs(
-            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(225.0)))
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(210.0)))
         )
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
@@ -941,6 +970,7 @@ class CompetitionFlow:
         ))
         if (
             speed <= 0.0
+            or final_speed <= 0.0
             or step_angle <= 0.0
             or sweep_angle <= 0.0
             or sweep_angle >= 2.0 * math.pi
@@ -996,10 +1026,12 @@ class CompetitionFlow:
                 math.degrees(sweep_angle)
             ),
         )
-        final_timeout = (2.0 * math.pi - sweep_angle) / speed + step_margin + 1.0
+        final_timeout = (
+            (2.0 * math.pi - sweep_angle) / final_speed + step_margin + 1.0
+        )
         self._return_qr_to_yaw(
             initial_yaw,
-            speed,
+            final_speed,
             final_tolerance,
             stale_sec,
             final_timeout,
@@ -1033,30 +1065,186 @@ class CompetitionFlow:
             "required": True,
         }
 
+    def _factory_navigator_args(self, center_only, start_paused):
+        return {
+            "trigger_mode": "vision",
+            "vision_topic": "/vision/detected",
+            "target_topic": "/vision/target",
+            "trigger_service": self.trigger_service_name,
+            "start_paused": start_paused,
+            "start_navigation_service": (
+                "/vision_triggered_navigator/start_navigation"
+            ),
+            "publish_initial_pose": (
+                False if self.mode == "task1_task2" else
+                bool_param("~navigator_publish_initial_pose", False)
+            ),
+            "navigate_to_end_after_trigger": False,
+            "coverage_search_mode": True,
+            "target_center_steering_sign": rospy.get_param(
+                "~target_center_steering_sign", -1.0),
+            "camera_boresight_yaw_offset": rospy.get_param(
+                "~camera_boresight_yaw_offset", 0.0),
+            "center_only": center_only,
+            "validate_parking_box": not center_only,
+            "max_coverage_anchors": int(rospy.get_param(
+                "~max_coverage_anchors", 0)),
+            "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
+            "parking_goal_offset": rospy.get_param(
+                "~parking_goal_offset", 0.26),
+            "parking_staging_offset": rospy.get_param(
+                "~parking_staging_offset", 0.55),
+            "parking_staging_timeout_sec": rospy.get_param(
+                "~parking_staging_timeout_sec", 20.0),
+            "parking_staging_position_tolerance": rospy.get_param(
+                "~parking_staging_position_tolerance", 0.10),
+            "parking_staging_yaw_tolerance": rospy.get_param(
+                "~parking_staging_yaw_tolerance", 0.10),
+            "parking_docking_timeout_sec": rospy.get_param(
+                "~parking_docking_timeout_sec", 15.0),
+            "parking_dock_max_x": rospy.get_param("~parking_dock_max_x", 0.10),
+            "parking_dock_max_y": rospy.get_param("~parking_dock_max_y", 0.06),
+            "parking_dock_max_yaw": rospy.get_param(
+                "~parking_dock_max_yaw", 0.15),
+            "parking_dock_min_yaw": rospy.get_param(
+                "~parking_dock_min_yaw", 0.15),
+            "parking_dock_normal_tolerance": rospy.get_param(
+                "~parking_dock_normal_tolerance", 0.015),
+            "parking_dock_tangent_tolerance": rospy.get_param(
+                "~parking_dock_tangent_tolerance", 0.02),
+            "parking_dock_yaw_tolerance": rospy.get_param(
+                "~parking_dock_yaw_tolerance", 0.035),
+            "parking_min_wall_distance": rospy.get_param(
+                "~parking_min_wall_distance", 0.19),
+            "parking_lidar_stop_distance": rospy.get_param(
+                "~parking_lidar_stop_distance", 0.15),
+            "parking_recenter_tolerance": rospy.get_param(
+                "~parking_recenter_tolerance", 0.04),
+            "parking_recenter_timeout_sec": rospy.get_param(
+                "~parking_recenter_timeout_sec", 8.0),
+            "parking_recenter_initial_wait_sec": rospy.get_param(
+                "~parking_recenter_initial_wait_sec", 1.0),
+            "parking_wall_fit_half_angle_deg": rospy.get_param(
+                "~parking_wall_fit_half_angle_deg", 35.0),
+            "parking_wall_fit_min_points": rospy.get_param(
+                "~parking_wall_fit_min_points", 12),
+            "parking_wall_fit_min_span": rospy.get_param(
+                "~parking_wall_fit_min_span", 0.25),
+            "parking_wall_fit_near_min_span": rospy.get_param(
+                "~parking_wall_fit_near_min_span", 0.18),
+            "parking_wall_fit_max_distance_jump": rospy.get_param(
+                "~parking_wall_fit_max_distance_jump", 0.05),
+            "parking_wall_fit_max_normal_jump_deg": rospy.get_param(
+                "~parking_wall_fit_max_normal_jump_deg", 8.0),
+            "parking_wall_fit_max_residual": rospy.get_param(
+                "~parking_wall_fit_max_residual", 0.015),
+            "parking_wall_fit_max_normal_error_deg": rospy.get_param(
+                "~parking_wall_fit_max_normal_error_deg", 20.0),
+            "parking_normal_offset": rospy.get_param("~parking_normal_offset", 0.0),
+            "parking_tangent_offset": rospy.get_param(
+                "~parking_tangent_offset", 0.0),
+            "parking_box_width": rospy.get_param("~parking_box_width", 0.50),
+            "parking_box_depth": rospy.get_param("~parking_box_depth", 0.50),
+            "parking_xy_tolerance": rospy.get_param("~parking_xy_tolerance", 0.04),
+            "parking_yaw_tolerance": rospy.get_param("~parking_yaw_tolerance", 0.06),
+            "target_center_coarse_step_deg": rospy.get_param(
+                "~target_center_coarse_step_deg", 4.0),
+            "target_center_fine_step_deg": rospy.get_param(
+                "~target_center_fine_step_deg", 2.0),
+            "target_center_start_speed": rospy.get_param(
+                "~target_center_start_speed", 0.20),
+            "target_center_step_max_speed": rospy.get_param(
+                "~target_center_max_speed", 0.35),
+            "target_center_timeout_sec": rospy.get_param(
+                "~target_center_timeout_sec", 12.0),
+            "coverage_scan_step_deg": rospy.get_param(
+                "~coverage_scan_step_deg", 20.0),
+            "coverage_scan_angular_speed": rospy.get_param(
+                "~coverage_scan_angular_speed", 0.35),
+            "coverage_scan_dwell_sec": rospy.get_param(
+                "~coverage_scan_dwell_sec", 0.65),
+            "coverage_candidate_hold_sec": rospy.get_param(
+                "~coverage_candidate_hold_sec", 1.2),
+            "coverage_scan_max_dwell_sec": rospy.get_param(
+                "~coverage_scan_max_dwell_sec", 2.0),
+            "coverage_scan_pose_timeout_sec": rospy.get_param(
+                "~coverage_scan_pose_timeout_sec", 0.5),
+            "coverage_goal_soft_timeout_sec": rospy.get_param(
+                "~coverage_goal_soft_timeout_sec", 25.0),
+            "coverage_goal_hard_timeout_sec": rospy.get_param(
+                "~coverage_goal_hard_timeout_sec", 40.0),
+            "coverage_goal_progress_window_sec": rospy.get_param(
+                "~coverage_goal_progress_window_sec", 5.0),
+            "coverage_goal_min_progress": rospy.get_param(
+                "~coverage_goal_min_progress", 0.03),
+        }
+
     def _factory_ocr_is_running(self):
         proc = self.children.get("factory_ocr")
         return proc is not None and proc.poll() is None
 
-    def _prewarm_factory_ocr_for_task2(self):
+    def _prewarm_task2_stack(self):
         if "task2" not in stage_sequence(self.mode, self.enable_simulation):
             return False
-        if self._factory_ocr_is_running():
-            return True
-        self.ocr_target = self.category
-        self.ocr_filter.reset()
-        self.ocr_last_message_at = 0.0
-        self.publish_status(
-            "task1",
-            "prewarming_factory_ocr",
-            "starting warehouse OCR while Spark X2 is reasoning",
-        )
-        self.start_child(
-            "factory_ocr",
-            "factory_sign_ppocr_rknn_test",
-            "factory_sign_ppocr_rknn_test.launch",
-            self._factory_ocr_args(),
-        )
+        if not self._factory_ocr_is_running():
+            self.ocr_target = self.category
+            self.ocr_filter.reset()
+            self.ocr_last_message_at = 0.0
+            self.publish_status(
+                "task1",
+                "prewarming_task2",
+                "first QR accepted; prewarming warehouse OCR and navigator",
+            )
+            self.start_child(
+                "factory_ocr",
+                "factory_sign_ppocr_rknn_test",
+                "factory_sign_ppocr_rknn_test.launch",
+                self._factory_ocr_args(),
+            )
+        navigator = self.children.get("factory_navigator")
+        if navigator is None or navigator.poll() is not None:
+            self.start_child(
+                "factory_navigator",
+                "vision_triggered_navigator",
+                "vision_triggered_navigator.launch",
+                self._factory_navigator_args(
+                    bool_param("~task2_center_only", False),
+                    True,
+                ),
+            )
         return True
+
+    def _wait_task2_prewarm_ready(self):
+        if "task2" not in stage_sequence(self.mode, self.enable_simulation):
+            return
+        timeout = float(rospy.get_param("~task2_prewarm_timeout_sec", 12.0))
+        deadline = time.monotonic() + timeout
+        start_service = "/vision_triggered_navigator/start_navigation"
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            for key in ("factory_ocr", "factory_navigator"):
+                proc = self.children.get(key)
+                if proc is None or proc.poll() is not None:
+                    raise StageError("task2 prewarm process {} is not running".format(key))
+            service_ready = False
+            try:
+                rospy.wait_for_service(start_service, timeout=0.1)
+                service_ready = True
+            except rospy.ROSException:
+                pass
+            if self.ocr_last_message_at and service_ready:
+                self.publish_status(
+                    "task1",
+                    "task2_prewarm_ready",
+                    "warehouse OCR and paused navigator are ready before announcement",
+                )
+                return
+            self.safe_stop()
+        raise StageError(
+            "task2 prewarm was not ready before announcement within {:.1f}s".format(
+                timeout
+            )
+        )
 
     def _start_task1_reasoning_async(self):
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
@@ -1087,7 +1275,7 @@ class CompetitionFlow:
             "three QR items collected; Spark X2 reasoning started in parallel",
         )
         worker.start()
-        self._prewarm_factory_ocr_for_task2()
+        self._prewarm_task2_stack()
         return True
 
     def _task1_reasoning_worker(self, generation, done_event, items, instruction):
@@ -1138,6 +1326,7 @@ class CompetitionFlow:
 
     # ------------------------------ stages ------------------------------
     def task1(self):
+        self.task1_task2_handoff_prepared = False
         with self.lock:
             if self.voice_handshake_error and not self.voice_command_acknowledged:
                 self.wakeup_received = False
@@ -1214,6 +1403,10 @@ class CompetitionFlow:
             "announcement": result.announcement_full,
         }
         self.result_pub.publish(String(data=json.dumps(self.task1_result, ensure_ascii=False)))
+        if "task2" in stage_sequence(self.mode, self.enable_simulation):
+            self.task1_task2_handoff()
+            self._wait_task2_prewarm_ready()
+            self.task1_task2_handoff_prepared = True
         self.announce("task1", text=result.announcement_full)
         self.publish_status("task1", "completed", "voice, QR and reasoning completed")
 
@@ -1273,6 +1466,10 @@ class CompetitionFlow:
                     "vision_topic": "/vision/detected",
                     "target_topic": "/vision/target",
                     "trigger_service": self.trigger_service_name,
+                    "start_paused": True,
+                    "start_navigation_service": (
+                        "/vision_triggered_navigator/start_navigation"
+                    ),
                     "publish_initial_pose": (
                         False if self.mode == "task1_task2" else
                         bool_param("~navigator_publish_initial_pose", False)),
@@ -1380,6 +1577,30 @@ class CompetitionFlow:
                     "coverage_goal_min_progress": rospy.get_param(
                         "~coverage_goal_min_progress", 0.03),
                 },
+                reuse_running=True,
+            )
+            start_service = "/vision_triggered_navigator/start_navigation"
+            try:
+                rospy.wait_for_service(
+                    start_service,
+                    timeout=float(rospy.get_param(
+                        "~navigator_ready_timeout_sec", 12.0)),
+                )
+                start_response = rospy.ServiceProxy(start_service, Trigger)()
+            except (rospy.ROSException, rospy.ServiceException) as exc:
+                raise StageError(
+                    "prewarmed navigator start service failed: {}".format(exc)
+                )
+            if not start_response.success:
+                raise StageError(
+                    "prewarmed navigator refused start: {}".format(
+                        start_response.message
+                    )
+                )
+            self.publish_status(
+                "task2",
+                "navigation_released",
+                "announcement completed; prewarmed navigation released",
             )
             timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))
             deadline = time.time() + timeout
@@ -1435,44 +1656,73 @@ class CompetitionFlow:
                 "task2 announcement service completed")
         self.publish_status("task2", "completed", "target factory reached")
 
-    def task3(self):
+    def _start_task3_async(self):
+        if "task3" not in stage_sequence(self.mode, self.enable_simulation):
+            return False
         if not self.sim_category:
-            raise StageError("task3 sim_category is missing")
+            return False
+        with self.lock:
+            if self.task3_thread is not None:
+                return True
+            worker = threading.Thread(
+                target=self._task3_worker,
+                name="task3-simulation",
+                daemon=True,
+            )
+            self.task3_thread = worker
+        self.publish_status(
+            "task3",
+            "starting_from_first_qr",
+            "first QR accepted; starting simulation task in parallel",
+        )
+        worker.start()
+        return True
+
+    def _task3_worker(self):
+        result_text = ""
+        error = ""
+        sock = None
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
-        if not host:
-            raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
         timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
-        self.publish_status("task3", "connecting", "connecting to {}:{}".format(host, port))
         try:
+            if not host:
+                raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
+            self.publish_status(
+                "task3", "connecting", "connecting to {}:{}".format(host, port)
+            )
             sock = socket.create_connection((host, port), timeout=10.0)
             sock.settimeout(1.0)
-        except OSError as exc:
-            raise StageError("simulation bridge connection failed: {}".format(exc))
-        request_id = str(uuid.uuid4())
-        deadline = time.time() + timeout
-        result_text = ""
-        done_received = False
-        done_received_at = 0.0
-        try:
             request = {
                 "command": "start",
                 "target": self.sim_category,
-                "request_id": request_id,
+                "request_id": str(uuid.uuid4()),
             }
-            sock.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
-            self.publish_status("task3", "running", "simulation task started")
+            sock.sendall(
+                (json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8")
+            )
+            self.publish_status(
+                "task3", "running_parallel", "simulation task started from first QR"
+            )
             decoder = JsonLineBuffer()
+            deadline = time.time() + timeout
+            done_received = False
+            done_received_at = 0.0
             while time.time() < deadline:
-                self.check_abort()
+                if self.aborted.is_set() or rospy.is_shutdown():
+                    raise Aborted("competition aborted during simulation")
                 if done_received and time.time() - done_received_at > 3.0:
-                    raise StageError("simulation reported done without a success result")
+                    raise StageError(
+                        "simulation reported done without a success result"
+                    )
                 try:
                     chunk = sock.recv(4096)
                 except socket.timeout:
                     continue
                 except OSError as exc:
-                    raise StageError("simulation bridge disconnected: {}".format(exc))
+                    raise StageError(
+                        "simulation bridge disconnected: {}".format(exc)
+                    )
                 if not chunk:
                     raise StageError("simulation bridge disconnected")
                 for event in decoder.feed(chunk):
@@ -1480,7 +1730,7 @@ class CompetitionFlow:
                     value = event.get("data")
                     if event_type == "state":
                         state_text = str(value or "")
-                        self.publish_status("task3", "running", state_text)
+                        self.publish_status("task3", "running_parallel", state_text)
                         if state_text.startswith("FAILED:"):
                             raise StageError(state_text)
                     elif event_type == "result":
@@ -1496,11 +1746,40 @@ class CompetitionFlow:
                     break
             else:
                 raise StageError("simulation task timed out")
+            if not result_text.startswith("SUCCESS:"):
+                raise StageError("simulation completed without a success result")
+        except Exception as exc:
+            error = str(exc)
         finally:
-            try:
-                sock.close()
-            except Exception:
-                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            with self.lock:
+                self.task3_result_text = result_text
+                self.task3_error = error
+            self.task3_done.set()
+
+    def task3(self):
+        if not self.sim_category:
+            raise StageError("task3 sim_category is missing")
+        self._start_task3_async()
+        if self.task3_thread is None:
+            raise StageError("task3 simulation worker did not start")
+        if not self.task3_done.is_set():
+            self.publish_status(
+                "task3",
+                "waiting_parallel_result",
+                "simulation was started from the first QR; waiting for completion",
+            )
+        while not self.task3_done.wait(0.1):
+            self.check_abort()
+        with self.lock:
+            result_text = self.task3_result_text
+            error = self.task3_error
+        if error:
+            raise StageError(error)
         if not result_text.startswith("SUCCESS:"):
             raise StageError("simulation completed without a success result")
         item = self.task1_result.get("sim_item") or self.task1_result.get("pickup_item")
@@ -1664,7 +1943,8 @@ class CompetitionFlow:
             previous_stage = None
             for stage in stage_sequence(self.mode, self.enable_simulation):
                 if previous_stage == "task1" and stage == "task2":
-                    self.run_stage("task1", self.task1_task2_handoff)
+                    if not self.task1_task2_handoff_prepared:
+                        self.run_stage("task1", self.task1_task2_handoff)
                 if task4_handoff_required(previous_stage, stage):
                     source_stage = previous_stage
                     self.run_stage(

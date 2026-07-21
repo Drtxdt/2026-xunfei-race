@@ -1,7 +1,7 @@
 <launch>
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
-  <arg name="enable_simulation" default="false" />
+  <arg name="enable_simulation" default="true" />
   <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
   <arg name="sim_bridge_port" default="26003" />
   <arg name="traffic_pose_configured" default="true" />

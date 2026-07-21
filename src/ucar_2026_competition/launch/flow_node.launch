@@ -1,6 +1,6 @@
 <launch>
   <arg name="start_stage" default="full" />
-  <arg name="enable_simulation" default="false" />
+  <arg name="enable_simulation" default="true" />
   <arg name="debug" default="false" />
   <arg name="target_category" default="" />
   <arg name="sim_category" default="" />

@@ -108,6 +108,14 @@ class VisionTriggeredNavigator(object):
             "~status_topic", "/vision_triggered_navigator/status")
         self.trigger_service_name = rospy.get_param(
             "~trigger_service", "/vision_triggered_navigator/trigger_target")
+        self.start_paused = bool(rospy.get_param("~start_paused", False))
+        self.start_navigation_service_name = rospy.get_param(
+            "~start_navigation_service",
+            "/vision_triggered_navigator/start_navigation",
+        )
+        self.navigation_start_event = threading.Event()
+        if not self.start_paused:
+            self.navigation_start_event.set()
         self.navigate_to_end_after_trigger = rospy.get_param(
             "~navigate_to_end_after_trigger", True)
 
@@ -373,6 +381,11 @@ class VisionTriggeredNavigator(object):
         # 只有在 action client 和全部状态完成初始化后才接收触发，避免启动竞态。
         self.trigger_service = rospy.Service(
             self.trigger_service_name, Trigger, self._trigger_service_cb)
+        self.start_navigation_service = rospy.Service(
+            self.start_navigation_service_name,
+            Trigger,
+            self._start_navigation_service_cb,
+        )
         rospy.loginfo("[vision_triggered_navigator] 可靠触发服务已就绪: %s",
                       self.trigger_service_name)
         if self.trigger_mode == "vision":
@@ -458,6 +471,14 @@ class VisionTriggeredNavigator(object):
         if accepted:
             return TriggerResponse(True, "target trigger accepted and latched")
         return TriggerResponse(True, "target trigger was already latched")
+
+    def _start_navigation_service_cb(self, _request):
+        """Release a fully initialized navigator without restarting its process."""
+        if self.navigation_start_event.is_set():
+            return TriggerResponse(True, "navigation was already released")
+        self.navigation_start_event.set()
+        self._publish_status("start_released")
+        return TriggerResponse(True, "navigation released")
 
     def _target_cb(self, msg):
         """保存当前目标厂牌在完整图像中的水平位置。"""
@@ -1987,6 +2008,16 @@ class VisionTriggeredNavigator(object):
     # 主循环
     # ------------------------------------------------------------------
     def run(self):
+        if not self.navigation_start_event.is_set():
+            self._publish_status("prewarmed_waiting_start")
+            rospy.loginfo(
+                "[vision_triggered_navigator] 初始化完成，等待总控放行导航。"
+            )
+        while (not rospy.is_shutdown() and
+               not self.navigation_start_event.wait(0.1)):
+            pass
+        if rospy.is_shutdown():
+            return
         rospy.loginfo("[vision_triggered_navigator] 节点启动，开始三阶段导航.")
         if (self.coverage_search_mode and
                 not self._disable_move_base_recovery_for_coverage()):

@@ -5,6 +5,8 @@
   <arg name="vision_topic" default="/vision/detected" />
   <arg name="status_topic" default="/vision_triggered_navigator/status" />
   <arg name="trigger_service" default="/vision_triggered_navigator/trigger_target" />
+  <arg name="start_paused" default="false" />
+  <arg name="start_navigation_service" default="/vision_triggered_navigator/start_navigation" />
   <arg name="publish_initial_pose" default="true" />
   <arg name="navigate_to_end_after_trigger" default="true" />
   <arg name="coverage_search_mode" default="false" />
@@ -75,6 +77,8 @@
     <param name="vision_topic" value="$(arg vision_topic)" />
     <param name="status_topic" value="$(arg status_topic)" />
     <param name="trigger_service" value="$(arg trigger_service)" />
+    <param name="start_paused" value="$(arg start_paused)" />
+    <param name="start_navigation_service" value="$(arg start_navigation_service)" />
     <param name="publish_initial_pose" value="$(arg publish_initial_pose)" />
     <param name="navigate_to_end_after_trigger" value="$(arg navigate_to_end_after_trigger)" />
     <param name="coverage_search_mode" value="$(arg coverage_search_mode)" />
