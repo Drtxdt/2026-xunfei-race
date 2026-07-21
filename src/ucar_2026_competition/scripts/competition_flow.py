@@ -1385,7 +1385,7 @@ class CompetitionFlow:
                     "parking_lidar_stop_distance": rospy.get_param(
                         "~parking_lidar_stop_distance", 0.15),
                     "parking_recenter_tolerance": rospy.get_param(
-                        "~parking_recenter_tolerance", 0.08),
+                        "~parking_recenter_tolerance", 0.04),
                     "parking_recenter_timeout_sec": rospy.get_param(
                         "~parking_recenter_timeout_sec", 8.0),
                     "parking_recenter_initial_wait_sec": rospy.get_param(

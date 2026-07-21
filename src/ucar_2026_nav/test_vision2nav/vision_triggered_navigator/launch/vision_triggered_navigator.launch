@@ -51,7 +51,7 @@
   <arg name="parking_dock_yaw_tolerance" default="0.035" />
   <arg name="parking_min_wall_distance" default="0.19" />
   <arg name="parking_lidar_stop_distance" default="0.15" />
-  <arg name="parking_recenter_tolerance" default="0.08" />
+  <arg name="parking_recenter_tolerance" default="0.04" />
   <arg name="parking_recenter_timeout_sec" default="8.0" />
   <arg name="parking_recenter_initial_wait_sec" default="1.0" />
   <arg name="parking_wall_fit_half_angle_deg" default="35.0" />

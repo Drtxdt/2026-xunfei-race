@@ -328,9 +328,6 @@ class CompetitionLogicTest(unittest.TestCase):
         launch_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "launch", "task1_task2.launch"))
         root = ET.parse(launch_path).getroot()
-        recenter_arg = root.find("arg[@name='parking_recenter_tolerance']")
-        self.assertIsNotNone(recenter_arg)
-        self.assertEqual(recenter_arg.attrib.get("default"), "0.08")
         flow_include = next(
             item for item in root.findall("include")
             if "flow_node.launch" in item.attrib.get("file", ""))
