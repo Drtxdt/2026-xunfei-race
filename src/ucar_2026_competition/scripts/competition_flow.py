@@ -946,9 +946,9 @@ class CompetitionFlow:
         raise StageError("QR scan failed to return to its original final yaw")
 
     def scan_qr_at_current_pose(self, status_state):
-        """Run the first-version nine-stop scan, then restore the final yaw."""
+        """Sweep 210 degrees forward and backward, then restore the final yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.60)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.70)))
         final_speed = abs(float(
             rospy.get_param("~qr_final_return_angular_speed", 1.20)
         ))
@@ -956,9 +956,9 @@ class CompetitionFlow:
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(30.0)))
         )
         sweep_angle = abs(
-            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(270.0)))
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(210.0)))
         )
-        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
+        settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.2)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
@@ -984,7 +984,7 @@ class CompetitionFlow:
         self.publish_status(
             "task1",
             status_state,
-            "step scan start: count={}/{} sweep={:.0f}deg steps={}".format(
+            "bidirectional step scan start: count={}/{} sweep={:.0f}deg x2 steps={}".format(
                 self._qr_count(),
                 expected_count,
                 math.degrees(sweep_angle),
@@ -996,38 +996,40 @@ class CompetitionFlow:
             settle_sec, expected_count, scan_deadline, stale_sec
         )
 
-        for index, angle in enumerate(steps, start=1):
-            self._rotate_qr_step(
-                angle,
-                speed,
-                1.0,
-                stale_sec,
-                scan_deadline,
-                step_margin,
-            )
-            self.publish_status(
-                "task1",
-                status_state,
-                "scan stop {}/{}: yaw step {:.0f}deg, hold {:.1f}s".format(
-                    index,
-                    len(steps),
-                    math.degrees(angle),
-                    settle_sec,
-                ),
-            )
-            self._settle_for_qr(
-                settle_sec, expected_count, scan_deadline, stale_sec
-            )
+        for pass_name, direction in (("forward", 1.0), ("reverse", -1.0)):
+            for index, angle in enumerate(steps, start=1):
+                self._rotate_qr_step(
+                    angle,
+                    speed,
+                    direction,
+                    stale_sec,
+                    scan_deadline,
+                    step_margin,
+                )
+                self.publish_status(
+                    "task1",
+                    status_state,
+                    "{} scan stop {}/{}: yaw step {:.0f}deg, hold {:.1f}s".format(
+                        pass_name,
+                        index,
+                        len(steps),
+                        math.degrees(angle),
+                        settle_sec,
+                    ),
+                )
+                self._settle_for_qr(
+                    settle_sec, expected_count, scan_deadline, stale_sec
+                )
 
         self.publish_status(
             "task1",
             "qr_returning_final_yaw",
-            "{:.0f}-degree scan complete; returning to the original final yaw".format(
+            "{:.0f}-degree forward/reverse scan complete; correcting final yaw".format(
                 math.degrees(sweep_angle)
             ),
         )
         final_timeout = (
-            (2.0 * math.pi - sweep_angle) / final_speed + step_margin + 1.0
+            sweep_angle / final_speed + step_margin + 1.0
         )
         self._return_qr_to_yaw(
             initial_yaw,

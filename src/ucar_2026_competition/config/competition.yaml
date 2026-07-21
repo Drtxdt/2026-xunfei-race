@@ -7,13 +7,13 @@ qr_navigation_timeout_sec: 120.0
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
-qr_scan_angular_speed: 0.60
+qr_scan_angular_speed: 0.70
 qr_final_return_angular_speed: 1.20
 qr_final_return_min_angular_speed: 0.25
 qr_final_return_slowdown_angle_rad: 0.4363323129985824
 qr_scan_step_angle_rad: 0.5235987755982988
-qr_scan_total_angle_rad: 4.71238898038469
-qr_scan_settle_sec: 0.3
+qr_scan_total_angle_rad: 3.6651914291880923
+qr_scan_settle_sec: 0.2
 qr_final_yaw_tolerance_rad: 0.03490658503988659
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
