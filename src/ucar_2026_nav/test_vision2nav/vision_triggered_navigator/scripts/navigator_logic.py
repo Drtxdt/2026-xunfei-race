@@ -472,24 +472,6 @@ def center_step_angle(error, tolerance, fine_threshold,
     return abs(float(coarse_step_angle))
 
 
-def centering_feedback_action(improvement, reverse_threshold,
-                              steering_validated, reversed_once,
-                              validated_regressions,
-                              max_validated_regressions=2):
-    """Choose a safe response to noisy stop-look centering feedback."""
-    improvement = float(improvement)
-    reverse_threshold = abs(float(reverse_threshold))
-    if improvement > 0.0:
-        return "accept"
-    if steering_validated:
-        if int(validated_regressions) >= int(max_validated_regressions):
-            return "fail"
-        return "retry_fine"
-    if improvement < -reverse_threshold:
-        return "fail" if reversed_once else "reverse"
-    return "accept"
-
-
 def parking_footprint_margins(pose, wall_point, inward_normal,
                               box_width, box_depth,
                               footprint_half_length, footprint_half_width,

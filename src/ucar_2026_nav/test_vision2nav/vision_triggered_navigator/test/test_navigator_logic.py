@@ -14,7 +14,6 @@ if SCRIPTS not in sys.path:
 from navigator_logic import (
     build_quadrilateral_walls,
     center_angular_command,
-    centering_feedback_action,
     center_step_angle,
     coverage_motion_is_rotation_stall,
     coverage_position_needs_yaw_alignment,
@@ -221,18 +220,6 @@ def test_center_step_uses_coarse_fine_and_stop_bands():
                              math.radians(4), math.radians(2)) == math.radians(2)
     assert center_step_angle(0.04, 0.08, 0.20,
                              math.radians(4), math.radians(2)) == 0.0
-
-
-def test_centering_feedback_keeps_a_validated_direction_through_ocr_jitter():
-    assert centering_feedback_action(-0.059, 0.03, True, False, 0) == "retry_fine"
-    assert centering_feedback_action(-0.109, 0.03, True, False, 1) == "retry_fine"
-    assert centering_feedback_action(-0.109, 0.03, True, False, 2) == "fail"
-
-
-def test_centering_feedback_reverses_only_an_unvalidated_bad_direction():
-    assert centering_feedback_action(-0.06, 0.03, False, False, 0) == "reverse"
-    assert centering_feedback_action(-0.06, 0.03, False, True, 0) == "fail"
-    assert centering_feedback_action(0.10, 0.03, True, False, 0) == "accept"
 
 
 def test_full_footprint_must_fit_inside_50cm_wall_box():

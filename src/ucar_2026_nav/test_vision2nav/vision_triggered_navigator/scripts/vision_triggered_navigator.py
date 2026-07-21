@@ -34,7 +34,6 @@ from navigator_logic import (
     fit_wall_line,
     lidar_base_wall_distance,
     lidar_requires_stop,
-    centering_feedback_action,
     center_step_angle,
     costmap_value_at,
     exact_observation_target,
@@ -1326,10 +1325,6 @@ class VisionTriggeredNavigator(object):
         steering_sign = self.target_center_steering_sign
         reversed_once = False
         must_improve_after_reverse = False
-        improving_steps = 0
-        steering_validated = False
-        validated_regressions = 0
-        force_fine_step = False
 
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             age = rospy.get_time() - self.target_payload_at
@@ -1367,8 +1362,6 @@ class VisionTriggeredNavigator(object):
                 self.target_center_coarse_step,
                 self.target_center_fine_step,
             )
-            if force_fine_step:
-                step_angle = min(step_angle, self.target_center_fine_step)
             direction = (1.0 if steering_sign >= 0.0 else -1.0) * math.copysign(
                 1.0, before_error)
             rospy.loginfo(
@@ -1395,39 +1388,16 @@ class VisionTriggeredNavigator(object):
                     return self._centering_failure(
                         "自动反向后误差仍未减小，停止居中.", failure_state)
                 must_improve_after_reverse = False
-                improving_steps = 1
-                validated_regressions = 0
-            else:
-                action = centering_feedback_action(
-                    improvement,
-                    self.target_center_reverse_threshold,
-                    steering_validated,
-                    reversed_once,
-                    validated_regressions,
-                )
-                if action == "accept":
-                    if improvement > self.target_center_reverse_threshold:
-                        improving_steps += 1
-                        steering_validated = improving_steps >= 2
-                        validated_regressions = 0
-                elif action == "retry_fine":
-                    validated_regressions += 1
-                    force_fine_step = True
-                    rospy.logwarn(
-                        "[vision_triggered_navigator] 已验证居中方向，忽略单帧OCR框抖动并降为%.1fdeg细步进 (%d/2).",
-                        math.degrees(self.target_center_fine_step),
-                        validated_regressions)
-                elif action == "fail":
+            elif improvement < -self.target_center_reverse_threshold:
+                if reversed_once:
                     return self._centering_failure(
-                        "连续OCR居中反馈均未改善，停止居中.", failure_state)
-                elif action == "reverse":
-                    steering_sign *= -1.0
-                    reversed_once = True
-                    must_improve_after_reverse = True
-                    improving_steps = 0
-                    rospy.logwarn(
-                        "[vision_triggered_navigator] 首次步进使误差增大，自动反转居中方向为%+.0f.",
-                        steering_sign)
+                        "目标误差再次增大，停止居中.", failure_state)
+                steering_sign *= -1.0
+                reversed_once = True
+                must_improve_after_reverse = True
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 首次步进使误差增大，自动反转居中方向为%+.0f.",
+                    steering_sign)
 
         return self._centering_failure(
             "目标居中超过%.1fs，车辆保持停车." % timeout, failure_state)
