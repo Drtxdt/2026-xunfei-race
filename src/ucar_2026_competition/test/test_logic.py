@@ -50,15 +50,15 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertAlmostEqual(tracker.update(0.19), 0.2)
         self.assertAlmostEqual(tracker.update(0.21), 0.21)
 
-    def test_qr_scan_splits_210_degrees_into_seven_30_degree_steps(self):
+    def test_qr_scan_splits_200_degrees_into_ten_20_degree_steps(self):
         steps = split_rotation_steps(
-            7.0 * 3.141592653589793 / 6.0,
-            3.141592653589793 / 6.0,
+            10.0 * 3.141592653589793 / 9.0,
+            3.141592653589793 / 9.0,
         )
-        self.assertEqual(len(steps), 7)
+        self.assertEqual(len(steps), 10)
         for step in steps:
-            self.assertAlmostEqual(step, 3.141592653589793 / 6.0)
-        self.assertAlmostEqual(sum(steps), 7.0 * 3.141592653589793 / 6.0)
+            self.assertAlmostEqual(step, 3.141592653589793 / 9.0)
+        self.assertAlmostEqual(sum(steps), 10.0 * 3.141592653589793 / 9.0)
 
     def test_voice_category(self):
         self.assertEqual(parse_category("小飞小飞，请取得食品类"), "food")

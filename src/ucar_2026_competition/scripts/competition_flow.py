@@ -946,17 +946,17 @@ class CompetitionFlow:
         raise StageError("QR scan failed to return to its original final yaw")
 
     def scan_qr_at_current_pose(self, status_state):
-        """Run one seven-stop scan pass, then restore the original final yaw."""
+        """Run one ten-stop scan pass, then restore the original final yaw."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 1.00)))
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.50)))
         final_speed = abs(float(
-            rospy.get_param("~qr_final_return_angular_speed", 1.20)
+            rospy.get_param("~qr_final_return_angular_speed", 0.70)
         ))
         step_angle = abs(
-            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(30.0)))
+            float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(20.0)))
         )
         sweep_angle = abs(
-            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(210.0)))
+            float(rospy.get_param("~qr_scan_total_angle_rad", math.radians(200.0)))
         )
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.3)))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
