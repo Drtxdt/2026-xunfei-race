@@ -99,6 +99,7 @@ coverage_scan_angular_speed: 0.35
 coverage_scan_dwell_sec: 0.65
 coverage_candidate_hold_sec: 1.2
 coverage_scan_max_dwell_sec: 2.0
+coverage_navigation_candidate_pause_count: 2
 coverage_scan_pose_timeout_sec: 0.5
 coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0

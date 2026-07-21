@@ -1438,6 +1438,8 @@ class CompetitionFlow:
                         "~coverage_candidate_hold_sec", 1.2),
                     "coverage_scan_max_dwell_sec": rospy.get_param(
                         "~coverage_scan_max_dwell_sec", 2.0),
+                    "coverage_navigation_candidate_pause_count": rospy.get_param(
+                        "~coverage_navigation_candidate_pause_count", 2),
                     "coverage_scan_pose_timeout_sec": rospy.get_param(
                         "~coverage_scan_pose_timeout_sec", 0.5),
                     "coverage_goal_soft_timeout_sec": rospy.get_param(

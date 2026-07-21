@@ -165,6 +165,8 @@ class VisionTriggeredNavigator(object):
         self.coverage_scan_max_dwell = max(
             self.coverage_scan_dwell,
             float(rospy.get_param("~coverage_scan_max_dwell_sec", 2.0)))
+        self.coverage_navigation_candidate_pause_count = max(0, int(
+            rospy.get_param("~coverage_navigation_candidate_pause_count", 2)))
         self.coverage_scan_pose_timeout = max(0.1, float(rospy.get_param(
             "~coverage_scan_pose_timeout_sec", 0.5)))
         self.coverage_scan_step_timeout_margin = max(0.1, float(rospy.get_param(
@@ -799,6 +801,8 @@ class VisionTriggeredNavigator(object):
         rotation_window_yaw = None
         rotation_accumulated = 0.0
         anchor_close_since = None
+        candidate_handled_at = started
+        candidate_pause_count = 0
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             state = self.move_base_client.get_state()
@@ -806,6 +810,53 @@ class VisionTriggeredNavigator(object):
                 break
             if self.coverage_search_mode and not self.triggered:
                 now = rospy.get_time()
+                candidate_at = self.target_payload_at
+                if (candidate_pause_count <
+                        self.coverage_navigation_candidate_pause_count and
+                        candidate_at > candidate_handled_at and
+                        now - candidate_at <= self.target_bbox_stale):
+                    candidate_pause_count += 1
+                    candidate_handled_at = candidate_at
+                    self._publish_status("coverage_navigation_candidate_hold")
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] target candidate seen while "
+                        "moving; pausing goal for stable OCR confirmation (%d/%d).",
+                        candidate_pause_count,
+                        self.coverage_navigation_candidate_pause_count)
+                    self.cancel_goal()
+                    if not self._wait_navigation_idle():
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] move_base did not release "
+                            "control for navigation candidate hold.")
+                        break
+                    self._hold_scan_step(
+                        "coverage navigation candidate", candidate_at,
+                        force_initial_candidate=True)
+                    if self.triggered:
+                        break
+
+                    candidate_handled_at = max(
+                        candidate_handled_at, self.target_payload_at)
+                    goal.target_pose.header.stamp = rospy.Time.now()
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] candidate was not confirmed; "
+                        "resuming the same exact coverage anchor.")
+                    self.move_base_client.send_goal(goal)
+                    started = rospy.get_time()
+                    progress_samples = []
+                    last_progress_check = 0.0
+                    last_progress_log = 0.0
+                    latest_distance = float("nan")
+                    latest_yaw_error = float("nan")
+                    window_progress = 0.0
+                    coverage_extended = False
+                    rotation_window_started = started
+                    rotation_window_pose = None
+                    rotation_window_yaw = None
+                    rotation_accumulated = 0.0
+                    anchor_close_since = None
+                    rate.sleep()
+                    continue
                 elapsed = now - started
                 if now - last_progress_check >= 0.25:
                     last_progress_check = now
@@ -928,13 +979,18 @@ class VisionTriggeredNavigator(object):
 
         return final_state
 
-    def _hold_scan_step(self, step_label, candidate_since):
+    def _hold_scan_step(self, step_label, candidate_since,
+                        force_initial_candidate=False):
         """Publish zero velocity while OCR consumes stable frames at one heading."""
         started = rospy.get_time()
+        initial_candidate_at = self.target_payload_at
+        if (force_initial_candidate and
+                initial_candidate_at >= candidate_since):
+            initial_candidate_at = started
         deadline = scan_dwell_deadline(
             started,
             self.coverage_scan_dwell,
-            self.target_payload_at if self.target_payload_at >= candidate_since else 0.0,
+            initial_candidate_at if initial_candidate_at >= candidate_since else 0.0,
             self.coverage_candidate_hold,
             self.coverage_scan_max_dwell,
         )
