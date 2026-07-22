@@ -47,6 +47,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -154,6 +155,17 @@ class CompetitionFlow:
             rospy.get_param("~ocr_required_hits", 2),
             rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
+        self.ocr_memory_filters = {
+            category: TemporalTargetFilter(
+                rospy.get_param("~ocr_memory_required_hits", 2),
+                rospy.get_param("~ocr_evidence_window_sec", 1.5),
+            )
+            for category in CATEGORY_LABELS
+        }
+        self.ocr_memory_min_score = float(rospy.get_param(
+            "~ocr_memory_min_score", 0.55))
+        self.task2_warehouse_memory = {}
+        self.current_coverage_anchor = None
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -485,7 +497,28 @@ class CompetitionFlow:
             category = normalize_category(payload.get("category"))
         except Exception:
             return
-        self.ocr_last_message_at = time.monotonic()
+        now = time.monotonic()
+        self.ocr_last_message_at = now
+        memory_confirmed = False
+        for candidate, candidate_filter in self.ocr_memory_filters.items():
+            if candidate_filter.push(candidate, category, now):
+                memory_confirmed = candidate == category
+        score = float(payload.get("category_score", 0.0) or 0.0)
+        if (memory_confirmed and payload.get("target_bbox") and
+                score >= self.ocr_memory_min_score):
+            with self.lock:
+                anchor = self.current_coverage_anchor
+                previous = self.task2_warehouse_memory.get(category)
+                if (anchor and (previous is None or
+                                score >= float(previous.get("score", 0.0)))):
+                    self.task2_warehouse_memory[category] = {
+                        "anchor": int(anchor),
+                        "score": score,
+                        "stamp": time.time(),
+                    }
+                    rospy.loginfo(
+                        "task2 warehouse memory: category=%s anchor=%d score=%.3f",
+                        category, anchor, score)
         if category == self.ocr_target and payload.get("target_bbox"):
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
@@ -519,6 +552,19 @@ class CompetitionFlow:
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()
+        if status.startswith("coverage_anchor_observing:"):
+            try:
+                anchor = int(status.rsplit(":", 1)[1])
+            except (TypeError, ValueError):
+                anchor = None
+            with self.lock:
+                self.current_coverage_anchor = anchor
+            rospy.loginfo("task2 observing coverage anchor: %s", anchor)
+            return
+        if status.startswith("coverage_anchor_transit:"):
+            with self.lock:
+                self.current_coverage_anchor = None
+            return
         if status != self.navigator_status:
             rospy.loginfo("task2 navigator status: %s", status)
         self.navigator_status = status
@@ -1332,6 +1378,18 @@ class CompetitionFlow:
         self.trigger_service_accepted = False
         self.trigger_acknowledged = False
         self.navigator_status = ""
+        with self.lock:
+            self.current_coverage_anchor = None
+            for memory_filter in self.ocr_memory_filters.values():
+                memory_filter.reset()
+            preferred_anchor, skipped_anchors = task2_semantic_coverage_hint(
+                self.task2_warehouse_memory, category)
+        if phase == "simulation" and preferred_anchor:
+            rospy.loginfo(
+                "task2 semantic memory: prioritizing remembered %s anchor %d; "
+                "skipping irrelevant anchors=%s",
+                category, preferred_anchor,
+                ",".join(str(value) for value in skipped_anchors) or "none")
         self.publish_status(
             "task2", "searching_{}".format(phase),
             "searching {} factory sign with existing 9-point navigation".format(category))
@@ -1377,6 +1435,11 @@ class CompetitionFlow:
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
                     "coverage_start_nearest": phase == "simulation",
+                    "coverage_preferred_anchor": (
+                        preferred_anchor if phase == "simulation" else 0),
+                    "coverage_skip_anchors": (
+                        ",".join(str(value) for value in skipped_anchors)
+                        if phase == "simulation" else ""),
                     "coverage_abort_fail_fast_count": (
                         max(0, int(rospy.get_param(
                             "~task2_second_search_abort_fail_fast_count", 0)))
@@ -1569,6 +1632,11 @@ class CompetitionFlow:
             (self.category, pickup_item, pickup_workshop),
             (self.sim_category, sim_item, sim_workshop),
         )
+        with self.lock:
+            self.task2_warehouse_memory = {}
+            self.current_coverage_anchor = None
+            for memory_filter in self.ocr_memory_filters.values():
+                memory_filter.reset()
         self.task2_announcement_completed = False
         for visit_index, (phase, category, item, workshop) in enumerate(visits):
             if visit_index > 0:

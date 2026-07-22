@@ -29,6 +29,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -38,6 +39,24 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
+        memory = {
+            "daily": {"anchor": 2, "score": 0.71},
+            "electronics": {"anchor": 8, "score": 0.69},
+            "food": {"anchor": 5, "score": 0.66},
+        }
+        self.assertEqual(
+            task2_semantic_coverage_hint(memory, "electronics"),
+            (8, (2, 5)),
+        )
+
+    def test_task2_semantic_memory_never_skips_shared_target_anchor(self):
+        self.assertEqual(
+            task2_semantic_coverage_hint(
+                {"daily": 3, "electronics": 3}, "electronics"),
+            (3, ()),
+        )
+
     def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))

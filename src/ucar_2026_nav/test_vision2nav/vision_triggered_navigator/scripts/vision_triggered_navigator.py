@@ -152,6 +152,20 @@ class VisionTriggeredNavigator(object):
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
         self.coverage_start_nearest = rospy.get_param(
             "~coverage_start_nearest", False)
+        self.coverage_preferred_anchor = max(0, int(rospy.get_param(
+            "~coverage_preferred_anchor", 0)))
+        raw_skip_anchors = str(rospy.get_param(
+            "~coverage_skip_anchors", "") or "")
+        self.coverage_skip_anchors = set()
+        for value in raw_skip_anchors.split(","):
+            try:
+                anchor = int(value.strip())
+            except (TypeError, ValueError):
+                continue
+            if anchor > 0:
+                self.coverage_skip_anchors.add(anchor)
+        self.coverage_failed_revisit_limit = max(0, int(rospy.get_param(
+            "~coverage_failed_revisit_limit", 1)))
         self.coverage_abort_fail_fast_count = max(0, int(rospy.get_param(
             "~coverage_abort_fail_fast_count", 0)))
         self.center_only = rospy.get_param("~center_only", False)
@@ -1221,7 +1235,8 @@ class VisionTriggeredNavigator(object):
                 # otherwise useful observation point pass without scanning.
                 self.cmd_vel_pub.publish(Twist())
                 arrival_hold_at = rospy.get_time()
-                self._publish_status("coverage_anchor_arrival_scan")
+                self._publish_status(
+                    "coverage_anchor_observing:{}".format(patrol_idx + 1))
                 self._hold_scan_step(
                     "anchor {} arrival view".format(patrol_idx + 1),
                     arrival_hold_at - max(self.target_bbox_stale,
@@ -1288,7 +1303,8 @@ class VisionTriggeredNavigator(object):
         self.cmd_vel_pub.publish(Twist())
         if not arrival_scanned:
             initial_hold_at = rospy.get_time()
-            self._publish_status("coverage_anchor_arrival_scan")
+            self._publish_status(
+                "coverage_anchor_observing:{}".format(patrol_idx + 1))
             self._hold_scan_step(
                 "anchor {} arrival view".format(patrol_idx + 1),
                 initial_hold_at - max(self.target_bbox_stale,
@@ -2201,8 +2217,32 @@ class VisionTriggeredNavigator(object):
                 coverage_order[0] + 1,
                 ",".join(str(index + 1) for index in coverage_order),
             )
+        preferred_index = self.coverage_preferred_anchor - 1
+        skipped_indices = {
+            anchor - 1 for anchor in self.coverage_skip_anchors
+            if 1 <= anchor <= len(self.patrol_points)
+        }
+        if preferred_index in coverage_order:
+            skipped_indices.discard(preferred_index)
+            coverage_order = ([preferred_index] + [
+                index for index in coverage_order
+                if index != preferred_index and index not in skipped_indices
+            ])
+        else:
+            coverage_order = [
+                index for index in coverage_order if index not in skipped_indices
+            ]
+        if self.max_coverage_anchors > 0:
+            coverage_order = coverage_order[:self.max_coverage_anchors]
+        coverage_count = len(coverage_order)
+        rospy.loginfo(
+            "[vision_triggered_navigator] semantic coverage order=%s preferred=%s skipped=%s",
+            ",".join(str(index + 1) for index in coverage_order),
+            self.coverage_preferred_anchor or "none",
+            ",".join(str(index + 1) for index in sorted(skipped_indices)) or "none")
         coverage_position = 0
         consecutive_aborts = 0
+        failed_revisits = {}
 
         while not rospy.is_shutdown():
             # 一旦被触发，立即切换到视觉阶段
@@ -2222,6 +2262,8 @@ class VisionTriggeredNavigator(object):
 
                     point_idx = coverage_order[coverage_position]
                     point = self.patrol_points[point_idx]
+                    self._publish_status(
+                        "coverage_anchor_transit:{}".format(point_idx + 1))
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",
                         coverage_position + 1, coverage_count, point_idx + 1)
@@ -2233,6 +2275,17 @@ class VisionTriggeredNavigator(object):
                         consecutive_aborts += 1
                     else:
                         consecutive_aborts = 0
+                    if (self.max_coverage_anchors <= 0 and
+                            outcome in ("aborted", "skipped_failed", "skipped_scan_failed") and
+                            failed_revisits.get(point_idx, 0) <
+                            self.coverage_failed_revisit_limit):
+                        failed_revisits[point_idx] = failed_revisits.get(point_idx, 0) + 1
+                        coverage_order.append(point_idx)
+                        coverage_count += 1
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] anchor %d was not observed; "
+                            "queued one deferred revisit after leaving the blocked area.",
+                            point_idx + 1)
                     coverage_position += 1
                     if (self.coverage_abort_fail_fast_count > 0 and
                             consecutive_aborts >= self.coverage_abort_fail_fast_count):
