@@ -174,8 +174,12 @@ class VisionTriggeredNavigator(object):
         self.target_center_tolerance = rospy.get_param("~target_center_tolerance", 0.08)
         self.target_center_required_hits = int(rospy.get_param(
             "~target_center_required_hits", 2))
-        self.target_center_timeout = rospy.get_param("~target_center_timeout_sec", 12.0)
+        self.target_center_timeout = rospy.get_param("~target_center_timeout_sec", 20.0)
         self.target_bbox_stale = rospy.get_param("~target_bbox_stale_sec", 0.8)
+        self.target_center_reacquire_timeout = max(
+            self.target_bbox_stale,
+            float(rospy.get_param(
+                "~target_center_reacquire_timeout_sec", 3.0)))
         self.target_center_min_speed = rospy.get_param("~target_center_min_speed", 0.08)
         self.target_center_max_speed = rospy.get_param("~target_center_max_speed", 0.18)
         self.target_center_steering_sign = rospy.get_param(
@@ -1310,8 +1314,19 @@ class VisionTriggeredNavigator(object):
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             age = rospy.get_time() - self.target_payload_at
             if self.target_error is None or age > self.target_bbox_stale:
-                return self._centering_failure(
-                    "目标框丢失或超过时效，停止而不恢复巡航.", failure_state)
+                previous_stamp = self.target_payload_at
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 目标框暂时丢失，停车等待最多%.1fs重新捕获.",
+                    self.target_center_reacquire_timeout)
+                if not self._wait_fresh_target(
+                        previous_stamp,
+                        min(deadline, rospy.get_time() +
+                            self.target_center_reacquire_timeout)):
+                    return self._centering_failure(
+                        "目标框持续丢失，超过重新捕获时限.", failure_state)
+                rospy.loginfo(
+                    "[vision_triggered_navigator] 已重新捕获目标框，继续视觉居中.")
+                continue
             if not self._odom_is_fresh():
                 return self._centering_failure(
                     "视觉居中期间/odom超过时效.", failure_state)
@@ -1328,9 +1343,10 @@ class VisionTriggeredNavigator(object):
                     self._hold_stopped(self.target_center_settle)
                     return True
                 if not self._wait_fresh_target(last_centered_stamp, min(
-                        deadline, rospy.get_time() + self.target_bbox_stale)):
+                        deadline, rospy.get_time() +
+                        self.target_center_reacquire_timeout)):
                     return self._centering_failure(
-                        "居中后未收到第二帧新目标框.", failure_state)
+                        "居中后超过重新捕获时限仍未收到第二帧目标框.", failure_state)
                 continue
 
             centered_hits = 0
@@ -1351,13 +1367,14 @@ class VisionTriggeredNavigator(object):
             if not self._rotate_center_step(direction, step_angle):
                 return self._centering_failure(
                     "底盘未完成视觉居中步进.", failure_state)
+            step_completed_at = rospy.get_time()
             self._hold_stopped(self.target_center_settle)
-            settled_at = rospy.get_time()
             if not self._wait_fresh_target(
-                    max(before_stamp, settled_at),
-                    min(deadline, rospy.get_time() + self.target_bbox_stale)):
+                    max(before_stamp, step_completed_at),
+                    min(deadline, rospy.get_time() +
+                        self.target_center_reacquire_timeout)):
                 return self._centering_failure(
-                    "步进后未收到新的目标框.", failure_state)
+                    "步进后超过重新捕获时限仍未收到新的目标框.", failure_state)
 
             after_error = float(self.target_error)
             improvement = abs(before_error) - abs(after_error)

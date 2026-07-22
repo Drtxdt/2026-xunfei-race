@@ -44,7 +44,7 @@ target_center_coarse_step_deg: 4.0
 target_center_fine_step_deg: 2.0
 target_center_start_speed: 0.20
 target_center_max_speed: 0.35
-target_center_timeout_sec: 12.0
+target_center_timeout_sec: 20.0
 # 厂牌居中后，车头射线相对相机光轴的实车标定偏差。
 camera_boresight_yaw_offset: 0.0
 factory_navigation_timeout_sec: 420.0

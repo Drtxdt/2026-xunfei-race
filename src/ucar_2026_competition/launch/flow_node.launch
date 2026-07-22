@@ -36,7 +36,7 @@
   <arg name="target_center_fine_step_deg" default="2.0" />
   <arg name="target_center_start_speed" default="0.20" />
   <arg name="target_center_max_speed" default="0.35" />
-  <arg name="target_center_timeout_sec" default="12.0" />
+  <arg name="target_center_timeout_sec" default="20.0" />
   <arg name="parking_box_width" default="0.50" />
   <arg name="parking_box_depth" default="0.50" />
   <arg name="parking_goal_offset" default="0.26" />
