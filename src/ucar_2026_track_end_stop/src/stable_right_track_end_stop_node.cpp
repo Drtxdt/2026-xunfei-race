@@ -131,7 +131,7 @@ private:
     private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("right_line_offset_px", right_line_offset_px_, 195.0);
+    private_nh_.param("right_line_offset_px", right_line_offset_px_, 170.0);
     target_right_x_ = clampInt(
         static_cast<int>(std::round(kImageCols * 0.5 +
                                     right_line_offset_px_)),
@@ -146,17 +146,17 @@ private:
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
-    private_nh_.param("error_alpha", error_alpha_, 0.10);
+    private_nh_.param("error_alpha", error_alpha_, 0.15);
     private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
     private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
     private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
     private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
     private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.15);
     private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.88);
-    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.66);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.025);
-    private_nh_.param("curve_angular_step", curve_angular_step_, 0.05);
+    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.82);
+    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
+    private_nh_.param("straight_angular_step", straight_angular_step_, 0.03);
+    private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
     private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
     private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
     private_nh_.param("right_guard_speed", right_guard_speed_, 0.11);
@@ -869,8 +869,8 @@ private:
   double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
-  double right_line_offset_px_ = 195.0;
-  int target_right_x_ = 515;
+  double right_line_offset_px_ = 170.0;
+  int target_right_x_ = 490;
   double base_speed_ = 0.24;
   double curve_speed_ = 0.15;
   double search_speed_ = 0.0;
@@ -881,17 +881,17 @@ private:
   int reacquire_confirm_frames_ = 3;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
-  double error_alpha_ = 0.10;
+  double error_alpha_ = 0.15;
   double curve_error_threshold_ = 38.0;
   double curve_angular_gain_ = 1.05;
   double max_angular_speed_ = 0.40;
   double steering_deadband_px_ = 7.0;
   double max_straight_angular_speed_ = 0.15;
   double max_right_angular_speed_ = 0.34;
-  double straight_angular_alpha_ = 0.88;
-  double curve_angular_alpha_ = 0.66;
-  double straight_angular_step_ = 0.025;
-  double curve_angular_step_ = 0.05;
+  double straight_angular_alpha_ = 0.82;
+  double curve_angular_alpha_ = 0.58;
+  double straight_angular_step_ = 0.03;
+  double curve_angular_step_ = 0.06;
   double right_warning_error_px_ = 28.0;
   double right_hard_error_px_ = 52.0;
   double right_guard_speed_ = 0.11;
