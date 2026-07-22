@@ -136,7 +136,7 @@ private:
     private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("right_line_offset_px", right_line_offset_px_, 170.0);
+    private_nh_.param("right_line_offset_px", right_line_offset_px_, 185.0);
     target_right_x_ = clampInt(
         static_cast<int>(std::round(kImageCols * 0.5 +
                                     right_line_offset_px_)),
@@ -924,8 +924,8 @@ private:
   double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
-  double right_line_offset_px_ = 170.0;
-  int target_right_x_ = 490;
+  double right_line_offset_px_ = 185.0;
+  int target_right_x_ = 505;
   double base_speed_ = 0.24;
   double curve_speed_ = 0.15;
   double search_speed_ = 0.0;
