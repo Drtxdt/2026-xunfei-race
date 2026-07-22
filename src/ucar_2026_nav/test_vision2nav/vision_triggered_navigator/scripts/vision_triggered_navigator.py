@@ -162,6 +162,9 @@ class VisionTriggeredNavigator(object):
             "~coverage_scan_angular_speed", 0.35)))
         self.coverage_scan_dwell = max(0.0, float(rospy.get_param(
             "~coverage_scan_dwell_sec", 0.65)))
+        self.coverage_arrival_dwell = max(
+            self.coverage_scan_dwell,
+            float(rospy.get_param("~coverage_arrival_dwell_sec", 1.5)))
         self.coverage_candidate_hold = max(0.0, float(rospy.get_param(
             "~coverage_candidate_hold_sec", 1.2)))
         self.coverage_scan_max_dwell = max(
@@ -175,6 +178,7 @@ class VisionTriggeredNavigator(object):
             "~coverage_scan_step_timeout_margin_sec", 2.0)))
         self.robot_footprint_radius = rospy.get_param("~robot_footprint_radius", 0.215)
         self.lethal_cost = int(rospy.get_param("~lethal_cost", 253))
+        self.coverage_rotation_blocked = False
 
         # OCR命中后先将目标框居中，再使用车头射线计算最终停泊点。
         self.target_center_tolerance = rospy.get_param("~target_center_tolerance", 0.08)
@@ -713,6 +717,7 @@ class VisionTriggeredNavigator(object):
 
     def _align_coverage_anchor_yaw(self, map_pose):
         """Finish only the calibrated anchor heading with odometry, not TEB."""
+        self.coverage_rotation_blocked = False
         odom_frame = self.odom_frame_from_msg or self.odom_frame
         target = self._transform_map_pose(odom_frame, map_pose)
         if target is None:
@@ -730,6 +735,7 @@ class VisionTriggeredNavigator(object):
                 return False
             if not self._rotation_clearance_is_safe():
                 self.cmd_vel_pub.publish(Twist())
+                self.coverage_rotation_blocked = True
                 self._publish_status("coverage_rotation_blocked_clearance")
                 rospy.logwarn(
                     "[vision_triggered_navigator] refusing anchor yaw rotation: "
@@ -990,16 +996,19 @@ class VisionTriggeredNavigator(object):
         return final_state
 
     def _hold_scan_step(self, step_label, candidate_since,
-                        force_initial_candidate=False):
+                        force_initial_candidate=False, minimum_dwell=None):
         """Publish zero velocity while OCR consumes stable frames at one heading."""
         started = rospy.get_time()
+        dwell = self.coverage_scan_dwell
+        if minimum_dwell is not None:
+            dwell = max(dwell, float(minimum_dwell))
         initial_candidate_at = self.target_payload_at
         if (force_initial_candidate and
                 initial_candidate_at >= candidate_since):
             initial_candidate_at = started
         deadline = scan_dwell_deadline(
             started,
-            self.coverage_scan_dwell,
+            dwell,
             initial_candidate_at if initial_candidate_at >= candidate_since else 0.0,
             self.coverage_candidate_hold,
             self.coverage_scan_max_dwell,
@@ -1011,7 +1020,7 @@ class VisionTriggeredNavigator(object):
             candidate_at = self.target_payload_at
             new_deadline = scan_dwell_deadline(
                 started,
-                self.coverage_scan_dwell,
+                dwell,
                 candidate_at if candidate_at >= candidate_since else 0.0,
                 self.coverage_candidate_hold,
                 self.coverage_scan_max_dwell,
@@ -1019,7 +1028,7 @@ class VisionTriggeredNavigator(object):
             if new_deadline > deadline:
                 deadline = new_deadline
             if (not extension_logged and candidate_at >= candidate_since and
-                    deadline > started + self.coverage_scan_dwell + 1e-3):
+                    deadline > started + dwell + 1e-3):
                 extension_logged = True
                 rospy.loginfo(
                     "[vision_triggered_navigator] %s 收到目标候选，停车延长确认至%.2fs.",
@@ -1052,6 +1061,7 @@ class VisionTriggeredNavigator(object):
                 return True
             if not self._rotation_clearance_is_safe():
                 self.cmd_vel_pub.publish(Twist())
+                self.coverage_rotation_blocked = True
                 self._publish_status("coverage_scan_stationary_clearance")
                 rospy.logwarn(
                     "[vision_triggered_navigator] in-place sweep blocked by "
@@ -1197,18 +1207,43 @@ class VisionTriggeredNavigator(object):
             patrol_idx + 1, x, y, yaw)
         result = None
         navigation_reached = False
+        arrival_scanned = False
         for attempt in range(self.coverage_goal_retry_count + 1):
             result = self.send_goal(x, y, yaw)
             if self.triggered:
                 return "triggered"
             if self.current_goal_needs_yaw_alignment:
-                if (self._wait_navigation_idle() and
-                        self._align_coverage_anchor_yaw((x, y, yaw))):
+                if not self._wait_navigation_idle():
+                    return "skipped_failed"
+
+                # Consume stable OCR frames as soon as the calibrated
+                # position is reached. A blocked final yaw must not make an
+                # otherwise useful observation point pass without scanning.
+                self.cmd_vel_pub.publish(Twist())
+                arrival_hold_at = rospy.get_time()
+                self._publish_status("coverage_anchor_arrival_scan")
+                self._hold_scan_step(
+                    "anchor {} arrival view".format(patrol_idx + 1),
+                    arrival_hold_at - max(self.target_bbox_stale,
+                                          self.coverage_arrival_dwell),
+                    minimum_dwell=self.coverage_arrival_dwell)
+                arrival_scanned = True
+                if self.triggered:
+                    return "triggered"
+
+                if self._align_coverage_anchor_yaw((x, y, yaw)):
                     navigation_reached = True
                     break
                 if self.triggered:
                     self.cmd_vel_pub.publish(Twist())
                     return "triggered"
+                if self.coverage_rotation_blocked:
+                    self._publish_status("coverage_anchor_stationary_observed")
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] anchor %d heading rotation "
+                        "was blocked by clearance; its reached-position view "
+                        "was scanned before continuing.", patrol_idx + 1)
+                    return "covered_stationary"
                 rospy.logerr(
                     "[vision_triggered_navigator] 精确锚点%d的odom航向闭环失败.",
                     patrol_idx + 1)
@@ -1251,11 +1286,14 @@ class VisionTriggeredNavigator(object):
             return "skipped_failed"
 
         self.cmd_vel_pub.publish(Twist())
-        initial_hold_at = rospy.get_time()
-        self._hold_scan_step(
-            "锚点{}初始朝向".format(patrol_idx + 1),
-            initial_hold_at - max(self.target_bbox_stale,
-                                  self.coverage_scan_dwell))
+        if not arrival_scanned:
+            initial_hold_at = rospy.get_time()
+            self._publish_status("coverage_anchor_arrival_scan")
+            self._hold_scan_step(
+                "anchor {} arrival view".format(patrol_idx + 1),
+                initial_hold_at - max(self.target_bbox_stale,
+                                      self.coverage_arrival_dwell),
+                minimum_dwell=self.coverage_arrival_dwell)
         if self.triggered:
             return "triggered"
         if not self.perform_rotations(point.get("rotations", [])):
