@@ -2326,23 +2326,26 @@ class VisionTriggeredNavigator(object):
                     break
                 self._publish_status("parking_recenter")
                 if self._wait_for_initial_recenter_target():
-                    # Once corrective motion begins, losing the target remains
-                    # a hard failure because the original ray is no longer
-                    # guaranteed to match the changed heading.
-                    if not self._center_visual_target(
+                    recentered = self._center_visual_target(
                             tolerance=self.parking_recenter_tolerance,
                             timeout=self.parking_recenter_timeout,
                             state="parking_recenter",
-                            failure_state="parking_recenter_failed"):
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    # A completed close-range recenter may refine the tangent.
+                            failure_state="parking_recenter_degraded")
+                    # Recompute from the latest close-range OCR geometry even
+                    # when the optional recenter adjustment did not converge.
+                    # The following lidar docking loop remains responsible for
+                    # final wall alignment and footprint validation.
                     goal = self.compute_vision_goal()
                     if goal is None:
                         self._publish_status("parking_recenter_failed")
                         self._hold_stopped(self.arrival_hold_sec)
                         break
                     gx, gy, gyaw = goal
+                    if not recentered:
+                        self._publish_status("parking_recenter_degraded")
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] close-range recenter did not converge; "
+                            "continuing with the latest fresh OCR ray and lidar wall docking.")
                 else:
                     self._publish_status("parking_recenter_skipped")
                     rospy.logwarn(
