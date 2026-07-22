@@ -241,6 +241,28 @@ def task2_delivery_targets(pickup, simulation):
     return tuple(visits)
 
 
+def task2_semantic_coverage_hint(memory, target_category):
+    """Return the remembered target anchor and confirmed irrelevant anchors."""
+    target_category = normalize_category(target_category)
+    preferred = 0
+    skipped = set()
+    for category, observation in (memory or {}).items():
+        normalized = normalize_category(category)
+        anchor = observation.get("anchor", 0) if isinstance(observation, dict) else observation
+        try:
+            anchor = int(anchor)
+        except (TypeError, ValueError):
+            continue
+        if anchor <= 0:
+            continue
+        if normalized == target_category:
+            preferred = anchor
+        else:
+            skipped.add(anchor)
+    skipped.discard(preferred)
+    return preferred, tuple(sorted(skipped))
+
+
 def normalize_category(value):
     text = str(value or "").strip().lower()
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)

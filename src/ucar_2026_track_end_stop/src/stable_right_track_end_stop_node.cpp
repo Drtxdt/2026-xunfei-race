@@ -77,20 +77,24 @@ private:
   {
     bool found = false;
     int right_x = -1;
+    int near_right_x = -1;
     int line_support = 0;
     double line_confidence = 0.0;
     double line_span_ratio = 0.0;
     double error = 0.0;
+    double near_error = 0.0;
     double filtered_error = 0.0;
     double linear = 0.0;
     double angular = 0.0;
     int guard_level = 0;
+    bool low_confidence = false;
   };
 
   struct RightLineResult
   {
     bool found = false;
     int x = -1;
+    int near_x = -1;
     int support = 0;
     double confidence = 0.0;
     double span_ratio = 0.0;
@@ -103,6 +107,7 @@ private:
     double weight_sum = 0.0;
     double min_y = 0.0;
     double max_y = 0.0;
+    std::vector<double> scan_xs;
   };
 
   struct Segment
@@ -131,7 +136,7 @@ private:
     private_nh_.param("startup_time", startup_time_, 2.0);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
-    private_nh_.param("right_line_offset_px", right_line_offset_px_, 170.0);
+    private_nh_.param("right_line_offset_px", right_line_offset_px_, 185.0);
     target_right_x_ = clampInt(
         static_cast<int>(std::round(kImageCols * 0.5 +
                                     right_line_offset_px_)),
@@ -162,6 +167,11 @@ private:
     private_nh_.param("right_guard_speed", right_guard_speed_, 0.11);
     private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
     private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
+    private_nh_.param("low_confidence_threshold", low_confidence_threshold_, 0.45);
+    private_nh_.param("low_confidence_speed", low_confidence_speed_, 0.09);
+    private_nh_.param("right_near_warning_error_px", right_near_warning_error_px_, 22.0);
+    private_nh_.param("right_near_hard_error_px", right_near_hard_error_px_, 35.0);
+    private_nh_.param("right_near_guard_speed", right_near_guard_speed_, 0.08);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
@@ -397,6 +407,7 @@ private:
     FollowResult result;
     const RightLineResult line = findRightLine(mask);
     result.right_x = line.x;
+    result.near_right_x = line.near_x;
     result.line_support = line.support;
     result.line_confidence = line.confidence;
     result.line_span_ratio = line.span_ratio;
@@ -405,6 +416,8 @@ private:
       return result;
 
     result.error = static_cast<double>(target_right_x_ - result.right_x);
+    result.near_error =
+        static_cast<double>(target_right_x_ - result.near_right_x);
     filtered_error_ = (1.0 - error_alpha_) * filtered_error_ + error_alpha_ * result.error;
     const double d_error = filtered_error_ - last_error_;
     last_error_ = filtered_error_;
@@ -422,6 +435,15 @@ private:
       angular *= curve_angular_gain_;
     }
 
+    // Keep high speed only while the boundary is supported by enough scan
+    // rows.  Weak detections are still useful for steering, but not safe for
+    // full-speed driving.
+    if (result.line_confidence < low_confidence_threshold_)
+    {
+      result.low_confidence = true;
+      linear = std::min(linear, low_confidence_speed_);
+    }
+
     // error = target - detected.  A positive error means that the right line
     // has moved left in the image and the car is getting too close to it.
     if (filtered_error_ >= right_warning_error_px_)
@@ -431,6 +453,23 @@ private:
       angular = std::max(angular, right_guard_away_angular_);
     }
     if (filtered_error_ >= right_hard_error_px_)
+    {
+      result.guard_level = 2;
+      linear = 0.0;
+      angular = std::max(angular, right_hard_away_angular_);
+    }
+
+    // Independent near-field safety channel.  Use the median of the three
+    // lowest visible points without temporal filtering, so a smooth steering
+    // filter cannot delay the response when the vehicle is already close to
+    // the right boundary.
+    if (result.near_error >= right_near_warning_error_px_)
+    {
+      result.guard_level = std::max(result.guard_level, 1);
+      linear = std::min(linear, right_near_guard_speed_);
+      angular = std::max(angular, right_guard_away_angular_);
+    }
+    if (result.near_error >= right_near_hard_error_px_)
     {
       result.guard_level = 2;
       linear = 0.0;
@@ -524,6 +563,7 @@ private:
             0.5 * static_cast<double>(left + right);
         candidate.weighted_x += center * weight;
         candidate.weight_sum += weight;
+        candidate.scan_xs.push_back(center);
         if (candidate.support == 0)
         {
           candidate.min_y = static_cast<double>(y);
@@ -583,6 +623,14 @@ private:
     result.found = true;
     result.x = clampInt(static_cast<int>(std::round(best_x)),
                         0, mask.cols - 1);
+    const std::size_t near_count =
+        std::min<std::size_t>(3, best->scan_xs.size());
+    std::vector<double> near_xs(best->scan_xs.begin(),
+                                best->scan_xs.begin() + near_count);
+    std::sort(near_xs.begin(), near_xs.end());
+    result.near_x = clampInt(
+        static_cast<int>(std::round(near_xs[near_count / 2])),
+        0, mask.cols - 1);
     result.support = best->support;
     result.confidence =
         static_cast<double>(best->support) /
@@ -737,6 +785,8 @@ private:
       setStatus("stable_right_tracking_right_hard_guard");
     else if (follow.guard_level == 1)
       setStatus("stable_right_tracking_right_guard");
+    else if (follow.low_confidence)
+      setStatus("stable_right_tracking_low_confidence");
     else if (std::fabs(follow.filtered_error) > curve_error_threshold_)
       setStatus("stable_right_tracking_curve");
     else
@@ -796,8 +846,10 @@ private:
     cv::putText(debug, line1.str(), cv::Point(10, 190), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 255, 0), 2);
 
     std::ostringstream line2;
-    line2 << "right_x=" << follow.right_x << " err=" << std::fixed << std::setprecision(1)
-          << follow.filtered_error << " support=" << follow.line_support
+    line2 << "right_x=" << follow.right_x << " near_x=" << follow.near_right_x
+          << " err=" << std::fixed << std::setprecision(1)
+          << follow.filtered_error << " near_err=" << follow.near_error
+          << " support=" << follow.line_support
           << " span=" << std::setprecision(2) << follow.line_span_ratio
           << " guard=" << follow.guard_level;
     cv::putText(debug, line2.str(), cv::Point(10, 215), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(0, 220, 255), 2);
@@ -821,12 +873,15 @@ private:
        << " elapsed=" << std::fixed << std::setprecision(2) << (now - start_time_).toSec()
        << " found=" << boolText(follow.found)
        << " right_x=" << follow.right_x
+       << " near_right_x=" << follow.near_right_x
        << " line_support=" << follow.line_support
        << " line_confidence=" << follow.line_confidence
        << " line_span_ratio=" << follow.line_span_ratio
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
+       << " near_error=" << follow.near_error
        << " guard_level=" << follow.guard_level
+       << " low_confidence=" << boolText(follow.low_confidence)
        << " lost_frames=" << lost_frame_count_
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
@@ -869,8 +924,8 @@ private:
   double startup_time_ = 2.0;
   double startup_speed_ = 0.45;
 
-  double right_line_offset_px_ = 170.0;
-  int target_right_x_ = 490;
+  double right_line_offset_px_ = 185.0;
+  int target_right_x_ = 505;
   double base_speed_ = 0.24;
   double curve_speed_ = 0.15;
   double search_speed_ = 0.0;
@@ -897,6 +952,11 @@ private:
   double right_guard_speed_ = 0.11;
   double right_guard_away_angular_ = 0.10;
   double right_hard_away_angular_ = 0.24;
+  double low_confidence_threshold_ = 0.45;
+  double low_confidence_speed_ = 0.09;
+  double right_near_warning_error_px_ = 22.0;
+  double right_near_hard_error_px_ = 35.0;
+  double right_near_guard_speed_ = 0.08;
   double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;

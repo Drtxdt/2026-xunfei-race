@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import math
 import os
 import sys
@@ -37,11 +38,13 @@ from navigator_logic import (
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
+    should_retry_coverage_goal,
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
     should_skip_coverage_anchor,
     split_scan_angle,
+    staging_handoff_accepted,
     wall_normal_distance,
     wall_fit_matches_expected,
     wall_fit_is_continuous,
@@ -69,6 +72,44 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
     latched, accepted = latch_trigger(latched)
     assert latched and not accepted
+
+
+def test_clearance_block_preserves_stationary_scan():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VisionTriggeredNavigator"
+    )
+    step_scan = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_step_scan"
+    )
+    clearance_if = next(
+        node for node in ast.walk(step_scan)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Call)
+        and isinstance(node.test.operand.func, ast.Attribute)
+        and node.test.operand.func.attr == "_rotation_clearance_is_safe"
+    )
+    returns = [node for node in clearance_if.body if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    assert isinstance(returns[0].value, ast.Constant)
+    assert returns[0].value.value is True
+
+
+def test_coverage_goal_retries_aborted_timeout_and_rotation_stall_once():
+    assert should_retry_coverage_goal(4, False, False, 0, 1)
+    assert should_retry_coverage_goal(2, False, True, 0, 1)
+    assert should_retry_coverage_goal(2, True, False, 0, 1)
+    assert not should_retry_coverage_goal(4, False, False, 1, 1)
+    assert not should_retry_coverage_goal(3, False, False, 0, 1)
 
 
 def test_second_search_starts_nearest_and_preserves_cyclic_route():
@@ -190,6 +231,19 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
     assert coverage_position_needs_yaw_alignment(0.15, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.151, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
+
+
+def test_successful_staging_goal_uses_bounded_handoff_envelope():
+    current = (0.122, 0.0, 0.080)
+    goal = (0.0, 0.0, 0.0)
+    assert not staging_pose_reached(current, goal, 0.10, 0.10)
+    assert staging_handoff_accepted(
+        current, goal, True, 0.10, 0.10, 0.15, 0.12)
+    assert not staging_handoff_accepted(
+        current, goal, False, 0.10, 0.10, 0.15, 0.12)
+    assert not staging_handoff_accepted(
+        (0.151, 0.0, 0.080), goal, True,
+        0.10, 0.10, 0.15, 0.12)
 
 
 def test_recenter_requires_a_fresh_target_sample_before_motion():

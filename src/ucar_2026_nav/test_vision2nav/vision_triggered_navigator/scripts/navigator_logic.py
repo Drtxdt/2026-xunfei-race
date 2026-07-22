@@ -42,6 +42,18 @@ def cyclic_coverage_order(points, robot_x, robot_y):
     return list(range(nearest, len(points))) + list(range(0, nearest))
 
 
+def should_retry_coverage_goal(result, rotation_stall, timed_out,
+                               attempt, retry_count, aborted_status=4):
+    """Retry an exact anchor after a recoverable move_base failure."""
+    if int(attempt) >= max(0, int(retry_count)):
+        return False
+    try:
+        aborted = int(result) == int(aborted_status)
+    except (TypeError, ValueError):
+        aborted = False
+    return bool(rotation_stall) or bool(timed_out) or aborted
+
+
 def build_quadrilateral_walls(corners):
     """Build measured wall segments with inward unit normals.
 
@@ -195,6 +207,30 @@ def staging_pose_reached(current_pose, goal_pose,
         float(goal_pose[2]) - float(current_pose[2])))
     return (distance <= abs(float(position_tolerance)) and
             yaw_error <= abs(float(yaw_tolerance)))
+
+
+def staging_handoff_accepted(current_pose, goal_pose, action_succeeded,
+                             position_tolerance=0.10,
+                             yaw_tolerance=0.10,
+                             success_position_tolerance=0.15,
+                             success_yaw_tolerance=0.12):
+    """Allow a bounded handoff after move_base reports success.
+
+    The normal tolerances remain active while move_base is driving.  A small
+    extra envelope is allowed only after SUCCEEDED because the following
+    docking controller performs the precise wall-relative approach.
+    """
+    if staging_pose_reached(
+            current_pose, goal_pose, position_tolerance, yaw_tolerance):
+        return True
+    if not bool(action_succeeded):
+        return False
+    return staging_pose_reached(
+        current_pose, goal_pose,
+        max(abs(float(position_tolerance)),
+            abs(float(success_position_tolerance))),
+        max(abs(float(yaw_tolerance)), abs(float(success_yaw_tolerance))),
+    )
 
 
 def fit_wall_line(points, min_points=12, min_span=0.25,

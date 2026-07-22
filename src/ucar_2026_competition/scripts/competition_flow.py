@@ -47,6 +47,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -154,6 +155,17 @@ class CompetitionFlow:
             rospy.get_param("~ocr_required_hits", 2),
             rospy.get_param("~ocr_evidence_window_sec", 1.5),
         )
+        self.ocr_memory_filters = {
+            category: TemporalTargetFilter(
+                rospy.get_param("~ocr_memory_required_hits", 2),
+                rospy.get_param("~ocr_evidence_window_sec", 1.5),
+            )
+            for category in CATEGORY_LABELS
+        }
+        self.ocr_memory_min_score = float(rospy.get_param(
+            "~ocr_memory_min_score", 0.55))
+        self.task2_warehouse_memory = {}
+        self.current_coverage_anchor = None
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -485,7 +497,28 @@ class CompetitionFlow:
             category = normalize_category(payload.get("category"))
         except Exception:
             return
-        self.ocr_last_message_at = time.monotonic()
+        now = time.monotonic()
+        self.ocr_last_message_at = now
+        memory_confirmed = False
+        for candidate, candidate_filter in self.ocr_memory_filters.items():
+            if candidate_filter.push(candidate, category, now):
+                memory_confirmed = candidate == category
+        score = float(payload.get("category_score", 0.0) or 0.0)
+        if (memory_confirmed and payload.get("target_bbox") and
+                score >= self.ocr_memory_min_score):
+            with self.lock:
+                anchor = self.current_coverage_anchor
+                previous = self.task2_warehouse_memory.get(category)
+                if (anchor and (previous is None or
+                                score >= float(previous.get("score", 0.0)))):
+                    self.task2_warehouse_memory[category] = {
+                        "anchor": int(anchor),
+                        "score": score,
+                        "stamp": time.time(),
+                    }
+                    rospy.loginfo(
+                        "task2 warehouse memory: category=%s anchor=%d score=%.3f",
+                        category, anchor, score)
         if category == self.ocr_target and payload.get("target_bbox"):
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
@@ -519,6 +552,19 @@ class CompetitionFlow:
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()
+        if status.startswith("coverage_anchor_observing:"):
+            try:
+                anchor = int(status.rsplit(":", 1)[1])
+            except (TypeError, ValueError):
+                anchor = None
+            with self.lock:
+                self.current_coverage_anchor = anchor
+            rospy.loginfo("task2 observing coverage anchor: %s", anchor)
+            return
+        if status.startswith("coverage_anchor_transit:"):
+            with self.lock:
+                self.current_coverage_anchor = None
+            return
         if status != self.navigator_status:
             rospy.loginfo("task2 navigator status: %s", status)
         self.navigator_status = status
@@ -1131,29 +1177,16 @@ class CompetitionFlow:
         step_margin = float(
             rospy.get_param("~qr_scan_step_timeout_margin_sec", 2.0)
         )
-        final_tolerance = abs(float(
-            rospy.get_param("~qr_final_yaw_tolerance_rad", math.radians(2.0))
-        ))
-        if (
-            speed <= 0.0
-            or step_angle <= 0.0
-            or sweep_angle <= 0.0
-            or sweep_angle >= 2.0 * math.pi
-            or stale_sec <= 0.0
-            or final_tolerance <= 0.0
-        ):
+        if speed <= 0.0 or step_angle <= 0.0 or stale_sec <= 0.0:
             raise StageError("QR scan motion parameters must be positive")
 
-        steps = split_rotation_steps(sweep_angle, step_angle)
+        total_steps = int(math.ceil((2.0 * math.pi) / step_angle))
         scan_deadline = time.monotonic() + scan_timeout
         self.publish_status(
             "task1",
             status_state,
-            "step scan start: count={}/{} sweep={:.0f}deg steps={}".format(
-                self._qr_count(),
-                expected_count,
-                math.degrees(sweep_angle),
-                len(steps),
+            "step scan start: count={}/{} steps={}".format(
+                self._qr_count(), expected_count, total_steps
             ),
         )
         self._wait_for_qr_odom(odom_wait_sec, stale_sec)
@@ -1235,53 +1268,7 @@ class CompetitionFlow:
             if self._settle_for_qr(
                 result_grace_sec, expected_count, scan_deadline, stale_sec
             ):
-                return False
-            items = list(self.qr_items.values())[:expected_count]
-            if len(items) < 3:
-                return False
-            instruction = self.task1_instruction
-            generation = self.task1_llm_generation
-            done_event = self.task1_llm_done
-            worker = threading.Thread(
-                target=self._task1_reasoning_worker,
-                args=(generation, done_event, items, instruction),
-                name="task1-llm-reasoning",
-                daemon=True,
-            )
-            self.task1_llm_thread = worker
-            self.task1_llm_items = items
-        self.publish_status(
-            "task1",
-            "reasoning_during_qr_scan",
-            "three QR items collected; Spark X2 reasoning started in parallel",
-        )
-        worker.start()
-        self._prewarm_factory_ocr_for_task2()
-        return True
-
-    def _task1_reasoning_worker(self, generation, done_event, items, instruction):
-        result = None
-        error = ""
-        service = rospy.get_param(
-            "~llm_service", "/smart_factory_llm/reason_pickup_order"
-        )
-        try:
-            rospy.wait_for_service(service, timeout=15.0)
-            result = rospy.ServiceProxy(service, ReasonPickupOrder)(
-                items[0], items[1], items[2], instruction
-            )
-            if not result.success:
-                error = "LLM reasoning failed: {}".format(result.error_message)
-        except (rospy.ROSException, rospy.ServiceException) as exc:
-            error = "LLM service failed: {}".format(exc)
-        except Exception as exc:
-            error = "LLM reasoning worker failed: {}".format(exc)
-        with self.lock:
-            if generation != self.task1_llm_generation:
-                return
-            self.task1_llm_result = result
-            self.task1_llm_error = error
-        done_event.set()
+                return True
 
         return self._qr_count() >= expected_count
 
@@ -1391,6 +1378,18 @@ class CompetitionFlow:
         self.trigger_service_accepted = False
         self.trigger_acknowledged = False
         self.navigator_status = ""
+        with self.lock:
+            self.current_coverage_anchor = None
+            for memory_filter in self.ocr_memory_filters.values():
+                memory_filter.reset()
+            preferred_anchor, skipped_anchors = task2_semantic_coverage_hint(
+                self.task2_warehouse_memory, category)
+        if phase == "simulation" and preferred_anchor:
+            rospy.loginfo(
+                "task2 semantic memory: prioritizing remembered %s anchor %d; "
+                "skipping irrelevant anchors=%s",
+                category, preferred_anchor,
+                ",".join(str(value) for value in skipped_anchors) or "none")
         self.publish_status(
             "task2", "searching_{}".format(phase),
             "searching {} factory sign with existing 9-point navigation".format(category))
@@ -1436,12 +1435,17 @@ class CompetitionFlow:
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
                     "coverage_start_nearest": phase == "simulation",
+                    "coverage_preferred_anchor": (
+                        preferred_anchor if phase == "simulation" else 0),
+                    "coverage_skip_anchors": (
+                        ",".join(str(value) for value in skipped_anchors)
+                        if phase == "simulation" else ""),
                     "coverage_abort_fail_fast_count": (
                         max(0, int(rospy.get_param(
                             "~task2_second_search_abort_fail_fast_count", 0)))
                         if phase == "simulation" else 0),
                     "coverage_rotation_min_clearance": rospy.get_param(
-                        "~coverage_rotation_min_clearance", 0.30),
+                        "~coverage_rotation_min_clearance", 0.28),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
                         "~coverage_rotation_max_yaw_deg", 45.0),
                     "target_center_steering_sign": rospy.get_param(
@@ -1463,6 +1467,10 @@ class CompetitionFlow:
                         "~parking_staging_position_tolerance", 0.10),
                     "parking_staging_yaw_tolerance": rospy.get_param(
                         "~parking_staging_yaw_tolerance", 0.10),
+                    "parking_staging_success_position_tolerance": rospy.get_param(
+                        "~parking_staging_success_position_tolerance", 0.15),
+                    "parking_staging_success_yaw_tolerance": rospy.get_param(
+                        "~parking_staging_success_yaw_tolerance", 0.12),
                     "parking_docking_timeout_sec": rospy.get_param(
                         "~parking_docking_timeout_sec", 25.0),
                     "parking_dock_max_x": rospy.get_param(
@@ -1624,6 +1632,11 @@ class CompetitionFlow:
             (self.category, pickup_item, pickup_workshop),
             (self.sim_category, sim_item, sim_workshop),
         )
+        with self.lock:
+            self.task2_warehouse_memory = {}
+            self.current_coverage_anchor = None
+            for memory_filter in self.ocr_memory_filters.values():
+                memory_filter.reset()
         self.task2_announcement_completed = False
         for visit_index, (phase, category, item, workshop) in enumerate(visits):
             if visit_index > 0:

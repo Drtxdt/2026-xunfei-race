@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import json
 import math
 import os
@@ -28,6 +29,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -37,6 +39,57 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
+        memory = {
+            "daily": {"anchor": 2, "score": 0.71},
+            "electronics": {"anchor": 8, "score": 0.69},
+            "food": {"anchor": 5, "score": 0.66},
+        }
+        self.assertEqual(
+            task2_semantic_coverage_hint(memory, "electronics"),
+            (8, (2, 5)),
+        )
+
+    def test_task2_semantic_memory_never_skips_shared_target_anchor(self):
+        self.assertEqual(
+            task2_semantic_coverage_hint(
+                {"daily": 3, "electronics": 3}, "electronics"),
+            (3, ()),
+        )
+
+    def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow"
+        )
+        workers = [
+            node for node in controller.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_task1_reasoning_worker"
+        ]
+        self.assertEqual(len(workers), 1)
+
+        scan = next(
+            node for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "scan_qr_at_current_pose"
+        )
+        assigned_names = {
+            target.id
+            for node in ast.walk(scan)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets if isinstance(node, ast.Assign) else [node.target]
+            )
+            if isinstance(target, ast.Name)
+        }
+        self.assertIn("total_steps", assigned_names)
+
     def test_competition_config_uses_faster_safe_qr_scan(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
@@ -63,6 +116,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertGreaterEqual(
             float(config["coverage_scan_max_dwell_sec"]),
             float(config["coverage_candidate_hold_sec"]))
+        self.assertEqual(float(config["coverage_rotation_min_clearance"]), 0.28)
 
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)

@@ -12,6 +12,7 @@ import time
 
 import actionlib
 import cv2
+import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
@@ -27,6 +28,7 @@ from ucar_2026_strict_mission.logic import (
     DistanceCalibration,
     forward_progress,
     line_alignment_command,
+    lowest_horizontal_band,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -50,6 +52,9 @@ class StrictMissionNode:
         self.started = False
         self.last_image_at = 0.0
         self.line_missing_since = None
+        self.line_search_origin_yaw = None
+        self.line_search_direction = 1.0
+        self.line_search_reversals = 0
         self.last_distance_m = None
         self.odom_pose = None
         self.odom_received_at = 0.0
@@ -286,7 +291,50 @@ class StrictMissionNode:
                     math.radians(angle_deg),
                 ))
         if not candidates:
-            return None, mask, None, None, None
+            row_occupancies = np.count_nonzero(mask, axis=1) / float(width)
+            band = lowest_horizontal_band(
+                row_occupancies,
+                float(rospy.get_param("~line_min_width_ratio", 0.45)),
+                max(2, int(round(float(rospy.get_param(
+                    "~line_max_height_ratio", 0.12)) * height))),
+            )
+            if band is None:
+                return None, mask, None, None, None
+            band_start, band_end = band
+            band_mask = mask[band_start:band_end + 1, :]
+            ys, xs = np.nonzero(band_mask)
+            if len(xs) < 8:
+                return None, mask, None, None, None
+            points = np.column_stack((xs, ys + band_start)).astype(np.float32)
+            vx, vy, _fit_x, _fit_y = cv2.fitLine(
+                points, cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+            angle_deg = math.degrees(math.atan2(float(vy), float(vx)))
+            while angle_deg > 90.0:
+                angle_deg -= 180.0
+            while angle_deg <= -90.0:
+                angle_deg += 180.0
+            if abs(angle_deg) > max_abs_angle:
+                return None, mask, None, None, None
+            x_min = int(np.min(xs))
+            x_max = int(np.max(xs))
+            center_x = float(np.median(xs))
+            center_error = (
+                center_x - 0.5 * float(width)
+            ) / (0.5 * float(width))
+            bottom_ratio = float(y0 + band_end + 1) / float(height)
+            box = (
+                x_min,
+                y0 + band_start,
+                x_max - x_min + 1,
+                band_end - band_start + 1,
+            )
+            return (
+                bottom_ratio,
+                mask,
+                box,
+                center_error,
+                math.radians(angle_deg),
+            )
         _, bottom_ratio, box, center_error, angle_rad = max(
             candidates, key=lambda item: item[0])
         return bottom_ratio, mask, box, center_error, angle_rad
@@ -305,13 +353,26 @@ class StrictMissionNode:
         bottom_ratio, mask, box, center_error, angle_error = \
             self.detect_stop_line(frame)
         if bottom_ratio is None:
-            self.publish_stop()
             self.band_filter.reset()
             if self.line_missing_since is None:
                 self.line_missing_since = now
-            self.publish_status("stop line not trusted; holding stop")
+                with self.lock:
+                    pose = self.odom_pose
+                self.line_search_origin_yaw = pose[2] if pose else None
+                self.line_search_direction = 1.0
+                self.line_search_reversals = 0
+            command = self.missing_line_search_command(now)
+            self.cmd_pub.publish(command)
+            self.publish_status(
+                "stop line not trusted; bounded yaw reacquisition",
+                commanded_yaw_rps=command.angular.z,
+                search_reversals=self.line_search_reversals,
+            )
             return
         self.line_missing_since = None
+        self.line_search_origin_yaw = None
+        self.line_search_direction = 1.0
+        self.line_search_reversals = 0
         distance = self.calibration.distance_for_ratio(bottom_ratio)
         self.last_distance_m = distance
         if distance is None:
@@ -388,6 +449,39 @@ class StrictMissionNode:
             )
             self.debug_pub.publish(
                 self.bridge.cv2_to_imgmsg(frame, encoding="bgr8"))
+
+    @staticmethod
+    def normalized_angle(angle):
+        return math.atan2(math.sin(float(angle)), math.cos(float(angle)))
+
+    def missing_line_search_command(self, now):
+        """Sweep in place within a small yaw window; never advance blind."""
+        command = Twist()
+        delay = max(0.0, float(rospy.get_param(
+            "~line_search_delay_sec", 0.40)))
+        if self.line_missing_since is None or now - self.line_missing_since < delay:
+            return command
+        with self.lock:
+            pose = self.odom_pose
+            odom_age = now - self.odom_received_at
+        stale = float(rospy.get_param("~line_search_odom_stale_sec", 0.50))
+        if pose is None or odom_age > stale:
+            return command
+        if self.line_search_origin_yaw is None:
+            self.line_search_origin_yaw = pose[2]
+        delta = self.normalized_angle(pose[2] - self.line_search_origin_yaw)
+        limit = math.radians(max(1.0, float(rospy.get_param(
+            "~line_search_yaw_limit_deg", 8.0))))
+        if self.line_search_direction > 0.0 and delta >= limit:
+            self.line_search_direction = -1.0
+            self.line_search_reversals += 1
+        elif self.line_search_direction < 0.0 and delta <= -limit:
+            self.line_search_direction = 1.0
+            self.line_search_reversals += 1
+        speed = max(0.01, float(rospy.get_param(
+            "~line_search_yaw_speed", 0.10)))
+        command.angular.z = self.line_search_direction * speed
+        return command
 
     def traffic_callback(self, msg):
         with self.lock:
@@ -557,6 +651,11 @@ class StrictMissionNode:
             with self.lock:
                 self.state = "APPROACH_LINE"
                 self.last_image_at = time.monotonic()
+                self.line_missing_since = None
+                self.line_search_origin_yaw = (
+                    self.odom_pose[2] if self.odom_pose else None)
+                self.line_search_direction = 1.0
+                self.line_search_reversals = 0
             self.publish_status("visual stop-line approach armed")
             self.wait_event(
                 self.parked_event,

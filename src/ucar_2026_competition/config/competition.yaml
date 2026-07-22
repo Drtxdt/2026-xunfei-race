@@ -2,26 +2,24 @@
 # 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
 # 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
 qr_navigation_timeout_sec: 120.0
-# 停转扫描：保持原扫码起始位姿，只执行一轮九步扫描，不再前往备用点扫第二轮。
-# 每次快速转25度后停车0.3秒，共225度；最后继续快速回到起始朝向（原代码最终姿态）。
+# 恢复昨晚第一版停转扫描：保持原扫码起始位姿，只执行一轮九步扫描。
+# 每次转30度后停车0.3秒，共270度；收齐三码后并行启动大模型和下一阶段预热。
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
-qr_scan_angular_speed: 0.35
+qr_scan_angular_speed: 0.60
+qr_final_return_angular_speed: 1.20
+qr_final_return_min_angular_speed: 0.25
+qr_final_return_slowdown_angle_rad: 0.4363323129985824
 qr_scan_step_angle_rad: 0.5235987755982988
+qr_scan_total_angle_rad: 4.71238898038469
 qr_scan_settle_sec: 0.3
-# Give the camera/decoder one stable frame window before the first marker moves.
-qr_decoder_warmup_sec: 1.2
-# URL resolution is asynchronous and can outlive the final rotation step.
-qr_scan_result_grace_sec: 3.2
-# If exactly one marker is still missing, revisit only the opening 120-degree arc.
-qr_scan_extra_sweep_angle_rad: 2.0943951023931953
+qr_final_yaw_tolerance_rad: 0.03490658503988659
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
 qr_expected_count: 3
-task1_reasoning_timeout_sec: 200.0
-# 第一圈不足三个时，使用现有 move_base 前往二维码区中间标定点。
-qr_fallback_enabled: true
+# 单轮扫描不足三个码时直接报错并等待恢复，不再移动到备用点重复扫码。
+qr_fallback_enabled: false
 qr_fallback_navigation_timeout_sec: 45.0
 qr_fallback_goal:
   x: -1.4643
@@ -46,17 +44,10 @@ target_center_coarse_step_deg: 4.0
 target_center_fine_step_deg: 2.0
 target_center_start_speed: 0.20
 target_center_max_speed: 0.35
-target_center_timeout_sec: 12.0
+target_center_timeout_sec: 20.0
 # 厂牌居中后，车头射线相对相机光轴的实车标定偏差。
 camera_boresight_yaw_offset: 0.0
 factory_navigation_timeout_sec: 420.0
-task2_inter_visit_reverse_distance_m: 0.32
-task2_inter_visit_reverse_speed_mps: 0.08
-task2_inter_visit_rear_clearance_m: 0.28
-task2_inter_visit_rear_half_angle_deg: 30.0
-task2_inter_visit_sensor_stale_sec: 0.5
-task2_inter_visit_timeout_sec: 7.0
-task2_second_search_abort_fail_fast_count: 0
 # 任务2停车框贴墙且厂牌居中，以四轮全部入框为目标。
 parking_box_width: 0.50
 parking_box_depth: 0.50
@@ -65,11 +56,11 @@ parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
 parking_staging_position_tolerance: 0.10
 parking_staging_yaw_tolerance: 0.10
-parking_docking_timeout_sec: 25.0
+parking_docking_timeout_sec: 20.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
-parking_dock_max_yaw: 0.15
-parking_dock_min_yaw: 0.15
+parking_dock_max_yaw: 0.30
+parking_dock_min_yaw: 0.30
 parking_dock_normal_tolerance: 0.015
 parking_dock_tangent_tolerance: 0.02
 parking_dock_yaw_tolerance: 0.035
@@ -100,7 +91,6 @@ coverage_scan_angular_speed: 0.35
 coverage_scan_dwell_sec: 0.65
 coverage_candidate_hold_sec: 1.2
 coverage_scan_max_dwell_sec: 2.0
-coverage_navigation_candidate_pause_count: 2
 coverage_scan_pose_timeout_sec: 0.5
 coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0
@@ -108,8 +98,7 @@ coverage_goal_progress_window_sec: 5.0
 coverage_goal_min_progress: 0.03
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
-coverage_rotation_max_yaw_deg: 45.0
-coverage_rotation_min_clearance: 0.30
+coverage_rotation_max_yaw_deg: 90.0
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44
@@ -122,9 +111,9 @@ sim_timeout_sec: 900.0
 
 # 交通灯坐标必须经实车标定后显式设置。未设置时流程安全暂停。
 traffic_pose_configured: false
-traffic_x: 0.0
-traffic_y: 0.0
-traffic_yaw: 0.0
+traffic_x: 0.2395
+traffic_y: -3.10
+traffic_yaw: -1.5596
 traffic_timeout_sec: 180.0
 
 track_timeout_sec: 420.0
