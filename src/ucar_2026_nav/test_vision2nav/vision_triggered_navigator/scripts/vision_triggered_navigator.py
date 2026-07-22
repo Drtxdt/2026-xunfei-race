@@ -134,7 +134,7 @@ class VisionTriggeredNavigator(object):
         self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
             "~coverage_rotation_max_yaw_deg", 45.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
-            "~coverage_rotation_min_clearance", 0.30)))
+            "~coverage_rotation_min_clearance", 0.28)))
         self.coverage_rotation_scan_max_age = max(0.1, float(rospy.get_param(
             "~coverage_rotation_scan_max_age_sec", 0.5)))
         self.coverage_goal_retry_count = max(0, int(rospy.get_param(
@@ -1048,7 +1048,7 @@ class VisionTriggeredNavigator(object):
                     "nearest lidar obstacle=%s required=%.2fm.",
                     self.scan_nearest_min,
                     self.coverage_rotation_min_clearance)
-                return True
+                return False
             start_pose = self._get_robot_pose(self.base_frame)
             if start_pose is None:
                 self.cmd_vel_pub.publish(Twist())

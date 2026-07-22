@@ -97,6 +97,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertGreaterEqual(
             float(config["coverage_scan_max_dwell_sec"]),
             float(config["coverage_candidate_hold_sec"]))
+        self.assertEqual(float(config["coverage_rotation_min_clearance"]), 0.28)
 
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)

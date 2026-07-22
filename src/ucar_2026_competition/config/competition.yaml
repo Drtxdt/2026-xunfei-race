@@ -109,7 +109,7 @@ coverage_goal_min_progress: 0.03
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 45.0
-coverage_rotation_min_clearance: 0.30
+coverage_rotation_min_clearance: 0.28
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44

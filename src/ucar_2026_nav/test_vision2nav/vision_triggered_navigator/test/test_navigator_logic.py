@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import ast
 import math
 import os
 import sys
@@ -69,6 +70,36 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
     latched, accepted = latch_trigger(latched)
     assert latched and not accepted
+
+
+def test_clearance_skip_does_not_report_scan_success():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VisionTriggeredNavigator"
+    )
+    step_scan = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_step_scan"
+    )
+    clearance_if = next(
+        node for node in ast.walk(step_scan)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.UnaryOp)
+        and isinstance(node.test.op, ast.Not)
+        and isinstance(node.test.operand, ast.Call)
+        and isinstance(node.test.operand.func, ast.Attribute)
+        and node.test.operand.func.attr == "_rotation_clearance_is_safe"
+    )
+    returns = [node for node in clearance_if.body if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    assert isinstance(returns[0].value, ast.Constant)
+    assert returns[0].value.value is False
 
 
 def test_second_search_starts_nearest_and_preserves_cyclic_route():

@@ -1382,7 +1382,7 @@ class CompetitionFlow:
                             "~task2_second_search_abort_fail_fast_count", 0)))
                         if phase == "simulation" else 0),
                     "coverage_rotation_min_clearance": rospy.get_param(
-                        "~coverage_rotation_min_clearance", 0.30),
+                        "~coverage_rotation_min_clearance", 0.28),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
                         "~coverage_rotation_max_yaw_deg", 45.0),
                     "target_center_steering_sign": rospy.get_param(
