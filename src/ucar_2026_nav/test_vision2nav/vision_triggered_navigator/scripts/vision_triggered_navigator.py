@@ -46,6 +46,7 @@ from navigator_logic import (
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
+    should_retry_coverage_goal,
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_handoff_accepted,
@@ -1051,13 +1052,16 @@ class VisionTriggeredNavigator(object):
                 return True
             if not self._rotation_clearance_is_safe():
                 self.cmd_vel_pub.publish(Twist())
-                self._publish_status("coverage_scan_skipped_clearance")
+                self._publish_status("coverage_scan_stationary_clearance")
                 rospy.logwarn(
-                    "[vision_triggered_navigator] skipping in-place sweep: "
-                    "nearest lidar obstacle=%s required=%.2fm.",
+                    "[vision_triggered_navigator] in-place sweep blocked by "
+                    "clearance; keep a stationary OCR view instead: nearest "
+                    "lidar obstacle=%s required=%.2fm.",
                     self.scan_nearest_min,
                     self.coverage_rotation_min_clearance)
-                return False
+                self._hold_scan_step(
+                    "anchor stationary clearance view", rospy.get_time())
+                return True
             start_pose = self._get_robot_pose(self.base_frame)
             if start_pose is None:
                 self.cmd_vel_pub.publish(Twist())
@@ -1212,8 +1216,13 @@ class VisionTriggeredNavigator(object):
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
-            if (self.current_goal_rotation_stall and
-                    attempt < self.coverage_goal_retry_count):
+            if should_retry_coverage_goal(
+                    result,
+                    self.current_goal_rotation_stall,
+                    self.current_goal_timed_out,
+                    attempt,
+                    self.coverage_goal_retry_count,
+                    actionlib.GoalStatus.ABORTED):
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
                     return "skipped_failed"

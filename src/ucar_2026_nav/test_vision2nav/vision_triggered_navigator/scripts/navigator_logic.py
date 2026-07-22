@@ -42,6 +42,18 @@ def cyclic_coverage_order(points, robot_x, robot_y):
     return list(range(nearest, len(points))) + list(range(0, nearest))
 
 
+def should_retry_coverage_goal(result, rotation_stall, timed_out,
+                               attempt, retry_count, aborted_status=4):
+    """Retry an exact anchor after a recoverable move_base failure."""
+    if int(attempt) >= max(0, int(retry_count)):
+        return False
+    try:
+        aborted = int(result) == int(aborted_status)
+    except (TypeError, ValueError):
+        aborted = False
+    return bool(rotation_stall) or bool(timed_out) or aborted
+
+
 def build_quadrilateral_walls(corners):
     """Build measured wall segments with inward unit normals.
 

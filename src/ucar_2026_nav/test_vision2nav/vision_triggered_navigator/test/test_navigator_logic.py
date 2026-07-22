@@ -38,6 +38,7 @@ from navigator_logic import (
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
+    should_retry_coverage_goal,
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
@@ -73,7 +74,7 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert latched and not accepted
 
 
-def test_clearance_skip_does_not_report_scan_success():
+def test_clearance_block_preserves_stationary_scan():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",
         "vision_triggered_navigator.py"))
@@ -100,7 +101,15 @@ def test_clearance_skip_does_not_report_scan_success():
     returns = [node for node in clearance_if.body if isinstance(node, ast.Return)]
     assert len(returns) == 1
     assert isinstance(returns[0].value, ast.Constant)
-    assert returns[0].value.value is False
+    assert returns[0].value.value is True
+
+
+def test_coverage_goal_retries_aborted_timeout_and_rotation_stall_once():
+    assert should_retry_coverage_goal(4, False, False, 0, 1)
+    assert should_retry_coverage_goal(2, False, True, 0, 1)
+    assert should_retry_coverage_goal(2, True, False, 0, 1)
+    assert not should_retry_coverage_goal(4, False, False, 1, 1)
+    assert not should_retry_coverage_goal(3, False, False, 0, 1)
 
 
 def test_second_search_starts_nearest_and_preserves_cyclic_route():
