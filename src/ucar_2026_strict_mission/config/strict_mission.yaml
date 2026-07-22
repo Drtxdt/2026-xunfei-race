@@ -8,8 +8,8 @@
 
   "traffic_pose_configured": true,
   "traffic_frame": "map",
-  "traffic_staging_x": 0.3195,
-  "traffic_staging_y": -3.0,
+  "traffic_staging_x": 0.2195,
+  "traffic_staging_y": -3.08,
   "traffic_staging_yaw":  -1.5596,
   "navigation_timeout_sec": 120.0,
 
@@ -32,7 +32,7 @@
   "stop_confirm_frames": 5,
   "stop_settle_sec": 0.60,
 
-  "final_advance_m": 0.12,
+  "final_advance_m": 0.16,
   "final_advance_speed": 0.045,
   "final_advance_timeout_sec": 6.0,
   "final_advance_odom_stale_sec": 0.50,
@@ -55,6 +55,7 @@
   "line_yaw_kp": 0.8,
   "line_yaw_max_speed": 0.16,
   "line_yaw_command_sign": -1.0,
+  "line_center_target_ratio": -0.12,
   "line_lateral_kp": 0.10,
   "line_lateral_max_speed": 0.045,
   "line_lateral_command_sign": -1.0,

@@ -4,8 +4,8 @@
   <arg name="start_traffic_detector" default="true" />
   <arg name="start_viewer" default="false" />
   <arg name="traffic_pose_configured" default="true" />
-  <arg name="traffic_staging_x" default="0.3195" />
-  <arg name="traffic_staging_y" default="-3.0" />
+  <arg name="traffic_staging_x" default="0.2195" />
+  <arg name="traffic_staging_y" default="-3.08" />
   <arg name="traffic_staging_yaw" default="-1.5596" />
   <arg name="traffic_config_file"
        default="$(find ucar_2026_strict_mission)/config/traffic_light_no_speech.yaml" />

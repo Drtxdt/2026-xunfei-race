@@ -325,7 +325,8 @@ class StrictMissionNode:
         alignment_state, lateral_speed, yaw_speed, aligned = \
             line_alignment_command(
                 angle_error,
-                center_error,
+                center_error - float(rospy.get_param(
+                    "~line_center_target_ratio", 0.0)),
                 math.radians(float(rospy.get_param(
                     "~line_yaw_tolerance_deg", 3.0))),
                 float(rospy.get_param(
