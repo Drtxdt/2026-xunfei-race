@@ -48,6 +48,7 @@ from navigator_logic import (
     sensor_is_fresh,
     should_skip_coverage_anchor,
     split_scan_angle,
+    staging_handoff_accepted,
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
@@ -227,6 +228,14 @@ class VisionTriggeredNavigator(object):
             "~parking_staging_position_tolerance", 0.10)))
         self.parking_staging_yaw_tolerance = abs(float(rospy.get_param(
             "~parking_staging_yaw_tolerance", 0.10)))
+        self.parking_staging_success_acceptance = max(
+            self.parking_staging_acceptance,
+            abs(float(rospy.get_param(
+                "~parking_staging_success_position_tolerance", 0.15))))
+        self.parking_staging_success_yaw_tolerance = max(
+            self.parking_staging_yaw_tolerance,
+            abs(float(rospy.get_param(
+                "~parking_staging_success_yaw_tolerance", 0.12))))
         self.parking_staging_watchdog_window = max(0.5, float(rospy.get_param(
             "~parking_staging_watchdog_window_sec", 2.0)))
         self.parking_staging_min_progress = max(0.0, float(rospy.get_param(
@@ -1546,15 +1555,32 @@ class VisionTriggeredNavigator(object):
         failure_reason = ""
         rate = rospy.Rate(20)
         while not rospy.is_shutdown():
+            state = self.move_base_client.get_state()
             pose = self._get_robot_pose(self.base_frame)
             if pose is not None:
                 distance = math.hypot(x - pose[0], y - pose[1])
                 yaw_accumulated += abs(normalize_angle(pose[2] - last_yaw))
                 last_yaw = pose[2]
                 yaw_error = abs(normalize_angle(yaw - pose[2]))
-                if staging_pose_reached(
-                        pose, (x, y, yaw), self.parking_staging_acceptance,
-                        self.parking_staging_yaw_tolerance):
+                if staging_handoff_accepted(
+                        pose, (x, y, yaw),
+                        state == actionlib.GoalStatus.SUCCEEDED,
+                        self.parking_staging_acceptance,
+                        self.parking_staging_yaw_tolerance,
+                        self.parking_staging_success_acceptance,
+                        self.parking_staging_success_yaw_tolerance):
+                    if (state == actionlib.GoalStatus.SUCCEEDED and
+                            not staging_pose_reached(
+                                pose, (x, y, yaw),
+                                self.parking_staging_acceptance,
+                                self.parking_staging_yaw_tolerance)):
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] move_base已成功，"
+                            "在放宽交接范围内继续低速停车: distance=%.3f "
+                            "yaw_error=%.3f limits=%.3f/%.3f",
+                            distance, yaw_error,
+                            self.parking_staging_success_acceptance,
+                            self.parking_staging_success_yaw_tolerance)
                     reached = True
                     break
                 if rospy.get_time() - window_started >= self.parking_staging_watchdog_window:
@@ -1573,7 +1599,6 @@ class VisionTriggeredNavigator(object):
                     window_pose = pose
                     yaw_accumulated = 0.0
 
-            state = self.move_base_client.get_state()
             if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
                 failure_reason = (
                     "move_base预停点提前结束(state=%s distance=%.3f yaw_error=%.3f)" %
@@ -1585,7 +1610,9 @@ class VisionTriggeredNavigator(object):
                 break
             rate.sleep()
 
-        self.move_base_client.cancel_goal()
+        if self.move_base_client.get_state() in [
+                actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
+            self.move_base_client.cancel_goal()
         idle = self._wait_navigation_idle(timeout=2.0)
         self.cmd_vel_pub.publish(Twist())
         if reached and idle:

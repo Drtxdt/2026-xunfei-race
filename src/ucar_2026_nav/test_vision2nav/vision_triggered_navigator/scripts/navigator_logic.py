@@ -197,6 +197,30 @@ def staging_pose_reached(current_pose, goal_pose,
             yaw_error <= abs(float(yaw_tolerance)))
 
 
+def staging_handoff_accepted(current_pose, goal_pose, action_succeeded,
+                             position_tolerance=0.10,
+                             yaw_tolerance=0.10,
+                             success_position_tolerance=0.15,
+                             success_yaw_tolerance=0.12):
+    """Allow a bounded handoff after move_base reports success.
+
+    The normal tolerances remain active while move_base is driving.  A small
+    extra envelope is allowed only after SUCCEEDED because the following
+    docking controller performs the precise wall-relative approach.
+    """
+    if staging_pose_reached(
+            current_pose, goal_pose, position_tolerance, yaw_tolerance):
+        return True
+    if not bool(action_succeeded):
+        return False
+    return staging_pose_reached(
+        current_pose, goal_pose,
+        max(abs(float(position_tolerance)),
+            abs(float(success_position_tolerance))),
+        max(abs(float(yaw_tolerance)), abs(float(success_yaw_tolerance))),
+    )
+
+
 def fit_wall_line(points, min_points=12, min_span=0.25,
                   max_residual=0.015):
     """Robustly fit a front wall in base coordinates without numpy.

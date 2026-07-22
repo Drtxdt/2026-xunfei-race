@@ -43,6 +43,7 @@ from navigator_logic import (
     target_sample_is_fresh,
     should_skip_coverage_anchor,
     split_scan_angle,
+    staging_handoff_accepted,
     wall_normal_distance,
     wall_fit_matches_expected,
     wall_fit_is_continuous,
@@ -221,6 +222,19 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
     assert coverage_position_needs_yaw_alignment(0.15, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.151, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
+
+
+def test_successful_staging_goal_uses_bounded_handoff_envelope():
+    current = (0.122, 0.0, 0.080)
+    goal = (0.0, 0.0, 0.0)
+    assert not staging_pose_reached(current, goal, 0.10, 0.10)
+    assert staging_handoff_accepted(
+        current, goal, True, 0.10, 0.10, 0.15, 0.12)
+    assert not staging_handoff_accepted(
+        current, goal, False, 0.10, 0.10, 0.15, 0.12)
+    assert not staging_handoff_accepted(
+        (0.151, 0.0, 0.080), goal, True,
+        0.10, 0.10, 0.15, 0.12)
 
 
 def test_recenter_requires_a_fresh_target_sample_before_motion():

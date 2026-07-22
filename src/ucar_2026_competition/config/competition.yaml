@@ -65,6 +65,8 @@ parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
 parking_staging_position_tolerance: 0.10
 parking_staging_yaw_tolerance: 0.10
+parking_staging_success_position_tolerance: 0.15
+parking_staging_success_yaw_tolerance: 0.12
 parking_docking_timeout_sec: 25.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
