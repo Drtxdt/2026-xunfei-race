@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import json
 import math
 import os
@@ -37,6 +38,39 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow"
+        )
+        workers = [
+            node for node in controller.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "_task1_reasoning_worker"
+        ]
+        self.assertEqual(len(workers), 1)
+
+        scan = next(
+            node for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "scan_qr_at_current_pose"
+        )
+        assigned_names = {
+            target.id
+            for node in ast.walk(scan)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            for target in (
+                node.targets if isinstance(node, ast.Assign) else [node.target]
+            )
+            if isinstance(target, ast.Name)
+        }
+        self.assertIn("total_steps", assigned_names)
+
     def test_competition_config_uses_faster_safe_qr_scan(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
