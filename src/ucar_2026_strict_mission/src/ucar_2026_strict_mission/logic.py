@@ -37,6 +37,24 @@ def forward_progress(start_pose, current_pose):
     return delta_x * math.cos(start_yaw) + delta_y * math.sin(start_yaw)
 
 
+def heading_alignment_command(error_rad, tolerance_rad, kp, min_speed,
+                              max_speed):
+    """Return a bounded angular command, or zero inside the tolerance."""
+    error = math.atan2(math.sin(float(error_rad)), math.cos(float(error_rad)))
+    tolerance = float(tolerance_rad)
+    minimum = float(min_speed)
+    maximum = float(max_speed)
+    if tolerance <= 0.0:
+        raise ValueError("heading tolerance must be positive")
+    if minimum <= 0.0 or maximum < minimum:
+        raise ValueError("heading speed bounds are invalid")
+    if abs(error) <= tolerance:
+        return 0.0
+    command = float(kp) * error
+    magnitude = min(maximum, max(minimum, abs(command)))
+    return math.copysign(magnitude, command)
+
+
 def lowest_horizontal_band(row_occupancies, min_occupancy, max_band_rows,
                            min_band_rows=2):
     """Return the lowest credible wide horizontal band as (start, end)."""

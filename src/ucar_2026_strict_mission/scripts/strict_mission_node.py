@@ -27,6 +27,7 @@ from ucar_2026_strict_mission.logic import (
     ConsecutiveBandFilter,
     DistanceCalibration,
     forward_progress,
+    heading_alignment_command,
     line_alignment_command,
     lowest_horizontal_band,
     track_launch_for_decision,
@@ -564,6 +565,51 @@ class StrictMissionNode:
                 "navigation failed with action state {}".format(
                     self.move_base.get_state()))
 
+    def align_to_staging_heading(self):
+        target_yaw = float(rospy.get_param("~traffic_staging_yaw"))
+        tolerance = math.radians(float(rospy.get_param(
+            "~staging_heading_tolerance_deg", 2.0)))
+        timeout = max(1.0, float(rospy.get_param(
+            "~staging_heading_timeout_sec", 12.0)))
+        kp = float(rospy.get_param("~staging_heading_kp", 0.9))
+        min_speed = float(rospy.get_param(
+            "~staging_heading_min_speed", 0.06))
+        max_speed = float(rospy.get_param(
+            "~staging_heading_max_speed", 0.16))
+        stale = float(rospy.get_param(
+            "~staging_heading_odom_stale_sec", 0.50))
+        deadline = time.monotonic() + timeout
+        rate = rospy.Rate(30)
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            with self.lock:
+                pose = self.odom_pose
+                age = time.monotonic() - self.odom_received_at
+            if pose is None or age > stale:
+                self.publish_stop()
+                rate.sleep()
+                continue
+            error = self.normalized_angle(target_yaw - pose[2])
+            angular = heading_alignment_command(
+                error, tolerance, kp, min_speed, max_speed)
+            if angular == 0.0:
+                self.publish_stop()
+                self.publish_status(
+                    "staging heading aligned",
+                    heading_error_deg=math.degrees(error),
+                )
+                return
+            command = Twist()
+            command.angular.z = angular
+            self.cmd_pub.publish(command)
+            self.publish_status(
+                "aligning staging heading before line search",
+                heading_error_deg=math.degrees(error),
+                commanded_yaw_rps=angular,
+            )
+            rate.sleep()
+        self.publish_stop()
+        raise RuntimeError("staging heading alignment timed out")
+
     def final_advance(self):
         target = float(rospy.get_param("~final_advance_m", 0.0))
         if target <= 0.0:
@@ -648,6 +694,10 @@ class StrictMissionNode:
             self.publish_status("navigating to calibrated staging pose")
             self.navigate_to_staging_pose()
             self.publish_stop()
+            with self.lock:
+                self.state = "ALIGN_STAGING_HEADING"
+            self.publish_status("correcting staging heading")
+            self.align_to_staging_heading()
             with self.lock:
                 self.state = "APPROACH_LINE"
                 self.last_image_at = time.monotonic()

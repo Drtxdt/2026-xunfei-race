@@ -14,6 +14,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ConsecutiveBandFilter,
     DistanceCalibration,
     forward_progress,
+    heading_alignment_command,
     line_alignment_command,
     lowest_horizontal_band,
     track_launch_for_decision,
@@ -55,6 +56,30 @@ class OdometryProgressTests(unittest.TestCase):
             forward_progress((0.0, 0.0, 0.0), (-0.03, 0.0, 0.0)),
             0.0,
         )
+
+
+class HeadingAlignmentTests(unittest.TestCase):
+    def test_stops_inside_heading_tolerance(self):
+        self.assertEqual(
+            heading_alignment_command(0.02, 0.04, 0.9, 0.06, 0.16),
+            0.0,
+        )
+
+    def test_preserves_turn_direction_and_speed_bounds(self):
+        self.assertAlmostEqual(
+            heading_alignment_command(-0.20, 0.04, 0.9, 0.06, 0.16),
+            -0.16,
+        )
+        self.assertAlmostEqual(
+            heading_alignment_command(0.05, 0.04, 0.9, 0.06, 0.16),
+            0.06,
+        )
+
+    def test_rejects_invalid_heading_parameters(self):
+        with self.assertRaises(ValueError):
+            heading_alignment_command(0.2, 0.0, 0.9, 0.06, 0.16)
+        with self.assertRaises(ValueError):
+            heading_alignment_command(0.2, 0.04, 0.9, 0.20, 0.16)
 
 
 class ApproachPolicyTests(unittest.TestCase):
