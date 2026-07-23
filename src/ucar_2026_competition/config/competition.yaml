@@ -19,7 +19,7 @@ qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
 qr_expected_count: 3
 # 单轮扫描不足三个码时直接报错并等待恢复，不再移动到备用点重复扫码。
-qr_fallback_enabled: false
+qr_fallback_enabled: true
 qr_fallback_navigation_timeout_sec: 45.0
 qr_fallback_goal:
   x: -1.4643

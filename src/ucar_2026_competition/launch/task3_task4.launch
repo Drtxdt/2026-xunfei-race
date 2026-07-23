@@ -4,7 +4,7 @@
   <arg name="sim_category" default="" />
   <arg name="sim_item" default="" />
   <arg name="sim_workshop" default="" />
-  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
   <arg name="sim_bridge_port" default="26003" />
   <arg name="traffic_pose_configured" default="true" />
   <arg name="traffic_x" default="0.2395" />
