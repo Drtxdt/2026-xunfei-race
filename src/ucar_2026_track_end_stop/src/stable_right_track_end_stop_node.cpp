@@ -133,7 +133,8 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_time", startup_time_, 2.0);
+    private_nh_.param("startup_forward_distance_m",
+                      startup_forward_distance_m_, 0.25);
     private_nh_.param("startup_speed", startup_speed_, 0.45);
 
     private_nh_.param("right_line_offset_px", right_line_offset_px_, 185.0);
@@ -165,13 +166,13 @@ private:
     private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
     private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
     private_nh_.param("right_guard_speed", right_guard_speed_, 0.11);
-    private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.10);
-    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.24);
+    private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.16);
+    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.30);
     private_nh_.param("low_confidence_threshold", low_confidence_threshold_, 0.45);
     private_nh_.param("low_confidence_speed", low_confidence_speed_, 0.09);
-    private_nh_.param("right_near_warning_error_px", right_near_warning_error_px_, 22.0);
-    private_nh_.param("right_near_hard_error_px", right_near_hard_error_px_, 35.0);
-    private_nh_.param("right_near_guard_speed", right_near_guard_speed_, 0.08);
+    private_nh_.param("right_near_warning_error_px", right_near_warning_error_px_, 12.0);
+    private_nh_.param("right_near_hard_error_px", right_near_hard_error_px_, 24.0);
+    private_nh_.param("right_near_guard_speed", right_near_guard_speed_, 0.06);
     private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
     private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
@@ -240,7 +241,11 @@ private:
         break;
 
       case State::StartupForward:
-        if ((now - start_time_).toSec() < startup_time_)
+      {
+        const double startup_duration =
+            startup_forward_distance_m_ /
+            std::max(startup_speed_, 1e-6);
+        if ((now - start_time_).toSec() < startup_duration)
         {
           setStatus("stable_right_startup_forward");
           cmd.linear.x = startup_speed_;
@@ -253,6 +258,7 @@ private:
           state_start_time_ = now;
         }
         break;
+      }
 
       case State::SearchRightLine:
         follow = computeFollow(mask);
@@ -921,7 +927,7 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_time_ = 2.0;
+  double startup_forward_distance_m_ = 0.25;
   double startup_speed_ = 0.45;
 
   double right_line_offset_px_ = 185.0;
@@ -950,13 +956,13 @@ private:
   double right_warning_error_px_ = 28.0;
   double right_hard_error_px_ = 52.0;
   double right_guard_speed_ = 0.11;
-  double right_guard_away_angular_ = 0.10;
-  double right_hard_away_angular_ = 0.24;
+  double right_guard_away_angular_ = 0.16;
+  double right_hard_away_angular_ = 0.30;
   double low_confidence_threshold_ = 0.45;
   double low_confidence_speed_ = 0.09;
-  double right_near_warning_error_px_ = 22.0;
-  double right_near_hard_error_px_ = 35.0;
-  double right_near_guard_speed_ = 0.08;
+  double right_near_warning_error_px_ = 12.0;
+  double right_near_hard_error_px_ = 24.0;
+  double right_near_guard_speed_ = 0.06;
   double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
