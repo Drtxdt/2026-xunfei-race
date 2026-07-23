@@ -66,7 +66,7 @@ parking_dock_tangent_tolerance: 0.02
 parking_dock_yaw_tolerance: 0.035
 parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15
-parking_recenter_tolerance: 0.04
+parking_recenter_tolerance: 0.08
 parking_recenter_timeout_sec: 8.0
 parking_recenter_initial_wait_sec: 1.0
 parking_wall_fit_half_angle_deg: 35.0

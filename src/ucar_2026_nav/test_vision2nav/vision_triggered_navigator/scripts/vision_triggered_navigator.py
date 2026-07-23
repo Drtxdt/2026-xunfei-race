@@ -268,7 +268,7 @@ class VisionTriggeredNavigator(object):
         self.scan_front_half_angle = math.radians(abs(float(rospy.get_param(
             "~scan_front_half_angle_deg", 15.0))))
         self.parking_recenter_tolerance = abs(float(rospy.get_param(
-            "~parking_recenter_tolerance", 0.04)))
+            "~parking_recenter_tolerance", 0.08)))
         self.parking_recenter_timeout = max(1.0, float(rospy.get_param(
             "~parking_recenter_timeout_sec", 8.0)))
         self.parking_recenter_initial_wait = max(0.0, float(rospy.get_param(
@@ -1310,6 +1310,7 @@ class VisionTriggeredNavigator(object):
         steering_sign = self.target_center_steering_sign
         reversed_once = False
         must_improve_after_reverse = False
+        reverse_reference_error = None
 
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             age = rospy.get_time() - self.target_payload_at
@@ -1382,10 +1383,19 @@ class VisionTriggeredNavigator(object):
                 "[vision_triggered_navigator] 居中反馈 before=%.3f after=%.3f improvement=%.3f",
                 before_error, after_error, improvement)
             if must_improve_after_reverse:
-                if improvement <= 0.0:
+                reference_error = (
+                    reverse_reference_error
+                    if reverse_reference_error is not None
+                    else abs(before_error)
+                )
+                if abs(after_error) >= reference_error:
                     return self._centering_failure(
                         "自动反向后误差仍未减小，停止居中.", failure_state)
                 must_improve_after_reverse = False
+                reverse_reference_error = None
+                rospy.loginfo(
+                    "[vision_triggered_navigator] 自动反向有效: reference=%.3f after=%.3f.",
+                    reference_error, abs(after_error))
             elif improvement < -self.target_center_reverse_threshold:
                 if reversed_once:
                     return self._centering_failure(
@@ -1393,9 +1403,10 @@ class VisionTriggeredNavigator(object):
                 steering_sign *= -1.0
                 reversed_once = True
                 must_improve_after_reverse = True
+                reverse_reference_error = abs(after_error)
                 rospy.logwarn(
-                    "[vision_triggered_navigator] 首次步进使误差增大，自动反转居中方向为%+.0f.",
-                    steering_sign)
+                    "[vision_triggered_navigator] 首次步进使误差增大，自动反转居中方向为%+.0f，反向基准=%.3f.",
+                    steering_sign, reverse_reference_error)
 
         return self._centering_failure(
             "目标居中超过%.1fs，车辆保持停车." % timeout, failure_state)
