@@ -24,9 +24,11 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
+    coverage_anchor_order,
     coverage_motion_is_rotation_stall,
     coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
+    cyclic_coverage_order,
     docking_command,
     docking_pose_errors,
     docking_within_tolerance,
@@ -150,6 +152,17 @@ class VisionTriggeredNavigator(object):
         self.coverage_anchor_yaw_timeout = max(1.0, float(rospy.get_param(
             "~coverage_anchor_yaw_timeout_sec", 20.0)))
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
+        self.coverage_start_nearest = bool(rospy.get_param(
+            "~coverage_start_nearest", False))
+        self.coverage_preferred_anchor = int(rospy.get_param(
+            "~coverage_preferred_anchor", 0))
+        raw_skipped_anchors = rospy.get_param("~coverage_skip_anchors", "")
+        if isinstance(raw_skipped_anchors, (list, tuple)):
+            self.coverage_skip_anchors = tuple(raw_skipped_anchors)
+        else:
+            self.coverage_skip_anchors = tuple(
+                value.strip() for value in str(raw_skipped_anchors).split(",")
+                if value.strip())
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
         self.coverage_scan_step_angle = math.radians(max(
@@ -234,7 +247,7 @@ class VisionTriggeredNavigator(object):
         self.parking_staging_max_rotation = math.radians(abs(float(rospy.get_param(
             "~parking_staging_max_rotation_deg", 45.0))))
         self.parking_docking_timeout = max(1.0, float(rospy.get_param(
-            "~parking_docking_timeout_sec", 20.0)))
+            "~parking_docking_timeout_sec", 30.0)))
         self.parking_dock_max_x = abs(float(rospy.get_param(
             "~parking_dock_max_x", 0.10)))
         self.parking_dock_max_y = abs(float(rospy.get_param(
@@ -249,11 +262,11 @@ class VisionTriggeredNavigator(object):
         self.parking_dock_rotation_stall_retries = max(0, int(
             rospy.get_param("~parking_dock_rotation_stall_retries", 2)))
         self.parking_dock_normal_tolerance = abs(float(rospy.get_param(
-            "~parking_dock_normal_tolerance", 0.015)))
+            "~parking_dock_normal_tolerance", 0.02)))
         self.parking_dock_tangent_tolerance = abs(float(rospy.get_param(
             "~parking_dock_tangent_tolerance", 0.02)))
         self.parking_dock_yaw_tolerance = abs(float(rospy.get_param(
-            "~parking_dock_yaw_tolerance", 0.035)))
+            "~parking_dock_yaw_tolerance", 0.05)))
         self.parking_dock_stable_sec = max(0.1, float(rospy.get_param(
             "~parking_dock_stable_sec", 0.5)))
         self.parking_min_wall_distance = abs(float(rospy.get_param(
@@ -2099,9 +2112,28 @@ class VisionTriggeredNavigator(object):
 
         state = "PATROL"
         patrol_idx = 0
-        coverage_count = len(self.patrol_points)
+        nearest_order = None
+        if self.coverage_search_mode and self.coverage_start_nearest:
+            pose = self._get_robot_pose(self.base_frame)
+            if pose is not None:
+                nearest_order = cyclic_coverage_order(
+                    self.patrol_points, pose[0], pose[1])
+        coverage_order = coverage_anchor_order(
+            len(self.patrol_points),
+            self.coverage_preferred_anchor,
+            self.coverage_skip_anchors,
+            nearest_order,
+        )
         if self.max_coverage_anchors > 0:
-            coverage_count = min(coverage_count, self.max_coverage_anchors)
+            coverage_order = coverage_order[:self.max_coverage_anchors]
+        coverage_count = len(coverage_order)
+        if self.coverage_search_mode:
+            rospy.loginfo(
+                "[vision_triggered_navigator] coverage anchor order=%s preferred=%d skipped=%s",
+                ",".join(str(index + 1) for index in coverage_order) or "none",
+                self.coverage_preferred_anchor,
+                ",".join(str(value) for value in self.coverage_skip_anchors)
+                or "none")
         coverage_position = 0
 
         while not rospy.is_shutdown():
@@ -2120,7 +2152,7 @@ class VisionTriggeredNavigator(object):
                         self._publish_status("failed")
                         break
 
-                    point_idx = coverage_position
+                    point_idx = coverage_order[coverage_position]
                     point = self.patrol_points[point_idx]
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",

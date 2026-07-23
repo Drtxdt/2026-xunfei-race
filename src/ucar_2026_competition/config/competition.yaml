@@ -61,14 +61,14 @@ parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
 parking_staging_position_tolerance: 0.16
 parking_staging_yaw_tolerance: 0.10
-parking_docking_timeout_sec: 20.0
+parking_docking_timeout_sec: 30.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
 parking_dock_max_yaw: 0.30
 parking_dock_min_yaw: 0.30
-parking_dock_normal_tolerance: 0.015
+parking_dock_normal_tolerance: 0.02
 parking_dock_tangent_tolerance: 0.02
-parking_dock_yaw_tolerance: 0.035
+parking_dock_yaw_tolerance: 0.05
 parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15
 parking_recenter_tolerance: 0.08

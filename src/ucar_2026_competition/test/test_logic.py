@@ -29,6 +29,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_resumed_coverage_hint,
     task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
@@ -73,6 +74,31 @@ class CompetitionLogicTest(unittest.TestCase):
             task2_semantic_coverage_hint(
                 {"daily": 3, "electronics": 3}, "electronics"),
             (3, ()),
+        )
+
+    def test_task2_second_search_resumes_after_last_observed_anchor(self):
+        self.assertEqual(
+            task2_resumed_coverage_hint(
+                {"daily": {"anchor": 2}},
+                "food",
+                last_anchor=5,
+                anchor_count=9,
+            ),
+            (6, (2,)),
+        )
+
+    def test_task2_remembered_target_wins_over_resume_anchor(self):
+        self.assertEqual(
+            task2_resumed_coverage_hint(
+                {
+                    "food": {"anchor": 3},
+                    "daily": {"anchor": 2},
+                },
+                "food",
+                last_anchor=7,
+                anchor_count=9,
+            ),
+            (3, (2,)),
         )
 
     def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):

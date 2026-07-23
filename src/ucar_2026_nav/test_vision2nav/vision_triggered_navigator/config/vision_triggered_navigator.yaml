@@ -31,6 +31,8 @@ feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频�
 # 任务2覆盖优先模式（launch默认关闭，只有比赛任务2显式开启）。
 coverage_search_mode: false
 coverage_start_nearest: false
+coverage_preferred_anchor: 0
+coverage_skip_anchors: ""
 coverage_failed_revisit_limit: 1
 coverage_abort_fail_fast_count: 0
 target_topic: "/vision/target"
@@ -99,14 +101,14 @@ parking_staging_success_yaw_tolerance: 0.12
 parking_staging_watchdog_window_sec: 2.0
 parking_staging_min_progress: 0.03
 parking_staging_max_rotation_deg: 45.0
-parking_docking_timeout_sec: 25.0
+parking_docking_timeout_sec: 30.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
 parking_dock_max_yaw: 0.15
 parking_dock_min_yaw: 0.15
-parking_dock_normal_tolerance: 0.015
+parking_dock_normal_tolerance: 0.02
 parking_dock_tangent_tolerance: 0.02
-parking_dock_yaw_tolerance: 0.035
+parking_dock_yaw_tolerance: 0.05
 parking_dock_stable_sec: 0.5
 parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15

@@ -47,7 +47,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
-    task2_semantic_coverage_hint,
+    task2_resumed_coverage_hint,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -174,6 +174,7 @@ class CompetitionFlow:
             "~task2_trigger_min_bbox_area_ratio", 0.006))
         self.task2_warehouse_memory = {}
         self.current_coverage_anchor = None
+        self.last_coverage_anchor = None
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -594,6 +595,8 @@ class CompetitionFlow:
                 anchor = None
             with self.lock:
                 self.current_coverage_anchor = anchor
+                if anchor is not None:
+                    self.last_coverage_anchor = anchor
             rospy.loginfo("task2 observing coverage anchor: %s", anchor)
             return
         if status.startswith("coverage_anchor_transit:"):
@@ -1417,11 +1420,16 @@ class CompetitionFlow:
             self.current_coverage_anchor = None
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
-            preferred_anchor, skipped_anchors = task2_semantic_coverage_hint(
-                self.task2_warehouse_memory, category)
+            preferred_anchor, skipped_anchors = task2_resumed_coverage_hint(
+                self.task2_warehouse_memory,
+                category,
+                self.last_coverage_anchor if phase == "simulation" else None,
+                len(rospy.get_param(
+                    "/vision_triggered_navigator/patrol_points", [])) or 9,
+            )
         if phase == "simulation" and preferred_anchor:
             rospy.loginfo(
-                "task2 semantic memory: prioritizing remembered %s anchor %d; "
+                "task2 coverage resume: starting %s search at anchor %d; "
                 "skipping irrelevant anchors=%s",
                 category, preferred_anchor,
                 ",".join(str(value) for value in skipped_anchors) or "none")
@@ -1469,7 +1477,8 @@ class CompetitionFlow:
                         bool_param("~navigator_publish_initial_pose", False)),
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
-                    "coverage_start_nearest": phase == "simulation",
+                    "coverage_start_nearest": (
+                        phase == "simulation" and not preferred_anchor),
                     "coverage_preferred_anchor": (
                         preferred_anchor if phase == "simulation" else 0),
                     "coverage_skip_anchors": (
@@ -1507,7 +1516,7 @@ class CompetitionFlow:
                     "parking_staging_success_yaw_tolerance": rospy.get_param(
                         "~parking_staging_success_yaw_tolerance", 0.12),
                     "parking_docking_timeout_sec": rospy.get_param(
-                        "~parking_docking_timeout_sec", 25.0),
+                        "~parking_docking_timeout_sec", 30.0),
                     "parking_dock_max_x": rospy.get_param(
                         "~parking_dock_max_x", 0.10),
                     "parking_dock_max_y": rospy.get_param(
@@ -1517,11 +1526,11 @@ class CompetitionFlow:
                     "parking_dock_min_yaw": rospy.get_param(
                         "~parking_dock_min_yaw", 0.15),
                     "parking_dock_normal_tolerance": rospy.get_param(
-                        "~parking_dock_normal_tolerance", 0.015),
+                        "~parking_dock_normal_tolerance", 0.02),
                     "parking_dock_tangent_tolerance": rospy.get_param(
                         "~parking_dock_tangent_tolerance", 0.02),
                     "parking_dock_yaw_tolerance": rospy.get_param(
-                        "~parking_dock_yaw_tolerance", 0.035),
+                        "~parking_dock_yaw_tolerance", 0.05),
                     "parking_min_wall_distance": rospy.get_param(
                         "~parking_min_wall_distance", 0.19),
                     "parking_lidar_stop_distance": rospy.get_param(
@@ -1670,6 +1679,7 @@ class CompetitionFlow:
         with self.lock:
             self.task2_warehouse_memory = {}
             self.current_coverage_anchor = None
+            self.last_coverage_anchor = None
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
         self.task2_announcement_completed = False

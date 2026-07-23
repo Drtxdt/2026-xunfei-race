@@ -17,6 +17,7 @@ from navigator_logic import (
     center_angular_command,
     center_step_angle,
     coverage_motion_is_rotation_stall,
+    coverage_anchor_order,
     coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
     cyclic_coverage_order,
@@ -148,6 +149,18 @@ def test_second_search_starts_nearest_and_preserves_cyclic_route():
         {"x": 3.0, "y": 0.0},
     ]
     assert cyclic_coverage_order(points, 2.1, 0.0) == [2, 3, 0, 1]
+
+
+def test_coverage_anchor_order_resumes_at_explicit_anchor():
+    assert coverage_anchor_order(5, preferred_anchor=3) == [2, 3, 4, 0, 1]
+
+
+def test_coverage_anchor_order_skips_confirmed_irrelevant_anchors():
+    assert coverage_anchor_order(
+        5,
+        skipped_anchors=(2, 4),
+        nearest_order=[3, 4, 0, 1, 2],
+    ) == [4, 0, 2]
 
 
 def test_measured_quadrilateral_wall_normals_point_inward():

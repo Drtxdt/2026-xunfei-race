@@ -42,6 +42,37 @@ def cyclic_coverage_order(points, robot_x, robot_y):
     return list(range(nearest, len(points))) + list(range(0, nearest))
 
 
+def coverage_anchor_order(count, preferred_anchor=0, skipped_anchors=(),
+                          nearest_order=None):
+    """Build a one-pass zero-based coverage order.
+
+    Public anchor parameters are one-based.  An explicit remembered anchor
+    wins; otherwise the caller may provide an order beginning at the nearest
+    current anchor.  Confirmed irrelevant anchors are omitted.
+    """
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    preferred = int(preferred_anchor or 0)
+    if 1 <= preferred <= count:
+        start = preferred - 1
+        order = list(range(start, count)) + list(range(0, start))
+    elif nearest_order is not None:
+        order = [int(index) for index in nearest_order
+                 if 0 <= int(index) < count]
+    else:
+        order = list(range(count))
+    skipped = set()
+    for anchor in skipped_anchors or ():
+        try:
+            anchor = int(anchor)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= anchor <= count:
+            skipped.add(anchor - 1)
+    return [index for index in order if index not in skipped]
+
+
 def should_retry_coverage_goal(result, rotation_stall, timed_out,
                                attempt, retry_count, aborted_status=4):
     """Retry an exact anchor after a recoverable move_base failure."""

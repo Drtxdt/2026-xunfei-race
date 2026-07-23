@@ -303,6 +303,22 @@ def task2_semantic_coverage_hint(memory, target_category):
     return preferred, tuple(sorted(skipped))
 
 
+def task2_resumed_coverage_hint(memory, target_category, last_anchor,
+                                anchor_count=9):
+    """Prefer remembered target, otherwise continue after the last anchor."""
+    preferred, skipped = task2_semantic_coverage_hint(memory, target_category)
+    if preferred:
+        return preferred, skipped
+    try:
+        last_anchor = int(last_anchor)
+    except (TypeError, ValueError):
+        last_anchor = 0
+    anchor_count = max(0, int(anchor_count))
+    if anchor_count and 1 <= last_anchor <= anchor_count:
+        preferred = last_anchor % anchor_count + 1
+    return preferred, skipped
+
+
 def normalize_category(value):
     text = str(value or "").strip().lower()
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)
