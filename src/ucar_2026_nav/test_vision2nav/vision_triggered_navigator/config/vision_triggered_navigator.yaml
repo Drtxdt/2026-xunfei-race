@@ -47,6 +47,8 @@ coverage_rotation_max_yaw_deg: 45.0
 coverage_rotation_min_clearance: 0.28
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
+coverage_anchor_observation_radius: 0.45
+coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0

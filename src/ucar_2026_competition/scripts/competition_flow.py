@@ -1599,6 +1599,10 @@ class CompetitionFlow:
                         "~coverage_goal_progress_window_sec", 5.0),
                     "coverage_goal_min_progress": rospy.get_param(
                         "~coverage_goal_min_progress", 0.03),
+                    "coverage_anchor_observation_radius": rospy.get_param(
+                        "~coverage_anchor_observation_radius", 0.45),
+                    "coverage_near_anchor_stall_timeout_sec": rospy.get_param(
+                        "~coverage_near_anchor_stall_timeout_sec", 3.0),
                 },
             )
             timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))

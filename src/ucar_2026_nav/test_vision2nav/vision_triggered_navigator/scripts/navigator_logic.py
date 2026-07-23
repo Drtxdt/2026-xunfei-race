@@ -392,6 +392,29 @@ def coverage_position_needs_yaw_alignment(distance, yaw_error,
             abs(float(yaw_error)) > abs(float(yaw_tolerance)))
 
 
+def coverage_near_anchor_action(distance, baseline_distance, elapsed,
+                                observation_radius=0.45,
+                                stall_timeout=3.0,
+                                minimum_progress=0.03):
+    """Decide whether a blocked near-anchor goal should become an observation.
+
+    Exact observation coordinates can be occupied by a cone or inflated
+    costmap cell.  Once the robot is close enough to see the sign, measurable
+    progress restarts the short watchdog; otherwise a stalled goal is handed
+    over to the stationary scan instead of waiting for the global timeout.
+    """
+    distance = float(distance)
+    if distance > abs(float(observation_radius)):
+        return "outside"
+    if baseline_distance is None:
+        return "start"
+    if float(baseline_distance) - distance >= abs(float(minimum_progress)):
+        return "reset"
+    if max(0.0, float(elapsed)) >= max(0.0, float(stall_timeout)):
+        return "observe"
+    return "continue"
+
+
 def coverage_timeout_decision(elapsed, window_progress,
                               soft_timeout=25.0, hard_timeout=40.0,
                               minimum_progress=0.03):

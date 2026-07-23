@@ -26,6 +26,7 @@ from navigator_logic import (
     build_quadrilateral_walls,
     coverage_anchor_order,
     coverage_motion_is_rotation_stall,
+    coverage_near_anchor_action,
     coverage_position_needs_yaw_alignment,
     coverage_timeout_decision,
     cyclic_coverage_order,
@@ -145,6 +146,12 @@ class VisionTriggeredNavigator(object):
             "~coverage_goal_retry_count", 1)))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
             "~coverage_anchor_position_tolerance", 0.15)))
+        self.coverage_anchor_observation_radius = max(
+            self.coverage_anchor_position_tolerance,
+            float(rospy.get_param(
+                "~coverage_anchor_observation_radius", 0.45)))
+        self.coverage_near_anchor_stall_timeout = max(0.5, float(
+            rospy.get_param("~coverage_near_anchor_stall_timeout_sec", 3.0)))
         self.coverage_anchor_yaw_tolerance = math.radians(abs(float(rospy.get_param(
             "~coverage_anchor_yaw_tolerance_deg", math.degrees(0.06)))))
         self.coverage_anchor_yaw_hold = max(0.0, float(rospy.get_param(
@@ -383,6 +390,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_timed_out = False
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
+        self.current_goal_near_observation = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
@@ -785,6 +793,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_timed_out = False
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
+        self.current_goal_near_observation = False
 
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = self.map_frame
@@ -815,6 +824,8 @@ class VisionTriggeredNavigator(object):
         rotation_window_yaw = None
         rotation_accumulated = 0.0
         anchor_close_since = None
+        near_observation_started = None
+        near_observation_distance = None
         rate = rospy.Rate(10)
         while not rospy.is_shutdown():
             state = self.move_base_client.get_state()
@@ -844,6 +855,32 @@ class VisionTriggeredNavigator(object):
                         if progress_samples:
                             window_progress = max(
                                 0.0, progress_samples[0][1] - latest_distance)
+                        near_action = coverage_near_anchor_action(
+                            latest_distance,
+                            near_observation_distance,
+                            0.0 if near_observation_started is None
+                            else now - near_observation_started,
+                            self.coverage_anchor_observation_radius,
+                            self.coverage_near_anchor_stall_timeout,
+                            self.coverage_goal_min_progress)
+                        if near_action == "outside":
+                            near_observation_started = None
+                            near_observation_distance = None
+                        elif near_action in ("start", "reset"):
+                            near_observation_started = now
+                            near_observation_distance = latest_distance
+                        elif near_action == "observe":
+                            self.current_goal_near_observation = True
+                            self._publish_status(
+                                "coverage_anchor_near_observation")
+                            rospy.logwarn(
+                                "[vision_triggered_navigator] Exact anchor is blocked or stalled, "
+                                "but the robot is within observation range "
+                                "(distance=%.3fm radius=%.3fm); stop and scan here.",
+                                latest_distance,
+                                self.coverage_anchor_observation_radius)
+                            self.cancel_goal()
+                            break
                         if coverage_position_needs_yaw_alignment(
                                 latest_distance, latest_yaw_error,
                                 self.coverage_anchor_position_tolerance,
@@ -929,7 +966,8 @@ class VisionTriggeredNavigator(object):
         if timer is not None:
             timer.shutdown()
         if (self.current_goal_timed_out or self.current_goal_rotation_stall or
-                self.current_goal_needs_yaw_alignment):
+                self.current_goal_needs_yaw_alignment or
+                self.current_goal_near_observation):
             self.move_base_client.wait_for_result(rospy.Duration(1.0))
         final_state = self.move_base_client.get_state()
 
@@ -1139,7 +1177,20 @@ class VisionTriggeredNavigator(object):
             result = self.send_goal(x, y, yaw)
             if self.triggered:
                 return "triggered"
-            if self.current_goal_needs_yaw_alignment:
+            if (not self.current_goal_near_observation and
+                    result != actionlib.GoalStatus.SUCCEEDED):
+                pose = self._get_robot_pose(self.base_frame)
+                if (pose is not None and
+                        math.hypot(x - pose[0], y - pose[1]) <=
+                        self.coverage_anchor_observation_radius):
+                    self.current_goal_near_observation = True
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] move_base ended before the exact "
+                        "anchor, but the robot is within %.3fm; retain this anchor "
+                        "and perform its stationary scan.",
+                        self.coverage_anchor_observation_radius)
+            if (self.current_goal_needs_yaw_alignment or
+                    self.current_goal_near_observation):
                 if (self._wait_navigation_idle() and
                         self._align_coverage_anchor_yaw((x, y, yaw))):
                     navigation_reached = True

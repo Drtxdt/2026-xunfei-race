@@ -101,6 +101,8 @@ coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0
 coverage_goal_progress_window_sec: 5.0
 coverage_goal_min_progress: 0.03
+coverage_anchor_observation_radius: 0.45
+coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
