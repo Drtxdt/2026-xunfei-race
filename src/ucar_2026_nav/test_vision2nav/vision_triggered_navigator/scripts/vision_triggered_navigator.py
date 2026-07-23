@@ -224,7 +224,7 @@ class VisionTriggeredNavigator(object):
         self.parking_staging_timeout = max(1.0, float(rospy.get_param(
             "~parking_staging_timeout_sec", 20.0)))
         self.parking_staging_acceptance = max(0.01, float(rospy.get_param(
-            "~parking_staging_position_tolerance", 0.10)))
+            "~parking_staging_position_tolerance", 0.16)))
         self.parking_staging_yaw_tolerance = abs(float(rospy.get_param(
             "~parking_staging_yaw_tolerance", 0.10)))
         self.parking_staging_watchdog_window = max(0.5, float(rospy.get_param(
@@ -671,18 +671,25 @@ class VisionTriggeredNavigator(object):
 
     def _wait_navigation_idle(self, timeout=2.0):
         """Do not publish direct cmd_vel until move_base has relinquished control."""
+        busy_states = [
+            actionlib.GoalStatus.PENDING,
+            actionlib.GoalStatus.ACTIVE,
+            actionlib.GoalStatus.PREEMPTING,
+            actionlib.GoalStatus.RECALLING,
+        ]
         deadline = rospy.get_time() + max(0.0, float(timeout))
         rate = rospy.Rate(20)
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             state = self.move_base_client.get_state()
-            if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
+            if state not in busy_states:
                 self.cmd_vel_pub.publish(Twist())
                 return True
-            self.move_base_client.cancel_goal()
+            if state in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
+                self.move_base_client.cancel_goal()
             self.cmd_vel_pub.publish(Twist())
             rate.sleep()
         state = self.move_base_client.get_state()
-        return state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]
+        return state not in busy_states
 
     def _clear_costmaps_and_wait(self, timeout=2.0):
         """Clear stale obstacle history, then require fresh scan and costmap data."""
@@ -1527,6 +1534,15 @@ class VisionTriggeredNavigator(object):
                     yaw_accumulated = 0.0
 
             state = self.move_base_client.get_state()
+            if state == actionlib.GoalStatus.SUCCEEDED:
+                reached = True
+                rospy.loginfo(
+                    "[vision_triggered_navigator] move_base已确认预停点成功"
+                    "(distance=%.3f yaw_error=%.3f)，进入停车对接.",
+                    distance,
+                    yaw_error,
+                )
+                break
             if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
                 failure_reason = (
                     "move_base预停点提前结束(state=%s distance=%.3f yaw_error=%.3f)" %
@@ -1538,7 +1554,11 @@ class VisionTriggeredNavigator(object):
                 break
             rate.sleep()
 
-        self.move_base_client.cancel_goal()
+        final_state = self.move_base_client.get_state()
+        if final_state in [
+                actionlib.GoalStatus.PENDING,
+                actionlib.GoalStatus.ACTIVE]:
+            self.move_base_client.cancel_goal()
         idle = self._wait_navigation_idle(timeout=2.0)
         self.cmd_vel_pub.publish(Twist())
         if reached and idle:

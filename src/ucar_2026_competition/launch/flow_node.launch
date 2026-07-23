@@ -42,7 +42,7 @@
   <arg name="parking_goal_offset" default="0.26" />
   <arg name="parking_staging_offset" default="0.55" />
   <arg name="parking_staging_timeout_sec" default="20.0" />
-  <arg name="parking_staging_position_tolerance" default="0.10" />
+  <arg name="parking_staging_position_tolerance" default="0.16" />
   <arg name="parking_staging_yaw_tolerance" default="0.10" />
   <arg name="parking_docking_timeout_sec" default="20.0" />
   <arg name="parking_dock_max_x" default="0.10" />
