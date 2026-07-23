@@ -39,10 +39,27 @@ TRACK_CONFIG = {
     ),
 }
 
+TASK4_STAGING_CALIBRATED = (0.2395, -3.10, -1.5596)
+TASK4_STAGING_RETIRED = (0.3195, -3.00, -1.5596)
+
 
 def normalize_angle(angle):
     """Normalize an angle to [-pi, pi)."""
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def normalize_task4_staging_pose(x, y, yaw):
+    """Migrate the retired task4 staging calibration while preserving custom poses."""
+    pose = (float(x), float(y), float(yaw))
+    retired = (
+        abs(pose[0] - TASK4_STAGING_RETIRED[0]) <= 0.002
+        and abs(pose[1] - TASK4_STAGING_RETIRED[1]) <= 0.002
+        and abs(normalize_angle(
+            pose[2] - TASK4_STAGING_RETIRED[2])) <= 0.02
+    )
+    if retired:
+        return TASK4_STAGING_CALIBRATED, True
+    return pose, False
 
 
 class DirectedYawAccumulator:

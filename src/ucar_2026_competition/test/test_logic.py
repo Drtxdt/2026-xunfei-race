@@ -22,6 +22,7 @@ from ucar_2026_competition.logic import (
     TemporalTargetFilter,
     normalize_category,
     normalize_angle,
+    normalize_task4_staging_pose,
     parse_category,
     parse_task1_categories,
     qr_values_from_payload,
@@ -42,6 +43,22 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_task4_retired_staging_pose_is_migrated(self):
+        pose, migrated = normalize_task4_staging_pose(
+            0.3195, -3.00, -1.5596)
+        self.assertTrue(migrated)
+        self.assertEqual(pose, (0.2395, -3.10, -1.5596))
+
+    def test_task4_current_and_custom_staging_poses_are_preserved(self):
+        current, migrated = normalize_task4_staging_pose(
+            0.2395, -3.10, -1.5596)
+        self.assertFalse(migrated)
+        self.assertEqual(current, (0.2395, -3.10, -1.5596))
+
+        custom, migrated = normalize_task4_staging_pose(1.0, 2.0, 0.5)
+        self.assertFalse(migrated)
+        self.assertEqual(custom, (1.0, 2.0, 0.5))
+
     def test_task2_rejects_distant_ocr_box_for_centering(self):
         bbox = [[100, 100], [151, 100], [151, 125], [100, 125]]
         self.assertEqual(

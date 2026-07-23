@@ -41,6 +41,7 @@ from ucar_2026_competition.logic import (
     TRACK_CONFIG,
     normalize_angle,
     normalize_category,
+    normalize_task4_staging_pose,
     parse_task1_categories,
     qr_values_from_payload,
     scan_sector_min,
@@ -1781,9 +1782,23 @@ class CompetitionFlow:
 
     def approach_task4_stop_line(self):
         self.strict_mission_status = {}
+        staging_pose, migrated = normalize_task4_staging_pose(
+            rospy.get_param("~traffic_x"),
+            rospy.get_param("~traffic_y"),
+            rospy.get_param("~traffic_yaw"),
+        )
+        staging_x, staging_y, staging_yaw = staging_pose
+        if migrated:
+            rospy.logwarn(
+                "task4 retired staging pose requested; auto-correcting "
+                "x=0.3195 y=-3.00 to x=0.2395 y=-3.10")
+        rospy.loginfo(
+            "task4 staging pose in use: x=%.4f y=%.4f yaw=%.4f migrated=%s",
+            staging_x, staging_y, staging_yaw, migrated)
         self.publish_status(
             "task4", "approaching_stop_line",
-            "navigating to staging pose, then approaching the stop line visually")
+            "staging x={:.4f} y={:.4f} yaw={:.4f}; then visual approach".format(
+                staging_x, staging_y, staging_yaw))
         self.start_child(
             "strict_line",
             "ucar_2026_strict_mission",
@@ -1792,9 +1807,9 @@ class CompetitionFlow:
                 "start_traffic_detector": False,
                 "start_viewer": self.debug,
                 "traffic_pose_configured": True,
-                "traffic_staging_x": float(rospy.get_param("~traffic_x")),
-                "traffic_staging_y": float(rospy.get_param("~traffic_y")),
-                "traffic_staging_yaw": float(rospy.get_param("~traffic_yaw")),
+                "traffic_staging_x": staging_x,
+                "traffic_staging_y": staging_y,
+                "traffic_staging_yaw": staging_yaw,
             },
         )
         try:
@@ -1810,10 +1825,16 @@ class CompetitionFlow:
                 + 15.0
             )
             deadline = time.time() + timeout
+            last_state = None
             while time.time() < deadline:
                 self.check_abort()
                 status = self.strict_mission_status
                 state = str(status.get("state", ""))
+                if state and state != last_state:
+                    rospy.loginfo(
+                        "task4 stop-line state: %s distance_m=%s detail=%s",
+                        state, status.get("distance_m"), status.get("detail"))
+                    last_state = state
                 if state == "WAIT_TRAFFIC":
                     distance = status.get("distance_m")
                     self.publish_status(
