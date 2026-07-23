@@ -14,6 +14,7 @@ import actionlib
 import cv2
 import numpy as np
 import rospy
+import tf2_ros
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -59,6 +60,8 @@ class StrictMissionNode:
         self.last_distance_m = None
         self.odom_pose = None
         self.odom_received_at = 0.0
+        self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.traffic_hits = 0
         self.last_traffic_decision = None
         self.selected_decision = None
@@ -567,28 +570,40 @@ class StrictMissionNode:
 
     def align_to_staging_heading(self):
         target_yaw = float(rospy.get_param("~traffic_staging_yaw"))
+        target_frame = str(rospy.get_param("~traffic_frame", "map"))
+        base_frame = str(rospy.get_param(
+            "~staging_heading_base_frame", "base_link"))
         tolerance = math.radians(float(rospy.get_param(
-            "~staging_heading_tolerance_deg", 2.0)))
+            "~staging_heading_tolerance_deg", 4.0)))
         timeout = max(1.0, float(rospy.get_param(
-            "~staging_heading_timeout_sec", 12.0)))
+            "~staging_heading_timeout_sec", 20.0)))
         kp = float(rospy.get_param("~staging_heading_kp", 0.9))
         min_speed = float(rospy.get_param(
             "~staging_heading_min_speed", 0.06))
         max_speed = float(rospy.get_param(
             "~staging_heading_max_speed", 0.16))
-        stale = float(rospy.get_param(
-            "~staging_heading_odom_stale_sec", 0.50))
         deadline = time.monotonic() + timeout
         rate = rospy.Rate(30)
         while not rospy.is_shutdown() and time.monotonic() < deadline:
-            with self.lock:
-                pose = self.odom_pose
-                age = time.monotonic() - self.odom_received_at
-            if pose is None or age > stale:
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    target_frame,
+                    base_frame,
+                    rospy.Time(0),
+                    rospy.Duration(0.10),
+                )
+            except tf2_ros.TransformException:
                 self.publish_stop()
                 rate.sleep()
                 continue
-            error = self.normalized_angle(target_yaw - pose[2])
+            orientation = transform.transform.rotation
+            current_yaw = math.atan2(
+                2.0 * (orientation.w * orientation.z
+                       + orientation.x * orientation.y),
+                1.0 - 2.0 * (orientation.y * orientation.y
+                             + orientation.z * orientation.z),
+            )
+            error = self.normalized_angle(target_yaw - current_yaw)
             angular = heading_alignment_command(
                 error, tolerance, kp, min_speed, max_speed)
             if angular == 0.0:

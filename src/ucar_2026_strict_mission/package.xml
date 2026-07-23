@@ -16,6 +16,7 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>tf2_ros</depend>
   <exec_depend>ucar_2026_track_end_stop</exec_depend>
   <exec_depend>ucar_2026_traffic_light_rknn_test</exec_depend>
   <test_depend>python3-nose</test_depend>
