@@ -104,6 +104,34 @@ def test_clearance_block_preserves_stationary_scan():
     assert returns[0].value.value is True
 
 
+def test_centering_loss_rearms_coverage_search_instead_of_stopping():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    constants = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "centering_retry_pending" in constants
+    assert "centering_recovering" in constants
+
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute)
+            and target.attr == "triggered"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is False
+    ]
+    assert assignments
+
+
 def test_coverage_goal_retries_aborted_timeout_and_rotation_stall_once():
     assert should_retry_coverage_goal(4, False, False, 0, 1)
     assert should_retry_coverage_goal(2, False, True, 0, 1)

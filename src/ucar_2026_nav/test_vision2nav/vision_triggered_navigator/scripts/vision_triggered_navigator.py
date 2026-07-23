@@ -2185,7 +2185,20 @@ class VisionTriggeredNavigator(object):
                 self.cancel_goal()
                 self._hold_stopped(self.coverage_scan_settle)
                 self._publish_status("target_locked")
-                if not self._center_visual_target():
+                if not self._center_visual_target(
+                        failure_state="centering_retry_pending"):
+                    if self.coverage_search_mode:
+                        with self.trigger_lock:
+                            self.triggered = False
+                        self.target_error = None
+                        self.target_payload_at = 0.0
+                        self.last_target_payload = None
+                        self._publish_status("centering_recovering")
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] target centering lost; "
+                            "resume scanning from the current coverage anchor.")
+                        state = "PATROL"
+                        continue
                     rospy.logerr("[vision_triggered_navigator] 目标锁定后居中失败，车辆保持停车.")
                     break
                 if self.center_only:

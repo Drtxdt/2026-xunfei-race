@@ -34,11 +34,29 @@ from ucar_2026_competition.logic import (
     task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
+    target_bbox_is_close_enough,
+    target_bbox_ratios,
     trigger_delivery_state,
 )
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_task2_rejects_distant_ocr_box_for_centering(self):
+        bbox = [[100, 100], [151, 100], [151, 125], [100, 125]]
+        self.assertEqual(
+            target_bbox_ratios(bbox, 640, 480),
+            (51.0 / 640.0, 25.0 / 480.0, 1275.0 / (640.0 * 480.0)),
+        )
+        self.assertFalse(target_bbox_is_close_enough(bbox, 640, 480))
+
+    def test_task2_accepts_near_ocr_box_for_centering(self):
+        bbox = [[100, 100], [179, 100], [179, 136], [100, 136]]
+        self.assertTrue(target_bbox_is_close_enough(bbox, 640, 480))
+
+    def test_task2_rejects_malformed_ocr_box_for_centering(self):
+        self.assertFalse(target_bbox_is_close_enough([], 640, 480))
+        self.assertFalse(target_bbox_is_close_enough([[1, 2]], 640, 480))
+
     def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
         memory = {
             "daily": {"anchor": 2, "score": 0.71},

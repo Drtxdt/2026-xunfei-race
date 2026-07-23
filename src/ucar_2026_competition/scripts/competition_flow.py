@@ -52,6 +52,8 @@ from ucar_2026_competition.logic import (
     task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
+    target_bbox_is_close_enough,
+    target_bbox_ratios,
     trigger_delivery_state,
 )
 
@@ -164,6 +166,12 @@ class CompetitionFlow:
         }
         self.ocr_memory_min_score = float(rospy.get_param(
             "~ocr_memory_min_score", 0.55))
+        self.ocr_trigger_min_bbox_width_ratio = float(rospy.get_param(
+            "~task2_trigger_min_bbox_width_ratio", 0.11))
+        self.ocr_trigger_min_bbox_height_ratio = float(rospy.get_param(
+            "~task2_trigger_min_bbox_height_ratio", 0.06))
+        self.ocr_trigger_min_bbox_area_ratio = float(rospy.get_param(
+            "~task2_trigger_min_bbox_area_ratio", 0.006))
         self.task2_warehouse_memory = {}
         self.current_coverage_anchor = None
         self.vision_trigger_latched = False
@@ -504,6 +512,17 @@ class CompetitionFlow:
             if candidate_filter.push(candidate, category, now):
                 memory_confirmed = candidate == category
         score = float(payload.get("category_score", 0.0) or 0.0)
+        bbox = payload.get("target_bbox")
+        bbox_ratios = target_bbox_ratios(
+            bbox, payload.get("image_width"), payload.get("image_height"))
+        trigger_eligible = target_bbox_is_close_enough(
+            bbox,
+            payload.get("image_width"),
+            payload.get("image_height"),
+            self.ocr_trigger_min_bbox_width_ratio,
+            self.ocr_trigger_min_bbox_height_ratio,
+            self.ocr_trigger_min_bbox_area_ratio,
+        )
         if (memory_confirmed and payload.get("target_bbox") and
                 score >= self.ocr_memory_min_score):
             with self.lock:
@@ -519,20 +538,27 @@ class CompetitionFlow:
                     rospy.loginfo(
                         "task2 warehouse memory: category=%s anchor=%d score=%.3f",
                         category, anchor, score)
-        if category == self.ocr_target and payload.get("target_bbox"):
+        if category == self.ocr_target and trigger_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
-            self.ocr_target, category, time.monotonic())
+            self.ocr_target,
+            category if trigger_eligible else None,
+            time.monotonic(),
+        )
         rospy.loginfo_throttle(
             0.5,
-            "task2 OCR filter: target=%s observed=%s hits=%d/%d bbox=%s",
+            "task2 OCR filter: target=%s observed=%s hits=%d/%d "
+            "bbox=%s trigger_eligible=%s bbox_ratio=%s",
             self.ocr_target,
             category or "none",
             self.ocr_filter.hit_count,
             self.ocr_filter.required,
-            bool(payload.get("target_bbox")),
+            bool(bbox),
+            trigger_eligible,
+            ("%.3f/%.3f/%.4f" % bbox_ratios
+             if bbox_ratios is not None else "invalid"),
         )
-        if (confirmed and category == self.ocr_target and payload.get("target_bbox") and
+        if (confirmed and category == self.ocr_target and trigger_eligible and
                 not self.vision_trigger_latched):
             self.vision_trigger_latched = True
             self.trigger_request_pending = True
@@ -552,6 +578,15 @@ class CompetitionFlow:
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()
+        if status == "centering_recovering":
+            with self.lock:
+                self.vision_trigger_latched = False
+                self.trigger_request_pending = False
+                self.trigger_service_accepted = False
+                self.trigger_acknowledged = False
+                self.ocr_filter.reset()
+            rospy.logwarn(
+                "task2 target centering lost; rearmed OCR at the current anchor")
         if status.startswith("coverage_anchor_observing:"):
             try:
                 anchor = int(status.rsplit(":", 1)[1])

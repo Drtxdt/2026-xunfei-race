@@ -114,6 +114,46 @@ def base_is_stopped(linear_x, linear_y, angular_z,
             abs(float(angular_z)) <= abs(float(angular_tolerance)))
 
 
+def target_bbox_ratios(bbox, image_width, image_height):
+    """Return normalized width, height, and area for a polygonal target box."""
+    try:
+        image_width = float(image_width)
+        image_height = float(image_height)
+        points = [
+            (float(point[0]), float(point[1]))
+            for point in bbox
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+    except (TypeError, ValueError):
+        return None
+    if image_width <= 1.0 or image_height <= 1.0 or len(points) < 2:
+        return None
+    width = max(point[0] for point in points) - min(point[0] for point in points)
+    height = max(point[1] for point in points) - min(point[1] for point in points)
+    if width <= 0.0 or height <= 0.0:
+        return None
+    return (
+        width / image_width,
+        height / image_height,
+        width * height / (image_width * image_height),
+    )
+
+
+def target_bbox_is_close_enough(
+        bbox, image_width, image_height,
+        min_width_ratio=0.11, min_height_ratio=0.06, min_area_ratio=0.006):
+    """Reject distant OCR signs that are too small for reliable centering."""
+    ratios = target_bbox_ratios(bbox, image_width, image_height)
+    if ratios is None:
+        return False
+    width_ratio, height_ratio, area_ratio = ratios
+    return (
+        width_ratio >= float(min_width_ratio)
+        and height_ratio >= float(min_height_ratio)
+        and area_ratio >= float(min_area_ratio)
+    )
+
+
 class ConsecutiveTargetFilter:
     def __init__(self, required=3):
         self.required = max(1, int(required))

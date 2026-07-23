@@ -38,6 +38,11 @@ voice_stop_listening_service: /speech_command_node/stop_listening
 ocr_required_hits: 2
 ocr_evidence_window_sec: 1.5
 ocr_ready_timeout_sec: 12.0
+# Distant signs remain available to semantic memory, but cannot interrupt
+# navigation until the OCR box is large enough for reliable visual centering.
+task2_trigger_min_bbox_width_ratio: 0.11
+task2_trigger_min_bbox_height_ratio: 0.06
+task2_trigger_min_bbox_area_ratio: 0.006
 # 图像横向误差为正时的转向符号。首次低速居中测试必须确认方向。
 target_center_steering_sign: -1.0
 target_center_coarse_step_deg: 4.0
