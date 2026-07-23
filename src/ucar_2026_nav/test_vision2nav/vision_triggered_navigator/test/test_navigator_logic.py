@@ -36,6 +36,7 @@ from navigator_logic import (
     parking_footprint_margins,
     parking_footprint_inside,
     parking_goal_from_wall,
+    parking_recenter_required,
     ray_segment_intersection,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
@@ -300,6 +301,13 @@ def test_recenter_requires_a_fresh_target_sample_before_motion():
     assert target_sample_is_fresh(-0.02, 9.6, 10.0, 0.8)
     assert not target_sample_is_fresh(None, 9.9, 10.0, 0.8)
     assert not target_sample_is_fresh(-0.02, 9.0, 10.0, 0.8)
+
+
+def test_recenter_preserves_an_initial_alignment_already_in_tolerance():
+    assert not parking_recenter_required(0.061, 0.08)
+    assert not parking_recenter_required(-0.061, 0.08)
+    assert parking_recenter_required(0.081, 0.08)
+    assert parking_recenter_required(None, 0.08)
 
 
 def test_cost_query_uses_coordinates_already_transformed_to_costmap_frame():

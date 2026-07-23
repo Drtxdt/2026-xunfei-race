@@ -441,6 +441,13 @@ def target_sample_is_fresh(target_error, received_at, now, timeout):
             sensor_is_fresh(received_at, now, timeout))
 
 
+def parking_recenter_required(initial_center_error, tolerance):
+    """Return whether staging should run another visual centering pass."""
+    if initial_center_error is None:
+        return True
+    return abs(float(initial_center_error)) > abs(float(tolerance))
+
+
 def wall_normal_distance(pose, wall_point, inward_normal):
     """Return base-centre distance from a wall along its inward normal."""
     x, y = float(pose[0]), float(pose[1])

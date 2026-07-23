@@ -44,6 +44,7 @@ from navigator_logic import (
     normalize_angle,
     parking_footprint_margins,
     parking_goal_from_wall,
+    parking_recenter_required,
     ray_segment_intersection,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -371,6 +372,7 @@ class VisionTriggeredNavigator(object):
         self.target_error = None
         self.target_payload_at = 0.0
         self.last_target_payload = None
+        self.last_centered_error = None
         if self.coverage_search_mode:
             rospy.Subscriber(self.target_topic, String, self._target_cb, queue_size=10)
 
@@ -1189,8 +1191,10 @@ class VisionTriggeredNavigator(object):
                         "anchor, but the robot is within %.3fm; retain this anchor "
                         "and perform its stationary scan.",
                         self.coverage_anchor_observation_radius)
-            if (self.current_goal_needs_yaw_alignment or
-                    self.current_goal_near_observation):
+            if self.current_goal_near_observation:
+                navigation_reached = True
+                break
+            if self.current_goal_needs_yaw_alignment:
                 if (self._wait_navigation_idle() and
                         self._align_coverage_anchor_yaw((x, y, yaw))):
                     navigation_reached = True
@@ -1240,6 +1244,12 @@ class VisionTriggeredNavigator(object):
                                   self.coverage_scan_dwell))
         if self.triggered:
             return "triggered"
+        if self.current_goal_near_observation:
+            rospy.loginfo(
+                "[vision_triggered_navigator] coverage anchor=%d "
+                "state=blocked_observed rotations=skipped",
+                patrol_idx + 1)
+            return "covered"
         if not self.perform_rotations(point.get("rotations", [])):
             self.cmd_vel_pub.publish(Twist())
             rospy.logwarn(
@@ -1367,6 +1377,7 @@ class VisionTriggeredNavigator(object):
                      else abs(float(tolerance)))
         timeout = (self.target_center_timeout if timeout is None
                    else max(0.1, float(timeout)))
+        self.last_centered_error = None
         self._publish_status(state)
         if not self._wait_navigation_idle():
             return self._centering_failure(
@@ -1412,6 +1423,7 @@ class VisionTriggeredNavigator(object):
                         "[vision_triggered_navigator] target centered error=%.3f hits=%d/%d",
                         self.target_error, centered_hits, self.target_center_required_hits)
                 if centered_hits >= self.target_center_required_hits:
+                    self.last_centered_error = float(self.target_error)
                     self._hold_stopped(self.target_center_settle)
                     return True
                 if not self._wait_fresh_target(last_centered_stamp, min(
@@ -2268,6 +2280,7 @@ class VisionTriggeredNavigator(object):
                 self.cancel_goal()
                 self._hold_stopped(self.coverage_scan_settle)
                 self._publish_status("target_locked")
+                initial_center_error = None
                 if not self._center_visual_target(
                         failure_state="centering_retry_pending"):
                     if self.coverage_search_mode:
@@ -2284,6 +2297,7 @@ class VisionTriggeredNavigator(object):
                         continue
                     rospy.logerr("[vision_triggered_navigator] 目标锁定后居中失败，车辆保持停车.")
                     break
+                initial_center_error = self.last_centered_error
                 if self.center_only:
                     self._hold_stopped(self.arrival_hold_sec)
                     self._publish_status("centered")
@@ -2307,8 +2321,18 @@ class VisionTriggeredNavigator(object):
                     self._publish_status("parking_staging_failed")
                     self._hold_stopped(self.arrival_hold_sec)
                     break
-                self._publish_status("parking_recenter")
-                if self._wait_for_initial_recenter_target():
+                if not parking_recenter_required(
+                        initial_center_error,
+                        self.parking_recenter_tolerance):
+                    self._publish_status("parking_recenter_preserved")
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] initial target alignment "
+                        "error=%.3f is within parking tolerance %.3f; preserve "
+                        "the reliable heading and continue wall docking.",
+                        initial_center_error,
+                        self.parking_recenter_tolerance)
+                elif self._wait_for_initial_recenter_target():
+                    self._publish_status("parking_recenter")
                     # Once corrective motion begins, losing the target remains
                     # a hard failure because the original ray is no longer
                     # guaranteed to match the changed heading.
