@@ -146,12 +146,10 @@ private:
     private_nh_.param("curve_speed", curve_speed_, 0.15);
     private_nh_.param("search_speed", search_speed_, 0.0);
     private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
+    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
     private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
     private_nh_.param("lost_guard_frames", lost_guard_frames_, 3);
-    private_nh_.param("lost_track_reset_frames", lost_track_reset_frames_, 6);
-    private_nh_.param("lost_search_phase_frames", lost_search_phase_frames_, 12);
     private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
-    private_nh_.param("reacquire_max_jump_px", reacquire_max_jump_px_, 55.0);
     private_nh_.param("kp", kp_, 0.0037);
     private_nh_.param("kd", kd_, 0.0006);
     private_nh_.param("error_alpha", error_alpha_, 0.15);
@@ -609,14 +607,14 @@ private:
               max_target_jump_px_)
         continue;
 
-      // Once a right boundary has been acquired, choose the component nearest
-      // to its previous raw position.  After a prolonged loss the old lock is
-      // cleared; then choose the component nearest to the target pixel rather
-      // than blindly taking a far-right border or reflection.
+      // Preserve the original tracking pixel: once a right boundary has been
+      // acquired, choose the connected component nearest to its previous raw
+      // position.  Only at startup, when no previous pixel exists, retain the
+      // original rightmost-line preference.
       const double distance =
           last_right_x_ >= 0
               ? std::fabs(candidate_x - last_right_x_)
-              : std::fabs(candidate_x - target_right_x_);
+              : -candidate_x;
       if (distance < best_distance)
       {
         best_distance = distance;
@@ -743,19 +741,6 @@ private:
       line_was_lost_ = true;
       reacquire_count_ = 0;
       ++lost_frame_count_;
-
-      // A stale position lock can reject the real line forever after the car
-      // is manually put back on the track.  Clear it after a short loss so
-      // the next frame can acquire a line at any valid image position.
-      if (lost_frame_count_ >= std::max(1, lost_track_reset_frames_) &&
-          last_right_x_ >= 0)
-      {
-        last_right_x_ = -1;
-        filtered_error_ = 0.0;
-        last_error_ = 0.0;
-        filtered_angular_ = 0.0;
-      }
-
       if (filtered_error_ >= right_warning_error_px_ &&
           lost_frame_count_ <= lost_guard_frames_)
       {
@@ -769,21 +754,9 @@ private:
       }
       else
       {
-        // Never rotate right forever.  Sweep in alternating directions while
-        // keeping linear speed at zero, so loss cannot drive the vehicle out
-        // of the track and a manually restored line can be seen again.
-        const int phase_frames = std::max(1, lost_search_phase_frames_);
-        const int search_frame =
-            std::max(0, lost_frame_count_ - lost_guard_frames_ - 1);
-        const bool search_right =
-            ((search_frame / phase_frames) % 2) == 0;
-        setStatus(search_right
-                      ? "stable_right_lost_search_right_stopped"
-                      : "stable_right_lost_search_left_stopped");
-        cmd.linear.x = 0.0;
-        cmd.angular.z = search_right
-                            ? lost_angular_speed_
-                            : -lost_angular_speed_;
+        setStatus("stable_right_lost_rotate_right_in_place");
+        cmd.linear.x = lost_linear_speed_;
+        cmd.angular.z = lost_angular_speed_;
       }
       publishCmd(cmd);
       return;
@@ -792,16 +765,6 @@ private:
     lost_frame_count_ = 0;
     if (line_was_lost_)
     {
-      if (reacquire_count_ > 0 && last_right_x_ >= 0 &&
-          std::fabs(static_cast<double>(follow.right_x - last_right_x_)) >
-              reacquire_max_jump_px_)
-      {
-        reacquire_count_ = 0;
-        last_right_x_ = follow.right_x;
-        setStatus("stable_right_reacquire_rejected_unstable_line");
-        publishStop();
-        return;
-      }
       ++reacquire_count_;
       last_right_x_ = follow.right_x;
       setStatus("stable_right_reacquire_confirming_continuous_line");
@@ -973,12 +936,10 @@ private:
   double curve_speed_ = 0.15;
   double search_speed_ = 0.0;
   double search_angular_speed_ = -0.08;
+  double lost_linear_speed_ = 0.0;
   double lost_angular_speed_ = -0.08;
   int lost_guard_frames_ = 3;
-  int lost_track_reset_frames_ = 6;
-  int lost_search_phase_frames_ = 12;
   int reacquire_confirm_frames_ = 3;
-  double reacquire_max_jump_px_ = 55.0;
   double kp_ = 0.0037;
   double kd_ = 0.0006;
   double error_alpha_ = 0.15;
