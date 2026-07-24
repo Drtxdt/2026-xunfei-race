@@ -251,14 +251,14 @@ class StrictMissionNode:
         roi = frame[y0:, :]
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         lower = (
-            0,
-            0,
-            int(rospy.get_param("~white_v_min", 165)),
+            int(rospy.get_param("~yellow_h_min", 12)),
+            int(rospy.get_param("~yellow_s_min", 70)),
+            int(rospy.get_param("~yellow_v_min", 70)),
         )
         upper = (
-            180,
-            int(rospy.get_param("~white_s_max", 85)),
-            255,
+            int(rospy.get_param("~yellow_h_max", 42)),
+            int(rospy.get_param("~yellow_s_max", 255)),
+            int(rospy.get_param("~yellow_v_max", 255)),
         )
         mask = cv2.inRange(hsv, lower, upper)
         kernel_size = max(3, int(rospy.get_param("~morph_kernel_size", 5)))
