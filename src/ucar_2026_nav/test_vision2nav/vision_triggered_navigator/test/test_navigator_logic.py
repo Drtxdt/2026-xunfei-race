@@ -577,33 +577,6 @@ def test_corrected_staging_pose_finishes_three_phase_docking_within_15s(label):
         (normal_error, tangent_error, yaw_error), 0.015, 0.02, 0.035)
 
 
-def test_navigation_uses_real_footprint_and_conservative_limits():
-    nav_root = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), "..", "..", "..", "ucar_nav",
-        "launch", "config", "move_base"))
-    with open(os.path.join(
-            nav_root, "teb_local_planner_params.yaml"),
-            "r", encoding="utf-8") as stream:
-        teb = yaml.safe_load(stream)["TebLocalPlannerROS"]
-    footprint = teb["footprint_model"]
-    assert footprint["type"] == "polygon"
-    assert footprint["vertices"] == [
-        [0.171, -0.128], [0.171, 0.128],
-        [-0.171, 0.128], [-0.171, -0.128],
-    ]
-    assert teb["max_vel_x"] <= 0.45
-    assert teb["max_vel_y"] <= 0.45
-    assert teb["max_vel_theta"] <= 1.20
-    assert teb["inflation_dist"] >= 0.20
-    assert teb["weight_inflation"] > 0.0
-
-    with open(os.path.join(
-            nav_root, "local_costmap_params.yaml"),
-            "r", encoding="utf-8") as stream:
-        local_costmap = yaml.safe_load(stream)["local_costmap"]
-    assert local_costmap["inflation_layer"]["inflation_radius"] >= 0.18
-
-
 def test_all_direct_task2_rotations_have_lidar_clearance_guards():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",

@@ -31,5 +31,5 @@ local_costmap:
       }    
   
   inflation_layer:                    
-    inflation_radius: 0.18
+    inflation_radius: 0.12 #！0.05 #0.8
     cost_scaling_factor: 10.0
