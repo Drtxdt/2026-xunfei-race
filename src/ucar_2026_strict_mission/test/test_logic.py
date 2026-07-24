@@ -198,6 +198,39 @@ class StopLineAlignmentTests(unittest.TestCase):
             ("forward", 0.0, 0.0, True),
         )
 
+    def test_applies_minimum_yaw_speed_for_small_actionable_error(self):
+        mode, lateral, yaw, aligned = line_alignment_command(
+            0.051, 0.0, 0.05, 0.06,
+            0.1, 0.16, -1.0,
+            0.10, 0.045, -1.0,
+            yaw_min=0.04,
+        )
+        self.assertEqual(mode, "yaw")
+        self.assertEqual(lateral, 0.0)
+        self.assertAlmostEqual(yaw, -0.04)
+        self.assertFalse(aligned)
+
+    def test_applies_minimum_lateral_speed_near_image_center(self):
+        mode, lateral, yaw, aligned = line_alignment_command(
+            0.0, 0.061, 0.05, 0.06,
+            0.8, 0.16, -1.0,
+            0.02, 0.045, -1.0,
+            lateral_min=0.015,
+        )
+        self.assertEqual(mode, "lateral")
+        self.assertAlmostEqual(lateral, -0.015)
+        self.assertEqual(yaw, 0.0)
+        self.assertFalse(aligned)
+
+    def test_rejects_minimum_speed_above_limit(self):
+        with self.assertRaises(ValueError):
+            line_alignment_command(
+                0.0, 0.0, 0.05, 0.06,
+                0.8, 0.16, -1.0,
+                0.10, 0.045, -1.0,
+                lateral_min=0.05,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

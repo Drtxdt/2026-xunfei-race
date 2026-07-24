@@ -232,6 +232,8 @@ def line_alignment_command(
     lateral_kp,
     lateral_limit,
     lateral_sign,
+    yaw_min=0.0,
+    lateral_min=0.0,
 ):
     """Return (mode, lateral_mps, yaw_rps, aligned) for stop-line alignment."""
     angle = float(angle_error_rad)
@@ -242,13 +244,21 @@ def line_alignment_command(
         raise ValueError("line alignment tolerances must be positive")
     if float(yaw_limit) <= 0.0 or float(lateral_limit) <= 0.0:
         raise ValueError("line alignment speed limits must be positive")
+    if not 0.0 <= float(yaw_min) <= float(yaw_limit):
+        raise ValueError("minimum yaw speed is outside its limit")
+    if not 0.0 <= float(lateral_min) <= float(lateral_limit):
+        raise ValueError("minimum lateral speed is outside its limit")
     if abs(angle) > yaw_tolerance:
         yaw = float(yaw_sign) * float(yaw_kp) * angle
         yaw = max(-float(yaw_limit), min(float(yaw_limit), yaw))
+        if abs(yaw) < float(yaw_min):
+            yaw = math.copysign(float(yaw_min), yaw)
         return "yaw", 0.0, yaw, False
     if abs(center) > center_tolerance:
         lateral = float(lateral_sign) * float(lateral_kp) * center
         lateral = max(
             -float(lateral_limit), min(float(lateral_limit), lateral))
+        if abs(lateral) < float(lateral_min):
+            lateral = math.copysign(float(lateral_min), lateral)
         return "lateral", lateral, 0.0, False
     return "forward", 0.0, 0.0, True

@@ -27,7 +27,6 @@ from ucar_2026_strict_mission.logic import (
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
-    forward_progress,
     heading_alignment_command,
     line_alignment_command,
     lowest_horizontal_band,
@@ -91,10 +90,34 @@ class StrictMissionNode:
             speed_creep=float(rospy.get_param("~speed_creep", 0.045)),
         )
         self.band_filter = ConsecutiveBandFilter(
-            int(rospy.get_param("~stop_confirm_frames", 5)),
+            int(rospy.get_param("~stop_confirm_frames", 8)),
             self.target_min_m,
             self.target_max_m,
         )
+        self.final_advance_m = float(rospy.get_param(
+            "~final_advance_m", 0.0))
+        if self.final_advance_m != 0.0:
+            raise ValueError(
+                "final_advance_m must be zero; blind advance is unsafe")
+        self.precision_start_m = float(rospy.get_param(
+            "~precision_start_m", 0.14))
+        self.line_yaw_tolerance_rad = math.radians(float(rospy.get_param(
+            "~line_yaw_tolerance_deg", 3.0)))
+        self.line_center_tolerance = float(rospy.get_param(
+            "~line_center_tolerance_ratio", 0.06))
+        self.final_yaw_tolerance_rad = math.radians(float(rospy.get_param(
+            "~final_yaw_tolerance_deg", 1.5)))
+        self.final_center_tolerance = float(rospy.get_param(
+            "~final_center_tolerance_ratio", 0.03))
+        if self.precision_start_m <= self.target_max_m:
+            raise ValueError(
+                "precision_start_m must exceed the target stop distance")
+        if self.final_yaw_tolerance_rad > self.line_yaw_tolerance_rad:
+            raise ValueError(
+                "final yaw tolerance must not exceed coarse tolerance")
+        if self.final_center_tolerance > self.line_center_tolerance:
+            raise ValueError(
+                "final center tolerance must not exceed coarse tolerance")
 
         self.image_topic = rospy.get_param("~image_topic", "/usb_cam/image_raw")
         self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/cmd_vel")
@@ -387,22 +410,36 @@ class StrictMissionNode:
                 line_bottom_ratio=bottom_ratio,
             )
             return
+        precision_mode = distance <= self.precision_start_m
+        yaw_tolerance = (
+            self.final_yaw_tolerance_rad
+            if precision_mode else self.line_yaw_tolerance_rad)
+        center_tolerance = (
+            self.final_center_tolerance
+            if precision_mode else self.line_center_tolerance)
+        yaw_limit = float(rospy.get_param(
+            "~final_yaw_max_speed", 0.10)) if precision_mode else \
+            float(rospy.get_param("~line_yaw_max_speed", 0.16))
+        lateral_limit = float(rospy.get_param(
+            "~final_lateral_max_speed", 0.03)) if precision_mode else \
+            float(rospy.get_param("~line_lateral_max_speed", 0.045))
         alignment_state, lateral_speed, yaw_speed, aligned = \
             line_alignment_command(
                 angle_error,
                 center_error,
-                math.radians(float(rospy.get_param(
-                    "~line_yaw_tolerance_deg", 3.0))),
-                float(rospy.get_param(
-                    "~line_center_tolerance_ratio", 0.06)),
+                yaw_tolerance,
+                center_tolerance,
                 float(rospy.get_param("~line_yaw_kp", 0.8)),
-                float(rospy.get_param("~line_yaw_max_speed", 0.16)),
+                yaw_limit,
                 float(rospy.get_param("~line_yaw_command_sign", -1.0)),
                 float(rospy.get_param("~line_lateral_kp", 0.10)),
-                float(rospy.get_param(
-                    "~line_lateral_max_speed", 0.045)),
+                lateral_limit,
                 float(rospy.get_param(
                     "~line_lateral_command_sign", -1.0)),
+                yaw_min=float(rospy.get_param(
+                    "~line_yaw_min_speed", 0.04)),
+                lateral_min=float(rospy.get_param(
+                    "~line_lateral_min_speed", 0.015)),
             )
         command = Twist()
         if alignment_state == "yaw":
@@ -417,18 +454,27 @@ class StrictMissionNode:
         if aligned and self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
-                self.state = "FINAL_ADVANCE"
+                self.state = "STOP_CONFIRM"
                 self.parked_event.set()
             self.publish_status(
-                "visual stop band confirmed; arming odometry final advance",
+                "precision stop pose confirmed; holding before traffic task",
                 line_bottom_ratio=bottom_ratio,
+                distance_m=distance,
+                line_center_error_ratio=center_error,
+                line_angle_deg=math.degrees(angle_error),
+                stop_confirm_hits=self.band_filter.hits,
             )
         else:
             self.publish_status(
-                "closed-loop line approach",
+                "precision line approach" if precision_mode
+                else "closed-loop line approach",
                 line_bottom_ratio=bottom_ratio,
                 line_center_error_ratio=center_error,
                 line_angle_deg=math.degrees(angle_error),
+                precision_mode=precision_mode,
+                yaw_tolerance_deg=math.degrees(yaw_tolerance),
+                center_tolerance_ratio=center_tolerance,
+                stop_confirm_hits=self.band_filter.hits,
                 alignment_state=alignment_state,
                 commanded_speed_mps=command.linear.x,
                 commanded_lateral_mps=command.linear.y,
@@ -625,60 +671,6 @@ class StrictMissionNode:
         self.publish_stop()
         raise RuntimeError("staging heading alignment timed out")
 
-    def final_advance(self):
-        target = float(rospy.get_param("~final_advance_m", 0.0))
-        if target <= 0.0:
-            return
-        speed = float(rospy.get_param("~final_advance_speed", 0.045))
-        timeout = float(rospy.get_param("~final_advance_timeout_sec", 6.0))
-        stale = float(rospy.get_param("~final_advance_odom_stale_sec", 0.5))
-        if speed <= 0.0 or timeout <= 0.0 or stale <= 0.0:
-            raise RuntimeError("final advance parameters must be positive")
-
-        wait_deadline = time.monotonic() + min(2.0, timeout)
-        start_pose = None
-        while not rospy.is_shutdown() and time.monotonic() < wait_deadline:
-            with self.lock:
-                pose = self.odom_pose
-                age = time.monotonic() - self.odom_received_at
-            if pose is not None and age <= stale:
-                start_pose = pose
-                break
-            self.publish_stop()
-            time.sleep(0.02)
-        if start_pose is None:
-            raise RuntimeError("fresh odometry unavailable for final advance")
-
-        deadline = time.monotonic() + timeout
-        rate = rospy.Rate(30)
-        while not rospy.is_shutdown() and time.monotonic() < deadline:
-            with self.lock:
-                pose = self.odom_pose
-                age = time.monotonic() - self.odom_received_at
-            if pose is None or age > stale:
-                self.publish_stop()
-                raise RuntimeError("odometry became stale during final advance")
-            progress = forward_progress(start_pose, pose)
-            if progress >= target:
-                self.publish_stop()
-                self.publish_status(
-                    "odometry final advance completed",
-                    final_advance_m=progress,
-                )
-                return
-            command = Twist()
-            command.linear.x = speed
-            self.cmd_pub.publish(command)
-            self.publish_status(
-                "odometry final advance",
-                final_advance_m=progress,
-                final_advance_target_m=target,
-                commanded_speed_mps=speed,
-            )
-            rate.sleep()
-        self.publish_stop()
-        raise RuntimeError("odometry final advance timed out")
-
     def launch_track(self, decision):
         launch_file, status_topic, finish_value = track_launch_for_decision(
             decision)
@@ -727,7 +719,6 @@ class StrictMissionNode:
                 float(rospy.get_param("~line_approach_timeout_sec", 75.0)),
                 "strict line approach",
             )
-            self.final_advance()
             with self.lock:
                 self.state = "STOP_CONFIRM"
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))
