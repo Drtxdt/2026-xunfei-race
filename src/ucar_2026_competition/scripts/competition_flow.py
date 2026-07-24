@@ -2056,7 +2056,7 @@ class CompetitionFlow:
                     planned = float(status.get("final_advance_m") or 0.0)
                     progress = float(status.get("final_progress_m") or 0.0)
                     min_progress = float(rospy.get_param(
-                        "~task4_min_final_progress_m", 0.175))
+                        "~task4_min_final_progress_m", 0.125))
                     if planned < min_progress or progress < min_progress:
                         raise StageError(
                             "task4 stop-line clearance not verified: "

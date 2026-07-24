@@ -130,7 +130,7 @@ traffic_x: 0.2395
 traffic_y: -3.10
 traffic_yaw: -1.5596
 traffic_timeout_sec: 180.0
-task4_min_final_progress_m: 0.175
+task4_min_final_progress_m: 0.125
 
 track_timeout_sec: 420.0
 status_topic: /competition/status

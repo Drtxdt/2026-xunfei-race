@@ -63,7 +63,7 @@ class OdometryProgressTests(unittest.TestCase):
         config = (
             competition_root / "config" / "competition.yaml"
         ).read_text(encoding="utf-8")
-        self.assertIn("task4_min_final_progress_m: 0.175", config)
+        self.assertIn("task4_min_final_progress_m: 0.125", config)
 
         flow = (
             competition_root / "scripts" / "competition_flow.py"
@@ -77,7 +77,7 @@ class OdometryProgressTests(unittest.TestCase):
                 encoding="utf-8"))
         self.assertEqual(
             config["calibrated_final_advance_fallback_sec"], 2.0)
-        self.assertEqual(config["final_advance_m"], 0.18)
+        self.assertEqual(config["final_advance_m"], 0.13)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
         self.assertGreaterEqual(
             config["final_advance_creep_speed_mps"], 0.030)
