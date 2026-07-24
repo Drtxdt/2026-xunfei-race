@@ -66,6 +66,8 @@ MEASURED_CORNERS = [
 def test_one_shot_trigger_is_idempotent():
     latched, accepted = latch_trigger(False)
     assert latched and accepted
+    latched, accepted = latch_trigger(latched)
+    assert latched and not accepted
 
 
 def test_in_place_rotation_requires_fresh_all_around_clearance():
@@ -73,8 +75,23 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(0.29, 0.1, 0.30)
     assert not rotation_clearance_is_safe(None, 0.1, 0.30)
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
-    latched, accepted = latch_trigger(latched)
-    assert latched and not accepted
+
+
+def test_navigation_node_imports_rotation_clearance_helper():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    imported_names = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "navigator_logic"
+        for alias in node.names
+    }
+    assert "rotation_clearance_is_safe" in imported_names
 
 
 def test_clearance_block_preserves_stationary_scan():

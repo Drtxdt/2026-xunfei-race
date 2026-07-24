@@ -46,6 +46,7 @@ from navigator_logic import (
     parking_goal_from_wall,
     parking_recenter_required,
     ray_segment_intersection,
+    rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
     should_skip_coverage_anchor,
