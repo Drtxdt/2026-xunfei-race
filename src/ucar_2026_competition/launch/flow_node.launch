@@ -8,7 +8,7 @@
   <arg name="target_workshop" default="" />
   <arg name="sim_item" default="" />
   <arg name="sim_workshop" default="" />
-  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
   <arg name="sim_bridge_port" default="26003" />
   <arg name="traffic_pose_configured" default="false" />
   <arg name="traffic_x" default="0.0" />
@@ -42,7 +42,7 @@
   <arg name="parking_goal_offset" default="0.26" />
   <arg name="parking_staging_offset" default="0.55" />
   <arg name="parking_staging_timeout_sec" default="20.0" />
-  <arg name="parking_staging_position_tolerance" default="0.10" />
+  <arg name="parking_staging_position_tolerance" default="0.16" />
   <arg name="parking_staging_yaw_tolerance" default="0.10" />
   <arg name="parking_docking_timeout_sec" default="20.0" />
   <arg name="parking_dock_max_x" default="0.10" />
@@ -54,7 +54,7 @@
   <arg name="parking_dock_yaw_tolerance" default="0.035" />
   <arg name="parking_min_wall_distance" default="0.19" />
   <arg name="parking_lidar_stop_distance" default="0.15" />
-  <arg name="parking_recenter_tolerance" default="0.04" />
+  <arg name="parking_recenter_tolerance" default="0.08" />
   <arg name="parking_recenter_timeout_sec" default="8.0" />
   <arg name="parking_recenter_initial_wait_sec" default="1.0" />
   <arg name="parking_wall_fit_half_angle_deg" default="35.0" />
