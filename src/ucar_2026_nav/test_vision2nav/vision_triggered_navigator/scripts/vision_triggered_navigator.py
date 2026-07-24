@@ -143,6 +143,8 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_min_progress", 0.03)))
         self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
             "~coverage_rotation_max_yaw_deg", 90.0))))
+        self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
+            "~coverage_rotation_min_clearance", 0.28)))
         self.coverage_goal_retry_count = max(0, int(rospy.get_param(
             "~coverage_goal_retry_count", 1)))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
@@ -226,6 +228,8 @@ class VisionTriggeredNavigator(object):
             "~target_center_settle_sec", 0.25)))
         self.target_center_reverse_threshold = abs(float(rospy.get_param(
             "~target_center_reverse_threshold", 0.03)))
+        self.target_center_min_clearance = max(0.0, float(rospy.get_param(
+            "~target_center_min_clearance", 0.23)))
         self.odom_topic = rospy.get_param("~odom_topic", "/odom")
         self.odom_frame = rospy.get_param("~odom_frame", "odom")
         self.odom_stale = max(0.1, float(rospy.get_param(
@@ -365,6 +369,7 @@ class VisionTriggeredNavigator(object):
         self.odom_received_at = 0.0
         rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=10)
         self.scan_front_min = None
+        self.scan_all_min = None
         self.scan_wall_points = []
         self.scan_received_at = 0.0
         rospy.Subscriber(self.scan_topic, LaserScan, self._scan_cb, queue_size=1)
@@ -453,6 +458,7 @@ class VisionTriggeredNavigator(object):
     def _scan_cb(self, msg):
         """Store the nearest range and front-sector points in base coordinates."""
         nearest = None
+        nearest_all = None
         wall_points = []
         angle = float(msg.angle_min)
         for value in msg.ranges:
@@ -461,6 +467,9 @@ class VisionTriggeredNavigator(object):
             if (math.isfinite(distance) and
                     distance >= float(msg.range_min) and
                     distance <= float(msg.range_max)):
+                nearest_all = (
+                    distance if nearest_all is None
+                    else min(nearest_all, distance))
                 if abs(base_angle) <= self.scan_front_half_angle:
                     nearest = distance if nearest is None else min(nearest, distance)
                 if abs(base_angle) <= self.parking_wall_fit_half_angle:
@@ -471,6 +480,7 @@ class VisionTriggeredNavigator(object):
                     ))
             angle += float(msg.angle_increment)
         self.scan_front_min = nearest
+        self.scan_all_min = nearest_all
         self.scan_wall_points = wall_points
         self.scan_received_at = rospy.get_time()
 
@@ -1063,6 +1073,9 @@ class VisionTriggeredNavigator(object):
 
             while not rospy.is_shutdown() and not self.triggered:
                 now = rospy.get_time()
+                if not self._rotation_clearance_safe(
+                        self.coverage_rotation_min_clearance, "观察点扫描"):
+                    return False
                 if self.target_payload_at > handled_candidate_at:
                     handled_candidate_at = self.target_payload_at
                     self.cmd_vel_pub.publish(Twist())
@@ -1141,6 +1154,9 @@ class VisionTriggeredNavigator(object):
             # 轮询时检查是否被视觉/键盘触发打断，打断立即停止
             if elapsed >= time_limit or self.triggered:
                 break
+            if not self._rotation_clearance_safe(
+                    self.coverage_rotation_min_clearance, "定时扫描"):
+                return False
             self.cmd_vel_pub.publish(twist)
             rate.sleep()
 
@@ -1289,6 +1305,23 @@ class VisionTriggeredNavigator(object):
         return (self.odom_yaw is not None and sensor_is_fresh(
             self.odom_received_at, rospy.get_time(), self.odom_stale))
 
+    def _rotation_clearance_safe(self, minimum, label):
+        scan_age = rospy.get_time() - self.scan_received_at
+        if self.scan_all_min is None or scan_age > self.scan_stale:
+            self.cmd_vel_pub.publish(Twist())
+            rospy.logerr(
+                "[vision_triggered_navigator] %s拒绝转动：/scan缺失或超过%.2fs未更新.",
+                label, self.scan_stale)
+            return False
+        if not rotation_clearance_is_safe(
+                self.scan_all_min, scan_age, minimum, self.scan_stale):
+            self.cmd_vel_pub.publish(Twist())
+            rospy.logerr(
+                "[vision_triggered_navigator] %s拒绝转动：全向最近障碍%.3fm，小于安全阈值%.3fm.",
+                label, self.scan_all_min, minimum)
+            return False
+        return True
+
     def _rotate_center_step(self, direction, target_angle,
                             abort_on_trigger=False):
         """Rotate one small odometry-closed-loop step, ramping through deadband."""
@@ -1319,6 +1352,9 @@ class VisionTriggeredNavigator(object):
             if not self._odom_is_fresh():
                 self.cmd_vel_pub.publish(Twist())
                 rospy.logerr("[vision_triggered_navigator] 居中步进期间/odom失效，立即停车.")
+                return False
+            if not self._rotation_clearance_safe(
+                    self.target_center_min_clearance, "视觉居中"):
                 return False
 
             progress = abs(normalize_angle(self.odom_yaw - start_yaw))

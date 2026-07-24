@@ -84,6 +84,7 @@ target_center_motion_window_sec: 0.6
 target_center_min_progress_deg: 0.5
 target_center_settle_sec: 0.25
 target_center_reverse_threshold: 0.03
+target_center_min_clearance: 0.23
 odom_topic: /odom
 odom_stale_sec: 0.5
 camera_boresight_yaw_offset: 0.0

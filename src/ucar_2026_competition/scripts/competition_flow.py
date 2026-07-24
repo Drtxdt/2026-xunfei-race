@@ -195,6 +195,7 @@ class CompetitionFlow:
         self.red_announced = False
         self.strict_mission_status = {}
         self.track_status = {}
+        self.rotation_scan_min = None
 
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
         rospy.Subscriber("/question", String, self._question_cb, queue_size=5)
@@ -498,9 +499,19 @@ class CompetitionFlow:
             msg.range_min,
             msg.range_max,
         )
+        rotation_nearest = scan_sector_min(
+            msg.ranges,
+            msg.angle_min,
+            msg.angle_increment,
+            0.0,
+            math.pi,
+            msg.range_min,
+            msg.range_max,
+        )
         with self.lock:
             self.handoff_scan_received_at = time.monotonic()
             self.rear_scan_min = nearest
+            self.rotation_scan_min = rotation_nearest
 
     def _handoff_costmap_cb(self, _msg):
         with self.lock:
@@ -1209,6 +1220,21 @@ class CompetitionFlow:
             )
         return yaw
 
+    def _require_rotation_clearance(self, stale_sec, minimum, label):
+        now = time.monotonic()
+        with self.lock:
+            scan_age = now - self.handoff_scan_received_at
+            nearest = self.rotation_scan_min
+        if nearest is None or scan_age > stale_sec:
+            self.safe_stop()
+            raise StageError(
+                "{} refused because /scan is missing or stale".format(label))
+        if nearest < minimum:
+            self.safe_stop()
+            raise StageError(
+                "{} refused: nearest obstacle {:.3f}m is below {:.3f}m".format(
+                    label, nearest, minimum))
+
     def _wait_for_qr_odom(self, wait_sec, stale_sec):
         deadline = time.monotonic() + wait_sec
         while time.monotonic() < deadline and not rospy.is_shutdown():
@@ -1284,6 +1310,8 @@ class CompetitionFlow:
     ):
         tracker = DirectedYawAccumulator(direction=direction)
         tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
+        minimum = max(0.0, float(rospy.get_param(
+            "~qr_rotation_min_clearance", 0.28)))
         step_deadline = min(
             scan_deadline,
             time.monotonic() + angle / speed + step_margin,
@@ -1293,6 +1321,8 @@ class CompetitionFlow:
         while tracker.progress < angle and not rospy.is_shutdown():
             self.check_abort()
             self._check_qr_decoder()
+            self._require_rotation_clearance(
+                stale_sec, minimum, "QR scan rotation")
             if time.monotonic() >= step_deadline:
                 raise StageError(
                     "QR scan failed to rotate {:.1f} degrees before step timeout".format(
@@ -1308,9 +1338,13 @@ class CompetitionFlow:
 
     def _return_qr_to_yaw(self, target_yaw, speed, tolerance, stale_sec, timeout):
         deadline = time.monotonic() + timeout
+        minimum = max(0.0, float(rospy.get_param(
+            "~qr_rotation_min_clearance", 0.28)))
         while time.monotonic() < deadline and not rospy.is_shutdown():
             self.check_abort()
             self._check_qr_decoder()
+            self._require_rotation_clearance(
+                stale_sec, minimum, "QR final-yaw rotation")
             current_yaw = self._fresh_qr_odom_yaw(stale_sec)
             error = normalize_angle(target_yaw - current_yaw)
             if abs(error) <= tolerance:
@@ -1359,6 +1393,8 @@ class CompetitionFlow:
         step_margin = float(
             rospy.get_param("~qr_scan_step_timeout_margin_sec", 2.0)
         )
+        rotation_minimum = max(0.0, float(rospy.get_param(
+            "~qr_rotation_min_clearance", 0.28)))
         if speed <= 0.0 or step_angle <= 0.0 or stale_sec <= 0.0:
             raise StageError("QR scan motion parameters must be positive")
 
@@ -1393,6 +1429,8 @@ class CompetitionFlow:
                 while tracker.progress < step_angle and not rospy.is_shutdown():
                     self.check_abort()
                     self._check_qr_decoder()
+                    self._require_rotation_clearance(
+                        stale_sec, rotation_minimum, "QR scan rotation")
                     if self._qr_count() >= expected_count:
                         self.safe_stop()
                         return True

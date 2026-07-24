@@ -207,6 +207,8 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(float(config["qr_scan_pending_idle_sec"]), 0.5)
         self.assertAlmostEqual(
             float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
+        self.assertGreaterEqual(
+            float(config["qr_rotation_min_clearance"]), 0.28)
 
     def test_qr_decoder_retries_network_and_reports_pending_work(self):
         launch_path = os.path.abspath(os.path.join(

@@ -22,6 +22,7 @@ qr_scan_extra_sweep_angle_rad: 2.0943951023931953
 qr_final_yaw_tolerance_rad: 0.03490658503988659
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
+qr_rotation_min_clearance: 0.28
 qr_expected_count: 3
 # 单轮扫描不足三个码时直接报错并等待恢复，不再移动到备用点重复扫码。
 qr_fallback_enabled: true
@@ -111,6 +112,7 @@ coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
+coverage_rotation_min_clearance: 0.28
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44
