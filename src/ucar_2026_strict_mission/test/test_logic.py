@@ -58,6 +58,19 @@ class OdometryProgressTests(unittest.TestCase):
             0.0,
         )
 
+    def test_competition_requires_completed_final_advance(self):
+        competition_root = PACKAGE_ROOT.parent / "ucar_2026_competition"
+        config = (
+            competition_root / "config" / "competition.yaml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("task4_min_final_progress_m: 0.095", config)
+
+        flow = (
+            competition_root / "scripts" / "competition_flow.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('status.get("final_progress_m")', flow)
+        self.assertIn("task4 stop-line clearance not verified", flow)
+
     def test_reports_drift_across_starting_heading(self):
         self.assertAlmostEqual(
             lateral_displacement(

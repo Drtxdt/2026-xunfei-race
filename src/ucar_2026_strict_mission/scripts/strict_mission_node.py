@@ -60,6 +60,10 @@ class StrictMissionNode:
         self.line_search_reversals = 0
         self.last_distance_m = None
         self.last_stop_line_color = None
+        self.visual_stop_distance_m = None
+        self.final_progress_m = 0.0
+        self.final_lateral_drift_m = 0.0
+        self.final_yaw_drift_deg = 0.0
         self.odom_pose = None
         self.odom_received_at = 0.0
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -183,6 +187,11 @@ class StrictMissionNode:
             "state": self.state,
             "detail": detail,
             "distance_m": self.last_distance_m,
+            "visual_stop_distance_m": self.visual_stop_distance_m,
+            "final_advance_m": self.final_advance_m,
+            "final_progress_m": self.final_progress_m,
+            "final_lateral_drift_m": self.final_lateral_drift_m,
+            "final_yaw_drift_deg": self.final_yaw_drift_deg,
             "decision": self.selected_decision,
             "stamp": rospy.Time.now().to_sec(),
         }
@@ -480,6 +489,7 @@ class StrictMissionNode:
         if aligned and self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
+                self.visual_stop_distance_m = distance
                 self.state = "VISUAL_CONFIRM"
                 self.parked_event.set()
             self.publish_status(
@@ -702,6 +712,10 @@ class StrictMissionNode:
 
     def advance_final_offset(self):
         distance = self.final_advance_m
+        with self.lock:
+            self.final_progress_m = 0.0
+            self.final_lateral_drift_m = 0.0
+            self.final_yaw_drift_deg = 0.0
         if distance <= 0.0:
             return
         stale_limit = max(0.05, float(rospy.get_param(
@@ -748,6 +762,10 @@ class StrictMissionNode:
             progress = forward_progress(start_pose, pose)
             lateral_drift = lateral_displacement(start_pose, pose)
             yaw_drift = abs(self.normalized_angle(pose[2] - start_pose[2]))
+            with self.lock:
+                self.final_progress_m = progress
+                self.final_lateral_drift_m = lateral_drift
+                self.final_yaw_drift_deg = math.degrees(yaw_drift)
             if yaw_drift > max_yaw_drift:
                 self.publish_stop()
                 raise RuntimeError("heading drift exceeded final advance limit")

@@ -2038,10 +2038,21 @@ class CompetitionFlow:
                         state, status.get("distance_m"), status.get("detail"))
                     last_state = state
                 if state == "WAIT_TRAFFIC":
-                    distance = status.get("distance_m")
+                    distance = status.get("visual_stop_distance_m")
+                    planned = float(status.get("final_advance_m") or 0.0)
+                    progress = float(status.get("final_progress_m") or 0.0)
+                    min_progress = float(rospy.get_param(
+                        "~task4_min_final_progress_m", 0.095))
+                    if planned < min_progress or progress < min_progress:
+                        raise StageError(
+                            "task4 stop-line clearance not verified: "
+                            "planned={:.3f}m progress={:.3f}m "
+                            "required={:.3f}m".format(
+                                planned, progress, min_progress))
                     self.publish_status(
                         "task4", "stop_line_reached",
-                        "vehicle held before stop line; distance_m={}".format(distance))
+                        "vehicle held before stop line; visual_distance_m={} "
+                        "final_progress_m={:.3f}".format(distance, progress))
                     return
                 if state == "FAULT":
                     raise StageError(
