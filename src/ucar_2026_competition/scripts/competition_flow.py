@@ -1263,15 +1263,59 @@ class CompetitionFlow:
             "QR decoder did not report ready within {:.1f}s".format(
                 timeout_sec))
 
-    def _settle_for_qr(self, duration, expected_count, scan_deadline, stale_sec):
-        self.safe_stop()
-        settle_deadline = min(scan_deadline, time.monotonic() + duration)
-        while time.monotonic() < settle_deadline and not rospy.is_shutdown():
+    def _settle_for_qr(
+            self, duration, expected_count, scan_deadline, stale_sec,
+            label="QR scan"):
+        """Hold zero velocity until odometry proves a stable recognition dwell."""
+        stable_required = max(0.05, float(rospy.get_param(
+            "~qr_scan_stationary_hold_sec", 0.20)))
+        stop_timeout = max(stable_required, float(rospy.get_param(
+            "~qr_scan_stop_timeout_sec", 1.5)))
+        local_deadline = min(
+            scan_deadline,
+            time.monotonic() + stop_timeout + stable_required + duration,
+        )
+        stable_since = None
+        stop_confirmed = False
+        zero = Twist()
+        while time.monotonic() < local_deadline and not rospy.is_shutdown():
             self.check_abort()
             self._check_qr_decoder()
-            self._fresh_qr_odom_yaw(stale_sec)
+            self.cmd_pub.publish(zero)
+            now = time.monotonic()
+            with self.lock:
+                twist = self.base_twist
+                odom_age = now - self.qr_odom_received_at
+            stopped = (
+                twist is not None and odom_age <= stale_sec and
+                base_is_stopped(*twist)
+            )
+            if stopped:
+                if stable_since is None:
+                    stable_since = now
+                stable_duration = now - stable_since
+                if not stop_confirmed and stable_duration >= stable_required:
+                    stop_confirmed = True
+                    rospy.loginfo(
+                        "%s stop confirmed after %.2fs; recognition dwell %.2fs",
+                        label, stable_duration, duration)
+                if (stop_confirmed and
+                        stable_duration >= stable_required + duration):
+                    rospy.loginfo("%s stationary dwell completed", label)
+                    return self._qr_count() >= expected_count
+            else:
+                if stop_confirmed:
+                    rospy.logwarn(
+                        "%s moved during recognition dwell; restarting stop confirmation",
+                        label)
+                stable_since = None
+                stop_confirmed = False
+            if self._qr_count() >= expected_count:
+                return True
             rospy.sleep(0.05)
-        return self._qr_count() >= expected_count
+        raise StageError(
+            "{} failed to remain stationary for {:.2f}s recognition dwell".format(
+                label, duration))
 
     def _drain_qr_results(
             self, duration, expected_count, scan_deadline, stale_sec):
@@ -1284,6 +1328,7 @@ class CompetitionFlow:
         while time.monotonic() < drain_deadline and not rospy.is_shutdown():
             self.check_abort()
             self._check_qr_decoder()
+            self.cmd_pub.publish(Twist())
             self._fresh_qr_odom_yaw(stale_sec)
             if self._qr_count() >= expected_count:
                 return True
@@ -1410,14 +1455,16 @@ class CompetitionFlow:
         )
         self._wait_for_qr_decoder_ready(decoder_ready_timeout)
         self._wait_for_qr_odom(odom_wait_sec, stale_sec)
-        if self._settle_for_qr(warmup_sec, expected_count, scan_deadline, stale_sec):
+        if self._settle_for_qr(
+                warmup_sec, expected_count, scan_deadline, stale_sec,
+                "QR warmup"):
             return True
 
         twist = Twist()
         twist.angular.z = speed
         tracker = DirectedYawAccumulator(direction=1.0)
-        def rotate_steps(step_count):
-            for _ in range(step_count):
+        def rotate_steps(step_count, phase):
+            for step_index in range(step_count):
                 if self._qr_count() >= expected_count:
                     self.safe_stop()
                     return True
@@ -1425,7 +1472,12 @@ class CompetitionFlow:
                     self.safe_stop()
                     return False
 
+                step_label = "{} step {}/{}".format(
+                    phase, step_index + 1, step_count)
                 tracker.reset(self._fresh_qr_odom_yaw(stale_sec))
+                rospy.loginfo(
+                    "%s rotating %.1fdeg", step_label,
+                    math.degrees(step_angle))
                 step_deadline = time.monotonic() + step_angle / speed + step_margin
                 while tracker.progress < step_angle and not rospy.is_shutdown():
                     self.check_abort()
@@ -1450,13 +1502,18 @@ class CompetitionFlow:
                     self.cmd_pub.publish(twist)
                     rospy.sleep(0.05)
 
+                self.safe_stop()
+                rospy.loginfo(
+                    "%s angle reached %.1fdeg; confirming full stop",
+                    step_label, math.degrees(tracker.progress))
                 if self._settle_for_qr(
-                    settle_sec, expected_count, scan_deadline, stale_sec
+                    settle_sec, expected_count, scan_deadline, stale_sec,
+                    step_label,
                 ):
                     return True
             return self._qr_count() >= expected_count
 
-        if rotate_steps(total_steps):
+        if rotate_steps(total_steps, "QR primary"):
             return True
 
         self.safe_stop()
@@ -1484,7 +1541,7 @@ class CompetitionFlow:
                     expected_count - self._qr_count(), extra_steps
                 ),
             )
-            if rotate_steps(extra_steps):
+            if rotate_steps(extra_steps, "QR extra"):
                 return True
             self.safe_stop()
             if self._drain_qr_results(
@@ -1701,6 +1758,8 @@ class CompetitionFlow:
                         "~coverage_rotation_min_clearance", 0.28),
                     "coverage_translation_min_clearance": rospy.get_param(
                         "~coverage_translation_min_clearance", 0.30),
+                    "coverage_translation_sector_half_angle_deg": rospy.get_param(
+                        "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(
                         "~coverage_max_vel_x", 0.35),
                     "coverage_max_vel_y": rospy.get_param(
@@ -1734,6 +1793,10 @@ class CompetitionFlow:
                         "~parking_staging_success_yaw_tolerance", 0.12),
                     "parking_docking_timeout_sec": rospy.get_param(
                         "~parking_docking_timeout_sec", 30.0),
+                    "parking_obstacle_min_clearance": rospy.get_param(
+                        "~parking_obstacle_min_clearance", 0.28),
+                    "parking_obstacle_sector_half_angle_deg": rospy.get_param(
+                        "~parking_obstacle_sector_half_angle_deg", 35.0),
                     "parking_dock_max_x": rospy.get_param(
                         "~parking_dock_max_x", 0.10),
                     "parking_dock_max_y": rospy.get_param(

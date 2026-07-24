@@ -45,6 +45,7 @@ from navigator_logic import (
     parking_footprint_margins,
     parking_goal_from_wall,
     parking_recenter_required,
+    polar_sector_min,
     ray_segment_intersection,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
@@ -149,6 +150,9 @@ class VisionTriggeredNavigator(object):
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
                 "~coverage_translation_min_clearance", 0.30)))
+        self.coverage_translation_sector_half_angle = math.radians(abs(float(
+            rospy.get_param(
+                "~coverage_translation_sector_half_angle_deg", 35.0))))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
             "~coverage_max_vel_x", 0.35)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
@@ -297,6 +301,11 @@ class VisionTriggeredNavigator(object):
             "~parking_lidar_stop_distance", 0.15)))
         self.parking_lidar_forward_offset = float(rospy.get_param(
             "~parking_lidar_forward_offset", 0.08))
+        self.parking_obstacle_min_clearance = max(0.0, float(
+            rospy.get_param("~parking_obstacle_min_clearance", 0.28)))
+        self.parking_obstacle_sector_half_angle = math.radians(abs(float(
+            rospy.get_param(
+                "~parking_obstacle_sector_half_angle_deg", 35.0))))
         self.scan_topic = rospy.get_param("~scan_topic", "/scan")
         self.scan_stale = max(0.1, float(rospy.get_param(
             "~scan_stale_sec", 0.5)))
@@ -380,9 +389,18 @@ class VisionTriggeredNavigator(object):
         rospy.Subscriber(self.odom_topic, Odometry, self._odom_cb, queue_size=10)
         self.scan_front_min = None
         self.scan_all_min = None
+        self.scan_nonfront_min = None
+        self.scan_left_min = None
+        self.scan_right_min = None
+        self.scan_rear_min = None
+        self.scan_polar_samples = ()
         self.scan_wall_points = []
         self.scan_received_at = 0.0
         rospy.Subscriber(self.scan_topic, LaserScan, self._scan_cb, queue_size=1)
+        self.last_cmd_vel = (0.0, 0.0, 0.0)
+        self.last_cmd_vel_received_at = 0.0
+        rospy.Subscriber(
+            self.cmd_vel_topic, Twist, self._cmd_vel_cb, queue_size=10)
 
         self.target_error = None
         self.target_payload_at = 0.0
@@ -466,10 +484,20 @@ class VisionTriggeredNavigator(object):
             self.odom_frame_from_msg = msg.header.frame_id
         self.odom_received_at = rospy.get_time()
 
+    def _cmd_vel_cb(self, msg):
+        self.last_cmd_vel = (
+            float(msg.linear.x),
+            float(msg.linear.y),
+            float(msg.angular.z),
+        )
+        self.last_cmd_vel_received_at = rospy.get_time()
+
     def _scan_cb(self, msg):
         """Store the nearest range and front-sector points in base coordinates."""
         nearest = None
         nearest_all = None
+        nearest_nonfront = None
+        polar_samples = []
         wall_points = []
         angle = float(msg.angle_min)
         for value in msg.ranges:
@@ -481,8 +509,13 @@ class VisionTriggeredNavigator(object):
                 nearest_all = (
                     distance if nearest_all is None
                     else min(nearest_all, distance))
+                polar_samples.append((base_angle, distance))
                 if abs(base_angle) <= self.scan_front_half_angle:
                     nearest = distance if nearest is None else min(nearest, distance)
+                if abs(base_angle) > self.parking_wall_fit_half_angle:
+                    nearest_nonfront = (
+                        distance if nearest_nonfront is None
+                        else min(nearest_nonfront, distance))
                 if abs(base_angle) <= self.parking_wall_fit_half_angle:
                     wall_points.append((
                         self.parking_lidar_forward_offset +
@@ -492,8 +525,53 @@ class VisionTriggeredNavigator(object):
             angle += float(msg.angle_increment)
         self.scan_front_min = nearest
         self.scan_all_min = nearest_all
+        self.scan_nonfront_min = nearest_nonfront
+        self.scan_left_min = polar_sector_min(
+            polar_samples, 0.5 * math.pi,
+            self.parking_obstacle_sector_half_angle)
+        self.scan_right_min = polar_sector_min(
+            polar_samples, -0.5 * math.pi,
+            self.parking_obstacle_sector_half_angle)
+        self.scan_rear_min = polar_sector_min(
+            polar_samples, math.pi,
+            self.parking_obstacle_sector_half_angle)
+        self.scan_polar_samples = tuple(polar_samples)
         self.scan_wall_points = wall_points
         self.scan_received_at = rospy.get_time()
+
+    def _coverage_motion_clearance(self, now):
+        """Return clearance in the current TEB motion direction."""
+        if not sensor_is_fresh(
+                self.last_cmd_vel_received_at, now, self.scan_stale):
+            return None, None, None
+        command_x, command_y, command_yaw = self.last_cmd_vel
+        if math.hypot(command_x, command_y) > 0.01:
+            direction = math.atan2(command_y, command_x)
+            nearest = polar_sector_min(
+                self.scan_polar_samples,
+                direction,
+                self.coverage_translation_sector_half_angle,
+            )
+            return nearest, self.coverage_translation_min_clearance, (
+                "translation {:.1f}deg".format(math.degrees(direction)))
+        if abs(command_yaw) > 0.02:
+            return (self.scan_all_min,
+                    self.coverage_rotation_min_clearance,
+                    "rotation")
+        return None, None, None
+
+    def _parking_command_clearance(self, command):
+        """Protect direct docking while allowing the expected front wall."""
+        command_x, command_y, command_yaw = command
+        if abs(command_yaw) > 0.0:
+            return self.scan_nonfront_min, "rotation sweep"
+        if command_y > 0.0:
+            return self.scan_left_min, "left"
+        if command_y < 0.0:
+            return self.scan_right_min, "right"
+        if command_x < 0.0:
+            return self.scan_rear_min, "rear"
+        return None, None
 
     def _publish_status(self, status):
         """发布简洁、稳定的流程状态，供比赛总控监听。"""
@@ -858,20 +936,22 @@ class VisionTriggeredNavigator(object):
             if self.coverage_search_mode and not self.triggered:
                 now = rospy.get_time()
                 elapsed = now - started
-                if (self.coverage_translation_min_clearance > 0.0 and
+                clearance, minimum, motion = (
+                    self._coverage_motion_clearance(now))
+                if (minimum is not None and minimum > 0.0 and
                         sensor_is_fresh(
                             self.scan_received_at, now, self.scan_stale) and
-                        self.scan_all_min is not None and
-                        self.scan_all_min <
-                        self.coverage_translation_min_clearance):
+                        (clearance is None or clearance < minimum)):
                     self.current_goal_clearance_stop = True
                     self._publish_status("coverage_clearance_stop")
                     rospy.logwarn(
                         "[vision_triggered_navigator] coverage navigation "
-                        "clearance %.3fm is below %.3fm; canceling the "
+                        "%s clearance %s is below %.3fm; canceling the "
                         "current anchor before contact.",
-                        self.scan_all_min,
-                        self.coverage_translation_min_clearance,
+                        motion,
+                        ("missing" if clearance is None
+                         else "{:.3f}m".format(clearance)),
+                        minimum,
                     )
                     self.cancel_goal()
                     self.cmd_vel_pub.publish(Twist())
@@ -1911,6 +1991,22 @@ class VisionTriggeredNavigator(object):
                 self.parking_dock_max_yaw,
                 self.parking_dock_min_yaw,
             )
+            obstacle_clearance, obstacle_direction = (
+                self._parking_command_clearance(command))
+            if (obstacle_direction is not None and
+                    (obstacle_clearance is None or
+                     obstacle_clearance < self.parking_obstacle_min_clearance)):
+                self.cmd_vel_pub.publish(Twist())
+                self.parking_failure_status = "parking_obstacle_blocked"
+                self._publish_status(self.parking_failure_status)
+                rospy.logerr(
+                    "[vision_triggered_navigator] parking obstacle blocks "
+                    "%s motion: clearance=%s required=%.3fm; vehicle stopped.",
+                    obstacle_direction,
+                    ("missing" if obstacle_clearance is None
+                     else "{:.3f}m".format(obstacle_clearance)),
+                    self.parking_obstacle_min_clearance)
+                return False
             if abs(command[2]) > 0.0:
                 if rotation_window_yaw is None:
                     rotation_window_yaw = pose[2]

@@ -46,6 +46,7 @@ coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 45.0
 coverage_rotation_min_clearance: 0.28
 coverage_translation_min_clearance: 0.30
+coverage_translation_sector_half_angle_deg: 35.0
 coverage_max_vel_x: 0.35
 coverage_max_vel_y: 0.35
 coverage_max_vel_theta: 0.80
@@ -121,6 +122,8 @@ parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15
 # ydlidar.launch中laser_frame位于base_link前方0.08m；安全阈值以base中心墙距解释。
 parking_lidar_forward_offset: 0.08
+parking_obstacle_min_clearance: 0.28
+parking_obstacle_sector_half_angle_deg: 35.0
 scan_topic: /scan
 scan_stale_sec: 0.5
 scan_front_half_angle_deg: 15.0
@@ -164,7 +167,7 @@ initial_pose:
 
 # 巡航点（9 个点）
 patrol_points:
-  - x: -1.3999
+  - x: -1.6499
     y: -1.7735
     yaw: 1.0417
     rotations:

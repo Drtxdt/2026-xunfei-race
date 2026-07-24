@@ -37,6 +37,7 @@ from navigator_logic import (
     parking_footprint_inside,
     parking_goal_from_wall,
     parking_recenter_required,
+    polar_sector_min,
     ray_segment_intersection,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
@@ -75,6 +76,19 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(0.29, 0.1, 0.30)
     assert not rotation_clearance_is_safe(None, 0.1, 0.30)
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
+
+
+def test_polar_sector_min_wraps_and_ignores_other_directions():
+    samples = [
+        (math.radians(179.0), 0.42),
+        (math.radians(-179.0), 0.31),
+        (0.0, 0.10),
+        (float("nan"), 0.01),
+    ]
+    assert polar_sector_min(
+        samples, math.pi, math.radians(10.0)) == pytest.approx(0.31)
+    assert polar_sector_min(
+        samples, 0.5 * math.pi, math.radians(10.0)) is None
 
 
 def test_navigation_node_imports_rotation_clearance_helper():
@@ -232,7 +246,7 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
 
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     calibrated = [
-        (-1.3999, -1.7735, 1.0417),
+        (-1.6499, -1.7735, 1.0417),
         (-1.6613, -2.2796, -3.1404),
         (-1.6846, -2.7856, -3.1176),
         (-0.6965, -2.8239, -1.5594),

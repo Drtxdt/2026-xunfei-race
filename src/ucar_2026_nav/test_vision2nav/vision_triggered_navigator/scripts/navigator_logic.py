@@ -27,6 +27,22 @@ def rotation_clearance_is_safe(nearest_range, scan_age, min_clearance,
             float(nearest_range) >= abs(float(min_clearance)))
 
 
+def polar_sector_min(samples, center_angle, half_angle):
+    """Return the nearest valid polar sample in a wrapped angular sector."""
+    nearest = None
+    center_angle = float(center_angle)
+    half_angle = abs(float(half_angle))
+    for angle, distance in samples or ():
+        angle = float(angle)
+        distance = float(distance)
+        if not math.isfinite(angle) or not math.isfinite(distance):
+            continue
+        if abs(normalize_angle(angle - center_angle)) > half_angle:
+            continue
+        nearest = distance if nearest is None else min(nearest, distance)
+    return nearest
+
+
 def cyclic_coverage_order(points, robot_x, robot_y):
     """Start at the nearest anchor while preserving the calibrated cycle."""
     if not points:
