@@ -151,6 +151,39 @@ class CompetitionLogicTest(unittest.TestCase):
         }
         self.assertIn("total_steps", assigned_names)
 
+    def test_transition_speech_overlaps_only_stationary_preparation(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow"
+        )
+        methods = {
+            node.name: node
+            for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+        }
+
+        def called(method_name):
+            return {
+                node.func.attr
+                for node in ast.walk(methods[method_name])
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+            }
+
+        self.assertIn("_start_transition_announcement", called("task1"))
+        self.assertIn(
+            "_wait_transition_announcement", called("task1_task2_handoff"))
+        self.assertIn("_start_transition_announcement", called("task3"))
+        self.assertIn(
+            "_wait_transition_announcement", called("production_task4_handoff"))
+        self.assertIn("_start_announcement", called("task4"))
+        self.assertIn("_wait_announcement", called("task4"))
+        self.assertIn("stop_child", called("task4"))
+
     def test_competition_config_uses_faster_safe_qr_scan(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))

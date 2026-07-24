@@ -84,6 +84,8 @@ class CompetitionFlow:
         self.children = {}
         self.lock = threading.RLock()
         self.voice_transition_lock = threading.Lock()
+        self.transition_announcement = None
+        self.next_stage = None
 
         self.status_pub = rospy.Publisher(
             rospy.get_param("~status_topic", "/competition/status"),
@@ -789,7 +791,11 @@ class CompetitionFlow:
         else:
             raise StageError(
                 "task1->task2 costmap refresh produced no fresh scan/costmap snapshot")
+        self._wait_transition_announcement("task1")
         self.safe_stop(cancel_navigation=True)
+        self.publish_status(
+            "task1", "completed",
+            "voice, QR and reasoning completed; task2 may start immediately")
         self.publish_status(
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
@@ -946,10 +952,15 @@ class CompetitionFlow:
             raise StageError(
                 "{}->task4 costmap refresh produced no fresh scan/costmap snapshot".format(
                     source_stage))
+        self._wait_transition_announcement(source_stage)
+        if source_stage == "task3":
+            self.publish_status(
+                "task3", "completed",
+                "simulation result announced; task4 handoff preparation complete")
         self.safe_stop(cancel_navigation=True)
         self.publish_status(
             source_stage, "task4_handoff_ready",
-            "current AMCL pose preserved; fresh costmap; task4 may navigate")
+            "announcement and costmap refresh complete; task4 may navigate immediately")
 
     def start_child(self, key, package, launch_file, args=None):
         self.stop_child(key)
@@ -1037,6 +1048,70 @@ class CompetitionFlow:
             raise StageError("speech service failed: {}".format(exc))
         if not response.success:
             raise StageError("speech rejected: {}".format(response.message))
+
+    def _start_announcement(self, event, item="", workshop="", decision="", text=""):
+        task = {
+            "done": threading.Event(),
+            "error": None,
+            "event": str(event),
+        }
+
+        def worker():
+            try:
+                self.announce(
+                    event,
+                    item=item,
+                    workshop=workshop,
+                    decision=decision,
+                    text=text,
+                )
+            except Exception as exc:
+                task["error"] = exc
+            finally:
+                task["done"].set()
+
+        threading.Thread(
+            target=worker,
+            name="announcement-{}".format(event),
+            daemon=True,
+        ).start()
+        return task
+
+    def _wait_announcement(self, task):
+        if task is None:
+            return
+        while not task["done"].wait(0.05):
+            self.check_abort()
+        if task["error"] is not None:
+            error = task["error"]
+            if isinstance(error, StageError):
+                raise error
+            raise StageError("speech failed: {}".format(error))
+
+    def _start_transition_announcement(
+            self, event, item="", workshop="", decision="", text=""):
+        if self.transition_announcement is not None:
+            raise StageError("previous transition announcement is still active")
+        self.transition_announcement = self._start_announcement(
+            event,
+            item=item,
+            workshop=workshop,
+            decision=decision,
+            text=text,
+        )
+
+    def _wait_transition_announcement(self, expected_event):
+        task = self.transition_announcement
+        if task is None:
+            return
+        if task["event"] != str(expected_event):
+            raise StageError(
+                "pending {} announcement cannot complete {} transition".format(
+                    task["event"], expected_event))
+        try:
+            self._wait_announcement(task)
+        finally:
+            self.transition_announcement = None
 
     def navigate_to_qr_area(self):
         """Run the untouched simple_navigator and observe its move_base result."""
@@ -1400,8 +1475,16 @@ class CompetitionFlow:
             "announcement": result.announcement_full,
         }
         self.result_pub.publish(String(data=json.dumps(self.task1_result, ensure_ascii=False)))
-        self.announce("task1", text=result.announcement_full)
-        self.publish_status("task1", "completed", "voice, QR and reasoning completed")
+        if self.next_stage == "task2":
+            self._start_transition_announcement(
+                "task1", text=result.announcement_full)
+            self.publish_status(
+                "task1", "announcement_running",
+                "QR result announcement overlaps task2 handoff preparation")
+        else:
+            self.announce("task1", text=result.announcement_full)
+            self.publish_status(
+                "task1", "completed", "voice, QR and reasoning completed")
 
     def _navigate_factory_target(self, category, item, workshop, phase, announce):
         if not category or not item or not workshop:
@@ -1777,8 +1860,16 @@ class CompetitionFlow:
         )
         if not item:
             raise StageError("task3 sim_item is missing")
-        self.announce("task3", item=item, workshop=workshop)
-        self.publish_status("task3", "completed", result_text)
+        if self.next_stage == "task4":
+            self._start_transition_announcement(
+                "task3", item=item, workshop=workshop)
+            self.publish_status(
+                "task3", "announcement_running",
+                "{}; announcement overlaps task4 handoff preparation".format(
+                    result_text))
+        else:
+            self.announce("task3", item=item, workshop=workshop)
+            self.publish_status("task3", "completed", result_text)
 
     def approach_task4_stop_line(self):
         self.strict_mission_status = {}
@@ -1898,9 +1989,15 @@ class CompetitionFlow:
                     self.traffic_decision = ""
                 elif self.traffic_decision in ("left", "right", "straight"):
                     decision = self.traffic_decision
-                    self.announce("task4", decision=decision)
+                    announcement = self._start_announcement(
+                        "task4", decision=decision)
+                    self.stop_child("traffic_light")
+                    self._wait_announcement(announcement)
                     self.traffic_pub.publish(String(data=decision))
-                    self.publish_status("task4", "completed", "decision={}".format(decision))
+                    self.publish_status(
+                        "task4", "completed",
+                        "decision={}; detector stopped during speech; task5 may start".format(
+                            decision))
                     self.traffic_decision = decision
                     return
                 proc = self.children.get("traffic_light")
@@ -1949,7 +2046,10 @@ class CompetitionFlow:
                 "task5": self.task5,
             }
             previous_stage = None
-            for stage in stage_sequence(self.mode, self.enable_simulation):
+            stages = stage_sequence(self.mode, self.enable_simulation)
+            for index, stage in enumerate(stages):
+                self.next_stage = (
+                    stages[index + 1] if index + 1 < len(stages) else None)
                 if previous_stage == "task1" and stage == "task2":
                     self.run_stage("task1", self.task1_task2_handoff)
                 if task4_handoff_required(previous_stage, stage):

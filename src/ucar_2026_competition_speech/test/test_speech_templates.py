@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -41,6 +42,19 @@ class SpeechTemplateTest(unittest.TestCase):
             estimate_duration("仿真任务已完成，已将毛巾放入日用品加工车间"),
             estimate_duration("任务完成"),
         )
+
+
+    def test_competition_launch_uses_short_post_speech_tail(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch",
+            "competition_speech.launch"))
+        root = ET.parse(launch_path).getroot()
+        args = {
+            node.attrib["name"]: node.attrib.get("default")
+            for node in root.findall("arg")
+        }
+        self.assertEqual(float(args["startup_sec"]), 1.0)
+        self.assertEqual(float(args["tail_sec"]), 0.2)
 
 
 if __name__ == "__main__":
