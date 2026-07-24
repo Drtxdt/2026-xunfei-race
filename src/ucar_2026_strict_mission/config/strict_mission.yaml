@@ -51,6 +51,8 @@
   "yellow_s_max": 255,
   "yellow_v_min": 70,
   "yellow_v_max": 255,
+  "white_s_max": 85,
+  "white_v_min": 165,
   "morph_kernel_size": 5,
   "line_min_width_ratio": 0.45,
   "line_max_height_ratio": 0.12,

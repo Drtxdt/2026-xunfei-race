@@ -57,6 +57,7 @@ class StrictMissionNode:
         self.line_search_direction = 1.0
         self.line_search_reversals = 0
         self.last_distance_m = None
+        self.last_stop_line_color = None
         self.odom_pose = None
         self.odom_received_at = 0.0
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -244,22 +245,34 @@ class StrictMissionNode:
             self.odom_pose = (position.x, position.y, yaw)
             self.odom_received_at = time.monotonic()
 
-    def detect_stop_line(self, frame):
+    def detect_stop_line(self, frame, color_mode="yellow"):
         height, width = frame.shape[:2]
         roi_start = float(rospy.get_param("~line_roi_start_ratio", 0.45))
         y0 = max(0, min(height - 1, int(height * roi_start)))
         roi = frame[y0:, :]
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        lower = (
-            int(rospy.get_param("~yellow_h_min", 12)),
-            int(rospy.get_param("~yellow_s_min", 70)),
-            int(rospy.get_param("~yellow_v_min", 70)),
-        )
-        upper = (
-            int(rospy.get_param("~yellow_h_max", 42)),
-            int(rospy.get_param("~yellow_s_max", 255)),
-            int(rospy.get_param("~yellow_v_max", 255)),
-        )
+        if color_mode == "yellow":
+            lower = (
+                int(rospy.get_param("~yellow_h_min", 12)),
+                int(rospy.get_param("~yellow_s_min", 70)),
+                int(rospy.get_param("~yellow_v_min", 70)),
+            )
+            upper = (
+                int(rospy.get_param("~yellow_h_max", 42)),
+                int(rospy.get_param("~yellow_s_max", 255)),
+                int(rospy.get_param("~yellow_v_max", 255)),
+            )
+        else:
+            lower = (
+                0,
+                0,
+                int(rospy.get_param("~white_v_min", 165)),
+            )
+            upper = (
+                180,
+                int(rospy.get_param("~white_s_max", 85)),
+                255,
+            )
         mask = cv2.inRange(hsv, lower, upper)
         kernel_size = max(3, int(rospy.get_param("~morph_kernel_size", 5)))
         if kernel_size % 2 == 0:
@@ -326,11 +339,17 @@ class StrictMissionNode:
                     "~line_max_height_ratio", 0.12)) * height))),
             )
             if band is None:
+                if color_mode == "yellow":
+                    return self.detect_stop_line(frame, color_mode="white")
+                self.last_stop_line_color = None
                 return None, mask, None, None, None
             band_start, band_end = band
             band_mask = mask[band_start:band_end + 1, :]
             ys, xs = np.nonzero(band_mask)
             if len(xs) < 8:
+                if color_mode == "yellow":
+                    return self.detect_stop_line(frame, color_mode="white")
+                self.last_stop_line_color = None
                 return None, mask, None, None, None
             points = np.column_stack((xs, ys + band_start)).astype(np.float32)
             vx, vy, _fit_x, _fit_y = cv2.fitLine(
@@ -341,6 +360,9 @@ class StrictMissionNode:
             while angle_deg <= -90.0:
                 angle_deg += 180.0
             if abs(angle_deg) > max_abs_angle:
+                if color_mode == "yellow":
+                    return self.detect_stop_line(frame, color_mode="white")
+                self.last_stop_line_color = None
                 return None, mask, None, None, None
             x_min = int(np.min(xs))
             x_max = int(np.max(xs))
@@ -355,6 +377,7 @@ class StrictMissionNode:
                 x_max - x_min + 1,
                 band_end - band_start + 1,
             )
+            self.last_stop_line_color = color_mode
             return (
                 bottom_ratio,
                 mask,
@@ -364,6 +387,7 @@ class StrictMissionNode:
             )
         _, bottom_ratio, box, center_error, angle_rad = max(
             candidates, key=lambda item: item[0])
+        self.last_stop_line_color = color_mode
         return bottom_ratio, mask, box, center_error, angle_rad
 
     def image_callback(self, msg):
@@ -462,6 +486,7 @@ class StrictMissionNode:
                 distance_m=distance,
                 line_center_error_ratio=center_error,
                 line_angle_deg=math.degrees(angle_error),
+                line_color=self.last_stop_line_color,
                 stop_confirm_hits=self.band_filter.hits,
             )
         else:
@@ -471,6 +496,7 @@ class StrictMissionNode:
                 line_bottom_ratio=bottom_ratio,
                 line_center_error_ratio=center_error,
                 line_angle_deg=math.degrees(angle_error),
+                line_color=self.last_stop_line_color,
                 precision_mode=precision_mode,
                 yaw_tolerance_deg=math.degrees(yaw_tolerance),
                 center_tolerance_ratio=center_tolerance,
