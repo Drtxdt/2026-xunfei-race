@@ -103,9 +103,9 @@ class StrictMissionNode:
         )
         self.final_advance_m = float(rospy.get_param(
             "~final_advance_m", 0.0))
-        if not 0.0 <= self.final_advance_m <= 0.12:
+        if not 0.0 <= self.final_advance_m <= 0.20:
             raise ValueError(
-                "final_advance_m must be within [0.0, 0.12]")
+                "final_advance_m must be within [0.0, 0.20]")
         self.precision_start_m = float(rospy.get_param(
             "~precision_start_m", 0.14))
         self.line_yaw_tolerance_rad = math.radians(float(rospy.get_param(

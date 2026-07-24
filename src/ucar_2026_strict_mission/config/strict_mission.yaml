@@ -39,7 +39,7 @@
   "stop_confirm_frames": 8,
   "stop_settle_sec": 0.60,
   "calibrated_final_advance_fallback_sec": 2.0,
-  "final_advance_m": 0.10,
+  "final_advance_m": 0.18,
   "final_advance_speed_mps": 0.045,
   "final_advance_creep_speed_mps": 0.030,
   "final_advance_creep_distance_m": 0.03,
