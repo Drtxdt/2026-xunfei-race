@@ -1683,7 +1683,7 @@ class CompetitionFlow:
             anchor_count = len(rospy.get_param(
                 "/vision_triggered_navigator/patrol_points", [])) or 9
             no_workshop_anchors = normalize_coverage_anchor_ids(
-                rospy.get_param("~task2_no_workshop_anchors", [4]),
+                rospy.get_param("~task2_no_workshop_anchors", []),
                 anchor_count,
             )
             if preferred_anchor in no_workshop_anchors:
@@ -1757,7 +1757,7 @@ class CompetitionFlow:
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.28),
                     "coverage_translation_min_clearance": rospy.get_param(
-                        "~coverage_translation_min_clearance", 0.34),
+                        "~coverage_translation_min_clearance", 0.30),
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(

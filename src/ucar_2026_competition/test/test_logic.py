@@ -48,17 +48,19 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
         self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))
 
-    def test_task2_always_skips_calibrated_no_workshop_anchor(self):
+    def test_task2_visits_all_anchors_by_default(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
         with open(config_path, "r", encoding="utf-8") as stream:
             config = stream.read()
-        self.assertIn("task2_no_workshop_anchors: [4]", config)
+        self.assertIn("task2_no_workshop_anchors: []", config)
 
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
         with open(flow_path, "r", encoding="utf-8") as stream:
             flow = stream.read()
+        self.assertIn(
+            'rospy.get_param("~task2_no_workshop_anchors", [])', flow)
         self.assertIn(
             'set(skipped_anchors).union(no_workshop_anchors)', flow)
         self.assertIn(
@@ -69,7 +71,7 @@ class CompetitionLogicTest(unittest.TestCase):
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
         with open(config_path, "r", encoding="utf-8") as stream:
             config = stream.read()
-        self.assertIn("coverage_translation_min_clearance: 0.34", config)
+        self.assertIn("coverage_translation_min_clearance: 0.30", config)
         self.assertIn(
             "coverage_translation_sector_half_angle_deg: 35.0", config)
         self.assertIn("coverage_max_vel_x: 0.55", config)

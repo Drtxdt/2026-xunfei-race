@@ -149,7 +149,7 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_min_clearance", 0.28)))
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
-                "~coverage_translation_min_clearance", 0.34)))
+                "~coverage_translation_min_clearance", 0.30)))
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))

@@ -117,7 +117,7 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
 coverage_rotation_min_clearance: 0.28
-coverage_translation_min_clearance: 0.34
+coverage_translation_min_clearance: 0.30
 coverage_translation_sector_half_angle_deg: 35.0
 coverage_max_vel_x: 0.55
 coverage_max_vel_y: 0.55
@@ -127,7 +127,7 @@ coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0
-task2_no_workshop_anchors: [4]
+task2_no_workshop_anchors: []
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003
