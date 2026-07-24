@@ -78,6 +78,13 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertEqual(
             config["calibrated_final_advance_fallback_sec"], 2.0)
         self.assertEqual(config["final_advance_m"], 0.10)
+        self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
+        self.assertGreaterEqual(
+            config["final_advance_creep_speed_mps"], 0.030)
+        self.assertLessEqual(
+            config["final_advance_creep_speed_mps"],
+            config["final_advance_speed_mps"],
+        )
         self.assertGreater(
             config["line_search_delay_sec"],
             config["calibrated_final_advance_fallback_sec"],

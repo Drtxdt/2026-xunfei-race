@@ -760,9 +760,9 @@ class StrictMissionNode:
             raise RuntimeError("fresh odometry unavailable for final advance")
 
         speed = max(0.005, float(rospy.get_param(
-            "~final_advance_speed_mps", 0.02)))
+            "~final_advance_speed_mps", 0.045)))
         creep_speed = min(speed, max(0.005, float(rospy.get_param(
-            "~final_advance_creep_speed_mps", 0.012))))
+            "~final_advance_creep_speed_mps", 0.030))))
         creep_distance = max(0.005, float(rospy.get_param(
             "~final_advance_creep_distance_m", 0.03)))
         max_yaw_drift = math.radians(max(1.0, float(rospy.get_param(
