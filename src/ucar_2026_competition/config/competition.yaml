@@ -48,15 +48,15 @@ ocr_evidence_window_sec: 1.5
 ocr_ready_timeout_sec: 12.0
 # Distant signs remain available to semantic memory, but cannot interrupt
 # navigation until the OCR box is large enough for reliable visual centering.
-task2_trigger_min_bbox_width_ratio: 0.11
+task2_trigger_min_bbox_width_ratio: 0.09
 task2_trigger_min_bbox_height_ratio: 0.06
 task2_trigger_min_bbox_area_ratio: 0.006
 # 图像横向误差为正时的转向符号。首次低速居中测试必须确认方向。
 target_center_steering_sign: -1.0
 target_center_coarse_step_deg: 4.0
 target_center_fine_step_deg: 2.0
-target_center_start_speed: 0.20
-target_center_max_speed: 0.35
+target_center_start_speed: 0.28
+target_center_max_speed: 0.45
 target_center_timeout_sec: 20.0
 # 厂牌居中后，车头射线相对相机光轴的实车标定偏差。
 camera_boresight_yaw_offset: 0.0
@@ -102,8 +102,8 @@ task1_task2_handoff_timeout_sec: 5.0
 task1_task2_handoff_stable_sec: 0.5
 # 任务2厂牌覆盖扫描：仅传给coverage_search_mode导航节点。
 coverage_scan_step_deg: 20.0
-coverage_scan_angular_speed: 0.35
-coverage_scan_dwell_sec: 0.65
+coverage_scan_angular_speed: 0.50
+coverage_scan_dwell_sec: 0.45
 coverage_candidate_hold_sec: 1.2
 coverage_scan_max_dwell_sec: 2.0
 coverage_scan_pose_timeout_sec: 0.5
@@ -117,11 +117,11 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
 coverage_rotation_min_clearance: 0.28
-coverage_translation_min_clearance: 0.30
+coverage_translation_min_clearance: 0.34
 coverage_translation_sector_half_angle_deg: 35.0
-coverage_max_vel_x: 0.35
-coverage_max_vel_y: 0.35
-coverage_max_vel_theta: 0.80
+coverage_max_vel_x: 0.55
+coverage_max_vel_y: 0.55
+coverage_max_vel_theta: 1.20
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44

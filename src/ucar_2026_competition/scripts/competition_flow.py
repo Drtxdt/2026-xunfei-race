@@ -174,7 +174,7 @@ class CompetitionFlow:
         self.ocr_memory_min_score = float(rospy.get_param(
             "~ocr_memory_min_score", 0.55))
         self.ocr_trigger_min_bbox_width_ratio = float(rospy.get_param(
-            "~task2_trigger_min_bbox_width_ratio", 0.11))
+            "~task2_trigger_min_bbox_width_ratio", 0.09))
         self.ocr_trigger_min_bbox_height_ratio = float(rospy.get_param(
             "~task2_trigger_min_bbox_height_ratio", 0.06))
         self.ocr_trigger_min_bbox_area_ratio = float(rospy.get_param(
@@ -1757,15 +1757,15 @@ class CompetitionFlow:
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.28),
                     "coverage_translation_min_clearance": rospy.get_param(
-                        "~coverage_translation_min_clearance", 0.30),
+                        "~coverage_translation_min_clearance", 0.34),
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(
-                        "~coverage_max_vel_x", 0.35),
+                        "~coverage_max_vel_x", 0.55),
                     "coverage_max_vel_y": rospy.get_param(
-                        "~coverage_max_vel_y", 0.35),
+                        "~coverage_max_vel_y", 0.55),
                     "coverage_max_vel_theta": rospy.get_param(
-                        "~coverage_max_vel_theta", 0.80),
+                        "~coverage_max_vel_theta", 1.20),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
                         "~coverage_rotation_max_yaw_deg", 45.0),
                     "target_center_steering_sign": rospy.get_param(
@@ -1852,17 +1852,17 @@ class CompetitionFlow:
                     "target_center_fine_step_deg": rospy.get_param(
                         "~target_center_fine_step_deg", 2.0),
                     "target_center_start_speed": rospy.get_param(
-                        "~target_center_start_speed", 0.20),
+                        "~target_center_start_speed", 0.28),
                     "target_center_step_max_speed": rospy.get_param(
-                        "~target_center_max_speed", 0.35),
+                        "~target_center_max_speed", 0.45),
                     "target_center_timeout_sec": rospy.get_param(
                         "~target_center_timeout_sec", 12.0),
                     "coverage_scan_step_deg": rospy.get_param(
                         "~coverage_scan_step_deg", 20.0),
                     "coverage_scan_angular_speed": rospy.get_param(
-                        "~coverage_scan_angular_speed", 0.35),
+                        "~coverage_scan_angular_speed", 0.50),
                     "coverage_scan_dwell_sec": rospy.get_param(
-                        "~coverage_scan_dwell_sec", 0.65),
+                        "~coverage_scan_dwell_sec", 0.45),
                     "coverage_candidate_hold_sec": rospy.get_param(
                         "~coverage_candidate_hold_sec", 1.2),
                     "coverage_scan_max_dwell_sec": rospy.get_param(

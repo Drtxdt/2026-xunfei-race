@@ -149,16 +149,16 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_min_clearance", 0.28)))
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
-                "~coverage_translation_min_clearance", 0.30)))
+                "~coverage_translation_min_clearance", 0.34)))
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_x", 0.35)))
+            "~coverage_max_vel_x", 0.55)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_y", 0.35)))
+            "~coverage_max_vel_y", 0.55)))
         self.coverage_max_vel_theta = max(0.10, float(rospy.get_param(
-            "~coverage_max_vel_theta", 0.80)))
+            "~coverage_max_vel_theta", 1.20)))
         self.coverage_goal_retry_count = max(0, int(rospy.get_param(
             "~coverage_goal_retry_count", 1)))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
@@ -192,9 +192,9 @@ class VisionTriggeredNavigator(object):
         self.coverage_scan_step_angle = math.radians(max(
             1.0, float(rospy.get_param("~coverage_scan_step_deg", 20.0))))
         self.coverage_scan_angular_speed = abs(float(rospy.get_param(
-            "~coverage_scan_angular_speed", 0.35)))
+            "~coverage_scan_angular_speed", 0.50)))
         self.coverage_scan_dwell = max(0.0, float(rospy.get_param(
-            "~coverage_scan_dwell_sec", 0.65)))
+            "~coverage_scan_dwell_sec", 0.45)))
         self.coverage_candidate_hold = max(0.0, float(rospy.get_param(
             "~coverage_candidate_hold_sec", 1.2)))
         self.coverage_scan_max_dwell = max(
@@ -228,10 +228,10 @@ class VisionTriggeredNavigator(object):
         self.target_center_fine_threshold = abs(float(rospy.get_param(
             "~target_center_fine_threshold", 0.20)))
         self.target_center_start_speed = abs(float(rospy.get_param(
-            "~target_center_start_speed", 0.20)))
+            "~target_center_start_speed", 0.28)))
         self.target_center_step_max_speed = max(
             self.target_center_start_speed,
-            abs(float(rospy.get_param("~target_center_step_max_speed", 0.35))))
+            abs(float(rospy.get_param("~target_center_step_max_speed", 0.45))))
         self.target_center_speed_increment = abs(float(rospy.get_param(
             "~target_center_speed_increment", 0.05)))
         self.target_center_motion_window = max(0.1, float(rospy.get_param(

@@ -69,12 +69,15 @@ class CompetitionLogicTest(unittest.TestCase):
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
         with open(config_path, "r", encoding="utf-8") as stream:
             config = stream.read()
-        self.assertIn("coverage_translation_min_clearance: 0.30", config)
+        self.assertIn("coverage_translation_min_clearance: 0.34", config)
         self.assertIn(
             "coverage_translation_sector_half_angle_deg: 35.0", config)
-        self.assertIn("coverage_max_vel_x: 0.35", config)
-        self.assertIn("coverage_max_vel_y: 0.35", config)
-        self.assertIn("coverage_max_vel_theta: 0.80", config)
+        self.assertIn("coverage_max_vel_x: 0.55", config)
+        self.assertIn("coverage_max_vel_y: 0.55", config)
+        self.assertIn("coverage_max_vel_theta: 1.20", config)
+        self.assertIn("coverage_scan_angular_speed: 0.50", config)
+        self.assertIn("coverage_scan_dwell_sec: 0.45", config)
+        self.assertIn("task2_trigger_min_bbox_width_ratio: 0.09", config)
         self.assertIn("parking_obstacle_min_clearance: 0.28", config)
 
     def test_task4_retired_staging_pose_is_migrated(self):
@@ -104,6 +107,16 @@ class CompetitionLogicTest(unittest.TestCase):
     def test_task2_accepts_near_ocr_box_for_centering(self):
         bbox = [[100, 100], [179, 100], [179, 136], [100, 136]]
         self.assertTrue(target_bbox_is_close_enough(bbox, 640, 480))
+
+    def test_task2_accepts_logged_food_short_word_box_at_calibrated_threshold(self):
+        bbox = [[100, 100], [160, 100], [160, 134], [100, 134]]
+        self.assertTrue(target_bbox_is_close_enough(
+            bbox, 640, 480, 0.09, 0.06, 0.006))
+
+    def test_task2_still_rejects_distant_food_short_word_box(self):
+        bbox = [[100, 100], [135, 100], [135, 128], [100, 128]]
+        self.assertFalse(target_bbox_is_close_enough(
+            bbox, 640, 480, 0.09, 0.06, 0.006))
 
     def test_task2_rejects_malformed_ocr_box_for_centering(self):
         self.assertFalse(target_bbox_is_close_enough([], 640, 480))

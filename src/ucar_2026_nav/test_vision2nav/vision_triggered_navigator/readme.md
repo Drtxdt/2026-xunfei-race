@@ -52,7 +52,7 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `vision_rect_corners` | 长方形围墙 4 个角点 | 见 yaml |
 | `vision_offset` | 墙交点回退距离（m） | `0.4` |
 | `target_center_coarse_step_deg` / `target_center_fine_step_deg` | 任务2目标居中粗调/细调步长 | `4.0 / 2.0` |
-| `target_center_start_speed` / `target_center_step_max_speed` | 居中起始/最大角速度 | `0.20 / 0.35` |
+| `target_center_start_speed` / `target_center_step_max_speed` | 居中起始/最大角速度 | `0.28 / 0.45` |
 | `parking_staging_offset` | move_base 预停点距墙距离 | 比赛任务2 `0.55` |
 | `parking_staging_position_tolerance` / `parking_staging_yaw_tolerance` | move_base行驶中的控制权交接门限 | `0.10m / 0.10rad` |
 | `parking_staging_success_position_tolerance` / `parking_staging_success_yaw_tolerance` | move_base成功后进入低速停车的有界交接门限 | `0.15m / 0.12rad` |
