@@ -1699,6 +1699,14 @@ class CompetitionFlow:
                         if phase == "simulation" else 0),
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.28),
+                    "coverage_translation_min_clearance": rospy.get_param(
+                        "~coverage_translation_min_clearance", 0.30),
+                    "coverage_max_vel_x": rospy.get_param(
+                        "~coverage_max_vel_x", 0.35),
+                    "coverage_max_vel_y": rospy.get_param(
+                        "~coverage_max_vel_y", 0.35),
+                    "coverage_max_vel_theta": rospy.get_param(
+                        "~coverage_max_vel_theta", 0.80),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
                         "~coverage_rotation_max_yaw_deg", 45.0),
                     "target_center_steering_sign": rospy.get_param(

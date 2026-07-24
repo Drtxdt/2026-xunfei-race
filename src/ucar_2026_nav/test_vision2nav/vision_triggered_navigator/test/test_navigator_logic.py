@@ -232,7 +232,7 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
 
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     calibrated = [
-        (-1.6499, -1.7735, 1.0417),
+        (-1.3999, -1.7735, 1.0417),
         (-1.6613, -2.2796, -3.1404),
         (-1.6846, -2.7856, -3.1176),
         (-0.6965, -2.8239, -1.5594),

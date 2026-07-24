@@ -64,6 +64,16 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn(
             '"coverage_skip_anchors": ",".join(', flow)
 
+    def test_task2_coverage_navigation_has_cone_safety_limits(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = stream.read()
+        self.assertIn("coverage_translation_min_clearance: 0.30", config)
+        self.assertIn("coverage_max_vel_x: 0.35", config)
+        self.assertIn("coverage_max_vel_y: 0.35", config)
+        self.assertIn("coverage_max_vel_theta: 0.80", config)
+
     def test_task4_retired_staging_pose_is_migrated(self):
         pose, migrated = normalize_task4_staging_pose(
             0.3195, -3.00, -1.5596)

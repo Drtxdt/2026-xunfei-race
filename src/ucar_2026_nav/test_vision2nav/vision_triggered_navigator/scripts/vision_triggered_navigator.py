@@ -146,6 +146,15 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_max_yaw_deg", 90.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
             "~coverage_rotation_min_clearance", 0.28)))
+        self.coverage_translation_min_clearance = max(
+            0.0, float(rospy.get_param(
+                "~coverage_translation_min_clearance", 0.30)))
+        self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
+            "~coverage_max_vel_x", 0.35)))
+        self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
+            "~coverage_max_vel_y", 0.35)))
+        self.coverage_max_vel_theta = max(0.10, float(rospy.get_param(
+            "~coverage_max_vel_theta", 0.80)))
         self.coverage_goal_retry_count = max(0, int(rospy.get_param(
             "~coverage_goal_retry_count", 1)))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
@@ -399,6 +408,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
+        self.current_goal_clearance_stop = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
@@ -411,7 +421,7 @@ class VisionTriggeredNavigator(object):
         self._saved_planner_tolerances = None
         self._move_base_reconfigure_client = None
         self._saved_move_base_recovery = None
-        self._saved_teb_oscillation_recovery = None
+        self._saved_teb_coverage_config = None
         rospy.on_shutdown(self._restore_final_tolerances)
         rospy.on_shutdown(self._restore_move_base_recovery)
         self._publish_status("ready")
@@ -807,6 +817,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
+        self.current_goal_clearance_stop = False
 
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = self.map_frame
@@ -847,6 +858,24 @@ class VisionTriggeredNavigator(object):
             if self.coverage_search_mode and not self.triggered:
                 now = rospy.get_time()
                 elapsed = now - started
+                if (self.coverage_translation_min_clearance > 0.0 and
+                        sensor_is_fresh(
+                            self.scan_received_at, now, self.scan_stale) and
+                        self.scan_all_min is not None and
+                        self.scan_all_min <
+                        self.coverage_translation_min_clearance):
+                    self.current_goal_clearance_stop = True
+                    self._publish_status("coverage_clearance_stop")
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] coverage navigation "
+                        "clearance %.3fm is below %.3fm; canceling the "
+                        "current anchor before contact.",
+                        self.scan_all_min,
+                        self.coverage_translation_min_clearance,
+                    )
+                    self.cancel_goal()
+                    self.cmd_vel_pub.publish(Twist())
+                    break
                 if now - last_progress_check >= 0.25:
                     last_progress_check = now
                     pose = self._get_robot_pose(self.base_frame)
@@ -983,7 +1012,8 @@ class VisionTriggeredNavigator(object):
             timer.shutdown()
         if (self.current_goal_timed_out or self.current_goal_rotation_stall or
                 self.current_goal_needs_yaw_alignment or
-                self.current_goal_near_observation):
+                self.current_goal_near_observation or
+                self.current_goal_clearance_stop):
             self.move_base_client.wait_for_result(rospy.Duration(1.0))
         final_state = self.move_base_client.get_state()
 
@@ -1954,22 +1984,45 @@ class VisionTriggeredNavigator(object):
                     self.local_planner_reconfigure_ns, timeout=3.0)
             planner_current = self._planner_client.get_configuration(
                 timeout=3.0)
-            if "oscillation_recovery" not in planner_current:
+            planner_required = (
+                "oscillation_recovery",
+                "max_vel_x",
+                "max_vel_y",
+                "max_vel_theta",
+            )
+            planner_missing = [
+                name for name in planner_required
+                if name not in planner_current
+            ]
+            if planner_missing:
                 raise RuntimeError(
-                    "TEB dynamic config missing oscillation_recovery")
-            self._saved_teb_oscillation_recovery = bool(
-                planner_current["oscillation_recovery"])
+                    "TEB dynamic config missing {}".format(
+                        ",".join(planner_missing)))
+            self._saved_teb_coverage_config = {
+                name: planner_current[name] for name in planner_required
+            }
             updated = self._move_base_reconfigure_client.update_configuration({
                 "recovery_behavior_enabled": False,
                 "clearing_rotation_allowed": False,
             })
             planner_updated = self._planner_client.update_configuration({
                 "oscillation_recovery": False,
+                "max_vel_x": self.coverage_max_vel_x,
+                "max_vel_y": self.coverage_max_vel_y,
+                "max_vel_theta": self.coverage_max_vel_theta,
             })
             if (bool(updated.get("recovery_behavior_enabled", True)) or
                     bool(updated.get("clearing_rotation_allowed", True)) or
-                    bool(planner_updated.get("oscillation_recovery", True))):
-                raise RuntimeError("move_base rejected recovery disable request")
+                    bool(planner_updated.get("oscillation_recovery", True)) or
+                    float(planner_updated.get("max_vel_x", float("inf"))) >
+                    self.coverage_max_vel_x + 1e-6 or
+                    float(planner_updated.get("max_vel_y", float("inf"))) >
+                    self.coverage_max_vel_y + 1e-6 or
+                    float(planner_updated.get(
+                        "max_vel_theta", float("inf"))) >
+                    self.coverage_max_vel_theta + 1e-6):
+                raise RuntimeError(
+                    "move_base rejected coverage safety configuration")
             self._publish_status("coverage_recovery_disabled")
             rospy.logwarn(
                 "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复行为和清障旋转；退出时自动恢复.")
@@ -1983,9 +2036,9 @@ class VisionTriggeredNavigator(object):
 
     def _restore_move_base_recovery(self):
         saved = self._saved_move_base_recovery
-        saved_teb = self._saved_teb_oscillation_recovery
+        saved_teb = self._saved_teb_coverage_config
         self._saved_move_base_recovery = None
-        self._saved_teb_oscillation_recovery = None
+        self._saved_teb_coverage_config = None
         try:
             if saved and self._move_base_reconfigure_client is not None:
                 self._move_base_reconfigure_client.update_configuration(saved)
@@ -1993,13 +2046,11 @@ class VisionTriggeredNavigator(object):
                     "[vision_triggered_navigator] 已恢复move_base恢复配置 recovery=%s clearing_rotation=%s.",
                     saved["recovery_behavior_enabled"],
                     saved["clearing_rotation_allowed"])
-            if saved_teb is not None and self._planner_client is not None:
-                self._planner_client.update_configuration({
-                    "oscillation_recovery": saved_teb,
-                })
+            if saved_teb and self._planner_client is not None:
+                self._planner_client.update_configuration(saved_teb)
                 rospy.loginfo(
                     "[vision_triggered_navigator] 已恢复TEB oscillation_recovery=%s.",
-                    saved_teb)
+                    bool(saved_teb["oscillation_recovery"]))
         except Exception as exc:
             rospy.logerr(
                 "[vision_triggered_navigator] 恢复move_base恢复配置失败: %s",
