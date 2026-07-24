@@ -27,7 +27,9 @@ from ucar_2026_strict_mission.logic import (
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    forward_progress,
     heading_alignment_command,
+    lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
     track_launch_for_decision,
@@ -97,9 +99,9 @@ class StrictMissionNode:
         )
         self.final_advance_m = float(rospy.get_param(
             "~final_advance_m", 0.0))
-        if self.final_advance_m != 0.0:
+        if not 0.0 <= self.final_advance_m <= 0.12:
             raise ValueError(
-                "final_advance_m must be zero; blind advance is unsafe")
+                "final_advance_m must be within [0.0, 0.12]")
         self.precision_start_m = float(rospy.get_param(
             "~precision_start_m", 0.14))
         self.line_yaw_tolerance_rad = math.radians(float(rospy.get_param(
@@ -478,15 +480,16 @@ class StrictMissionNode:
         if aligned and self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
-                self.state = "STOP_CONFIRM"
+                self.state = "VISUAL_CONFIRM"
                 self.parked_event.set()
             self.publish_status(
-                "precision stop pose confirmed; holding before traffic task",
+                "visual stop pose confirmed; final odometry advance armed",
                 line_bottom_ratio=bottom_ratio,
                 distance_m=distance,
                 line_center_error_ratio=center_error,
                 line_angle_deg=math.degrees(angle_error),
                 line_color=self.last_stop_line_color,
+                final_advance_m=self.final_advance_m,
                 stop_confirm_hits=self.band_filter.hits,
             )
         else:
@@ -595,7 +598,7 @@ class StrictMissionNode:
         with self.lock:
             state = self.state
             last_image_at = self.last_image_at
-        if state in ("STOP_CONFIRM", "WAIT_TRAFFIC", "FAULT"):
+        if state in ("VISUAL_CONFIRM", "STOP_CONFIRM", "WAIT_TRAFFIC", "FAULT"):
             self.publish_stop()
         if state != "APPROACH_LINE":
             return
@@ -697,6 +700,90 @@ class StrictMissionNode:
         self.publish_stop()
         raise RuntimeError("staging heading alignment timed out")
 
+    def advance_final_offset(self):
+        distance = self.final_advance_m
+        if distance <= 0.0:
+            return
+        stale_limit = max(0.05, float(rospy.get_param(
+            "~final_advance_odom_stale_sec", 0.30)))
+        wait_deadline = time.monotonic() + max(0.5, float(rospy.get_param(
+            "~final_advance_odom_wait_sec", 2.0)))
+        start_pose = None
+        while not rospy.is_shutdown() and time.monotonic() < wait_deadline:
+            now = time.monotonic()
+            with self.lock:
+                pose = self.odom_pose
+                age = now - self.odom_received_at
+            if pose is not None and age <= stale_limit:
+                start_pose = pose
+                break
+            self.publish_stop()
+            time.sleep(0.02)
+        if start_pose is None:
+            raise RuntimeError("fresh odometry unavailable for final advance")
+
+        speed = max(0.005, float(rospy.get_param(
+            "~final_advance_speed_mps", 0.02)))
+        creep_speed = min(speed, max(0.005, float(rospy.get_param(
+            "~final_advance_creep_speed_mps", 0.012))))
+        creep_distance = max(0.005, float(rospy.get_param(
+            "~final_advance_creep_distance_m", 0.03)))
+        max_yaw_drift = math.radians(max(1.0, float(rospy.get_param(
+            "~final_advance_max_yaw_drift_deg", 4.0))))
+        max_lateral_drift = max(0.005, float(rospy.get_param(
+            "~final_advance_max_lateral_drift_m", 0.025)))
+        timeout = max(1.0, float(rospy.get_param(
+            "~final_advance_timeout_sec", 10.0)))
+        deadline = time.monotonic() + timeout
+        rate = rospy.Rate(30)
+
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            now = time.monotonic()
+            with self.lock:
+                pose = self.odom_pose
+                age = now - self.odom_received_at
+            if pose is None or age > stale_limit:
+                self.publish_stop()
+                raise RuntimeError("odometry became stale during final advance")
+            progress = forward_progress(start_pose, pose)
+            lateral_drift = lateral_displacement(start_pose, pose)
+            yaw_drift = abs(self.normalized_angle(pose[2] - start_pose[2]))
+            if yaw_drift > max_yaw_drift:
+                self.publish_stop()
+                raise RuntimeError("heading drift exceeded final advance limit")
+            if abs(lateral_drift) > max_lateral_drift:
+                self.publish_stop()
+                raise RuntimeError("lateral drift exceeded final advance limit")
+            if progress < -0.01:
+                self.publish_stop()
+                raise RuntimeError("vehicle moved backward during final advance")
+            remaining = distance - progress
+            if remaining <= 0.002:
+                self.publish_stop()
+                self.publish_status(
+                    "final odometry advance completed",
+                    final_advance_m=distance,
+                    final_progress_m=progress,
+                    final_remaining_m=max(0.0, remaining),
+                )
+                return
+            command = Twist()
+            command.linear.x = (
+                creep_speed if remaining <= creep_distance else speed)
+            self.cmd_pub.publish(command)
+            self.publish_status(
+                "guarded final advance toward stop line",
+                final_advance_m=distance,
+                final_progress_m=progress,
+                final_remaining_m=remaining,
+                commanded_speed_mps=command.linear.x,
+                lateral_drift_m=lateral_drift,
+                yaw_drift_deg=math.degrees(yaw_drift),
+            )
+            rate.sleep()
+        self.publish_stop()
+        raise RuntimeError("final odometry advance timed out")
+
     def launch_track(self, decision):
         launch_file, status_topic, finish_value = track_launch_for_decision(
             decision)
@@ -745,6 +832,13 @@ class StrictMissionNode:
                 float(rospy.get_param("~line_approach_timeout_sec", 75.0)),
                 "strict line approach",
             )
+            with self.lock:
+                self.state = "FINAL_ADVANCE"
+            self.publish_status(
+                "starting guarded final stop-line advance",
+                final_advance_m=self.final_advance_m,
+            )
+            self.advance_final_offset()
             with self.lock:
                 self.state = "STOP_CONFIRM"
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))

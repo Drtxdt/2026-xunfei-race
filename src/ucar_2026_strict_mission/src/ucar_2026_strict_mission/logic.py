@@ -37,6 +37,15 @@ def forward_progress(start_pose, current_pose):
     return delta_x * math.cos(start_yaw) + delta_y * math.sin(start_yaw)
 
 
+def lateral_displacement(start_pose, current_pose):
+    """Return signed odometry displacement across the starting heading."""
+    start_x, start_y, start_yaw = (float(value) for value in start_pose)
+    current_x, current_y = (float(value) for value in current_pose[:2])
+    delta_x = current_x - start_x
+    delta_y = current_y - start_y
+    return -delta_x * math.sin(start_yaw) + delta_y * math.cos(start_yaw)
+
+
 def heading_alignment_command(error_rad, tolerance_rad, kp, min_speed,
                               max_speed):
     """Return a bounded angular command, or zero inside the tolerance."""

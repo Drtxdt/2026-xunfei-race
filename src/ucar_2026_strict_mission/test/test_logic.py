@@ -15,6 +15,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     DistanceCalibration,
     forward_progress,
     heading_alignment_command,
+    lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
     track_launch_for_decision,
@@ -55,6 +56,23 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertLess(
             forward_progress((0.0, 0.0, 0.0), (-0.03, 0.0, 0.0)),
             0.0,
+        )
+
+    def test_reports_drift_across_starting_heading(self):
+        self.assertAlmostEqual(
+            lateral_displacement(
+                (1.0, 2.0, 0.0),
+                (1.10, 2.03, 0.0),
+            ),
+            0.03,
+        )
+        self.assertAlmostEqual(
+            lateral_displacement(
+                (1.0, 2.0, 1.57079632679),
+                (0.97, 2.10, 1.57079632679),
+            ),
+            0.03,
+            places=6,
         )
 
 
