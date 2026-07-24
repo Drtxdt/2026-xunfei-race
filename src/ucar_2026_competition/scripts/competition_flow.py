@@ -139,6 +139,9 @@ class CompetitionFlow:
         self.qr_navigation_result = None
         self.qr_odom_yaw = None
         self.qr_odom_received_at = 0.0
+        self.qr_decoder_ready = False
+        self.qr_decoder_pending_count = 0
+        self.qr_decoder_status_at = 0.0
         self.task1_instruction = ""
         self.task1_llm_generation = 0
         self.task1_llm_thread = None
@@ -196,6 +199,9 @@ class CompetitionFlow:
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
         rospy.Subscriber("/question", String, self._question_cb, queue_size=5)
         rospy.Subscriber("/qr_code_data", String, self._qr_cb, queue_size=20)
+        rospy.Subscriber(
+            "/qr_decoder/status", String,
+            self._qr_decoder_status_cb, queue_size=20)
         rospy.Subscriber(
             rospy.get_param("~qr_odom_topic", "/odom"),
             Odometry,
@@ -387,6 +393,18 @@ class CompetitionFlow:
                     rospy.loginfo("QR accepted %d/3: %s", len(self.qr_items), result)
         if accepted:
             self._start_task1_reasoning_if_ready()
+
+    def _qr_decoder_status_cb(self, msg):
+        try:
+            payload = json.loads(msg.data)
+            state = str(payload.get("state") or "")
+            pending_count = max(0, int(payload.get("pending_count", 0)))
+        except (TypeError, ValueError):
+            return
+        with self.lock:
+            self.qr_decoder_ready = state in ("ready", "idle", "fetching")
+            self.qr_decoder_pending_count = pending_count
+            self.qr_decoder_status_at = time.monotonic()
 
     def _start_task1_reasoning_if_ready(self):
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
@@ -1204,6 +1222,20 @@ class CompetitionFlow:
             rospy.sleep(0.05)
         raise StageError("QR scan did not receive fresh odometry within {:.1f}s".format(wait_sec))
 
+    def _wait_for_qr_decoder_ready(self, timeout_sec):
+        deadline = time.monotonic() + max(0.5, float(timeout_sec))
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            with self.lock:
+                ready = self.qr_decoder_ready
+            if ready:
+                return
+            rospy.sleep(0.05)
+        raise StageError(
+            "QR decoder did not report ready within {:.1f}s".format(
+                timeout_sec))
+
     def _settle_for_qr(self, duration, expected_count, scan_deadline, stale_sec):
         self.safe_stop()
         settle_deadline = min(scan_deadline, time.monotonic() + duration)
@@ -1211,6 +1243,33 @@ class CompetitionFlow:
             self.check_abort()
             self._check_qr_decoder()
             self._fresh_qr_odom_yaw(stale_sec)
+            rospy.sleep(0.05)
+        return self._qr_count() >= expected_count
+
+    def _drain_qr_results(
+            self, duration, expected_count, scan_deadline, stale_sec):
+        self.safe_stop()
+        drain_deadline = min(
+            scan_deadline, time.monotonic() + max(0.0, float(duration)))
+        idle_required = max(0.1, float(rospy.get_param(
+            "~qr_scan_pending_idle_sec", 0.5)))
+        idle_since = None
+        while time.monotonic() < drain_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self._check_qr_decoder()
+            self._fresh_qr_odom_yaw(stale_sec)
+            if self._qr_count() >= expected_count:
+                return True
+            with self.lock:
+                ready = self.qr_decoder_ready
+                pending_count = self.qr_decoder_pending_count
+            if ready and pending_count == 0:
+                if idle_since is None:
+                    idle_since = time.monotonic()
+                elif time.monotonic() - idle_since >= idle_required:
+                    return False
+            else:
+                idle_since = None
             rospy.sleep(0.05)
         return self._qr_count() >= expected_count
 
@@ -1271,6 +1330,11 @@ class CompetitionFlow:
         step_angle = abs(
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(25.0)))
         )
+        total_angle = max(
+            step_angle,
+            abs(float(rospy.get_param(
+                "~qr_scan_total_angle_rad", 2.0 * math.pi))),
+        )
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
         warmup_sec = max(
             settle_sec,
@@ -1278,6 +1342,10 @@ class CompetitionFlow:
         )
         result_grace_sec = max(
             0.0, float(rospy.get_param("~qr_scan_result_grace_sec", 3.2))
+        )
+        decoder_ready_timeout = max(
+            0.5, float(rospy.get_param(
+                "~qr_decoder_ready_timeout_sec", 6.0))
         )
         extra_sweep_angle = max(
             0.0,
@@ -1294,7 +1362,7 @@ class CompetitionFlow:
         if speed <= 0.0 or step_angle <= 0.0 or stale_sec <= 0.0:
             raise StageError("QR scan motion parameters must be positive")
 
-        total_steps = int(math.ceil((2.0 * math.pi) / step_angle))
+        total_steps = int(math.ceil(total_angle / step_angle))
         scan_deadline = time.monotonic() + scan_timeout
         self.publish_status(
             "task1",
@@ -1303,6 +1371,7 @@ class CompetitionFlow:
                 self._qr_count(), expected_count, total_steps
             ),
         )
+        self._wait_for_qr_decoder_ready(decoder_ready_timeout)
         self._wait_for_qr_odom(odom_wait_sec, stale_sec)
         if self._settle_for_qr(warmup_sec, expected_count, scan_deadline, stale_sec):
             return True
@@ -1359,7 +1428,7 @@ class CompetitionFlow:
                 self._qr_count(), expected_count
             ),
         )
-        if self._settle_for_qr(
+        if self._drain_qr_results(
             result_grace_sec, expected_count, scan_deadline, stale_sec
         ):
             return True
@@ -1367,19 +1436,19 @@ class CompetitionFlow:
         # A decoder that starts on the first visible marker can miss that marker
         # while OpenCV and the HTTP worker warm up. Revisit only the opening arc
         # instead of spending another complete revolution at the same pose.
-        if self._qr_count() == expected_count - 1 and extra_sweep_angle > 0.0:
+        if self._qr_count() < expected_count and extra_sweep_angle > 0.0:
             extra_steps = int(math.ceil(extra_sweep_angle / step_angle))
             self.publish_status(
                 "task1",
                 status_state,
-                "one QR missing after first revolution; extra sweep steps={}".format(
-                    extra_steps
+                "{} QR missing after first revolution; extra sweep steps={}".format(
+                    expected_count - self._qr_count(), extra_steps
                 ),
             )
             if rotate_steps(extra_steps):
                 return True
             self.safe_stop()
-            if self._settle_for_qr(
+            if self._drain_qr_results(
                 result_grace_sec, expected_count, scan_deadline, stale_sec
             ):
                 return True
@@ -1421,6 +1490,10 @@ class CompetitionFlow:
             self.task1_reasoning_done.clear()
         try:
             qr_scan_started_at = time.monotonic()
+            with self.lock:
+                self.qr_decoder_ready = False
+                self.qr_decoder_pending_count = 0
+                self.qr_decoder_status_at = 0.0
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
             self.qr_collecting = True
             completed = self.scan_qr_at_current_pose("scanning_qr_primary")

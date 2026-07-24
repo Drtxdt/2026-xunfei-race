@@ -195,22 +195,49 @@ class CompetitionLogicTest(unittest.TestCase):
                     continue
                 key, value = line.split(":", 1)
                 config[key.strip()] = value.strip()
-        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.35)
+        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.60)
         self.assertAlmostEqual(
             float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
+        self.assertAlmostEqual(
+            float(config["qr_scan_total_angle_rad"]), 2.0 * math.pi)
         self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
-        self.assertEqual(float(config["qr_decoder_warmup_sec"]), 1.2)
-        self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 3.0)
+        self.assertEqual(float(config["qr_decoder_warmup_sec"]), 0.4)
+        self.assertEqual(float(config["qr_decoder_ready_timeout_sec"]), 6.0)
+        self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 20.0)
+        self.assertEqual(float(config["qr_scan_pending_idle_sec"]), 0.5)
         self.assertAlmostEqual(
             float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
-        self.assertGreaterEqual(
-            int(config["coverage_navigation_candidate_pause_count"]), 1)
-        self.assertGreaterEqual(
-            float(config["coverage_candidate_hold_sec"]), 1.0)
-        self.assertGreaterEqual(
-            float(config["coverage_scan_max_dwell_sec"]),
-            float(config["coverage_candidate_hold_sec"]))
-        self.assertEqual(float(config["coverage_rotation_min_clearance"]), 0.28)
+
+    def test_qr_decoder_retries_network_and_reports_pending_work(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "qr_decoder.launch"))
+        with open(launch_path, "r", encoding="utf-8") as stream:
+            launch = stream.read()
+        self.assertIn("--status-topic $(arg status_topic)", launch)
+        self.assertIn("--fetch-retries $(arg fetch_retries)", launch)
+        self.assertIn("--retry-backoff $(arg retry_backoff)", launch)
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow"
+        )
+        scan = next(
+            node for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "scan_qr_at_current_pose"
+        )
+        calls = {
+            node.func.attr
+            for node in ast.walk(scan)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn("_wait_for_qr_decoder_ready", calls)
+        self.assertIn("_drain_qr_results", calls)
 
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)

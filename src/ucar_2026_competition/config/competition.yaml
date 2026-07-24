@@ -2,8 +2,8 @@
 # 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
 # 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
 qr_navigation_timeout_sec: 120.0
-# 恢复昨晚第一版停转扫描：保持原扫码起始位姿，只执行一轮九步扫描。
-# 每次转30度后停车0.3秒，共270度；收齐三码后并行启动大模型和下一阶段预热。
+# 保持扫码起始位姿执行一轮完整扫描；每次转30度后停车0.3秒。
+# 网络结果后台并发返回，收齐三码后立即启动大模型和下一阶段预热。
 qr_odom_topic: /odom
 qr_odom_stale_sec: 0.5
 qr_odom_wait_sec: 2.0
@@ -12,8 +12,13 @@ qr_final_return_angular_speed: 1.20
 qr_final_return_min_angular_speed: 0.25
 qr_final_return_slowdown_angle_rad: 0.4363323129985824
 qr_scan_step_angle_rad: 0.5235987755982988
-qr_scan_total_angle_rad: 4.71238898038469
+qr_scan_total_angle_rad: 6.283185307179586
 qr_scan_settle_sec: 0.3
+qr_decoder_ready_timeout_sec: 6.0
+qr_decoder_warmup_sec: 0.4
+qr_scan_result_grace_sec: 20.0
+qr_scan_pending_idle_sec: 0.5
+qr_scan_extra_sweep_angle_rad: 2.0943951023931953
 qr_final_yaw_tolerance_rad: 0.03490658503988659
 qr_scan_timeout_sec: 60.0
 qr_scan_step_timeout_margin_sec: 2.0
