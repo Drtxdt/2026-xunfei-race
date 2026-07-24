@@ -669,6 +669,7 @@ class StrictMissionNode:
             "~staging_heading_max_speed", 0.30))
         deadline = time.monotonic() + timeout
         rate = rospy.Rate(30)
+        last_error = None
         while not rospy.is_shutdown() and time.monotonic() < deadline:
             try:
                 transform = self.tf_buffer.lookup_transform(
@@ -689,6 +690,7 @@ class StrictMissionNode:
                              + orientation.z * orientation.z),
             )
             error = self.normalized_angle(target_yaw - current_yaw)
+            last_error = error
             angular = heading_alignment_command(
                 error, tolerance, kp, min_speed, max_speed)
             if angular == 0.0:
@@ -708,6 +710,23 @@ class StrictMissionNode:
             )
             rate.sleep()
         self.publish_stop()
+        if bool(rospy.get_param(
+                "~staging_heading_fallback_to_vision", True)):
+            error_text = (
+                "unknown" if last_error is None
+                else "{:.2f}deg".format(math.degrees(last_error)))
+            rospy.logwarn(
+                "staging heading alignment timed out at %s; vehicle stopped, "
+                "continuing with visual stop-line alignment",
+                error_text,
+            )
+            self.publish_status(
+                "staging heading incomplete; visual alignment taking over",
+                heading_error_deg=(
+                    None if last_error is None
+                    else math.degrees(last_error)),
+            )
+            return
         raise RuntimeError("staging heading alignment timed out")
 
     def advance_final_offset(self):

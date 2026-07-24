@@ -15,6 +15,7 @@
   "staging_heading_base_frame": "base_link",
   "staging_heading_tolerance_deg": 6.0,
   "staging_heading_timeout_sec": 20.0,
+  "staging_heading_fallback_to_vision": true,
   "staging_heading_kp": 0.9,
   "staging_heading_min_speed": 0.20,
   "staging_heading_max_speed": 0.30,

@@ -100,6 +100,15 @@ class HeadingAlignmentTests(unittest.TestCase):
             config["staging_heading_max_speed"],
             config["staging_heading_min_speed"],
         )
+        self.assertTrue(config["staging_heading_fallback_to_vision"])
+
+        node_source = (
+            PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "continuing with visual stop-line alignment",
+            node_source,
+        )
 
     def test_stops_inside_heading_tolerance(self):
         self.assertEqual(
