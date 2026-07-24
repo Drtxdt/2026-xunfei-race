@@ -90,6 +90,17 @@ class OdometryProgressTests(unittest.TestCase):
 
 
 class HeadingAlignmentTests(unittest.TestCase):
+    def test_staging_heading_config_clears_drive_deadband(self):
+        config = json.loads(
+            (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
+                encoding="utf-8"))
+        self.assertGreaterEqual(config["staging_heading_tolerance_deg"], 5.8)
+        self.assertGreaterEqual(config["staging_heading_min_speed"], 0.20)
+        self.assertGreaterEqual(
+            config["staging_heading_max_speed"],
+            config["staging_heading_min_speed"],
+        )
+
     def test_stops_inside_heading_tolerance(self):
         self.assertEqual(
             heading_alignment_command(0.02, 0.04, 0.9, 0.06, 0.16),

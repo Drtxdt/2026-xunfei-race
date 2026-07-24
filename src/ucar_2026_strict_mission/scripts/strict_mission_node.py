@@ -659,14 +659,14 @@ class StrictMissionNode:
         base_frame = str(rospy.get_param(
             "~staging_heading_base_frame", "base_link"))
         tolerance = math.radians(float(rospy.get_param(
-            "~staging_heading_tolerance_deg", 4.0)))
+            "~staging_heading_tolerance_deg", 6.0)))
         timeout = max(1.0, float(rospy.get_param(
             "~staging_heading_timeout_sec", 20.0)))
         kp = float(rospy.get_param("~staging_heading_kp", 0.9))
         min_speed = float(rospy.get_param(
-            "~staging_heading_min_speed", 0.06))
+            "~staging_heading_min_speed", 0.20))
         max_speed = float(rospy.get_param(
-            "~staging_heading_max_speed", 0.16))
+            "~staging_heading_max_speed", 0.30))
         deadline = time.monotonic() + timeout
         rate = rospy.Rate(30)
         while not rospy.is_shutdown() and time.monotonic() < deadline:

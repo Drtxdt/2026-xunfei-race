@@ -336,6 +336,26 @@ def task2_resumed_coverage_hint(memory, target_category, last_anchor,
     return preferred, skipped
 
 
+def normalize_coverage_anchor_ids(value, anchor_count=9):
+    """Return sorted, unique one-based anchor IDs from ROS list/string input."""
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = (value,)
+    anchor_count = max(0, int(anchor_count))
+    anchors = set()
+    for item in values:
+        try:
+            anchor = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= anchor <= anchor_count:
+            anchors.add(anchor)
+    return tuple(sorted(anchors))
+
+
 def normalize_category(value):
     text = str(value or "").strip().lower()
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)

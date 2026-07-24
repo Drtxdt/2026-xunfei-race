@@ -118,6 +118,7 @@ coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0
+task2_no_workshop_anchors: [4]
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003

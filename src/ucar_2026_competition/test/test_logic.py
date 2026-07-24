@@ -22,6 +22,7 @@ from ucar_2026_competition.logic import (
     TemporalTargetFilter,
     normalize_category,
     normalize_angle,
+    normalize_coverage_anchor_ids,
     normalize_task4_staging_pose,
     parse_category,
     parse_task1_categories,
@@ -43,6 +44,26 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_normalizes_calibrated_no_workshop_anchors(self):
+        self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
+        self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))
+
+    def test_task2_always_skips_calibrated_no_workshop_anchor(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = stream.read()
+        self.assertIn("task2_no_workshop_anchors: [4]", config)
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow = stream.read()
+        self.assertIn(
+            'set(skipped_anchors).union(no_workshop_anchors)', flow)
+        self.assertIn(
+            '"coverage_skip_anchors": ",".join(', flow)
+
     def test_task4_retired_staging_pose_is_migrated(self):
         pose, migrated = normalize_task4_staging_pose(
             0.3195, -3.00, -1.5596)

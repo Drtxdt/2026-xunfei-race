@@ -41,6 +41,7 @@ from ucar_2026_competition.logic import (
     TRACK_CONFIG,
     normalize_angle,
     normalize_category,
+    normalize_coverage_anchor_ids,
     normalize_task4_staging_pose,
     parse_task1_categories,
     qr_values_from_payload,
@@ -1622,6 +1623,20 @@ class CompetitionFlow:
                 len(rospy.get_param(
                     "/vision_triggered_navigator/patrol_points", [])) or 9,
             )
+            anchor_count = len(rospy.get_param(
+                "/vision_triggered_navigator/patrol_points", [])) or 9
+            no_workshop_anchors = normalize_coverage_anchor_ids(
+                rospy.get_param("~task2_no_workshop_anchors", [4]),
+                anchor_count,
+            )
+            if preferred_anchor in no_workshop_anchors:
+                preferred_anchor = 0
+            skipped_anchors = tuple(sorted(
+                set(skipped_anchors).union(no_workshop_anchors)))
+        if no_workshop_anchors:
+            rospy.loginfo(
+                "task2 calibrated no-workshop anchors skipped: %s",
+                ",".join(str(value) for value in no_workshop_anchors))
         if phase == "simulation" and preferred_anchor:
             rospy.loginfo(
                 "task2 coverage resume: starting %s search at anchor %d; "
@@ -1676,9 +1691,8 @@ class CompetitionFlow:
                         phase == "simulation" and not preferred_anchor),
                     "coverage_preferred_anchor": (
                         preferred_anchor if phase == "simulation" else 0),
-                    "coverage_skip_anchors": (
-                        ",".join(str(value) for value in skipped_anchors)
-                        if phase == "simulation" else ""),
+                    "coverage_skip_anchors": ",".join(
+                        str(value) for value in skipped_anchors),
                     "coverage_abort_fail_fast_count": (
                         max(0, int(rospy.get_param(
                             "~task2_second_search_abort_fail_fast_count", 0)))
