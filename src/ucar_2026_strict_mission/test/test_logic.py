@@ -71,6 +71,26 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn('status.get("final_progress_m")', flow)
         self.assertIn("task4 stop-line clearance not verified", flow)
 
+    def test_calibrated_fallback_always_arms_final_advance(self):
+        config = json.loads(
+            (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
+                encoding="utf-8"))
+        self.assertEqual(
+            config["calibrated_final_advance_fallback_sec"], 2.0)
+        self.assertEqual(config["final_advance_m"], 0.10)
+        self.assertGreater(
+            config["line_search_delay_sec"],
+            config["calibrated_final_advance_fallback_sec"],
+        )
+
+        node_source = (
+            PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "using calibrated guarded final advance",
+            node_source,
+        )
+
     def test_reports_drift_across_starting_heading(self):
         self.assertAlmostEqual(
             lateral_displacement(

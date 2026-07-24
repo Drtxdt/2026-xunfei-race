@@ -484,7 +484,11 @@ class StrictMissionNode:
             command.linear.y = lateral_speed
             self.band_filter.reset()
         else:
-            command.linear.x = self.policy.command_for_distance(distance)
+            calibrated_fallback = float(rospy.get_param(
+                "~calibrated_final_advance_fallback_sec", 0.0))
+            command.linear.x = (
+                0.0 if calibrated_fallback > 0.0
+                else self.policy.command_for_distance(distance))
         self.cmd_pub.publish(command)
         if aligned and self.band_filter.push(distance):
             self.publish_stop()
@@ -864,11 +868,32 @@ class StrictMissionNode:
                 self.line_search_direction = 1.0
                 self.line_search_reversals = 0
             self.publish_status("visual stop-line approach armed")
-            self.wait_event(
-                self.parked_event,
-                float(rospy.get_param("~line_approach_timeout_sec", 75.0)),
-                "strict line approach",
-            )
+            fallback_timeout = max(0.0, float(rospy.get_param(
+                "~calibrated_final_advance_fallback_sec", 0.0)))
+            try:
+                self.wait_event(
+                    self.parked_event,
+                    fallback_timeout or float(rospy.get_param(
+                        "~line_approach_timeout_sec", 75.0)),
+                    "strict line approach",
+                )
+            except RuntimeError:
+                with self.lock:
+                    faulted = self.state == "FAULT"
+                if faulted or fallback_timeout <= 0.0:
+                    raise
+                self.publish_stop()
+                rospy.logwarn(
+                    "visual stop-line confirmation did not finish within %.2fs; "
+                    "using calibrated guarded final advance",
+                    fallback_timeout,
+                )
+                self.publish_status(
+                    "visual alignment window complete; calibrated final "
+                    "advance armed",
+                    visual_distance_m=self.last_distance_m,
+                    fallback_timeout_sec=fallback_timeout,
+                )
             with self.lock:
                 self.state = "FINAL_ADVANCE"
             self.publish_status(
