@@ -10,6 +10,7 @@ import math
 import os
 import threading
 import sys
+from collections import deque
 
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseStamped, Quaternion, Twist, PoseWithCovarianceStamped
@@ -48,6 +49,7 @@ from navigator_logic import (
     polar_sector_min,
     ray_segment_intersection,
     rotation_clearance_allows_near_wall,
+    rotation_clearance_consensus,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -148,6 +150,21 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_max_yaw_deg", 90.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
             "~coverage_rotation_min_clearance", 0.28)))
+        self.coverage_rotation_clearance_tolerance = max(0.0, float(
+            rospy.get_param(
+                "~coverage_rotation_clearance_tolerance", 0.005)))
+        self.coverage_rotation_consensus_window = max(0.05, float(
+            rospy.get_param(
+                "~coverage_rotation_consensus_window_sec", 0.35)))
+        self.coverage_rotation_consensus_min_samples = max(1, int(
+            rospy.get_param(
+                "~coverage_rotation_consensus_min_samples", 3)))
+        self.coverage_rotation_resample_timeout = max(0.0, float(
+            rospy.get_param(
+                "~coverage_rotation_resample_timeout_sec", 0.25)))
+        self.coverage_rotation_consensus_history_size = max(3, int(
+            rospy.get_param(
+                "~coverage_rotation_consensus_history_size", 9)))
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
                 "~coverage_translation_min_clearance", 0.00)))
@@ -406,6 +423,9 @@ class VisionTriggeredNavigator(object):
         self.scan_polar_samples = ()
         self.scan_wall_points = []
         self.scan_received_at = 0.0
+        self.scan_clearance_history = deque(
+            maxlen=self.coverage_rotation_consensus_history_size)
+        self.rotation_clearance_blocked = False
         rospy.Subscriber(self.scan_topic, LaserScan, self._scan_cb, queue_size=1)
         self.last_cmd_vel = (0.0, 0.0, 0.0)
         self.last_cmd_vel_received_at = 0.0
@@ -547,7 +567,9 @@ class VisionTriggeredNavigator(object):
             self.parking_obstacle_sector_half_angle)
         self.scan_polar_samples = tuple(polar_samples)
         self.scan_wall_points = wall_points
-        self.scan_received_at = rospy.get_time()
+        received_at = rospy.get_time()
+        self.scan_received_at = received_at
+        self.scan_clearance_history.append((received_at, nearest_all))
 
     def _coverage_motion_clearance(self, now):
         """Return clearance in the current TEB motion direction."""
@@ -1450,6 +1472,29 @@ class VisionTriggeredNavigator(object):
                 if self.triggered:
                     self.cmd_vel_pub.publish(Twist())
                     return "triggered"
+                if self.rotation_clearance_blocked:
+                    self.cmd_vel_pub.publish(Twist())
+                    self._publish_status(
+                        "coverage_anchor_yaw_clearance_hold:{}".format(
+                            patrol_idx + 1))
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] 精确锚点%d航向校正空间不足；"
+                        "保持当前朝向停车识别%.2fs后继续下一锚点，不冒险转动，"
+                        "也不再中止任务2.",
+                        patrol_idx + 1, self.coverage_candidate_hold)
+                    hold_started = rospy.get_time()
+                    self._hold_scan_step(
+                        "锚点{}航向安全静止识别".format(patrol_idx + 1),
+                        hold_started,
+                        minimum_dwell=self.coverage_candidate_hold,
+                    )
+                    if self.triggered:
+                        return "triggered"
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] coverage anchor=%d "
+                        "state=covered clearance_hold=true",
+                        patrol_idx + 1)
+                    return "covered"
                 rospy.logerr(
                     "[vision_triggered_navigator] 精确锚点%d的odom航向闭环失败.",
                     patrol_idx + 1)
@@ -1566,41 +1611,78 @@ class VisionTriggeredNavigator(object):
         scan_age = rospy.get_time() - self.scan_received_at
         if self.scan_all_min is None or scan_age > self.scan_stale:
             self.cmd_vel_pub.publish(Twist())
+            self.rotation_clearance_blocked = True
             rospy.logerr(
                 "[vision_triggered_navigator] %s拒绝转动：/scan缺失或超过%.2fs未更新.",
                 label, self.scan_stale)
             return False
-        if not rotation_clearance_is_safe(
+        if rotation_clearance_is_safe(
                 self.scan_all_min, scan_age, minimum, self.scan_stale):
-            if rotation_clearance_allows_near_wall(
-                    self.scan_polar_samples,
-                    scan_age,
+            self.rotation_clearance_blocked = False
+            return True
+        if rotation_clearance_allows_near_wall(
+                self.scan_polar_samples,
+                scan_age,
+                minimum,
+                max_scan_age=self.scan_stale,
+                lidar_forward_offset=self.parking_lidar_forward_offset,
+                footprint_radius=self.robot_footprint_radius,
+                footprint_margin=self.parking_required_margin,
+                wall_min_points=self.parking_wall_fit_min_points,
+                wall_min_span=self.parking_wall_fit_min_span,
+                wall_max_residual=max(
+                    self.parking_wall_fit_max_residual, 0.02)):
+            rospy.loginfo_throttle(
+                2.0,
+                "[vision_triggered_navigator] %s近点%.3fm已确认是"
+                "车体旋转包络外的连续墙面，允许低速转动.",
+                label, self.scan_all_min)
+            self.rotation_clearance_blocked = False
+            return True
+        borderline = (
+            self.scan_all_min +
+            self.coverage_rotation_clearance_tolerance >= minimum)
+        if borderline:
+            deadline = (
+                rospy.get_time() +
+                self.coverage_rotation_resample_timeout)
+            consensus = (False, None, 0)
+            while not rospy.is_shutdown():
+                now = rospy.get_time()
+                consensus = rotation_clearance_consensus(
+                    tuple(self.scan_clearance_history),
+                    now,
                     minimum,
-                    max_scan_age=self.scan_stale,
-                    lidar_forward_offset=self.parking_lidar_forward_offset,
-                    footprint_radius=self.robot_footprint_radius,
-                    footprint_margin=self.parking_required_margin,
-                    wall_min_points=self.parking_wall_fit_min_points,
-                    wall_min_span=self.parking_wall_fit_min_span,
-                    wall_max_residual=max(
-                        self.parking_wall_fit_max_residual, 0.02)):
-                rospy.loginfo_throttle(
+                    tolerance=self.coverage_rotation_clearance_tolerance,
+                    max_sample_age=self.coverage_rotation_consensus_window,
+                    min_samples=self.coverage_rotation_consensus_min_samples,
+                )
+                if consensus[1] is not None or now >= deadline:
+                    break
+                self.cmd_vel_pub.publish(Twist())
+                rospy.sleep(0.02)
+            if consensus[0]:
+                rospy.logwarn_throttle(
                     2.0,
-                    "[vision_triggered_navigator] %s近点%.3fm已确认是"
-                    "车体旋转包络外的连续墙面，允许低速转动.",
-                    label, self.scan_all_min)
+                    "[vision_triggered_navigator] %s临界净空%.3fm，"
+                    "%d帧中位数%.3fm；仅吸收%.0fmm雷达波动，"
+                    "允许低速转动.",
+                    label, self.scan_all_min, consensus[2], consensus[1],
+                    1000.0 * self.coverage_rotation_clearance_tolerance)
+                self.rotation_clearance_blocked = False
                 return True
-            self.cmd_vel_pub.publish(Twist())
-            rospy.logerr(
-                "[vision_triggered_navigator] %s拒绝转动：全向最近障碍%.3fm"
-                "小于安全阈值%.3fm，且不满足连续墙面安全例外.",
-                label, self.scan_all_min, minimum)
-            return False
-        return True
+        self.cmd_vel_pub.publish(Twist())
+        self.rotation_clearance_blocked = True
+        rospy.logerr(
+            "[vision_triggered_navigator] %s拒绝转动：全向最近障碍%.3fm"
+            "小于安全阈值%.3fm，且不满足连续墙面安全例外.",
+            label, self.scan_all_min, minimum)
+        return False
 
     def _rotate_center_step(self, direction, target_angle,
                             abort_on_trigger=False, minimum_clearance=None):
         """Rotate one small odometry-closed-loop step, ramping through deadband."""
+        self.rotation_clearance_blocked = False
         if not self._odom_is_fresh():
             rospy.logerr("[vision_triggered_navigator] /odom超过%.2fs未更新，拒绝居中转动.",
                          self.odom_stale)

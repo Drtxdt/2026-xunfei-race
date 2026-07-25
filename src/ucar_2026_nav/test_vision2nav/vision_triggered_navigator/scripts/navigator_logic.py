@@ -27,6 +27,34 @@ def rotation_clearance_is_safe(nearest_range, scan_age, min_clearance,
             float(nearest_range) >= abs(float(min_clearance)))
 
 
+def rotation_clearance_consensus(samples, now, min_clearance,
+                                 tolerance=0.005, max_sample_age=0.35,
+                                 min_samples=3):
+    """Return ``(safe, median, count)`` for recent all-around scan minima."""
+    values = []
+    now = float(now)
+    max_sample_age = abs(float(max_sample_age))
+    for stamp, distance in samples or ():
+        if distance is None:
+            continue
+        age = now - float(stamp)
+        distance = float(distance)
+        if (0.0 <= age <= max_sample_age and math.isfinite(distance) and
+                distance >= 0.0):
+            values.append(distance)
+    required = max(1, int(min_samples))
+    if len(values) < required:
+        return False, None, len(values)
+    values.sort()
+    middle = len(values) // 2
+    if len(values) % 2:
+        median = values[middle]
+    else:
+        median = 0.5 * (values[middle - 1] + values[middle])
+    safe = median + abs(float(tolerance)) >= abs(float(min_clearance))
+    return safe, median, len(values)
+
+
 def polar_sector_min(samples, center_angle, half_angle):
     """Return the nearest valid polar sample in a wrapped angular sector."""
     nearest = None

@@ -49,6 +49,11 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 45.0
 coverage_rotation_min_clearance: 0.28
+coverage_rotation_clearance_tolerance: 0.005
+coverage_rotation_consensus_window_sec: 0.35
+coverage_rotation_consensus_min_samples: 3
+coverage_rotation_resample_timeout_sec: 0.25
+coverage_rotation_consensus_history_size: 9
 # 交由 move_base/costmap 绕障；设为 0 禁用会误取消整个位点的激光平移门槛。
 coverage_translation_min_clearance: 0.00
 coverage_translation_sector_half_angle_deg: 35.0

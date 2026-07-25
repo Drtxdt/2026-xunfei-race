@@ -40,6 +40,7 @@ from navigator_logic import (
     polar_sector_min,
     ray_segment_intersection,
     rotation_clearance_allows_near_wall,
+    rotation_clearance_consensus,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -77,6 +78,32 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(0.29, 0.1, 0.30)
     assert not rotation_clearance_is_safe(None, 0.1, 0.30)
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
+
+
+def test_rotation_clearance_consensus_absorbs_only_small_lidar_jitter():
+    samples = [(9.80, 0.279), (9.90, 0.280), (10.00, 0.279)]
+    safe, median, count = rotation_clearance_consensus(
+        samples, now=10.0, min_clearance=0.28, tolerance=0.005)
+    assert safe
+    assert math.isclose(median, 0.279)
+    assert count == 3
+
+    unsafe, median, count = rotation_clearance_consensus(
+        [(9.80, 0.274), (9.90, 0.274), (10.00, 0.274)],
+        now=10.0, min_clearance=0.28, tolerance=0.005)
+    assert not unsafe
+    assert math.isclose(median, 0.274)
+    assert count == 3
+
+
+def test_rotation_clearance_consensus_requires_enough_fresh_samples():
+    safe, median, count = rotation_clearance_consensus(
+        [(9.00, 0.50), (9.90, 0.279)],
+        now=10.0, min_clearance=0.28, tolerance=0.005,
+        max_sample_age=0.35, min_samples=3)
+    assert not safe
+    assert median is None
+    assert count == 1
 
 
 def test_close_continuous_wall_can_use_rotation_clearance_exception():
@@ -222,6 +249,44 @@ def test_clearance_block_preserves_stationary_scan():
     assert len(returns) == 1
     assert isinstance(returns[0].value, ast.Constant)
     assert returns[0].value.value is True
+
+
+def test_anchor_yaw_clearance_block_holds_and_continues_coverage():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VisionTriggeredNavigator"
+    )
+    visit = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_visit_coverage_point"
+    )
+    clearance_if = next(
+        node for node in ast.walk(visit)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Attribute)
+        and node.test.attr == "rotation_clearance_blocked"
+    )
+    called = {
+        node.func.attr
+        for node in ast.walk(clearance_if)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+    }
+    returned = {
+        node.value.value
+        for node in ast.walk(clearance_if)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+    }
+    assert "_hold_scan_step" in called
+    assert "covered" in returned
+    assert "failed" not in returned
 
 
 def test_centering_loss_rearms_coverage_search_instead_of_stopping():
