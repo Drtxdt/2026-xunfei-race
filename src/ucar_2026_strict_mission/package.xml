@@ -9,6 +9,7 @@
   <buildtool_depend>catkin</buildtool_depend>
   <depend>actionlib</depend>
   <depend>cv_bridge</depend>
+  <depend>dynamic_reconfigure</depend>
   <depend>geometry_msgs</depend>
   <depend>move_base_msgs</depend>
   <exec_depend>python3-numpy</exec_depend>

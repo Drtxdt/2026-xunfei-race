@@ -12,6 +12,7 @@ import time
 
 import actionlib
 import cv2
+import dynamic_reconfigure.client
 import numpy as np
 import rospy
 import tf2_ros
@@ -58,7 +59,6 @@ class StrictMissionNode:
         self.line_search_origin_yaw = None
         self.line_search_direction = 1.0
         self.line_search_reversals = 0
-        self.line_alignment_hits = 0
         self.last_distance_m = None
         self.last_stop_line_color = None
         self.visual_stop_distance_m = None
@@ -417,7 +417,6 @@ class StrictMissionNode:
             self.detect_stop_line(frame)
         if bottom_ratio is None:
             self.band_filter.reset()
-            self.line_alignment_hits = 0
             if self.line_missing_since is None:
                 self.line_missing_since = now
                 with self.lock:
@@ -442,7 +441,6 @@ class StrictMissionNode:
         if distance is None:
             self.publish_stop()
             self.band_filter.reset()
-            self.line_alignment_hits = 0
             self.publish_status(
                 "line outside calibrated range; holding stop",
                 line_bottom_ratio=bottom_ratio,
@@ -461,8 +459,6 @@ class StrictMissionNode:
         lateral_limit = float(rospy.get_param(
             "~final_lateral_max_speed", 0.03)) if precision_mode else \
             float(rospy.get_param("~line_lateral_max_speed", 0.045))
-        calibrated_fallback = float(rospy.get_param(
-            "~calibrated_final_advance_fallback_sec", 0.0))
         alignment_state, lateral_speed, yaw_speed, aligned = \
             line_alignment_command(
                 angle_error,
@@ -489,29 +485,20 @@ class StrictMissionNode:
             command.linear.y = lateral_speed
             self.band_filter.reset()
         else:
+            calibrated_fallback = float(rospy.get_param(
+                "~calibrated_final_advance_fallback_sec", 0.0))
             command.linear.x = (
                 0.0 if calibrated_fallback > 0.0
                 else self.policy.command_for_distance(distance))
         self.cmd_pub.publish(command)
-        if aligned:
-            self.line_alignment_hits += 1
-        else:
-            self.line_alignment_hits = 0
-        calibrated_alignment_confirmed = (
-            calibrated_fallback > 0.0 and
-            self.line_alignment_hits >= max(1, int(rospy.get_param(
-                "~calibrated_alignment_confirm_frames", 4))))
-        distance_confirmed = (
-            calibrated_fallback <= 0.0 and
-            aligned and self.band_filter.push(distance))
-        if calibrated_alignment_confirmed or distance_confirmed:
+        if aligned and self.band_filter.push(distance):
             self.publish_stop()
             with self.lock:
                 self.visual_stop_distance_m = distance
                 self.state = "VISUAL_CONFIRM"
                 self.parked_event.set()
             self.publish_status(
-                "visual line alignment confirmed; final odometry advance armed",
+                "visual stop pose confirmed; final odometry advance armed",
                 line_bottom_ratio=bottom_ratio,
                 distance_m=distance,
                 line_center_error_ratio=center_error,
@@ -519,7 +506,6 @@ class StrictMissionNode:
                 line_color=self.last_stop_line_color,
                 final_advance_m=self.final_advance_m,
                 stop_confirm_hits=self.band_filter.hits,
-                alignment_confirm_hits=self.line_alignment_hits,
             )
         else:
             self.publish_status(
@@ -651,26 +637,95 @@ class StrictMissionNode:
         timeout = float(rospy.get_param("~navigation_timeout_sec", 120.0))
         if not self.move_base.wait_for_server(rospy.Duration(10.0)):
             raise RuntimeError("move_base action server unavailable")
-        goal = MoveBaseGoal()
-        goal.target_pose.header.frame_id = rospy.get_param(
-            "~traffic_frame", "map")
-        goal.target_pose.header.stamp = rospy.Time.now()
-        goal.target_pose.pose.position.x = float(rospy.get_param(
-            "~traffic_staging_x"))
-        goal.target_pose.pose.position.y = float(rospy.get_param(
-            "~traffic_staging_y"))
-        sin_half, cos_half = quaternion_from_yaw(
-            float(rospy.get_param("~traffic_staging_yaw")))
-        goal.target_pose.pose.orientation.z = sin_half
-        goal.target_pose.pose.orientation.w = cos_half
-        self.move_base.send_goal(goal)
-        if not self.move_base.wait_for_result(rospy.Duration(timeout)):
-            self.move_base.cancel_goal()
-            raise RuntimeError("navigation to stop-line staging pose timed out")
-        if self.move_base.get_state() != 3:
+        planner_client, saved_tolerances = self.tighten_staging_tolerances()
+        try:
+            goal = MoveBaseGoal()
+            goal.target_pose.header.frame_id = rospy.get_param(
+                "~traffic_frame", "map")
+            goal.target_pose.header.stamp = rospy.Time.now()
+            goal.target_pose.pose.position.x = float(rospy.get_param(
+                "~traffic_staging_x"))
+            goal.target_pose.pose.position.y = float(rospy.get_param(
+                "~traffic_staging_y"))
+            sin_half, cos_half = quaternion_from_yaw(
+                float(rospy.get_param("~traffic_staging_yaw")))
+            goal.target_pose.pose.orientation.z = sin_half
+            goal.target_pose.pose.orientation.w = cos_half
+            self.move_base.send_goal(goal)
+            if not self.move_base.wait_for_result(rospy.Duration(timeout)):
+                self.move_base.cancel_goal()
+                raise RuntimeError(
+                    "navigation to stop-line staging pose timed out")
+            if self.move_base.get_state() != 3:
+                raise RuntimeError(
+                    "navigation failed with action state {}".format(
+                        self.move_base.get_state()))
+        finally:
+            self.restore_staging_tolerances(
+                planner_client, saved_tolerances)
+
+    @staticmethod
+    def restore_staging_tolerances(planner_client, saved_tolerances):
+        if planner_client is None or saved_tolerances is None:
+            return
+        try:
+            restored = planner_client.update_configuration(saved_tolerances)
+            rospy.loginfo(
+                "restored TEB goal tolerances: xy=%.3f yaw=%.3f",
+                float(restored.get(
+                    "xy_goal_tolerance",
+                    saved_tolerances["xy_goal_tolerance"])),
+                float(restored.get(
+                    "yaw_goal_tolerance",
+                    saved_tolerances["yaw_goal_tolerance"])),
+            )
+        except Exception as exc:
+            rospy.logerr("failed to restore TEB goal tolerances: %s", exc)
+
+    @staticmethod
+    def tighten_staging_tolerances():
+        if not bool(rospy.get_param(
+                "~tighten_staging_goal_tolerance", True)):
+            return None, None
+        namespace = str(rospy.get_param(
+            "~staging_planner_reconfigure_ns",
+            "/move_base/TebLocalPlannerROS"))
+        xy_tolerance = float(rospy.get_param(
+            "~staging_xy_goal_tolerance", 0.04))
+        yaw_tolerance = float(rospy.get_param(
+            "~staging_yaw_goal_tolerance", 0.08))
+        if not 0.01 <= xy_tolerance <= 0.15:
             raise RuntimeError(
-                "navigation failed with action state {}".format(
-                    self.move_base.get_state()))
+                "staging_xy_goal_tolerance must be within [0.01, 0.15]")
+        if not 0.02 <= yaw_tolerance <= 0.20:
+            raise RuntimeError(
+                "staging_yaw_goal_tolerance must be within [0.02, 0.20]")
+        try:
+            planner_client = dynamic_reconfigure.client.Client(
+                namespace, timeout=5.0)
+            current = planner_client.get_configuration(timeout=3.0)
+            saved_tolerances = {
+                "xy_goal_tolerance": current.get(
+                    "xy_goal_tolerance", 0.15),
+                "yaw_goal_tolerance": current.get(
+                    "yaw_goal_tolerance", 0.10),
+                "free_goal_vel": current.get("free_goal_vel", False),
+            }
+            updated = planner_client.update_configuration({
+                "xy_goal_tolerance": xy_tolerance,
+                "yaw_goal_tolerance": yaw_tolerance,
+                "free_goal_vel": False,
+            })
+            rospy.logwarn(
+                "TASK4_TOLERANCE_GUARD applied: xy=%.3f yaw=%.3f",
+                float(updated.get("xy_goal_tolerance", xy_tolerance)),
+                float(updated.get("yaw_goal_tolerance", yaw_tolerance)),
+            )
+            return planner_client, saved_tolerances
+        except Exception as exc:
+            raise RuntimeError(
+                "unable to tighten task4 TEB goal tolerances: {}".format(
+                    exc))
 
     def align_to_staging_heading(self):
         target_yaw = float(rospy.get_param("~traffic_staging_yaw"))
@@ -882,7 +937,6 @@ class StrictMissionNode:
                     self.odom_pose[2] if self.odom_pose else None)
                 self.line_search_direction = 1.0
                 self.line_search_reversals = 0
-                self.line_alignment_hits = 0
             self.publish_status("visual stop-line approach armed")
             fallback_timeout = max(0.0, float(rospy.get_param(
                 "~calibrated_final_advance_fallback_sec", 0.0)))
@@ -896,14 +950,20 @@ class StrictMissionNode:
             except RuntimeError:
                 with self.lock:
                     faulted = self.state == "FAULT"
-                if rospy.is_shutdown():
-                    return
                 if faulted or fallback_timeout <= 0.0:
                     raise
                 self.publish_stop()
-                raise RuntimeError(
-                    "stop line was not stably aligned within {:.2f}s; "
-                    "refusing blind final advance".format(fallback_timeout))
+                rospy.logwarn(
+                    "visual stop-line confirmation did not finish within %.2fs; "
+                    "using calibrated guarded final advance",
+                    fallback_timeout,
+                )
+                self.publish_status(
+                    "visual alignment window complete; calibrated final "
+                    "advance armed",
+                    visual_distance_m=self.last_distance_m,
+                    fallback_timeout_sec=fallback_timeout,
+                )
             with self.lock:
                 self.state = "FINAL_ADVANCE"
             self.publish_status(
@@ -952,8 +1012,6 @@ class StrictMissionNode:
                 self.state = "DONE"
             self.publish_status("strict post-warehouse mission completed")
         except Exception as exc:
-            if rospy.is_shutdown():
-                return
             self.set_fault(str(exc))
 
     def shutdown(self):

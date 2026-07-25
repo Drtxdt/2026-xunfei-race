@@ -4,6 +4,7 @@ project(ucar_2026_strict_mission)
 find_package(catkin REQUIRED COMPONENTS
   actionlib
   cv_bridge
+  dynamic_reconfigure
   geometry_msgs
   move_base_msgs
   rospy

@@ -71,15 +71,13 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn('status.get("final_progress_m")', flow)
         self.assertIn("task4 stop-line clearance not verified", flow)
 
-    def test_calibrated_advance_requires_visual_alignment_first(self):
+    def test_calibrated_advance_uses_verified_hard_stop_distance(self):
         config = json.loads(
             (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
                 encoding="utf-8"))
         self.assertEqual(
-            config["calibrated_final_advance_fallback_sec"], 8.0)
-        self.assertGreaterEqual(
-            config["calibrated_alignment_confirm_frames"], 3)
-        self.assertEqual(config["final_advance_m"], 0.13)
+            config["calibrated_final_advance_fallback_sec"], 2.0)
+        self.assertEqual(config["final_advance_m"], 0.20)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
         self.assertGreaterEqual(
             config["final_advance_creep_speed_mps"], 0.030)
@@ -87,7 +85,7 @@ class OdometryProgressTests(unittest.TestCase):
             config["final_advance_creep_speed_mps"],
             config["final_advance_speed_mps"],
         )
-        self.assertLess(
+        self.assertGreater(
             config["line_search_delay_sec"],
             config["calibrated_final_advance_fallback_sec"],
         )
@@ -96,8 +94,30 @@ class OdometryProgressTests(unittest.TestCase):
             PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "refusing blind final advance",
+            "using calibrated guarded final advance",
             node_source,
+        )
+
+    def test_task4_tightens_and_restores_teb_goal_tolerances(self):
+        config = json.loads(
+            (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
+                encoding="utf-8"))
+        self.assertTrue(config["tighten_staging_goal_tolerance"])
+        self.assertEqual(config["staging_xy_goal_tolerance"], 0.04)
+        self.assertEqual(config["staging_yaw_goal_tolerance"], 0.08)
+
+        node_source = (
+            PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("TASK4_TOLERANCE_GUARD applied", node_source)
+        self.assertIn("restore_staging_tolerances", node_source)
+
+        package_xml = (
+            PACKAGE_ROOT / "package.xml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "<depend>dynamic_reconfigure</depend>",
+            package_xml,
         )
 
     def test_reports_drift_across_starting_heading(self):
