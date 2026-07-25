@@ -99,6 +99,14 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_scan_dwell_sec: 0.45", config)
         self.assertIn("task2_trigger_min_bbox_width_ratio: 0.09", config)
         self.assertIn("parking_obstacle_min_clearance: 0.28", config)
+        self.assertIn(
+            "parking_obstacle_clearance_tolerance: 0.005", config)
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow = stream.read()
+        self.assertIn(
+            '"parking_obstacle_clearance_tolerance": rospy.get_param(', flow)
 
     def test_task4_retired_staging_pose_is_migrated(self):
         pose, migrated = normalize_task4_staging_pose(

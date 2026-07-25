@@ -1881,6 +1881,8 @@ class CompetitionFlow:
                         "~parking_docking_timeout_sec", 30.0),
                     "parking_obstacle_min_clearance": rospy.get_param(
                         "~parking_obstacle_min_clearance", 0.28),
+                    "parking_obstacle_clearance_tolerance": rospy.get_param(
+                        "~parking_obstacle_clearance_tolerance", 0.005),
                     "parking_obstacle_sector_half_angle_deg": rospy.get_param(
                         "~parking_obstacle_sector_half_angle_deg", 35.0),
                     "parking_dock_max_x": rospy.get_param(

@@ -55,6 +55,15 @@ def rotation_clearance_consensus(samples, now, min_clearance,
     return safe, median, len(values)
 
 
+def obstacle_clearance_requires_stop(nearest_range, min_clearance,
+                                     tolerance=0.0):
+    """Return whether a directional obstacle reading must stop motion."""
+    if nearest_range is None:
+        return True
+    return (float(nearest_range) + abs(float(tolerance)) <
+            abs(float(min_clearance)))
+
+
 def polar_sector_min(samples, center_angle, half_angle):
     """Return the nearest valid polar sample in a wrapped angular sector."""
     nearest = None

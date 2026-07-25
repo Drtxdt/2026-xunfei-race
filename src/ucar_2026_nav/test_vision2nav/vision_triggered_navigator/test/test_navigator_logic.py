@@ -4,6 +4,7 @@ import ast
 import math
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 import yaml
 import pytest
@@ -33,6 +34,7 @@ from navigator_logic import (
     lidar_base_wall_distance,
     lidar_requires_stop,
     normalize_angle,
+    obstacle_clearance_requires_stop,
     parking_footprint_margins,
     parking_footprint_inside,
     parking_goal_from_wall,
@@ -94,6 +96,40 @@ def test_rotation_clearance_consensus_absorbs_only_small_lidar_jitter():
     assert not unsafe
     assert math.isclose(median, 0.274)
     assert count == 3
+
+
+def test_parking_clearance_tolerance_absorbs_only_five_mm_jitter():
+    assert not obstacle_clearance_requires_stop(0.279, 0.28, 0.005)
+    assert not obstacle_clearance_requires_stop(0.278, 0.28, 0.005)
+    assert not obstacle_clearance_requires_stop(0.275, 0.28, 0.005)
+    assert obstacle_clearance_requires_stop(0.274, 0.28, 0.005)
+    assert obstacle_clearance_requires_stop(None, 0.28, 0.005)
+
+
+def test_parking_clearance_tolerance_is_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(
+        float(config["parking_obstacle_clearance_tolerance"]), 0.005)
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    assert launch_args["parking_obstacle_clearance_tolerance"] == "0.005"
+    assert node_params["parking_obstacle_clearance_tolerance"] == (
+        "$(arg parking_obstacle_clearance_tolerance)")
 
 
 def test_rotation_clearance_consensus_requires_enough_fresh_samples():

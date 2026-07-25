@@ -133,6 +133,7 @@ parking_lidar_stop_distance: 0.15
 # ydlidar.launch中laser_frame位于base_link前方0.08m；安全阈值以base中心墙距解释。
 parking_lidar_forward_offset: 0.08
 parking_obstacle_min_clearance: 0.28
+parking_obstacle_clearance_tolerance: 0.005
 parking_obstacle_sector_half_angle_deg: 35.0
 scan_topic: /scan
 scan_stale_sec: 0.5
