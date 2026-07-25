@@ -54,6 +54,7 @@ from navigator_logic import (
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
+    scan_step_timeout_extension,
     sensor_is_fresh,
     should_skip_coverage_anchor,
     split_scan_angle,
@@ -233,6 +234,17 @@ class VisionTriggeredNavigator(object):
             "~coverage_scan_pose_timeout_sec", 0.5)))
         self.coverage_scan_step_timeout_margin = max(0.1, float(rospy.get_param(
             "~coverage_scan_step_timeout_margin_sec", 2.0)))
+        self.coverage_scan_step_max_extra = max(0.0, float(rospy.get_param(
+            "~coverage_scan_step_max_extra_sec", 3.0)))
+        self.coverage_scan_step_retry_count = max(0, int(rospy.get_param(
+            "~coverage_scan_step_retry_count", 1)))
+        self.coverage_scan_step_retry_settle = max(0.0, float(rospy.get_param(
+            "~coverage_scan_step_retry_settle_sec", 0.20)))
+        self.coverage_scan_progress_fresh = max(0.1, float(rospy.get_param(
+            "~coverage_scan_progress_fresh_sec", 0.8)))
+        self.coverage_scan_progress_epsilon = math.radians(max(
+            0.1, float(rospy.get_param(
+                "~coverage_scan_progress_epsilon_deg", 0.5))))
         self.robot_footprint_radius = rospy.get_param("~robot_footprint_radius", 0.215)
         self.lethal_cost = int(rospy.get_param("~lethal_cost", 253))
 
@@ -1313,6 +1325,10 @@ class VisionTriggeredNavigator(object):
             if self.triggered:
                 self.cmd_vel_pub.publish(Twist())
                 return True
+            scan_started = rospy.get_time()
+            completed_progress = 0.0
+            attempt_angle = step_angle
+            retry_index = 0
             start_pose = self._get_robot_pose(self.base_frame)
             if start_pose is None:
                 self.cmd_vel_pub.publish(Twist())
@@ -1323,10 +1339,14 @@ class VisionTriggeredNavigator(object):
 
             step_started = rospy.get_time()
             last_pose_at = step_started
+            last_progress_at = step_started
             handled_candidate_at = self.target_payload_at
-            deadline = (step_started + step_angle / self.coverage_scan_angular_speed +
+            deadline = (step_started + attempt_angle / self.coverage_scan_angular_speed +
                         self.coverage_scan_step_timeout_margin)
             max_progress = 0.0
+            progress_mark = 0.0
+            paused_duration = 0.0
+            extension_used = False
             twist = Twist()
             twist.angular.z = self.coverage_scan_angular_speed * direction_sign
             rate = rospy.Rate(20)
@@ -1357,7 +1377,9 @@ class VisionTriggeredNavigator(object):
                     pause_started = rospy.get_time()
                     self._hold_scan_step(
                         "步进{}/{}".format(step_index, len(steps)), step_started)
-                    deadline += max(0.0, rospy.get_time() - pause_started)
+                    pause_duration = max(0.0, rospy.get_time() - pause_started)
+                    deadline += pause_duration
+                    paused_duration += pause_duration
                     if self.triggered:
                         return True
                     handled_candidate_at = self.target_payload_at
@@ -1367,7 +1389,12 @@ class VisionTriggeredNavigator(object):
                     last_pose_at = now
                     progress = normalize_angle(pose[2] - start_pose[2]) * direction_sign
                     max_progress = max(max_progress, progress)
-                    if max_progress >= step_angle:
+                    if (max_progress >=
+                            progress_mark + self.coverage_scan_progress_epsilon):
+                        progress_mark = max_progress
+                        last_progress_at = now
+                    if (max_progress + self.coverage_scan_progress_epsilon >=
+                            attempt_angle):
                         break
                 elif now - last_pose_at >= self.coverage_scan_pose_timeout:
                     self.cmd_vel_pub.publish(Twist())
@@ -1377,11 +1404,75 @@ class VisionTriggeredNavigator(object):
                     return False
 
                 if now >= deadline:
+                    extra_time = 0.0
+                    if not extension_used:
+                        extra_time = scan_step_timeout_extension(
+                            max_progress,
+                            attempt_angle,
+                            max(0.0, now - step_started - paused_duration),
+                            max(0.0, now - last_progress_at),
+                            self.coverage_scan_angular_speed,
+                            self.coverage_scan_step_max_extra,
+                            self.coverage_scan_progress_fresh,
+                            self.coverage_scan_progress_epsilon,
+                        )
+                    if extra_time > 0.0:
+                        extension_used = True
+                        deadline = now + extra_time
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 步进扫描%d/%d转速低于标称，"
+                            "progress=%.1f/%.1fdeg，按剩余角度延时%.2fs继续补转.",
+                            step_index, len(steps),
+                            math.degrees(completed_progress + max_progress),
+                            math.degrees(step_angle), extra_time)
+                        self.cmd_vel_pub.publish(twist)
+                        rate.sleep()
+                        continue
+
                     self.cmd_vel_pub.publish(Twist())
+                    completed_progress = min(
+                        step_angle, completed_progress + max_progress)
+                    remaining_angle = max(
+                        0.0, step_angle - completed_progress)
+                    if remaining_angle <= self.coverage_scan_progress_epsilon:
+                        break
+                    if retry_index < self.coverage_scan_step_retry_count:
+                        retry_index += 1
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 步进扫描%d/%d未转足，"
+                            "已完成%.1f/%.1fdeg；停车后第%d次补转剩余%.1fdeg.",
+                            step_index, len(steps),
+                            math.degrees(completed_progress),
+                            math.degrees(step_angle), retry_index,
+                            math.degrees(remaining_angle))
+                        if self.coverage_scan_step_retry_settle > 0.0:
+                            rospy.sleep(self.coverage_scan_step_retry_settle)
+                        start_pose = self._get_robot_pose(self.base_frame)
+                        if start_pose is None:
+                            rospy.logerr(
+                                "[vision_triggered_navigator] 步进扫描%d/%d补转TF不可用，"
+                                "延期当前锚点.", step_index, len(steps))
+                            return False
+                        attempt_angle = remaining_angle
+                        step_started = rospy.get_time()
+                        last_pose_at = step_started
+                        last_progress_at = step_started
+                        deadline = (
+                            step_started +
+                            attempt_angle / self.coverage_scan_angular_speed +
+                            self.coverage_scan_step_timeout_margin)
+                        max_progress = 0.0
+                        progress_mark = 0.0
+                        paused_duration = 0.0
+                        extension_used = False
+                        handled_candidate_at = self.target_payload_at
+                        continue
+
                     rospy.logerr(
                         "[vision_triggered_navigator] 步进扫描%d/%d超时，"
                         "progress=%.1f/%.1fdeg，延期当前锚点.",
-                        step_index, len(steps), math.degrees(max_progress),
+                        step_index, len(steps),
+                        math.degrees(completed_progress),
                         math.degrees(step_angle))
                     return False
                 self.cmd_vel_pub.publish(twist)
@@ -1396,7 +1487,7 @@ class VisionTriggeredNavigator(object):
                 "[vision_triggered_navigator] 步进%d/%d到位 heading=%.1fdeg，停车识别.",
                 step_index, len(steps), heading)
             self._hold_scan_step(
-                "步进{}/{}".format(step_index, len(steps)), step_started)
+                "步进{}/{}".format(step_index, len(steps)), scan_started)
         return True
 
     def rotate(self, direction, duration):

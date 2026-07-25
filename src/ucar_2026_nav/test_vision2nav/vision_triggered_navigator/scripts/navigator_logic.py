@@ -688,6 +688,36 @@ def split_scan_angle(total_angle, step_angle):
     return result
 
 
+def scan_step_timeout_extension(progress, target, elapsed, progress_age,
+                                commanded_speed, max_extra_sec,
+                                progress_fresh_sec=0.8,
+                                min_progress=math.radians(0.5),
+                                reserve_sec=0.35):
+    """Return bounded extra time while a scan step is still making progress."""
+    progress = max(0.0, float(progress))
+    target = max(0.0, float(target))
+    remaining = max(0.0, target - progress)
+    max_extra_sec = max(0.0, float(max_extra_sec))
+    if remaining <= 1e-6 or max_extra_sec <= 0.0:
+        return 0.0
+    if progress < max(0.0, float(min_progress)):
+        return 0.0
+    if float(progress_age) > max(0.0, float(progress_fresh_sec)):
+        return 0.0
+
+    commanded_speed = abs(float(commanded_speed))
+    if commanded_speed <= 1e-6:
+        return 0.0
+    measured_speed = progress / max(0.05, float(elapsed))
+    conservative_speed = max(
+        0.03,
+        commanded_speed * 0.15,
+        min(commanded_speed, measured_speed * 0.75),
+    )
+    estimate = remaining / conservative_speed + max(0.0, float(reserve_sec))
+    return min(max_extra_sec, estimate)
+
+
 def scan_dwell_deadline(started_at, dwell_sec, candidate_at,
                         candidate_hold_sec, max_dwell_sec):
     """Return a bounded dwell deadline, extending it for a fresh OCR candidate."""

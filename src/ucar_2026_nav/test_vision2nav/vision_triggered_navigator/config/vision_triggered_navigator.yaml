@@ -78,6 +78,11 @@ coverage_candidate_hold_sec: 1.2
 coverage_scan_max_dwell_sec: 2.0
 coverage_scan_pose_timeout_sec: 0.5
 coverage_scan_step_timeout_margin_sec: 2.0
+coverage_scan_step_max_extra_sec: 3.0
+coverage_scan_step_retry_count: 1
+coverage_scan_step_retry_settle_sec: 0.20
+coverage_scan_progress_fresh_sec: 0.8
+coverage_scan_progress_epsilon_deg: 0.5
 robot_footprint_radius: 0.215
 lethal_cost: 253
 

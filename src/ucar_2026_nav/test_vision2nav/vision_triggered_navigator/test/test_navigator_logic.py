@@ -46,6 +46,7 @@ from navigator_logic import (
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
+    scan_step_timeout_extension,
     sensor_is_fresh,
     should_retry_coverage_goal,
     staging_pose_reached,
@@ -685,6 +686,92 @@ def test_scan_dwell_extends_for_candidate_but_is_bounded():
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 0.0, 1.2, 2.0), 10.65)
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 10.2, 1.2, 2.0), 11.4)
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 11.8, 1.2, 2.0), 12.0)
+
+
+def test_slow_scan_step_gets_bounded_time_to_finish_remaining_angle():
+    extra = scan_step_timeout_extension(
+        math.radians(13.0),
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=0.2,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+    )
+    assert 1.8 < extra < 2.2
+
+    capped = scan_step_timeout_extension(
+        math.radians(1.0),
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=0.1,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+    )
+    assert math.isclose(capped, 3.0)
+
+
+def test_stalled_scan_step_does_not_extend_indefinitely():
+    assert scan_step_timeout_extension(
+        math.radians(13.0),
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=1.0,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+        progress_fresh_sec=0.8,
+    ) == 0.0
+    assert scan_step_timeout_extension(
+        0.0,
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=0.0,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+    ) == 0.0
+
+
+def test_scan_step_recovery_is_configured_and_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(float(config["coverage_scan_step_max_extra_sec"]), 3.0)
+    assert int(config["coverage_scan_step_retry_count"]) == 1
+    assert math.isclose(
+        float(config["coverage_scan_step_retry_settle_sec"]), 0.20)
+    assert math.isclose(float(config["coverage_scan_progress_fresh_sec"]), 0.8)
+    assert math.isclose(
+        float(config["coverage_scan_progress_epsilon_deg"]), 0.5)
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "coverage_scan_step_max_extra_sec",
+            "coverage_scan_step_retry_count",
+            "coverage_scan_step_retry_settle_sec",
+            "coverage_scan_progress_fresh_sec",
+            "coverage_scan_progress_epsilon_deg"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "scan_step_timeout_extension(" in source
+    assert "retry_index < self.coverage_scan_step_retry_count" in source
+    assert "attempt_angle = remaining_angle" in source
 
 
 def test_docking_errors_are_expressed_in_robot_body_frame():
