@@ -27,6 +27,15 @@ def rotation_clearance_is_safe(nearest_range, scan_age, min_clearance,
             float(nearest_range) >= abs(float(min_clearance)))
 
 
+def obstacle_clearance_requires_stop(nearest_range, min_clearance,
+                                     tolerance=0.0):
+    """Apply a small sensor tolerance without weakening the nominal limit."""
+    if nearest_range is None:
+        return True
+    return (float(nearest_range) + abs(float(tolerance)) <
+            abs(float(min_clearance)))
+
+
 def rotation_clearance_consensus(samples, now, min_clearance,
                                  tolerance=0.005, max_sample_age=0.35,
                                  min_samples=3):

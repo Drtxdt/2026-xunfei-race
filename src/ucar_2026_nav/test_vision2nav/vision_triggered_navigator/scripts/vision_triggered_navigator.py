@@ -43,6 +43,7 @@ from navigator_logic import (
     footprint_max_cost,
     latch_trigger,
     normalize_angle,
+    obstacle_clearance_requires_stop,
     parking_footprint_margins,
     parking_goal_from_wall,
     parking_recenter_required,
@@ -168,6 +169,9 @@ class VisionTriggeredNavigator(object):
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
                 "~coverage_translation_min_clearance", 0.28)))
+        self.coverage_translation_clearance_tolerance = max(
+            0.0, float(rospy.get_param(
+                "~coverage_translation_clearance_tolerance", 0.005)))
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
@@ -330,6 +334,9 @@ class VisionTriggeredNavigator(object):
             "~parking_lidar_forward_offset", 0.08))
         self.parking_obstacle_min_clearance = max(0.0, float(
             rospy.get_param("~parking_obstacle_min_clearance", 0.28)))
+        self.parking_obstacle_clearance_tolerance = max(0.0, float(
+            rospy.get_param(
+                "~parking_obstacle_clearance_tolerance", 0.005)))
         self.parking_obstacle_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~parking_obstacle_sector_half_angle_deg", 35.0))))
@@ -1047,17 +1054,22 @@ class VisionTriggeredNavigator(object):
                 if (minimum is not None and minimum > 0.0 and
                         sensor_is_fresh(
                             self.scan_received_at, now, self.scan_stale) and
-                        (clearance is None or clearance < minimum)):
+                        obstacle_clearance_requires_stop(
+                            clearance,
+                            minimum,
+                            self.coverage_translation_clearance_tolerance)):
                     self.current_goal_clearance_stop = True
                     self._publish_status("coverage_clearance_stop")
                     rospy.logwarn(
                         "[vision_triggered_navigator] coverage navigation "
-                        "%s clearance %s is below %.3fm; canceling the "
+                        "%s clearance %s is below %.3fm minus %.3fm lidar "
+                        "tolerance; canceling the "
                         "current anchor before contact.",
                         motion,
                         ("missing" if clearance is None
                          else "{:.3f}m".format(clearance)),
                         minimum,
+                        self.coverage_translation_clearance_tolerance,
                     )
                     self.cancel_goal()
                     self.cmd_vel_pub.publish(Twist())
@@ -2269,18 +2281,22 @@ class VisionTriggeredNavigator(object):
             obstacle_clearance, obstacle_direction = (
                 self._parking_command_clearance(command))
             if (obstacle_direction is not None and
-                    (obstacle_clearance is None or
-                     obstacle_clearance < self.parking_obstacle_min_clearance)):
+                    obstacle_clearance_requires_stop(
+                        obstacle_clearance,
+                        self.parking_obstacle_min_clearance,
+                        self.parking_obstacle_clearance_tolerance)):
                 self.cmd_vel_pub.publish(Twist())
                 self.parking_failure_status = "parking_obstacle_blocked"
                 self._publish_status(self.parking_failure_status)
                 rospy.logerr(
                     "[vision_triggered_navigator] parking obstacle blocks "
-                    "%s motion: clearance=%s required=%.3fm; vehicle stopped.",
+                    "%s motion: clearance=%s required=%.3fm tolerance=%.3fm; "
+                    "vehicle stopped.",
                     obstacle_direction,
                     ("missing" if obstacle_clearance is None
                      else "{:.3f}m".format(obstacle_clearance)),
-                    self.parking_obstacle_min_clearance)
+                    self.parking_obstacle_min_clearance,
+                    self.parking_obstacle_clearance_tolerance)
                 return False
             if abs(command[2]) > 0.0:
                 if rotation_window_yaw is None:

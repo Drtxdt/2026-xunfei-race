@@ -56,6 +56,7 @@ coverage_rotation_resample_timeout_sec: 0.25
 coverage_rotation_consensus_history_size: 9
 # 只检查当前平移方向，避免TEB在锥桶前轨迹不可行时仍继续贴近。
 coverage_translation_min_clearance: 0.28
+coverage_translation_clearance_tolerance: 0.005
 coverage_translation_sector_half_angle_deg: 35.0
 coverage_max_vel_x: 0.55
 coverage_max_vel_y: 0.55
@@ -133,6 +134,7 @@ parking_lidar_stop_distance: 0.15
 # ydlidar.launch中laser_frame位于base_link前方0.08m；安全阈值以base中心墙距解释。
 parking_lidar_forward_offset: 0.08
 parking_obstacle_min_clearance: 0.28
+parking_obstacle_clearance_tolerance: 0.005
 parking_obstacle_sector_half_angle_deg: 35.0
 scan_topic: /scan
 scan_stale_sec: 0.5
