@@ -47,6 +47,7 @@ from navigator_logic import (
     parking_recenter_required,
     polar_sector_min,
     ray_segment_intersection,
+    rotation_clearance_allows_near_wall,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -1108,15 +1109,19 @@ class VisionTriggeredNavigator(object):
 
         return final_state
 
-    def _hold_scan_step(self, step_label, candidate_since):
+    def _hold_scan_step(self, step_label, candidate_since,
+                        minimum_dwell=None):
         """Publish zero velocity while OCR consumes stable frames at one heading."""
         started = rospy.get_time()
+        dwell = self.coverage_scan_dwell
+        if minimum_dwell is not None:
+            dwell = max(dwell, float(minimum_dwell))
         deadline = scan_dwell_deadline(
             started,
-            self.coverage_scan_dwell,
+            dwell,
             self.target_payload_at if self.target_payload_at >= candidate_since else 0.0,
             self.coverage_candidate_hold,
-            self.coverage_scan_max_dwell,
+            max(self.coverage_scan_max_dwell, dwell),
         )
         extension_logged = False
         rate = rospy.Rate(20)
@@ -1125,15 +1130,15 @@ class VisionTriggeredNavigator(object):
             candidate_at = self.target_payload_at
             new_deadline = scan_dwell_deadline(
                 started,
-                self.coverage_scan_dwell,
+                dwell,
                 candidate_at if candidate_at >= candidate_since else 0.0,
                 self.coverage_candidate_hold,
-                self.coverage_scan_max_dwell,
+                max(self.coverage_scan_max_dwell, dwell),
             )
             if new_deadline > deadline:
                 deadline = new_deadline
             if (not extension_logged and candidate_at >= candidate_since and
-                    deadline > started + self.coverage_scan_dwell + 1e-3):
+                    deadline > started + dwell + 1e-3):
                 extension_logged = True
                 rospy.loginfo(
                     "[vision_triggered_navigator] %s 收到目标候选，停车延长确认至%.2fs.",
@@ -1186,7 +1191,19 @@ class VisionTriggeredNavigator(object):
                 now = rospy.get_time()
                 if not self._rotation_clearance_safe(
                         self.coverage_rotation_min_clearance, "观察点扫描"):
-                    return False
+                    self._publish_status("coverage_scan_clearance_hold")
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] 当前锚点旋转空间不足；"
+                        "保持当前航向停车识别%.2fs后继续下一锚点，"
+                        "不再中止任务2.",
+                        self.coverage_candidate_hold)
+                    self._hold_scan_step(
+                        "安全静止识别{}/{}".format(
+                            step_index, len(steps)),
+                        step_started,
+                        minimum_dwell=self.coverage_candidate_hold,
+                    )
+                    return True
                 if self.target_payload_at > handled_candidate_at:
                     handled_candidate_at = self.target_payload_at
                     self.cmd_vel_pub.publish(Twist())
@@ -1430,9 +1447,28 @@ class VisionTriggeredNavigator(object):
             return False
         if not rotation_clearance_is_safe(
                 self.scan_all_min, scan_age, minimum, self.scan_stale):
+            if rotation_clearance_allows_near_wall(
+                    self.scan_polar_samples,
+                    scan_age,
+                    minimum,
+                    max_scan_age=self.scan_stale,
+                    lidar_forward_offset=self.parking_lidar_forward_offset,
+                    footprint_radius=self.robot_footprint_radius,
+                    footprint_margin=self.parking_required_margin,
+                    wall_min_points=self.parking_wall_fit_min_points,
+                    wall_min_span=self.parking_wall_fit_min_span,
+                    wall_max_residual=max(
+                        self.parking_wall_fit_max_residual, 0.02)):
+                rospy.loginfo_throttle(
+                    2.0,
+                    "[vision_triggered_navigator] %s近点%.3fm已确认是"
+                    "车体旋转包络外的连续墙面，允许低速转动.",
+                    label, self.scan_all_min)
+                return True
             self.cmd_vel_pub.publish(Twist())
             rospy.logerr(
-                "[vision_triggered_navigator] %s拒绝转动：全向最近障碍%.3fm，小于安全阈值%.3fm.",
+                "[vision_triggered_navigator] %s拒绝转动：全向最近障碍%.3fm"
+                "小于安全阈值%.3fm，且不满足连续墙面安全例外.",
                 label, self.scan_all_min, minimum)
             return False
         return True

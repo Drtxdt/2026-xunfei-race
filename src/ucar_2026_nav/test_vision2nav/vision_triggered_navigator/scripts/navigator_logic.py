@@ -355,6 +355,77 @@ def fit_wall_line(points, min_points=12, min_span=0.25,
     }
 
 
+def rotation_clearance_allows_near_wall(
+        samples, scan_age, min_clearance, max_scan_age=0.5,
+        lidar_forward_offset=0.0, footprint_radius=0.215,
+        footprint_margin=0.02, wall_range_band=0.16,
+        wall_min_points=10, wall_min_span=0.25,
+        wall_max_residual=0.02):
+    """Allow a conservative close-range turn only beside a continuous wall.
+
+    The ordinary all-around threshold remains the first line of defence.  This
+    exception is for calibrated observation poses where the lidar can be less
+    than that threshold from a wall although the wall remains outside the
+    chassis rotation envelope.  A compact return such as a cone cannot satisfy
+    the required line span and nearest-point agreement.
+    """
+    if not (0.0 <= float(scan_age) <= abs(float(max_scan_age))):
+        return False
+    valid = [
+        (normalize_angle(float(angle)), float(distance))
+        for angle, distance in samples or ()
+        if (math.isfinite(float(angle)) and
+            math.isfinite(float(distance)) and float(distance) > 0.0)
+    ]
+    if not valid:
+        return False
+
+    nearest_angle, nearest_range = min(valid, key=lambda item: item[1])
+    if nearest_range >= abs(float(min_clearance)):
+        return True
+
+    offset = float(lidar_forward_offset)
+    base_points = [
+        (offset + distance * math.cos(angle),
+         distance * math.sin(angle))
+        for angle, distance in valid
+    ]
+    nearest_base_range = min(math.hypot(x, y) for x, y in base_points)
+    required_base_range = (
+        abs(float(footprint_radius)) + abs(float(footprint_margin)))
+    if nearest_base_range < required_base_range:
+        return False
+
+    maximum_wall_range = (
+        abs(float(min_clearance)) + abs(float(wall_range_band)))
+    wall_half_angle = math.radians(60.0)
+    wall_points = [
+        (offset + distance * math.cos(angle),
+         distance * math.sin(angle))
+        for angle, distance in valid
+        if (distance <= maximum_wall_range and
+            abs(normalize_angle(angle - nearest_angle)) <= wall_half_angle)
+    ]
+    fit = fit_wall_line(
+        wall_points,
+        min_points=wall_min_points,
+        min_span=wall_min_span,
+        max_residual=wall_max_residual,
+    )
+    if fit is None:
+        return False
+
+    nearest_point = (
+        offset + nearest_range * math.cos(nearest_angle),
+        nearest_range * math.sin(nearest_angle),
+    )
+    nx, ny = fit["normal"]
+    nearest_residual = abs(
+        nearest_point[0] * nx + nearest_point[1] * ny - fit["distance"])
+    return nearest_residual <= max(
+        0.01, abs(float(wall_max_residual)) * 1.5)
+
+
 def wall_fit_matches_expected(fit, expected_normal_angle,
                               maximum_error=math.radians(20.0)):
     if not fit:

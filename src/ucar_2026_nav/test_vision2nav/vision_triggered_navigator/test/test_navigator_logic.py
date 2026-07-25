@@ -39,6 +39,7 @@ from navigator_logic import (
     parking_recenter_required,
     polar_sector_min,
     ray_segment_intersection,
+    rotation_clearance_allows_near_wall,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -78,6 +79,45 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
 
 
+def test_close_continuous_wall_can_use_rotation_clearance_exception():
+    distance = 0.264
+    samples = []
+    for degrees in range(-50, 51, 2):
+        angle = math.radians(degrees)
+        samples.append((angle, distance / math.cos(angle)))
+    assert rotation_clearance_allows_near_wall(
+        samples,
+        scan_age=0.1,
+        min_clearance=0.28,
+        lidar_forward_offset=0.08,
+        footprint_radius=0.215,
+    )
+
+
+def test_compact_cone_cannot_use_rotation_clearance_exception():
+    samples = [
+        (math.radians(degrees), 0.264 + 0.002 * abs(degrees - 90))
+        for degrees in range(84, 97, 2)
+    ]
+    assert not rotation_clearance_allows_near_wall(
+        samples,
+        scan_age=0.1,
+        min_clearance=0.28,
+        lidar_forward_offset=0.08,
+        footprint_radius=0.215,
+    )
+
+
+def test_stale_scan_cannot_use_rotation_clearance_exception():
+    samples = [(0.0, 0.264)] * 20
+    assert not rotation_clearance_allows_near_wall(
+        samples,
+        scan_age=0.6,
+        min_clearance=0.28,
+        max_scan_age=0.5,
+    )
+
+
 def test_polar_sector_min_wraps_and_ignores_other_directions():
     samples = [
         (math.radians(179.0), 0.42),
@@ -105,6 +145,7 @@ def test_navigation_node_imports_rotation_clearance_helper():
         and node.module == "navigator_logic"
         for alias in node.names
     }
+    assert "rotation_clearance_allows_near_wall" in imported_names
     assert "rotation_clearance_is_safe" in imported_names
 
 
@@ -130,7 +171,7 @@ def test_clearance_block_preserves_stationary_scan():
         and isinstance(node.test.op, ast.Not)
         and isinstance(node.test.operand, ast.Call)
         and isinstance(node.test.operand.func, ast.Attribute)
-        and node.test.operand.func.attr == "_rotation_clearance_is_safe"
+        and node.test.operand.func.attr == "_rotation_clearance_safe"
     )
     returns = [node for node in clearance_if.body if isinstance(node, ast.Return)]
     assert len(returns) == 1
