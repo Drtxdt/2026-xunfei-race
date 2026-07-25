@@ -1019,6 +1019,29 @@ class CompetitionFlow:
             raise StageError(
                 "{}->task4 costmap refresh produced no fresh scan/costmap snapshot".format(
                     source_stage))
+        if bool_param("~task4_internal_waypoint_enabled", True):
+            waypoint_x = float(rospy.get_param(
+                "~task4_internal_waypoint_x", 1.2660))
+            waypoint_y = float(rospy.get_param(
+                "~task4_internal_waypoint_y", -2.8863))
+            waypoint_yaw = float(rospy.get_param(
+                "~task4_internal_waypoint_yaw", -1.5443))
+            waypoint_timeout = max(5.0, float(rospy.get_param(
+                "~task4_internal_waypoint_timeout_sec", 45.0)))
+            self.navigate(
+                waypoint_x,
+                waypoint_y,
+                waypoint_yaw,
+                source_stage,
+                timeout_sec=waypoint_timeout,
+                status_state="routing_inside_production",
+            )
+            self.safe_stop(cancel_navigation=True)
+            self.publish_status(
+                source_stage,
+                "internal_route_ready",
+                "reached calibrated internal waypoint before stop-line navigation",
+            )
         self._wait_transition_announcement(source_stage)
         if source_stage == "task3":
             self.publish_status(

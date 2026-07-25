@@ -249,6 +249,7 @@ class CompetitionLogicTest(unittest.TestCase):
             "_wait_transition_announcement", called("production_task4_handoff"))
         self.assertIn(
             "_back_out_of_factory_bay", called("production_task4_handoff"))
+        self.assertIn("navigate", called("production_task4_handoff"))
         handoff_calls = [
             node for node in ast.walk(methods["production_task4_handoff"])
             if isinstance(node, ast.Call)
@@ -257,9 +258,14 @@ class CompetitionLogicTest(unittest.TestCase):
         back_out_line = next(
             node.lineno for node in handoff_calls
             if node.func.attr == "_back_out_of_factory_bay")
+        internal_route_line = next(
+            node.lineno for node in handoff_calls
+            if node.func.attr == "navigate")
         announcement_line = next(
             node.lineno for node in handoff_calls
             if node.func.attr == "_wait_transition_announcement")
+        self.assertLess(back_out_line, internal_route_line)
+        self.assertLess(internal_route_line, announcement_line)
         self.assertLess(back_out_line, announcement_line)
         self.assertIn("_start_announcement", called("task4"))
         self.assertIn("_wait_announcement", called("task4"))
@@ -413,6 +419,9 @@ class CompetitionLogicTest(unittest.TestCase):
             "task4_factory_egress_reverse_distance_m: 0.32", content)
         self.assertIn(
             "task4_factory_egress_rear_clearance_m: 0.28", content)
+        self.assertIn("task4_internal_waypoint_enabled: true", content)
+        self.assertIn("task4_internal_waypoint_x: 1.2660", content)
+        self.assertIn("task4_internal_waypoint_y: -2.8863", content)
         self.assertIn(
             "task2_second_search_abort_fail_fast_count: 0", content)
 
