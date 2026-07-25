@@ -15,6 +15,7 @@ from factory_sign_ppocr_rknn_node import (
     VoteWindow,
     map_box_to_frame,
     parse_view_scales,
+    select_factory_sign_box,
 )
 
 
@@ -63,6 +64,42 @@ def test_keyword_classifier_merges_one_and_two_line_candidates():
     assert category == "electronic"
     assert score > 0.0
     assert evidence == "电子产品"
+
+
+def test_split_food_sign_uses_combined_factory_bbox():
+    classifier = FactorySignKeywordClassifier()
+    category = OCRText(
+        "食品", 0.71,
+        [[100.0, 20.0], [140.0, 20.0], [140.0, 49.0], [100.0, 49.0]],
+    )
+    workshop = OCRText(
+        "加工车间", 0.70,
+        [[80.0, 55.0], [166.0, 55.0], [166.0, 90.0], [80.0, 90.0]],
+    )
+
+    selected = select_factory_sign_box(
+        [category, workshop], "food", classifier)
+
+    assert selected.box == [
+        [80.0, 20.0], [166.0, 20.0], [166.0, 90.0], [80.0, 90.0],
+    ]
+
+
+def test_split_sign_does_not_merge_distant_workshop_text():
+    classifier = FactorySignKeywordClassifier()
+    category = OCRText(
+        "食品", 0.71,
+        [[100.0, 20.0], [140.0, 20.0], [140.0, 49.0], [100.0, 49.0]],
+    )
+    distant = OCRText(
+        "加工车间", 0.70,
+        [[400.0, 300.0], [500.0, 300.0], [500.0, 340.0], [400.0, 340.0]],
+    )
+
+    selected = select_factory_sign_box(
+        [category, distant], "food", classifier)
+
+    assert selected.box == category.box
 
 
 def test_competing_complete_categories_are_ambiguous():

@@ -149,6 +149,21 @@ def test_navigation_node_imports_rotation_clearance_helper():
     assert "rotation_clearance_is_safe" in imported_names
 
 
+def test_coverage_navigation_reports_transit_and_observation_anchor_ids():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    constants = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "coverage_anchor_transit:{}" in constants
+    assert "coverage_anchor_observing:{}" in constants
+
+
 def test_clearance_block_preserves_stationary_scan():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",

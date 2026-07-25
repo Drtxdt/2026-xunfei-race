@@ -129,8 +129,8 @@ coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0
 task2_no_workshop_anchors: []
-# false 时物理/仿真两轮都严格按 1→9 搜索，不按上一轮 OCR 记忆重排或跳点。
-task2_resume_coverage_enabled: false
+# 第二轮优先使用第一轮仓库记忆；未记住目标时从下一个未扫描点继续。
+task2_resume_coverage_enabled: true
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003

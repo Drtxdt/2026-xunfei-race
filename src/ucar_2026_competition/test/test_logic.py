@@ -48,18 +48,20 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
         self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))
 
-    def test_task2_visits_all_anchors_by_default(self):
+    def test_task2_resumes_coverage_by_default(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
         with open(config_path, "r", encoding="utf-8") as stream:
             config = stream.read()
         self.assertIn("task2_no_workshop_anchors: []", config)
-        self.assertIn("task2_resume_coverage_enabled: false", config)
+        self.assertIn("task2_resume_coverage_enabled: true", config)
 
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
         with open(flow_path, "r", encoding="utf-8") as stream:
             flow = stream.read()
+        self.assertIn(
+            '"~task2_resume_coverage_enabled", True', flow)
         self.assertIn(
             'rospy.get_param("~task2_no_workshop_anchors", [])', flow)
         self.assertIn(
@@ -151,7 +153,7 @@ class CompetitionLogicTest(unittest.TestCase):
                 last_anchor=5,
                 anchor_count=9,
             ),
-            (6, (2,)),
+            (6, (1, 2, 3, 4, 5)),
         )
 
     def test_task2_remembered_target_wins_over_resume_anchor(self):

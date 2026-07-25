@@ -1670,7 +1670,7 @@ class CompetitionFlow:
         self.trigger_acknowledged = False
         self.navigator_status = ""
         resume_coverage_enabled = bool_param(
-            "~task2_resume_coverage_enabled", False)
+            "~task2_resume_coverage_enabled", True)
         with self.lock:
             self.current_coverage_anchor = None
             for memory_filter in self.ocr_memory_filters.values():

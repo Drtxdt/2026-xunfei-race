@@ -1335,6 +1335,8 @@ class VisionTriggeredNavigator(object):
 
             if (distance is not None and
                     distance <= self.coverage_anchor_position_tolerance):
+                self._publish_status(
+                    "coverage_anchor_observing:{}".format(patrol_idx + 1))
                 self.current_goal_near_observation = False
                 if (yaw_error is not None and
                         yaw_error > self.coverage_anchor_yaw_tolerance):
@@ -1408,6 +1410,8 @@ class VisionTriggeredNavigator(object):
 
         self.cmd_vel_pub.publish(Twist())
         initial_hold_at = rospy.get_time()
+        self._publish_status(
+            "coverage_anchor_observing:{}".format(patrol_idx + 1))
         self._hold_scan_step(
             "锚点{}初始朝向".format(patrol_idx + 1),
             initial_hold_at - max(self.target_bbox_stale,
@@ -2463,6 +2467,8 @@ class VisionTriggeredNavigator(object):
 
                     point_idx = coverage_order[coverage_position]
                     point = self.patrol_points[point_idx]
+                    self._publish_status(
+                        "coverage_anchor_transit:{}".format(point_idx + 1))
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",
                         coverage_position + 1, coverage_count, point_idx + 1)

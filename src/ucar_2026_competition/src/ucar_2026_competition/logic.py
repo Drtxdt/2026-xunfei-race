@@ -322,7 +322,7 @@ def task2_semantic_coverage_hint(memory, target_category):
 
 def task2_resumed_coverage_hint(memory, target_category, last_anchor,
                                 anchor_count=9):
-    """Prefer remembered target, otherwise continue after the last anchor."""
+    """Prefer remembered target, otherwise continue through unvisited anchors."""
     preferred, skipped = task2_semantic_coverage_hint(memory, target_category)
     if preferred:
         return preferred, skipped
@@ -332,7 +332,14 @@ def task2_resumed_coverage_hint(memory, target_category, last_anchor,
         last_anchor = 0
     anchor_count = max(0, int(anchor_count))
     if anchor_count and 1 <= last_anchor <= anchor_count:
-        preferred = last_anchor % anchor_count + 1
+        if last_anchor < anchor_count:
+            preferred = last_anchor + 1
+            skipped = tuple(sorted(
+                set(skipped).union(range(1, last_anchor + 1))))
+        else:
+            # A complete first pass can only avoid rescanning when the target
+            # was remembered. Fall back to a full pass if memory was empty.
+            preferred = 0
     return preferred, skipped
 
 
