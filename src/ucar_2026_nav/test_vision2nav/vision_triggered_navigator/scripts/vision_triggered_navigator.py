@@ -189,6 +189,12 @@ class VisionTriggeredNavigator(object):
             "~coverage_corridor_depth_bin", 0.20)))
         self.coverage_corridor_min_side_points = max(1, int(rospy.get_param(
             "~coverage_corridor_min_side_points", 2)))
+        self.coverage_corridor_cluster_gap = max(0.02, float(rospy.get_param(
+            "~coverage_corridor_cluster_gap", 0.08)))
+        self.coverage_corridor_compact_max_span = max(
+            self.coverage_corridor_cluster_gap,
+            float(rospy.get_param(
+                "~coverage_corridor_compact_max_span", 0.30)))
         self.coverage_teb_min_obstacle_dist = max(0.0, float(
             rospy.get_param("~coverage_teb_min_obstacle_dist", 0.22)))
         self.coverage_teb_inflation_dist = max(
@@ -626,12 +632,12 @@ class VisionTriggeredNavigator(object):
         if (not self.coverage_corridor_guard_enabled or
                 not sensor_is_fresh(
                     self.last_cmd_vel_received_at, now, self.scan_stale)):
-            return None, None, None, None, None
+            return (None,) * 7
         command_x, command_y, _command_yaw = self.last_cmd_vel
         if math.hypot(command_x, command_y) <= 0.01:
-            return None, None, None, None, None
+            return (None,) * 7
         direction = math.atan2(command_y, command_x)
-        width, forward, left_count, right_count = translation_corridor_width(
+        result = translation_corridor_width(
             self.scan_polar_samples,
             direction,
             min_forward=0.10,
@@ -639,8 +645,10 @@ class VisionTriggeredNavigator(object):
             lateral_extent=self.coverage_corridor_lateral_extent,
             depth_bin=self.coverage_corridor_depth_bin,
             min_side_points=self.coverage_corridor_min_side_points,
+            cluster_gap=self.coverage_corridor_cluster_gap,
+            compact_max_span=self.coverage_corridor_compact_max_span,
         )
-        return width, forward, left_count, right_count, direction
+        return result + (direction,)
 
     def _parking_command_clearance(self, command):
         """Protect direct docking while allowing the expected front wall."""
@@ -1105,12 +1113,14 @@ class VisionTriggeredNavigator(object):
                     rospy.logwarn(
                         "[vision_triggered_navigator] Narrow passage detected "
                         "%.3fm ahead: width=%.3fm required=%.3fm "
-                        "direction=%.1fdeg returns=%d/%d; canceling this "
+                        "direction=%.1fdeg compact_returns=%d/%d "
+                        "compact_spans=%.3f/%.3fm; canceling this "
                         "anchor before the robot enters the bottleneck.",
                         corridor[1], corridor_width,
                         self.coverage_corridor_min_width,
-                        math.degrees(corridor[4]),
+                        math.degrees(corridor[6]),
                         corridor[2], corridor[3],
+                        corridor[4], corridor[5],
                     )
                     self.cancel_goal()
                     self.cmd_vel_pub.publish(Twist())

@@ -33,6 +33,8 @@
   <arg name="coverage_corridor_lateral_extent" default="0.60" />
   <arg name="coverage_corridor_depth_bin" default="0.20" />
   <arg name="coverage_corridor_min_side_points" default="2" />
+  <arg name="coverage_corridor_cluster_gap" default="0.08" />
+  <arg name="coverage_corridor_compact_max_span" default="0.30" />
   <arg name="coverage_teb_min_obstacle_dist" default="0.22" />
   <arg name="coverage_teb_inflation_dist" default="0.30" />
   <arg name="coverage_teb_weight_inflation" default="0.20" />
@@ -135,6 +137,8 @@
     <param name="coverage_corridor_lateral_extent" value="$(arg coverage_corridor_lateral_extent)" />
     <param name="coverage_corridor_depth_bin" value="$(arg coverage_corridor_depth_bin)" />
     <param name="coverage_corridor_min_side_points" value="$(arg coverage_corridor_min_side_points)" />
+    <param name="coverage_corridor_cluster_gap" value="$(arg coverage_corridor_cluster_gap)" />
+    <param name="coverage_corridor_compact_max_span" value="$(arg coverage_corridor_compact_max_span)" />
     <param name="coverage_teb_min_obstacle_dist" value="$(arg coverage_teb_min_obstacle_dist)" />
     <param name="coverage_teb_inflation_dist" value="$(arg coverage_teb_inflation_dist)" />
     <param name="coverage_teb_weight_inflation" value="$(arg coverage_teb_weight_inflation)" />

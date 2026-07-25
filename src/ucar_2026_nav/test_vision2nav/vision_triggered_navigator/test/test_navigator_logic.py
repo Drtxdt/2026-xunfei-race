@@ -176,13 +176,38 @@ def test_translation_corridor_detects_variable_two_sided_bottleneck():
                 math.atan2(lateral, forward),
                 math.hypot(forward, lateral),
             ))
-    width, forward, left_count, right_count = translation_corridor_width(
+    (width, forward, left_count, right_count,
+     left_span, right_span) = translation_corridor_width(
         samples, direction=0.0, min_forward=0.10, max_forward=0.80,
         lateral_extent=0.60, depth_bin=0.20, min_side_points=2)
     assert width == pytest.approx(0.43)
     assert forward == pytest.approx(0.38)
     assert left_count >= 2
     assert right_count >= 2
+    assert left_span < 0.30
+    assert right_span < 0.30
+
+
+def test_translation_corridor_detects_two_curved_cone_returns():
+    samples = []
+    for center_lateral in (-0.24, 0.24):
+        for step in range(17):
+            angle = 0.5 * math.pi + math.pi * step / 16.0
+            forward = 0.55 + 0.07 * math.cos(angle)
+            lateral = center_lateral + 0.07 * math.sin(angle)
+            samples.append((
+                math.atan2(lateral, forward),
+                math.hypot(forward, lateral),
+            ))
+    width, forward, left_count, right_count, left_span, right_span = (
+        translation_corridor_width(samples, direction=0.0)
+    )
+    assert width == pytest.approx(0.34)
+    assert forward == pytest.approx(0.48)
+    assert left_count == 17
+    assert right_count == 17
+    assert left_span < 0.20
+    assert right_span < 0.20
 
 
 def test_translation_corridor_uses_current_motion_direction():
@@ -195,8 +220,10 @@ def test_translation_corridor_uses_current_motion_direction():
                 normalize_angle(direction + relative),
                 math.hypot(forward, lateral),
             ))
-    width, forward, _left, _right = translation_corridor_width(
+    width, forward, _left, _right, _left_span, _right_span = (
+        translation_corridor_width(
         samples, direction=direction)
+    )
     assert width == pytest.approx(0.40)
     assert forward == pytest.approx(0.30)
 
@@ -206,8 +233,7 @@ def test_translation_corridor_ignores_one_sided_or_staggered_obstacles():
         (math.atan2(0.20, forward), math.hypot(forward, 0.20))
         for forward in (0.30, 0.32, 0.34)
     ]
-    assert translation_corridor_width(one_sided, 0.0) == (
-        None, None, None, None)
+    assert translation_corridor_width(one_sided, 0.0) == (None,) * 6
 
     staggered = []
     for forward, lateral in (
@@ -218,7 +244,7 @@ def test_translation_corridor_ignores_one_sided_or_staggered_obstacles():
             math.hypot(forward, lateral),
         ))
     assert translation_corridor_width(
-        staggered, 0.0, depth_bin=0.20) == (None, None, None, None)
+        staggered, 0.0, depth_bin=0.20) == (None,) * 6
 
 
 def test_translation_corridor_ignores_points_behind_or_beyond_lookahead():
@@ -230,7 +256,49 @@ def test_translation_corridor_ignores_points_behind_or_beyond_lookahead():
                 (math.atan2(lateral, forward), math.hypot(forward, lateral)),
             ])
     assert translation_corridor_width(
-        samples, 0.0, max_forward=0.80) == (None, None, None, None)
+        samples, 0.0, max_forward=0.80) == (None,) * 6
+
+
+def test_translation_corridor_does_not_block_continuous_wall_corridor():
+    samples = []
+    for forward_step in range(12, 76, 2):
+        forward = forward_step / 100.0
+        for lateral in (-0.20, 0.20):
+            samples.append((
+                math.atan2(lateral, forward),
+                math.hypot(forward, lateral),
+            ))
+    assert translation_corridor_width(samples, 0.0) == (None,) * 6
+
+
+def test_translation_corridor_does_not_split_one_wall_across_centerline():
+    samples = []
+    forward = 0.60
+    for lateral_step in range(-30, 31, 2):
+        lateral = lateral_step / 100.0
+        samples.append((
+            math.atan2(lateral, forward),
+            math.hypot(forward, lateral),
+        ))
+    assert translation_corridor_width(samples, 0.0) == (None,) * 6
+
+
+def test_translation_corridor_requires_two_compact_obstacles():
+    samples = []
+    for forward_step in range(20, 71, 2):
+        forward = forward_step / 100.0
+        lateral = -0.22
+        samples.append((
+            math.atan2(lateral, forward),
+            math.hypot(forward, lateral),
+        ))
+    for forward, lateral in (
+            (0.39, 0.20), (0.40, 0.21), (0.41, 0.20)):
+        samples.append((
+            math.atan2(lateral, forward),
+            math.hypot(forward, lateral),
+        ))
+    assert translation_corridor_width(samples, 0.0) == (None,) * 6
 
 
 def test_navigation_node_imports_rotation_clearance_helper():

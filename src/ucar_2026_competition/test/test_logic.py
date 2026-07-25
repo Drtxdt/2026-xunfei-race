@@ -102,6 +102,8 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_corridor_lateral_extent: 0.60", config)
         self.assertIn("coverage_corridor_depth_bin: 0.20", config)
         self.assertIn("coverage_corridor_min_side_points: 2", config)
+        self.assertIn("coverage_corridor_cluster_gap: 0.08", config)
+        self.assertIn("coverage_corridor_compact_max_span: 0.30", config)
         self.assertIn("coverage_teb_min_obstacle_dist: 0.22", config)
         self.assertIn("coverage_teb_inflation_dist: 0.30", config)
         self.assertIn("coverage_teb_weight_inflation: 0.20", config)

@@ -1812,6 +1812,10 @@ class CompetitionFlow:
                         "~coverage_corridor_depth_bin", 0.20),
                     "coverage_corridor_min_side_points": rospy.get_param(
                         "~coverage_corridor_min_side_points", 2),
+                    "coverage_corridor_cluster_gap": rospy.get_param(
+                        "~coverage_corridor_cluster_gap", 0.08),
+                    "coverage_corridor_compact_max_span": rospy.get_param(
+                        "~coverage_corridor_compact_max_span", 0.30),
                     "coverage_teb_min_obstacle_dist": rospy.get_param(
                         "~coverage_teb_min_obstacle_dist", 0.22),
                     "coverage_teb_inflation_dist": rospy.get_param(
