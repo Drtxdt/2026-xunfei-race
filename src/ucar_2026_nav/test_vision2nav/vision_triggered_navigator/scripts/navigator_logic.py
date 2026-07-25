@@ -64,6 +64,61 @@ def obstacle_clearance_requires_stop(nearest_range, min_clearance,
             abs(float(min_clearance)))
 
 
+def parking_rotation_obstacle_clearance(
+        samples, wall_fit, lidar_forward_offset=0.0,
+        front_half_angle=math.radians(35.0),
+        wall_residual_tolerance=0.02,
+        minimum_base_clearance=0.0):
+    """Return nearest rotation obstacle after removing a trusted front wall.
+
+    Parking already validates ``wall_fit`` for span, orientation, residual,
+    and temporal continuity.  At close range that same wall extends beyond
+    the fixed front angular sector, so an angle-only exclusion can mistake it
+    for a side obstacle.  Returns infinity when every non-front return belongs
+    to the fitted wall, and ``None`` when no usable non-front evidence exists.
+    """
+    if not wall_fit:
+        return None
+    try:
+        nx, ny = [float(value) for value in wall_fit["normal"]]
+        wall_distance = float(wall_fit["distance"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    normal_length = math.hypot(nx, ny)
+    if (normal_length <= 1e-9 or not math.isfinite(wall_distance)):
+        return None
+    nx /= normal_length
+    ny /= normal_length
+    wall_distance /= normal_length
+
+    offset = float(lidar_forward_offset)
+    half_angle = abs(float(front_half_angle))
+    residual_limit = abs(float(wall_residual_tolerance))
+    base_clearance = max(0.0, float(minimum_base_clearance))
+    nearest = None
+    wall_return_count = 0
+    for angle, distance in samples or ():
+        angle = normalize_angle(float(angle))
+        distance = float(distance)
+        if (not math.isfinite(angle) or not math.isfinite(distance) or
+                distance <= 0.0 or abs(angle) <= half_angle):
+            continue
+        point_x = offset + distance * math.cos(angle)
+        point_y = distance * math.sin(angle)
+        wall_residual = abs(
+            point_x * nx + point_y * ny - wall_distance)
+        if (wall_residual <= residual_limit and
+                math.hypot(point_x, point_y) >= base_clearance):
+            wall_return_count += 1
+            continue
+        nearest = distance if nearest is None else min(nearest, distance)
+    if nearest is not None:
+        return nearest
+    if wall_return_count:
+        return float("inf")
+    return None
+
+
 def polar_sector_min(samples, center_angle, half_angle):
     """Return the nearest valid polar sample in a wrapped angular sector."""
     nearest = None

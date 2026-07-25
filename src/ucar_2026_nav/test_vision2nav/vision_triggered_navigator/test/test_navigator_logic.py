@@ -39,6 +39,7 @@ from navigator_logic import (
     parking_footprint_inside,
     parking_goal_from_wall,
     parking_recenter_required,
+    parking_rotation_obstacle_clearance,
     polar_sector_min,
     ray_segment_intersection,
     rotation_clearance_allows_near_wall,
@@ -130,6 +131,66 @@ def test_parking_clearance_tolerance_is_wired_through_launch():
     assert launch_args["parking_obstacle_clearance_tolerance"] == "0.005"
     assert node_params["parking_obstacle_clearance_tolerance"] == (
         "$(arg parking_obstacle_clearance_tolerance)")
+
+
+def test_parking_rotation_filters_logged_wall_return_beyond_front_sector():
+    normal_angle = -0.047
+    wall_fit = {
+        "normal": (math.cos(normal_angle), math.sin(normal_angle)),
+        "distance": 0.306,
+    }
+    samples = [
+        (math.radians(36.0), 0.267),
+        (math.radians(-40.0), 0.310),
+        (math.radians(90.0), 0.80),
+    ]
+    clearance = parking_rotation_obstacle_clearance(
+        samples, wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isclose(clearance, 0.80)
+    assert not obstacle_clearance_requires_stop(
+        clearance, 0.28, 0.005)
+    wall_only_clearance = parking_rotation_obstacle_clearance(
+        samples[:2], wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isinf(wall_only_clearance)
+    assert not obstacle_clearance_requires_stop(
+        wall_only_clearance, 0.28, 0.005)
+
+
+def test_parking_rotation_keeps_cone_that_protrudes_from_fitted_wall():
+    normal_angle = -0.047
+    wall_fit = {
+        "normal": (math.cos(normal_angle), math.sin(normal_angle)),
+        "distance": 0.306,
+    }
+    samples = [
+        (math.radians(36.0), 0.267),
+        (math.radians(60.0), 0.267),
+        (math.radians(90.0), 0.80),
+    ]
+    clearance = parking_rotation_obstacle_clearance(
+        samples, wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isclose(clearance, 0.267)
+    assert obstacle_clearance_requires_stop(
+        clearance, 0.28, 0.005)
+
+
+def test_parking_rotation_never_filters_wall_like_return_inside_footprint():
+    wall_fit = {
+        "normal": (1.0, 0.0),
+        "distance": 0.20,
+    }
+    samples = [(math.radians(36.0), 0.16)]
+    clearance = parking_rotation_obstacle_clearance(
+        samples, wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isclose(clearance, 0.16)
+    assert obstacle_clearance_requires_stop(
+        clearance, 0.28, 0.005)
+
+
+def test_parking_rotation_requires_evidence_without_a_trusted_wall():
+    samples = [(math.radians(36.0), 0.267)]
+    assert parking_rotation_obstacle_clearance(
+        samples, None, 0.08, math.radians(35.0), 0.0225) is None
 
 
 def test_rotation_clearance_consensus_requires_enough_fresh_samples():

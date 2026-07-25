@@ -47,6 +47,7 @@ from navigator_logic import (
     parking_footprint_margins,
     parking_goal_from_wall,
     parking_recenter_required,
+    parking_rotation_obstacle_clearance,
     polar_sector_min,
     ray_segment_intersection,
     rotation_clearance_allows_near_wall,
@@ -596,10 +597,44 @@ class VisionTriggeredNavigator(object):
                     "rotation")
         return None, None, None
 
-    def _parking_command_clearance(self, command):
+    def _parking_command_clearance(self, command, wall_fit=None):
         """Protect direct docking while allowing the expected front wall."""
         command_x, command_y, command_yaw = command
         if abs(command_yaw) > 0.0:
+            if wall_fit is not None:
+                filtered = parking_rotation_obstacle_clearance(
+                    self.scan_polar_samples,
+                    wall_fit,
+                    self.parking_lidar_forward_offset,
+                    self.parking_wall_fit_half_angle,
+                    max(
+                        0.02,
+                        self.parking_wall_fit_max_residual * 1.5),
+                    self.robot_footprint_radius +
+                    self.parking_required_margin,
+                )
+                if filtered is not None:
+                    raw_blocked = obstacle_clearance_requires_stop(
+                        self.scan_nonfront_min,
+                        self.parking_obstacle_min_clearance,
+                        self.parking_obstacle_clearance_tolerance)
+                    filtered_blocked = obstacle_clearance_requires_stop(
+                        filtered,
+                        self.parking_obstacle_min_clearance,
+                        self.parking_obstacle_clearance_tolerance)
+                    if raw_blocked and not filtered_blocked:
+                        raw_clearance = (
+                            "missing" if self.scan_nonfront_min is None
+                            else "{:.3f}m".format(self.scan_nonfront_min))
+                        rospy.loginfo_throttle(
+                            1.0,
+                            "[vision_triggered_navigator] parking rotation "
+                            "ignored trusted wall return %s; nearest "
+                            "non-wall obstacle=%s.",
+                            raw_clearance,
+                            ("clear" if math.isinf(filtered)
+                             else "{:.3f}m".format(filtered)))
+                    return filtered, "rotation sweep"
             return self.scan_nonfront_min, "rotation sweep"
         if command_y > 0.0:
             return self.scan_left_min, "left"
@@ -2246,7 +2281,7 @@ class VisionTriggeredNavigator(object):
                 self.parking_dock_min_yaw,
             )
             obstacle_clearance, obstacle_direction = (
-                self._parking_command_clearance(command))
+                self._parking_command_clearance(command, fit))
             if (obstacle_direction is not None and
                     obstacle_clearance_requires_stop(
                         obstacle_clearance,
