@@ -247,6 +247,20 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("_start_transition_announcement", called("task3"))
         self.assertIn(
             "_wait_transition_announcement", called("production_task4_handoff"))
+        self.assertIn(
+            "_back_out_of_factory_bay", called("production_task4_handoff"))
+        handoff_calls = [
+            node for node in ast.walk(methods["production_task4_handoff"])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        ]
+        back_out_line = next(
+            node.lineno for node in handoff_calls
+            if node.func.attr == "_back_out_of_factory_bay")
+        announcement_line = next(
+            node.lineno for node in handoff_calls
+            if node.func.attr == "_wait_transition_announcement")
+        self.assertLess(back_out_line, announcement_line)
         self.assertIn("_start_announcement", called("task4"))
         self.assertIn("_wait_announcement", called("task4"))
         self.assertIn("stop_child", called("task4"))
@@ -394,6 +408,11 @@ class CompetitionLogicTest(unittest.TestCase):
             content = stream.read()
         self.assertIn("task2_inter_visit_reverse_distance_m: 0.32", content)
         self.assertIn("task2_inter_visit_rear_clearance_m: 0.28", content)
+        self.assertIn("task4_factory_egress_enabled: true", content)
+        self.assertIn(
+            "task4_factory_egress_reverse_distance_m: 0.32", content)
+        self.assertIn(
+            "task4_factory_egress_rear_clearance_m: 0.28", content)
         self.assertIn(
             "task2_second_search_abort_fail_fast_count: 0", content)
 

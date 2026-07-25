@@ -100,6 +100,18 @@ target_trigger_service: /vision_triggered_navigator/trigger_target
 trigger_ack_timeout_sec: 2.0
 task1_task2_handoff_timeout_sec: 5.0
 task1_task2_handoff_stable_sec: 0.5
+# 每次离开贴墙停车框都先直线倒车，禁止move_base从框内强行规划。
+task2_inter_visit_reverse_distance_m: 0.32
+task2_inter_visit_reverse_speed_mps: 0.08
+task2_inter_visit_rear_clearance_m: 0.28
+task2_inter_visit_sensor_stale_sec: 0.5
+task2_inter_visit_timeout_sec: 7.0
+task4_factory_egress_enabled: true
+task4_factory_egress_reverse_distance_m: 0.32
+task4_factory_egress_reverse_speed_mps: 0.08
+task4_factory_egress_rear_clearance_m: 0.28
+task4_factory_egress_sensor_stale_sec: 0.5
+task4_factory_egress_timeout_sec: 7.0
 # 任务2厂牌覆盖扫描：仅传给coverage_search_mode导航节点。
 coverage_scan_step_deg: 20.0
 coverage_scan_angular_speed: 0.50
@@ -131,6 +143,7 @@ coverage_anchor_yaw_timeout_sec: 20.0
 task2_no_workshop_anchors: []
 # 第二轮优先使用第一轮仓库记忆；未记住目标时从下一个未扫描点继续。
 task2_resume_coverage_enabled: true
+task2_second_search_abort_fail_fast_count: 0
 task2_remembered_heading_confirm_sec: 1.2
 task2_remembered_heading_scan_half_angle_deg: 18.0
 

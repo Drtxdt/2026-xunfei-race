@@ -842,24 +842,24 @@ class CompetitionFlow:
             "task1", "task2_handoff_ready",
             "move_base idle; fresh costmap; preserving AMCL state")
 
-    def task2_inter_visit_handoff(self):
-        """Back out of the first wall-facing bay before searching again."""
+    def _back_out_of_factory_bay(self, stage, state, detail, parameter_prefix):
+        """Leave a wall-facing bay with rear lidar and odometry guards."""
         distance = max(0.0, float(rospy.get_param(
-            "~task2_inter_visit_reverse_distance_m", 0.32)))
+            "~{}_reverse_distance_m".format(parameter_prefix), 0.32)))
         speed = abs(float(rospy.get_param(
-            "~task2_inter_visit_reverse_speed_mps", 0.08)))
+            "~{}_reverse_speed_mps".format(parameter_prefix), 0.08)))
         min_clearance = max(0.0, float(rospy.get_param(
-            "~task2_inter_visit_rear_clearance_m", 0.28)))
+            "~{}_rear_clearance_m".format(parameter_prefix), 0.28)))
         stale_sec = max(0.1, float(rospy.get_param(
-            "~task2_inter_visit_sensor_stale_sec", 0.5)))
+            "~{}_sensor_stale_sec".format(parameter_prefix), 0.5)))
         timeout = max(1.0, float(rospy.get_param(
-            "~task2_inter_visit_timeout_sec", 7.0)))
+            "~{}_timeout_sec".format(parameter_prefix), 7.0)))
         if distance <= 0.0 or speed <= 0.0:
-            raise StageError("task2 inter-visit reverse parameters must be positive")
+            raise StageError(
+                "{} reverse parameters must be positive".format(
+                    parameter_prefix))
 
-        self.publish_status(
-            "task2", "leaving_physical_factory",
-            "backing out of the first parking bay before the second search")
+        self.publish_status(stage, state, detail)
         self.safe_stop(cancel_navigation=True)
         ready_deadline = time.monotonic() + 2.0
         start_pose = None
@@ -876,7 +876,8 @@ class CompetitionFlow:
                 break
             rospy.sleep(0.05)
         if start_pose is None:
-            raise StageError("task2 inter-visit exit has no fresh odom/rear lidar")
+            raise StageError(
+                "{} has no fresh odom/rear lidar".format(parameter_prefix))
 
         deadline = time.monotonic() + timeout
         moved = 0.0
@@ -894,23 +895,34 @@ class CompetitionFlow:
                 if (pose is None or rear_min is None or
                         odom_age > stale_sec or scan_age > stale_sec):
                     raise StageError(
-                        "task2 inter-visit exit lost fresh odom/rear lidar")
+                        "{} lost fresh odom/rear lidar".format(
+                            parameter_prefix))
                 moved = math.hypot(
                     pose[0] - start_pose[0], pose[1] - start_pose[1])
                 if moved >= distance:
                     break
                 if rear_min <= min_clearance:
                     raise StageError(
-                        "task2 inter-visit rear path blocked at {:.3f}m".format(
-                            rear_min))
+                        "{} rear path blocked at {:.3f}m".format(
+                            parameter_prefix, rear_min))
                 self.cmd_pub.publish(command)
                 rate.sleep()
             else:
                 raise StageError(
-                    "task2 inter-visit exit timed out after moving {:.3f}m".format(
-                        moved))
+                    "{} timed out after moving {:.3f}m".format(
+                        parameter_prefix, moved))
         finally:
             self.safe_stop(cancel_navigation=True)
+        return moved
+
+    def task2_inter_visit_handoff(self):
+        """Back out of the first wall-facing bay before searching again."""
+        moved = self._back_out_of_factory_bay(
+            "task2",
+            "leaving_physical_factory",
+            "backing out of the first parking bay before the second search",
+            "task2_inter_visit",
+        )
 
         self.publish_status(
             "task2", "refreshing_second_search",
@@ -945,6 +957,19 @@ class CompetitionFlow:
             source_stage, "task4_handoff",
             "preserving AMCL pose and preparing physical navigation")
         self.safe_stop(cancel_navigation=True)
+        if bool_param("~task4_factory_egress_enabled", True):
+            moved = self._back_out_of_factory_bay(
+                source_stage,
+                "leaving_final_factory",
+                "backing out of the final parking bay before task4 navigation",
+                "task4_factory_egress",
+            )
+            self.publish_status(
+                source_stage,
+                "final_factory_exit_ready",
+                "left final parking bay by {:.3f}m before task4".format(
+                    moved),
+            )
         timeout = float(rospy.get_param(
             "~task3_task4_handoff_timeout_sec", 5.0))
         stable_required = float(rospy.get_param(
