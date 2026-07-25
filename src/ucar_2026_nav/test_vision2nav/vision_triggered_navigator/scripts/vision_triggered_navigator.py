@@ -59,6 +59,7 @@ from navigator_logic import (
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
+    translation_corridor_width,
     wall_fit_matches_expected,
     wall_fit_is_continuous,
     wall_frame_docking_command,
@@ -175,6 +176,26 @@ class VisionTriggeredNavigator(object):
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
+        self.coverage_corridor_guard_enabled = bool(rospy.get_param(
+            "~coverage_corridor_guard_enabled", True))
+        self.coverage_corridor_lookahead = max(0.20, float(rospy.get_param(
+            "~coverage_corridor_lookahead", 0.80)))
+        self.coverage_corridor_min_width = max(0.10, float(rospy.get_param(
+            "~coverage_corridor_min_width", 0.50)))
+        self.coverage_corridor_lateral_extent = max(
+            0.10, float(rospy.get_param(
+                "~coverage_corridor_lateral_extent", 0.60)))
+        self.coverage_corridor_depth_bin = max(0.05, float(rospy.get_param(
+            "~coverage_corridor_depth_bin", 0.20)))
+        self.coverage_corridor_min_side_points = max(1, int(rospy.get_param(
+            "~coverage_corridor_min_side_points", 2)))
+        self.coverage_teb_min_obstacle_dist = max(0.0, float(
+            rospy.get_param("~coverage_teb_min_obstacle_dist", 0.22)))
+        self.coverage_teb_inflation_dist = max(
+            self.coverage_teb_min_obstacle_dist,
+            float(rospy.get_param("~coverage_teb_inflation_dist", 0.30)))
+        self.coverage_teb_weight_inflation = max(0.0, float(
+            rospy.get_param("~coverage_teb_weight_inflation", 0.20)))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
             "~coverage_max_vel_x", 0.55)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
@@ -464,6 +485,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
         self.current_goal_clearance_stop = False
+        self.current_goal_corridor_stop = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
@@ -598,6 +620,27 @@ class VisionTriggeredNavigator(object):
                     self.coverage_rotation_min_clearance,
                     "rotation")
         return None, None, None
+
+    def _coverage_motion_corridor(self, now):
+        """Return a two-sided bottleneck observed ahead of current motion."""
+        if (not self.coverage_corridor_guard_enabled or
+                not sensor_is_fresh(
+                    self.last_cmd_vel_received_at, now, self.scan_stale)):
+            return None, None, None, None, None
+        command_x, command_y, _command_yaw = self.last_cmd_vel
+        if math.hypot(command_x, command_y) <= 0.01:
+            return None, None, None, None, None
+        direction = math.atan2(command_y, command_x)
+        width, forward, left_count, right_count = translation_corridor_width(
+            self.scan_polar_samples,
+            direction,
+            min_forward=0.10,
+            max_forward=self.coverage_corridor_lookahead,
+            lateral_extent=self.coverage_corridor_lateral_extent,
+            depth_bin=self.coverage_corridor_depth_bin,
+            min_side_points=self.coverage_corridor_min_side_points,
+        )
+        return width, forward, left_count, right_count, direction
 
     def _parking_command_clearance(self, command):
         """Protect direct docking while allowing the expected front wall."""
@@ -1009,6 +1052,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
         self.current_goal_clearance_stop = False
+        self.current_goal_corridor_stop = False
 
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = self.map_frame
@@ -1049,6 +1093,28 @@ class VisionTriggeredNavigator(object):
             if self.coverage_search_mode and not self.triggered:
                 now = rospy.get_time()
                 elapsed = now - started
+                corridor = self._coverage_motion_corridor(now)
+                corridor_width = corridor[0]
+                if (corridor_width is not None and
+                        sensor_is_fresh(
+                            self.scan_received_at, now, self.scan_stale) and
+                        corridor_width < self.coverage_corridor_min_width):
+                    self.current_goal_clearance_stop = True
+                    self.current_goal_corridor_stop = True
+                    self._publish_status("coverage_corridor_stop")
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] Narrow passage detected "
+                        "%.3fm ahead: width=%.3fm required=%.3fm "
+                        "direction=%.1fdeg returns=%d/%d; canceling this "
+                        "anchor before the robot enters the bottleneck.",
+                        corridor[1], corridor_width,
+                        self.coverage_corridor_min_width,
+                        math.degrees(corridor[4]),
+                        corridor[2], corridor[3],
+                    )
+                    self.cancel_goal()
+                    self.cmd_vel_pub.publish(Twist())
+                    break
                 clearance, minimum, motion = (
                     self._coverage_motion_clearance(now))
                 if (minimum is not None and minimum > 0.0 and
@@ -1521,14 +1587,28 @@ class VisionTriggeredNavigator(object):
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
                     return "failed"
+                if (self.current_goal_corridor_stop and
+                        attempt < self.coverage_goal_retry_count):
+                    self._publish_status(
+                        "coverage_corridor_replan:{}".format(patrol_idx + 1))
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] 精确锚点%d前方存在通用"
+                        "狭窄通道；保留当前障碍地图并重规划一次绕行路线，"
+                        "不清除锥桶障碍.",
+                        patrol_idx + 1)
+                    rospy.sleep(0.8)
+                    continue
                 self._publish_status(
                     "coverage_translation_clearance_hold:{}".format(
                         patrol_idx + 1))
                 rospy.logwarn(
-                    "[vision_triggered_navigator] 精确锚点%d行驶方向被近距离"
-                    "障碍物阻挡；保持停车识别%.2fs后继续下一锚点，"
-                    "禁止再次向同一障碍物冲刺.",
-                    patrol_idx + 1, self.coverage_candidate_hold)
+                    "[vision_triggered_navigator] 精确锚点%d行驶方向被%s"
+                    "阻挡；保持停车识别%.2fs后继续下一锚点，"
+                    "禁止再次驶入危险区域.",
+                    patrol_idx + 1,
+                    "狭窄通道" if self.current_goal_corridor_stop else
+                    "近距离障碍物",
+                    self.coverage_candidate_hold)
                 hold_started = rospy.get_time()
                 self._hold_scan_step(
                     "锚点{}平移安全静止识别".format(patrol_idx + 1),
@@ -2376,6 +2456,9 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x",
                 "max_vel_y",
                 "max_vel_theta",
+                "min_obstacle_dist",
+                "inflation_dist",
+                "weight_inflation",
             )
             planner_missing = [
                 name for name in planner_required
@@ -2397,6 +2480,9 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x": self.coverage_max_vel_x,
                 "max_vel_y": self.coverage_max_vel_y,
                 "max_vel_theta": self.coverage_max_vel_theta,
+                "min_obstacle_dist": self.coverage_teb_min_obstacle_dist,
+                "inflation_dist": self.coverage_teb_inflation_dist,
+                "weight_inflation": self.coverage_teb_weight_inflation,
             })
             if (bool(updated.get("recovery_behavior_enabled", True)) or
                     bool(updated.get("clearing_rotation_allowed", True)) or
@@ -2407,12 +2493,24 @@ class VisionTriggeredNavigator(object):
                     self.coverage_max_vel_y + 1e-6 or
                     float(planner_updated.get(
                         "max_vel_theta", float("inf"))) >
-                    self.coverage_max_vel_theta + 1e-6):
+                    self.coverage_max_vel_theta + 1e-6 or
+                    float(planner_updated.get("min_obstacle_dist", 0.0)) <
+                    self.coverage_teb_min_obstacle_dist - 1e-6 or
+                    float(planner_updated.get("inflation_dist", 0.0)) <
+                    self.coverage_teb_inflation_dist - 1e-6 or
+                    float(planner_updated.get("weight_inflation", 0.0)) <
+                    self.coverage_teb_weight_inflation - 1e-6):
                 raise RuntimeError(
                     "move_base rejected coverage safety configuration")
             self._publish_status("coverage_recovery_disabled")
             rospy.logwarn(
-                "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复行为和清障旋转；退出时自动恢复.")
+                "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复"
+                "行为和清障旋转，并将TEB障碍间距设为%.2f/%.2fm"
+                "（膨胀权重%.2f）；"
+                "退出时自动恢复.",
+                self.coverage_teb_min_obstacle_dist,
+                self.coverage_teb_inflation_dist,
+                self.coverage_teb_weight_inflation)
             return True
         except Exception as exc:
             rospy.logerr(

@@ -80,6 +80,74 @@ def polar_sector_min(samples, center_angle, half_angle):
     return nearest
 
 
+def translation_corridor_width(samples, direction, min_forward=0.10,
+                               max_forward=0.80, lateral_extent=0.60,
+                               depth_bin=0.20, min_side_points=2):
+    """Return the narrowest obstacle-bounded corridor in a motion frame.
+
+    Polar lidar points are projected into axes aligned with ``direction`` and
+    grouped by forward depth.  A bin only forms a corridor when it contains
+    enough returns on both sides of the motion centerline.  This detects cone
+    or wall bottlenecks before the robot enters them without relying on map
+    coordinates or calibrated anchor IDs.
+
+    The return value is ``(width, forward_distance, left_count, right_count)``.
+    When no two-sided corridor is visible, all values are ``None``.
+    """
+    min_forward = max(0.0, float(min_forward))
+    max_forward = max(min_forward, float(max_forward))
+    lateral_extent = abs(float(lateral_extent))
+    depth_bin = max(0.01, abs(float(depth_bin)))
+    required = max(1, int(min_side_points))
+    bins = {}
+
+    for angle, distance in samples or ():
+        try:
+            angle = float(angle)
+            distance = float(distance)
+        except (TypeError, ValueError):
+            continue
+        if (not math.isfinite(angle) or not math.isfinite(distance) or
+                distance <= 0.0):
+            continue
+        relative_angle = normalize_angle(angle - float(direction))
+        forward = distance * math.cos(relative_angle)
+        lateral = distance * math.sin(relative_angle)
+        if (forward < min_forward or forward > max_forward or
+                abs(lateral) > lateral_extent or abs(lateral) < 1e-6):
+            continue
+        # Two half-bin-shifted grids prevent a cone pair near a bin boundary
+        # from being split solely by floating-point rounding.
+        for grid, offset in enumerate((0.0, 0.5 * depth_bin)):
+            index = int(math.floor(
+                (forward - min_forward + offset) / depth_bin))
+            entry = bins.setdefault(
+                (grid, index), {"left": [], "right": []})
+            entry["left" if lateral > 0.0 else "right"].append(
+                (lateral, forward))
+
+    narrowest = None
+    for entry in bins.values():
+        left = entry["left"]
+        right = entry["right"]
+        if len(left) < required or len(right) < required:
+            continue
+        left_edge = min(item[0] for item in left)
+        right_edge = max(item[0] for item in right)
+        width = left_edge - right_edge
+        forward_distance = min(
+            min(item[1] for item in left),
+            min(item[1] for item in right),
+        )
+        candidate = (width, forward_distance, len(left), len(right))
+        if narrowest is None or candidate[0] < narrowest[0]:
+            narrowest = candidate
+
+    if narrowest is None:
+        return None, None, None, None
+    return narrowest
+
+
 def cyclic_coverage_order(points, robot_x, robot_y):
     """Start at the nearest anchor while preserving the calibrated cycle."""
     if not points:

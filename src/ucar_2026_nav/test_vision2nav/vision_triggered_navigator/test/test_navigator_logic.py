@@ -49,6 +49,7 @@ from navigator_logic import (
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
+    translation_corridor_width,
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_handoff_accepted,
@@ -165,6 +166,71 @@ def test_polar_sector_min_wraps_and_ignores_other_directions():
         samples, math.pi, math.radians(10.0)) == pytest.approx(0.31)
     assert polar_sector_min(
         samples, 0.5 * math.pi, math.radians(10.0)) is None
+
+
+def test_translation_corridor_detects_variable_two_sided_bottleneck():
+    samples = []
+    for forward in (0.38, 0.40, 0.42):
+        for lateral in (-0.23, -0.22, 0.21, 0.24):
+            samples.append((
+                math.atan2(lateral, forward),
+                math.hypot(forward, lateral),
+            ))
+    width, forward, left_count, right_count = translation_corridor_width(
+        samples, direction=0.0, min_forward=0.10, max_forward=0.80,
+        lateral_extent=0.60, depth_bin=0.20, min_side_points=2)
+    assert width == pytest.approx(0.43)
+    assert forward == pytest.approx(0.38)
+    assert left_count >= 2
+    assert right_count >= 2
+
+
+def test_translation_corridor_uses_current_motion_direction():
+    samples = []
+    direction = 0.5 * math.pi
+    for forward in (0.30, 0.32):
+        for lateral in (-0.20, 0.20):
+            relative = math.atan2(lateral, forward)
+            samples.append((
+                normalize_angle(direction + relative),
+                math.hypot(forward, lateral),
+            ))
+    width, forward, _left, _right = translation_corridor_width(
+        samples, direction=direction)
+    assert width == pytest.approx(0.40)
+    assert forward == pytest.approx(0.30)
+
+
+def test_translation_corridor_ignores_one_sided_or_staggered_obstacles():
+    one_sided = [
+        (math.atan2(0.20, forward), math.hypot(forward, 0.20))
+        for forward in (0.30, 0.32, 0.34)
+    ]
+    assert translation_corridor_width(one_sided, 0.0) == (
+        None, None, None, None)
+
+    staggered = []
+    for forward, lateral in (
+            (0.20, 0.20), (0.22, 0.21),
+            (0.65, -0.20), (0.67, -0.21)):
+        staggered.append((
+            math.atan2(lateral, forward),
+            math.hypot(forward, lateral),
+        ))
+    assert translation_corridor_width(
+        staggered, 0.0, depth_bin=0.20) == (None, None, None, None)
+
+
+def test_translation_corridor_ignores_points_behind_or_beyond_lookahead():
+    samples = []
+    for forward in (-0.30, 1.10):
+        for lateral in (-0.20, 0.20):
+            samples.extend([
+                (math.atan2(lateral, forward), math.hypot(forward, lateral)),
+                (math.atan2(lateral, forward), math.hypot(forward, lateral)),
+            ])
+    assert translation_corridor_width(
+        samples, 0.0, max_forward=0.80) == (None, None, None, None)
 
 
 def test_navigation_node_imports_rotation_clearance_helper():
