@@ -32,6 +32,10 @@ feasibility_check_rate: 1.0  # Hz，导航过程中检查目标可行性的频�
 coverage_search_mode: false
 coverage_start_nearest: false
 coverage_preferred_anchor: 0
+coverage_preferred_odom_yaw_enabled: false
+coverage_preferred_odom_yaw: 0.0
+coverage_preferred_confirm_dwell_sec: 1.2
+coverage_preferred_scan_half_angle_deg: 18.0
 coverage_skip_anchors: ""
 coverage_failed_revisit_limit: 1
 coverage_abort_fail_fast_count: 0

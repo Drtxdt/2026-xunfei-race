@@ -164,6 +164,36 @@ def test_coverage_navigation_reports_transit_and_observation_anchor_ids():
     assert "coverage_anchor_observing:{}" in constants
 
 
+def test_remembered_target_uses_saved_heading_and_short_scan_only():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VisionTriggeredNavigator"
+    )
+    method_names = {
+        node.name for node in navigator.body if isinstance(node, ast.FunctionDef)
+    }
+    assert "_align_remembered_odom_yaw" in method_names
+    assert "_scan_remembered_heading_window" in method_names
+
+    constants = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "coverage_remembered_heading_observing:{}" in constants
+    assert (
+        "[vision_triggered_navigator] Remembered target was not "
+        "confirmed at anchor %d within the short scan; continue to "
+        "the remaining anchors without repeating this anchor's full "
+        "rotation plan."
+    ) in constants
+
+
 def test_clearance_block_preserves_stationary_scan():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",

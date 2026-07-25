@@ -562,16 +562,27 @@ class CompetitionFlow:
             with self.lock:
                 anchor = self.current_coverage_anchor
                 previous = self.task2_warehouse_memory.get(category)
-                if (anchor and (previous is None or
-                                score >= float(previous.get("score", 0.0)))):
+                pose = self.base_pose
+                yaw = pose[2] if pose is not None else None
+                area_ratio = bbox_ratios[2] if bbox_ratios is not None else 0.0
+                previous_quality = (
+                    float(previous.get("area_ratio", 0.0)),
+                    float(previous.get("score", 0.0)),
+                ) if previous is not None else (-1.0, -1.0)
+                quality = (area_ratio, score)
+                if (anchor and yaw is not None and math.isfinite(yaw) and
+                        (previous is None or quality > previous_quality)):
                     self.task2_warehouse_memory[category] = {
                         "anchor": int(anchor),
                         "score": score,
+                        "area_ratio": area_ratio,
+                        "odom_yaw": float(yaw),
                         "stamp": time.time(),
                     }
                     rospy.loginfo(
-                        "task2 warehouse memory: category=%s anchor=%d score=%.3f",
-                        category, anchor, score)
+                        "task2 warehouse memory: category=%s anchor=%d "
+                        "score=%.3f area=%.4f odom_yaw=%.3f",
+                        category, anchor, score, area_ratio, yaw)
         if category == self.ocr_target and trigger_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
@@ -1686,6 +1697,16 @@ class CompetitionFlow:
                 )
             else:
                 preferred_anchor, skipped_anchors = 0, ()
+            remembered_observation = self.task2_warehouse_memory.get(
+                category, {})
+            remembered_heading_enabled = bool(
+                phase == "simulation" and preferred_anchor and
+                int(remembered_observation.get("anchor", 0) or 0) ==
+                int(preferred_anchor) and
+                remembered_observation.get("odom_yaw") is not None
+            )
+            remembered_odom_yaw = float(
+                remembered_observation.get("odom_yaw", 0.0) or 0.0)
             no_workshop_anchors = normalize_coverage_anchor_ids(
                 rospy.get_param("~task2_no_workshop_anchors", []),
                 anchor_count,
@@ -1701,9 +1722,11 @@ class CompetitionFlow:
         if phase == "simulation" and preferred_anchor:
             rospy.loginfo(
                 "task2 coverage resume: starting %s search at anchor %d; "
-                "skipping irrelevant anchors=%s",
+                "skipping irrelevant anchors=%s remembered_heading=%s "
+                "odom_yaw=%.3f",
                 category, preferred_anchor,
-                ",".join(str(value) for value in skipped_anchors) or "none")
+                ",".join(str(value) for value in skipped_anchors) or "none",
+                remembered_heading_enabled, remembered_odom_yaw)
         self.publish_status(
             "task2", "searching_{}".format(phase),
             "searching {} factory sign with existing 9-point navigation".format(category))
@@ -1755,6 +1778,13 @@ class CompetitionFlow:
                         preferred_anchor
                         if resume_coverage_enabled and phase == "simulation"
                         else 0),
+                    "coverage_preferred_odom_yaw_enabled": (
+                        remembered_heading_enabled),
+                    "coverage_preferred_odom_yaw": remembered_odom_yaw,
+                    "coverage_preferred_confirm_dwell_sec": rospy.get_param(
+                        "~task2_remembered_heading_confirm_sec", 1.2),
+                    "coverage_preferred_scan_half_angle_deg": rospy.get_param(
+                        "~task2_remembered_heading_scan_half_angle_deg", 18.0),
                     "coverage_skip_anchors": ",".join(
                         str(value) for value in skipped_anchors),
                     "coverage_abort_fail_fast_count": (

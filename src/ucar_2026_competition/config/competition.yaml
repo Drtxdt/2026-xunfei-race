@@ -131,6 +131,8 @@ coverage_anchor_yaw_timeout_sec: 20.0
 task2_no_workshop_anchors: []
 # 第二轮优先使用第一轮仓库记忆；未记住目标时从下一个未扫描点继续。
 task2_resume_coverage_enabled: true
+task2_remembered_heading_confirm_sec: 1.2
+task2_remembered_heading_scan_half_angle_deg: 18.0
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003

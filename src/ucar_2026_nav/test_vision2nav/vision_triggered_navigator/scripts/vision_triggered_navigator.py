@@ -181,6 +181,15 @@ class VisionTriggeredNavigator(object):
             "~coverage_start_nearest", False))
         self.coverage_preferred_anchor = int(rospy.get_param(
             "~coverage_preferred_anchor", 0))
+        self.coverage_preferred_odom_yaw_enabled = bool(rospy.get_param(
+            "~coverage_preferred_odom_yaw_enabled", False))
+        self.coverage_preferred_odom_yaw = normalize_angle(float(
+            rospy.get_param("~coverage_preferred_odom_yaw", 0.0)))
+        self.coverage_preferred_confirm_dwell = max(0.2, float(
+            rospy.get_param("~coverage_preferred_confirm_dwell_sec", 1.2)))
+        self.coverage_preferred_scan_half_angle = math.radians(max(
+            0.0, min(45.0, float(rospy.get_param(
+                "~coverage_preferred_scan_half_angle_deg", 18.0)))))
         raw_skipped_anchors = rospy.get_param("~coverage_skip_anchors", "")
         if isinstance(raw_skipped_anchors, (list, tuple)):
             self.coverage_skip_anchors = tuple(raw_skipped_anchors)
@@ -862,12 +871,86 @@ class VisionTriggeredNavigator(object):
             step = min(abs(error), math.radians(10.0))
             if not self._rotate_center_step(
                     1.0 if error > 0.0 else -1.0, step,
-                    abort_on_trigger=True):
+                    abort_on_trigger=True,
+                    minimum_clearance=self.coverage_rotation_min_clearance):
                 return False
         self.cmd_vel_pub.publish(Twist())
         rospy.logerr("[vision_triggered_navigator] 精确锚点航向闭环超过%.1fs.",
                      self.coverage_anchor_yaw_timeout)
         return False
+
+    def _align_remembered_odom_yaw(self):
+        """Restore the odometry heading that previously produced the best OCR."""
+        target_yaw = self.coverage_preferred_odom_yaw
+        self._publish_status("coverage_remembered_heading_aligning")
+        deadline = rospy.get_time() + self.coverage_anchor_yaw_timeout
+        while not rospy.is_shutdown() and rospy.get_time() < deadline:
+            if self.triggered:
+                self.cmd_vel_pub.publish(Twist())
+                return True
+            if not self._odom_is_fresh():
+                self.cmd_vel_pub.publish(Twist())
+                rospy.logerr(
+                    "[vision_triggered_navigator] Cannot restore remembered "
+                    "heading because odometry is stale.")
+                return False
+            error = normalize_angle(target_yaw - self.odom_yaw)
+            if abs(error) <= self.coverage_anchor_yaw_tolerance:
+                self.cmd_vel_pub.publish(Twist())
+                self._publish_status("coverage_remembered_heading_aligned")
+                rospy.loginfo(
+                    "[vision_triggered_navigator] Restored remembered OCR "
+                    "heading: target=%.1fdeg error=%.1fdeg.",
+                    math.degrees(target_yaw), math.degrees(error))
+                return True
+            step = min(abs(error), math.radians(10.0))
+            if not self._rotate_center_step(
+                    1.0 if error > 0.0 else -1.0,
+                    step,
+                    abort_on_trigger=True,
+                    minimum_clearance=self.coverage_rotation_min_clearance):
+                return bool(self.triggered)
+        self.cmd_vel_pub.publish(Twist())
+        rospy.logerr(
+            "[vision_triggered_navigator] Remembered OCR heading alignment "
+            "timed out after %.1fs.", self.coverage_anchor_yaw_timeout)
+        return False
+
+    def _scan_remembered_heading_window(self, anchor_id):
+        """Confirm a remembered sign near its saved heading without a full sweep."""
+        half_angle = self.coverage_preferred_scan_half_angle
+        if half_angle <= 0.0:
+            return True
+        scan_steps = (
+            ("left", 1.0, half_angle),
+            ("right", -1.0, 2.0 * half_angle),
+            ("return", 1.0, half_angle),
+        )
+        rospy.loginfo(
+            "[vision_triggered_navigator] Remembered anchor %d short scan: "
+            "saved heading %.1fdeg, window +/-%.1fdeg.",
+            anchor_id, math.degrees(self.coverage_preferred_odom_yaw),
+            math.degrees(half_angle))
+        for label, direction, angle in scan_steps:
+            if self.triggered:
+                return True
+            if not self._rotate_center_step(
+                    direction, angle, abort_on_trigger=True,
+                    minimum_clearance=self.coverage_rotation_min_clearance):
+                if self.triggered:
+                    return True
+                rospy.logwarn(
+                    "[vision_triggered_navigator] Remembered anchor %d short "
+                    "scan stopped during %s; do not start the full sweep.",
+                    anchor_id, label)
+                return False
+            started = rospy.get_time()
+            self._hold_scan_step(
+                "remembered anchor {} {}".format(anchor_id, label),
+                started,
+                minimum_dwell=self.coverage_preferred_confirm_dwell,
+            )
+        return True
 
     def _check_current_goal_cb(self, event):
         """定时器回调：检查当前导航目标是否仍然可行"""
@@ -1409,6 +1492,44 @@ class VisionTriggeredNavigator(object):
             return "failed"
 
         self.cmd_vel_pub.publish(Twist())
+        remembered_anchor = (
+            self.coverage_preferred_odom_yaw_enabled and
+            patrol_idx + 1 == self.coverage_preferred_anchor)
+        if remembered_anchor:
+            if not self._align_remembered_odom_yaw():
+                if self.triggered:
+                    return "triggered"
+                rospy.logwarn(
+                    "[vision_triggered_navigator] Remembered anchor %d "
+                    "heading could not be restored; hold safely and continue "
+                    "without a full-angle scan.", patrol_idx + 1)
+                self._hold_scan_step(
+                    "remembered anchor {} safe hold".format(patrol_idx + 1),
+                    rospy.get_time(),
+                    minimum_dwell=self.coverage_preferred_confirm_dwell,
+                )
+                return "covered"
+            remembered_hold_at = rospy.get_time()
+            self._publish_status(
+                "coverage_remembered_heading_observing:{}".format(
+                    patrol_idx + 1))
+            self._hold_scan_step(
+                "remembered anchor {} saved heading".format(patrol_idx + 1),
+                remembered_hold_at,
+                minimum_dwell=self.coverage_preferred_confirm_dwell,
+            )
+            if self.triggered:
+                return "triggered"
+            self._scan_remembered_heading_window(patrol_idx + 1)
+            if self.triggered:
+                return "triggered"
+            rospy.logwarn(
+                "[vision_triggered_navigator] Remembered target was not "
+                "confirmed at anchor %d within the short scan; continue to "
+                "the remaining anchors without repeating this anchor's full "
+                "rotation plan.", patrol_idx + 1)
+            return "covered"
+
         initial_hold_at = rospy.get_time()
         self._publish_status(
             "coverage_anchor_observing:{}".format(patrol_idx + 1))
@@ -1478,7 +1599,7 @@ class VisionTriggeredNavigator(object):
         return True
 
     def _rotate_center_step(self, direction, target_angle,
-                            abort_on_trigger=False):
+                            abort_on_trigger=False, minimum_clearance=None):
         """Rotate one small odometry-closed-loop step, ramping through deadband."""
         if not self._odom_is_fresh():
             rospy.logerr("[vision_triggered_navigator] /odom超过%.2fs未更新，拒绝居中转动.",
@@ -1508,8 +1629,11 @@ class VisionTriggeredNavigator(object):
                 self.cmd_vel_pub.publish(Twist())
                 rospy.logerr("[vision_triggered_navigator] 居中步进期间/odom失效，立即停车.")
                 return False
-            if not self._rotation_clearance_safe(
-                    self.target_center_min_clearance, "视觉居中"):
+            clearance = (
+                self.target_center_min_clearance
+                if minimum_clearance is None
+                else max(0.0, float(minimum_clearance)))
+            if not self._rotation_clearance_safe(clearance, "视觉居中"):
                 return False
 
             progress = abs(normalize_angle(self.odom_yaw - start_yaw))

@@ -55,6 +55,10 @@ class CompetitionLogicTest(unittest.TestCase):
             config = stream.read()
         self.assertIn("task2_no_workshop_anchors: []", config)
         self.assertIn("task2_resume_coverage_enabled: true", config)
+        self.assertIn(
+            "task2_remembered_heading_confirm_sec: 1.2", config)
+        self.assertIn(
+            "task2_remembered_heading_scan_half_angle_deg: 18.0", config)
 
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
@@ -68,6 +72,11 @@ class CompetitionLogicTest(unittest.TestCase):
             'set(skipped_anchors).union(no_workshop_anchors)', flow)
         self.assertIn(
             '"coverage_skip_anchors": ",".join(', flow)
+        self.assertIn('"odom_yaw": float(yaw)', flow)
+        self.assertIn(
+            '"coverage_preferred_odom_yaw_enabled": (', flow)
+        self.assertIn(
+            '"coverage_preferred_odom_yaw": remembered_odom_yaw', flow)
 
     def test_task2_coverage_navigation_has_cone_safety_limits(self):
         config_path = os.path.abspath(os.path.join(
