@@ -17,6 +17,7 @@ from collections import OrderedDict
 
 import actionlib
 import rospy
+import tf
 from actionlib_msgs.msg import GoalStatus
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import (
@@ -33,6 +34,7 @@ from ucar_2026_competition_speech.srv import Announce
 from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
+    FINISH_EXTRA_FORWARD_DISTANCE_M,
     base_is_stopped,
     build_task1_instruction,
     TemporalTargetFilter,
@@ -41,6 +43,7 @@ from ucar_2026_competition.logic import (
     TRACK_CONFIG,
     normalize_angle,
     normalize_category,
+    remembered_factory_poses,
     parse_task1_categories,
     qr_values_from_payload,
     scan_sector_min,
@@ -93,6 +96,7 @@ class CompetitionFlow:
         self.force_traffic_deadline = None
         self.force_traffic_triggered = False
         self.active_stage = ""
+        self.tf_listener = tf.TransformListener()
 
         self.status_pub = rospy.Publisher(
             rospy.get_param("~status_topic", "/competition/status"),
@@ -179,6 +183,12 @@ class CompetitionFlow:
         self.task2_warehouse_memory = {}
         self.current_coverage_anchor = None
         self.task2_trigger_anchor = 0
+        self.factory_map_corners = rospy.get_param(
+            "~factory_map_corners",
+            [[-2.2311, -1.2505],
+             [2.8000, -1.1940],
+             [-2.2197, -3.2746],
+             [2.7739, -3.2186]])
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -519,19 +529,29 @@ class CompetitionFlow:
         score = float(payload.get("category_score", 0.0) or 0.0)
         if (memory_confirmed and payload.get("target_bbox") and
                 score >= self.ocr_memory_min_score):
+            factory_poses = self._factory_poses_from_ocr(payload)
             with self.lock:
                 anchor = self.current_coverage_anchor
                 previous = self.task2_warehouse_memory.get(category)
-                if (anchor and (previous is None or
-                                score >= float(previous.get("score", 0.0)))):
-                    self.task2_warehouse_memory[category] = {
-                        "anchor": int(anchor),
+                if ((anchor or factory_poses) and
+                        not (isinstance(previous, dict) and
+                             previous.get("staging_pose")) and
+                        (factory_poses or previous is None or
+                         score >= float(previous.get("score", 0.0)))):
+                    observation = {
+                        "anchor": int(anchor or 0),
                         "score": score,
                         "stamp": time.time(),
                     }
+                    if factory_poses:
+                        observation.update(factory_poses)
+                    self.task2_warehouse_memory[category] = observation
                     rospy.loginfo(
-                        "task2 warehouse memory: category=%s anchor=%d score=%.3f",
-                        category, anchor, score)
+                        "task2 warehouse memory: category=%s anchor=%d "
+                        "wall=%s staging=%s score=%.3f",
+                        category, int(anchor or 0),
+                        observation.get("wall_point"),
+                        observation.get("staging_pose"), score)
         with self.lock:
             trigger_anchor = self.task2_trigger_anchor
             observed_anchor = self.current_coverage_anchor
@@ -582,6 +602,38 @@ class CompetitionFlow:
                 "task2 remembered target visible during transit; "
                 "waiting to reach anchor %d before local rescan and docking",
                 trigger_anchor)
+
+    def _factory_poses_from_ocr(self, payload):
+        try:
+            translation, rotation = self.tf_listener.lookupTransform(
+                "map", "base_link", rospy.Time(0))
+            yaw = math.atan2(
+                2.0 * (rotation[3] * rotation[2]
+                       + rotation[0] * rotation[1]),
+                1.0 - 2.0 * (
+                    rotation[1] * rotation[1]
+                    + rotation[2] * rotation[2]),
+            )
+            return remembered_factory_poses(
+                (translation[0], translation[1], yaw),
+                payload.get("target_center_x"),
+                payload.get("image_width"),
+                math.radians(float(rospy.get_param(
+                    "~factory_camera_horizontal_fov_deg", 60.0))) * 0.5,
+                self.factory_map_corners,
+                rospy.get_param("~parking_goal_offset", 0.26),
+                rospy.get_param("~parking_staging_offset", 0.55),
+                rospy.get_param("~camera_boresight_yaw_offset", 0.0),
+                rospy.get_param("~target_center_steering_sign", -1.0),
+                rospy.get_param("~parking_normal_offset", 0.0),
+                rospy.get_param("~parking_tangent_offset", 0.0),
+            )
+        except (
+                tf.LookupException, tf.ConnectivityException,
+                tf.ExtrapolationException, TypeError, ValueError) as exc:
+            rospy.logwarn_throttle(
+                2.0, "cannot calculate warehouse map pose from OCR: %s", exc)
+            return None
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()
@@ -1444,9 +1496,15 @@ class CompetitionFlow:
         with self.lock:
             preferred_anchor, skipped_anchors = task2_semantic_coverage_hint(
                 self.task2_warehouse_memory, category)
+            remembered = self.task2_warehouse_memory.get(category, {})
+            direct_pose = (
+                remembered.get("staging_pose")
+                if phase == "simulation" and isinstance(remembered, dict)
+                else None)
             self.current_coverage_anchor = None
             self.task2_trigger_anchor = (
-                preferred_anchor if phase == "simulation" else 0)
+                1000 if direct_pose else
+                (preferred_anchor if phase == "simulation" else 0))
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
         if phase == "simulation" and preferred_anchor:
@@ -1455,6 +1513,11 @@ class CompetitionFlow:
                 "skipping irrelevant anchors=%s",
                 category, preferred_anchor,
                 ",".join(str(value) for value in skipped_anchors) or "none")
+        if direct_pose:
+            rospy.loginfo(
+                "task2 warehouse-pose memory: driving directly to %s, "
+                "then requiring a fresh local OCR scan before docking",
+                direct_pose)
         navigation_failure = ""
         self.publish_status(
             "task2", "searching_{}".format(phase),
@@ -1503,6 +1566,10 @@ class CompetitionFlow:
                     "coverage_start_nearest": phase == "simulation",
                     "coverage_preferred_anchor": (
                         preferred_anchor if phase == "simulation" else 0),
+                    "coverage_direct_pose_enabled": bool(direct_pose),
+                    "coverage_direct_x": direct_pose[0] if direct_pose else 0.0,
+                    "coverage_direct_y": direct_pose[1] if direct_pose else 0.0,
+                    "coverage_direct_yaw": direct_pose[2] if direct_pose else 0.0,
                     "coverage_skip_anchors": (
                         ",".join(str(value) for value in skipped_anchors)
                         if phase == "simulation" else ""),
@@ -2023,8 +2090,7 @@ class CompetitionFlow:
             self.safe_stop(cancel_navigation=True)
 
     def advance_after_track_finish(self):
-        distance = max(0.0, float(rospy.get_param(
-            "~finish_extra_forward_distance_m", 0.08)))
+        distance = FINISH_EXTRA_FORWARD_DISTANCE_M
         speed = abs(float(rospy.get_param(
             "~finish_extra_forward_speed_mps", 0.05)))
         timeout = max(1.0, float(rospy.get_param(
@@ -2039,6 +2105,27 @@ class CompetitionFlow:
                 "extra finish distance configured but speed is zero")
             return False
 
+        def timed_fallback(remaining):
+            remaining = max(0.0, float(remaining))
+            if remaining <= 0.0:
+                return True
+            command = Twist()
+            command.linear.x = speed
+            end_at = time.monotonic() + remaining / speed
+            self.publish_status(
+                "task5", "extra_forward_timed_fallback",
+                "odometry unavailable; enforcing remaining {:.3f}m by "
+                "calibrated speed-time motion".format(remaining))
+            try:
+                rate = rospy.Rate(30)
+                while time.monotonic() < end_at and not rospy.is_shutdown():
+                    self.check_abort()
+                    self.cmd_pub.publish(command)
+                    rate.sleep()
+                return not rospy.is_shutdown()
+            finally:
+                self.safe_stop(cancel_navigation=True)
+
         self.safe_stop(cancel_navigation=True)
         ready_deadline = time.monotonic() + 1.0
         start_pose = None
@@ -2052,10 +2139,7 @@ class CompetitionFlow:
                 break
             rospy.sleep(0.05)
         if start_pose is None:
-            self.publish_status(
-                "task5", "extra_forward_skipped",
-                "no fresh odometry for final 8cm movement")
-            return False
+            return timed_fallback(distance)
 
         self.publish_status(
             "task5", "extra_forward",
@@ -2072,10 +2156,7 @@ class CompetitionFlow:
                     pose = self.base_pose
                     odom_age = time.monotonic() - self.qr_odom_received_at
                 if pose is None or odom_age > stale_sec:
-                    self.publish_status(
-                        "task5", "extra_forward_incomplete",
-                        "odometry became stale during final movement")
-                    return False
+                    return timed_fallback(max(0.0, distance - moved))
                 moved = math.hypot(
                     pose[0] - start_pose[0], pose[1] - start_pose[1])
                 if moved >= distance:
@@ -2085,10 +2166,7 @@ class CompetitionFlow:
                     return True
                 self.cmd_pub.publish(command)
                 rate.sleep()
-            self.publish_status(
-                "task5", "extra_forward_incomplete",
-                "final movement timed out after {:.3f}m".format(moved))
-            return False
+            return timed_fallback(max(0.0, distance - moved))
         finally:
             self.safe_stop(cancel_navigation=True)
 

@@ -39,6 +39,8 @@ TRACK_CONFIG = {
     ),
 }
 
+FINISH_EXTRA_FORWARD_DISTANCE_M = 0.10
+
 
 def normalize_angle(angle):
     """Normalize an angle to [-pi, pi)."""
@@ -132,6 +134,95 @@ def task2_remembered_anchor_ready(required_anchor, observed_anchor):
     except (TypeError, ValueError):
         observed = 0
     return required <= 0 or observed == required
+
+
+def remembered_factory_poses(
+        robot_pose, target_center_x, image_width, horizontal_fov,
+        corners, parking_offset, staging_offset,
+        boresight_offset=0.0, steering_sign=-1.0,
+        normal_offset=0.0, tangent_offset=0.0):
+    """Project an OCR sign ray onto the factory wall and return true goal poses."""
+    px, py, robot_yaw = [float(value) for value in robot_pose]
+    width = float(image_width)
+    if width <= 1.0 or len(corners) != 4:
+        return None
+    error = (
+        float(target_center_x) - width * 0.5) / (width * 0.5)
+    ray_yaw = normalize_angle(
+        robot_yaw + float(boresight_offset)
+        + error * abs(float(horizontal_fov)) * float(steering_sign))
+    direction = (math.cos(ray_yaw), math.sin(ray_yaw))
+
+    points = [(float(point[0]), float(point[1])) for point in corners]
+    centroid = (
+        sum(point[0] for point in points) / 4.0,
+        sum(point[1] for point in points) / 4.0,
+    )
+    segments = (
+        (points[0], points[2]),
+        (points[1], points[3]),
+        (points[2], points[3]),
+        (points[0], points[1]),
+    )
+    best = None
+    for start, end in segments:
+        vx, vy = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(vx, vy)
+        if length <= 1e-9:
+            continue
+        normal = (-vy / length, vx / length)
+        midpoint = (
+            (start[0] + end[0]) * 0.5,
+            (start[1] + end[1]) * 0.5,
+        )
+        if (
+            normal[0] * (centroid[0] - midpoint[0])
+            + normal[1] * (centroid[1] - midpoint[1])
+        ) < 0.0:
+            normal = (-normal[0], -normal[1])
+        denominator = -vx * direction[1] + vy * direction[0]
+        if abs(denominator) <= 1e-9:
+            continue
+        wx, wy = px - start[0], py - start[1]
+        ray_t = (vx * wy - vy * wx) / denominator
+        segment_u = (
+            -wx * direction[1] + wy * direction[0]) / denominator
+        if (
+            ray_t <= 1e-9
+            or segment_u < -1e-6
+            or segment_u > 1.0 + 1e-6
+        ):
+            continue
+        if best is None or ray_t < best[0]:
+            best = (
+                ray_t,
+                (px + ray_t * direction[0],
+                 py + ray_t * direction[1]),
+                normal,
+            )
+    if best is None:
+        return None
+
+    wall_point, normal = best[1], best[2]
+    tangent = (-normal[1], normal[0])
+
+    def goal(offset):
+        distance = float(offset) + float(normal_offset)
+        x = (
+            wall_point[0] + normal[0] * distance
+            + tangent[0] * float(tangent_offset))
+        y = (
+            wall_point[1] + normal[1] * distance
+            + tangent[1] * float(tangent_offset))
+        yaw = math.atan2(-normal[1], -normal[0])
+        return (x, y, yaw)
+
+    return {
+        "wall_point": wall_point,
+        "parking_pose": goal(parking_offset),
+        "staging_pose": goal(staging_offset),
+        "ray_yaw": ray_yaw,
+    }
 
 
 def task4_start_action(skip_stop_line_approach, traffic_pose_configured):

@@ -123,7 +123,6 @@ traffic_yaw: -1.5596
 traffic_timeout_sec: 180.0
 
 track_timeout_sec: 420.0
-finish_extra_forward_distance_m: 0.08
 finish_extra_forward_speed_mps: 0.05
 finish_extra_forward_timeout_sec: 4.0
 finish_extra_forward_odom_stale_sec: 0.5

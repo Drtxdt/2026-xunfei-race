@@ -158,6 +158,17 @@ class VisionTriggeredNavigator(object):
             int(value.strip()) for value in skip_text.split(",")
             if value.strip().isdigit()
         )
+        self.coverage_direct_pose_enabled = bool(rospy.get_param(
+            "~coverage_direct_pose_enabled", False))
+        self.coverage_direct_pose = {
+            "x": float(rospy.get_param("~coverage_direct_x", 0.0)),
+            "y": float(rospy.get_param("~coverage_direct_y", 0.0)),
+            "yaw": float(rospy.get_param("~coverage_direct_yaw", 0.0)),
+            "rotations": [
+                {"direction": "left", "duration": math.radians(20.0)},
+                {"direction": "right", "duration": math.radians(40.0)},
+            ],
+        }
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
         self.coverage_scan_step_angle = math.radians(max(
@@ -1114,10 +1125,11 @@ class VisionTriggeredNavigator(object):
     def _visit_coverage_point(self, point, patrol_idx):
         """Visit one calibrated anchor once, then perform its original scan."""
         x, y, yaw = exact_observation_target(point)
+        anchor_id = 1000 if patrol_idx < 0 else patrol_idx + 1
         if self.triggered:
             return "triggered"
         self._publish_status("coverage_anchor_transit:{}".format(
-            patrol_idx + 1))
+            anchor_id))
 
         known, max_cost, _blocked = self._coverage_pose_cost(x, y)
         if should_skip_coverage_anchor(known, max_cost, self.lethal_cost):
@@ -1180,7 +1192,7 @@ class VisionTriggeredNavigator(object):
 
         self.cmd_vel_pub.publish(Twist())
         self._publish_status("coverage_anchor_observing:{}".format(
-            patrol_idx + 1))
+            anchor_id))
         initial_hold_at = rospy.get_time()
         self._hold_scan_step(
             "锚点{}初始朝向".format(patrol_idx + 1),
@@ -2119,6 +2131,11 @@ class VisionTriggeredNavigator(object):
             self.coverage_preferred_anchor,
             self.coverage_skip_anchors,
         )
+        coverage_plan = []
+        if self.coverage_direct_pose_enabled:
+            coverage_plan.append((-1, self.coverage_direct_pose))
+        coverage_plan.extend(
+            (index, self.patrol_points[index]) for index in coverage_order)
         coverage_position = 0
 
         while not rospy.is_shutdown():
@@ -2130,18 +2147,18 @@ class VisionTriggeredNavigator(object):
 
             if state == "PATROL":
                 if self.coverage_search_mode:
-                    if coverage_position >= len(coverage_order):
+                    if coverage_position >= len(coverage_plan):
                         rospy.logerr(
                             "[vision_triggered_navigator] %d个精确观察点已按原顺序处理完成，但未锁定目标.",
-                            len(coverage_order))
+                            len(coverage_plan))
                         self._publish_status("failed")
                         break
 
-                    point_idx = coverage_order[coverage_position]
-                    point = self.patrol_points[point_idx]
+                    point_idx, point = coverage_plan[coverage_position]
                     rospy.loginfo(
                         "[vision_triggered_navigator] === 覆盖锚点 %d / %d，逻辑编号%d ===",
-                        coverage_position + 1, len(coverage_order), point_idx + 1)
+                        coverage_position + 1, len(coverage_plan),
+                        1000 if point_idx < 0 else point_idx + 1)
                     outcome = self._visit_coverage_point(point, point_idx)
                     if outcome == "triggered":
                         state = "VISION"

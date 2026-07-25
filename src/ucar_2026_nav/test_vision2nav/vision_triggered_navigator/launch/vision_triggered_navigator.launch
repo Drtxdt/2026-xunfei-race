@@ -13,6 +13,10 @@
   <arg name="coverage_start_nearest" default="false" />
   <arg name="coverage_preferred_anchor" default="0" />
   <arg name="coverage_skip_anchors" default="" />
+  <arg name="coverage_direct_pose_enabled" default="false" />
+  <arg name="coverage_direct_x" default="0.0" />
+  <arg name="coverage_direct_y" default="0.0" />
+  <arg name="coverage_direct_yaw" default="0.0" />
   <arg name="coverage_abort_fail_fast_count" default="0" />
   <arg name="coverage_navigation_candidate_pause_count" default="2" />
   <arg name="coverage_rotation_min_clearance" default="0.28" />
@@ -95,6 +99,10 @@
     <param name="coverage_start_nearest" value="$(arg coverage_start_nearest)" />
     <param name="coverage_preferred_anchor" value="$(arg coverage_preferred_anchor)" />
     <param name="coverage_skip_anchors" value="$(arg coverage_skip_anchors)" />
+    <param name="coverage_direct_pose_enabled" value="$(arg coverage_direct_pose_enabled)" />
+    <param name="coverage_direct_x" value="$(arg coverage_direct_x)" />
+    <param name="coverage_direct_y" value="$(arg coverage_direct_y)" />
+    <param name="coverage_direct_yaw" value="$(arg coverage_direct_yaw)" />
     <param name="coverage_abort_fail_fast_count" value="$(arg coverage_abort_fail_fast_count)" />
     <param name="coverage_navigation_candidate_pause_count" value="$(arg coverage_navigation_candidate_pause_count)" />
     <param name="coverage_rotation_min_clearance" value="$(arg coverage_rotation_min_clearance)" />

@@ -13,6 +13,7 @@ if PACKAGE_SRC not in sys.path:
 
 from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
+    FINISH_EXTRA_FORWARD_DISTANCE_M,
     base_is_stopped,
     build_task1_instruction,
     ConsecutiveTargetFilter,
@@ -25,6 +26,7 @@ from ucar_2026_competition.logic import (
     parse_category,
     parse_task1_categories,
     qr_values_from_payload,
+    remembered_factory_poses,
     scan_sector_min,
     split_rotation_steps,
     stage_sequence,
@@ -74,6 +76,20 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertTrue(task2_remembered_anchor_ready(7, 7))
         self.assertTrue(task2_remembered_anchor_ready(0, None))
 
+    def test_warehouse_memory_stores_wall_goal_not_observer_pose(self):
+        poses = remembered_factory_poses(
+            (0.0, 0.0, math.pi / 2.0),
+            320.0, 640.0, math.radians(30.0),
+            [(-1.0, 1.0), (1.0, 1.0),
+             (-1.0, -1.0), (1.0, -1.0)],
+            0.2, 0.5,
+        )
+        self.assertIsNotNone(poses)
+        self.assertAlmostEqual(poses["wall_point"][0], 0.0)
+        self.assertAlmostEqual(poses["wall_point"][1], 1.0)
+        self.assertAlmostEqual(poses["parking_pose"][1], 0.8)
+        self.assertAlmostEqual(poses["staging_pose"][1], 0.5)
+
     def test_hard_competition_and_simulation_deadlines_are_configured(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
@@ -82,7 +98,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("force_traffic_after_sec: 510.0", content)
         self.assertIn("simulation_fixed_duration_sec: 120.0", content)
         self.assertIn('simulation_deadline_announcement_text: "仿真已完成"', content)
-        self.assertIn("finish_extra_forward_distance_m: 0.08", content)
+        self.assertEqual(FINISH_EXTRA_FORWARD_DISTANCE_M, 0.10)
 
     def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
         flow_path = os.path.abspath(os.path.join(

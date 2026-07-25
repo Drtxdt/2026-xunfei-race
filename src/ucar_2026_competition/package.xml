@@ -16,6 +16,7 @@
   <depend>rospy</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>tf</depend>
   <depend>ucar_2026_competition_speech</depend>
   <depend>ucar_2026_smart_factory_llm</depend>
 

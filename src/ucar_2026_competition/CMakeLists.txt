@@ -11,6 +11,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   std_srvs
+  tf
   ucar_2026_competition_speech
   ucar_2026_smart_factory_llm
 )
