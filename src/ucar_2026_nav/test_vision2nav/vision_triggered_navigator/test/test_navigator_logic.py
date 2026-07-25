@@ -49,7 +49,6 @@ from navigator_logic import (
     staging_pose_reached,
     staging_motion_is_rotation_stall,
     target_sample_is_fresh,
-    translation_corridor_width,
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_handoff_accepted,
@@ -166,139 +165,6 @@ def test_polar_sector_min_wraps_and_ignores_other_directions():
         samples, math.pi, math.radians(10.0)) == pytest.approx(0.31)
     assert polar_sector_min(
         samples, 0.5 * math.pi, math.radians(10.0)) is None
-
-
-def test_translation_corridor_detects_variable_two_sided_bottleneck():
-    samples = []
-    for forward in (0.38, 0.40, 0.42):
-        for lateral in (-0.23, -0.22, 0.21, 0.24):
-            samples.append((
-                math.atan2(lateral, forward),
-                math.hypot(forward, lateral),
-            ))
-    (width, forward, left_count, right_count,
-     left_span, right_span) = translation_corridor_width(
-        samples, direction=0.0, min_forward=0.10, max_forward=0.80,
-        lateral_extent=0.60, depth_bin=0.20, min_side_points=2)
-    assert width == pytest.approx(0.43)
-    assert forward == pytest.approx(0.38)
-    assert left_count >= 2
-    assert right_count >= 2
-    assert left_span < 0.30
-    assert right_span < 0.30
-
-
-def test_translation_corridor_detects_two_curved_cone_returns():
-    samples = []
-    for center_lateral in (-0.24, 0.24):
-        for step in range(17):
-            angle = 0.5 * math.pi + math.pi * step / 16.0
-            forward = 0.55 + 0.07 * math.cos(angle)
-            lateral = center_lateral + 0.07 * math.sin(angle)
-            samples.append((
-                math.atan2(lateral, forward),
-                math.hypot(forward, lateral),
-            ))
-    width, forward, left_count, right_count, left_span, right_span = (
-        translation_corridor_width(samples, direction=0.0)
-    )
-    assert width == pytest.approx(0.34)
-    assert forward == pytest.approx(0.48)
-    assert left_count == 17
-    assert right_count == 17
-    assert left_span < 0.20
-    assert right_span < 0.20
-
-
-def test_translation_corridor_uses_current_motion_direction():
-    samples = []
-    direction = 0.5 * math.pi
-    for forward in (0.30, 0.32):
-        for lateral in (-0.20, 0.20):
-            relative = math.atan2(lateral, forward)
-            samples.append((
-                normalize_angle(direction + relative),
-                math.hypot(forward, lateral),
-            ))
-    width, forward, _left, _right, _left_span, _right_span = (
-        translation_corridor_width(
-        samples, direction=direction)
-    )
-    assert width == pytest.approx(0.40)
-    assert forward == pytest.approx(0.30)
-
-
-def test_translation_corridor_ignores_one_sided_or_staggered_obstacles():
-    one_sided = [
-        (math.atan2(0.20, forward), math.hypot(forward, 0.20))
-        for forward in (0.30, 0.32, 0.34)
-    ]
-    assert translation_corridor_width(one_sided, 0.0) == (None,) * 6
-
-    staggered = []
-    for forward, lateral in (
-            (0.20, 0.20), (0.22, 0.21),
-            (0.65, -0.20), (0.67, -0.21)):
-        staggered.append((
-            math.atan2(lateral, forward),
-            math.hypot(forward, lateral),
-        ))
-    assert translation_corridor_width(
-        staggered, 0.0, depth_bin=0.20) == (None,) * 6
-
-
-def test_translation_corridor_ignores_points_behind_or_beyond_lookahead():
-    samples = []
-    for forward in (-0.30, 1.10):
-        for lateral in (-0.20, 0.20):
-            samples.extend([
-                (math.atan2(lateral, forward), math.hypot(forward, lateral)),
-                (math.atan2(lateral, forward), math.hypot(forward, lateral)),
-            ])
-    assert translation_corridor_width(
-        samples, 0.0, max_forward=0.80) == (None,) * 6
-
-
-def test_translation_corridor_does_not_block_continuous_wall_corridor():
-    samples = []
-    for forward_step in range(12, 76, 2):
-        forward = forward_step / 100.0
-        for lateral in (-0.20, 0.20):
-            samples.append((
-                math.atan2(lateral, forward),
-                math.hypot(forward, lateral),
-            ))
-    assert translation_corridor_width(samples, 0.0) == (None,) * 6
-
-
-def test_translation_corridor_does_not_split_one_wall_across_centerline():
-    samples = []
-    forward = 0.60
-    for lateral_step in range(-30, 31, 2):
-        lateral = lateral_step / 100.0
-        samples.append((
-            math.atan2(lateral, forward),
-            math.hypot(forward, lateral),
-        ))
-    assert translation_corridor_width(samples, 0.0) == (None,) * 6
-
-
-def test_translation_corridor_requires_two_compact_obstacles():
-    samples = []
-    for forward_step in range(20, 71, 2):
-        forward = forward_step / 100.0
-        lateral = -0.22
-        samples.append((
-            math.atan2(lateral, forward),
-            math.hypot(forward, lateral),
-        ))
-    for forward, lateral in (
-            (0.39, 0.20), (0.40, 0.21), (0.41, 0.20)):
-        samples.append((
-            math.atan2(lateral, forward),
-            math.hypot(forward, lateral),
-        ))
-    assert translation_corridor_width(samples, 0.0) == (None,) * 6
 
 
 def test_navigation_node_imports_rotation_clearance_helper():
@@ -969,3 +835,26 @@ def test_translation_clearance_guard_uses_motion_sector_and_skips_blocked_anchor
     assert "_wait_navigation_idle" in called
     assert "_hold_scan_step" in called
     assert "covered" in returned
+
+
+def test_teb_uses_the_measured_rectangular_costmap_footprint():
+    nav_root = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "..", "ucar_nav",
+        "launch", "config", "move_base"))
+    with open(os.path.join(
+            nav_root, "teb_local_planner_params.yaml"),
+            "r", encoding="utf-8") as stream:
+        teb = yaml.safe_load(stream)["TebLocalPlannerROS"]
+    with open(os.path.join(
+            nav_root, "costmap_common_params.yaml"),
+            "r", encoding="utf-8") as stream:
+        costmap = yaml.safe_load(stream)
+
+    model = teb["footprint_model"]
+    assert model["type"] == "polygon"
+    assert {tuple(vertex) for vertex in model["vertices"]} == {
+        tuple(vertex) for vertex in costmap["footprint"]
+    }
+    assert teb["min_obstacle_dist"] == pytest.approx(0.15)
+    assert teb["inflation_dist"] == pytest.approx(0.18)
+    assert teb["weight_inflation"] == pytest.approx(0.0)

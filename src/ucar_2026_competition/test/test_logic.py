@@ -96,17 +96,6 @@ class CompetitionLogicTest(unittest.TestCase):
             "parking_obstacle_clearance_tolerance: 0.005", config)
         self.assertIn(
             "coverage_translation_sector_half_angle_deg: 35.0", config)
-        self.assertIn("coverage_corridor_guard_enabled: true", config)
-        self.assertIn("coverage_corridor_lookahead: 0.80", config)
-        self.assertIn("coverage_corridor_min_width: 0.50", config)
-        self.assertIn("coverage_corridor_lateral_extent: 0.60", config)
-        self.assertIn("coverage_corridor_depth_bin: 0.20", config)
-        self.assertIn("coverage_corridor_min_side_points: 2", config)
-        self.assertIn("coverage_corridor_cluster_gap: 0.08", config)
-        self.assertIn("coverage_corridor_compact_max_span: 0.30", config)
-        self.assertIn("coverage_teb_min_obstacle_dist: 0.22", config)
-        self.assertIn("coverage_teb_inflation_dist: 0.30", config)
-        self.assertIn("coverage_teb_weight_inflation: 0.20", config)
         self.assertIn("coverage_max_vel_x: 0.55", config)
         self.assertIn("coverage_max_vel_y: 0.55", config)
         self.assertIn("coverage_max_vel_theta: 1.20", config)
@@ -114,6 +103,8 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_scan_dwell_sec: 0.45", config)
         self.assertIn("task2_trigger_min_bbox_width_ratio: 0.09", config)
         self.assertIn("parking_obstacle_min_clearance: 0.28", config)
+        self.assertNotIn("coverage_corridor_", config)
+        self.assertNotIn("coverage_teb_", config)
 
     def test_task4_retired_staging_pose_is_migrated(self):
         pose, migrated = normalize_task4_staging_pose(

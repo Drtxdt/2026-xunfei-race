@@ -1800,28 +1800,6 @@ class CompetitionFlow:
                         "~coverage_translation_clearance_tolerance", 0.005),
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
-                    "coverage_corridor_guard_enabled": rospy.get_param(
-                        "~coverage_corridor_guard_enabled", True),
-                    "coverage_corridor_lookahead": rospy.get_param(
-                        "~coverage_corridor_lookahead", 0.80),
-                    "coverage_corridor_min_width": rospy.get_param(
-                        "~coverage_corridor_min_width", 0.50),
-                    "coverage_corridor_lateral_extent": rospy.get_param(
-                        "~coverage_corridor_lateral_extent", 0.60),
-                    "coverage_corridor_depth_bin": rospy.get_param(
-                        "~coverage_corridor_depth_bin", 0.20),
-                    "coverage_corridor_min_side_points": rospy.get_param(
-                        "~coverage_corridor_min_side_points", 2),
-                    "coverage_corridor_cluster_gap": rospy.get_param(
-                        "~coverage_corridor_cluster_gap", 0.08),
-                    "coverage_corridor_compact_max_span": rospy.get_param(
-                        "~coverage_corridor_compact_max_span", 0.30),
-                    "coverage_teb_min_obstacle_dist": rospy.get_param(
-                        "~coverage_teb_min_obstacle_dist", 0.22),
-                    "coverage_teb_inflation_dist": rospy.get_param(
-                        "~coverage_teb_inflation_dist", 0.30),
-                    "coverage_teb_weight_inflation": rospy.get_param(
-                        "~coverage_teb_weight_inflation", 0.20),
                     "coverage_max_vel_x": rospy.get_param(
                         "~coverage_max_vel_x", 0.55),
                     "coverage_max_vel_y": rospy.get_param(

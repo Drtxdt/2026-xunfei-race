@@ -27,17 +27,6 @@
   <arg name="coverage_translation_min_clearance" default="0.28" />
   <arg name="coverage_translation_clearance_tolerance" default="0.005" />
   <arg name="coverage_translation_sector_half_angle_deg" default="35.0" />
-  <arg name="coverage_corridor_guard_enabled" default="true" />
-  <arg name="coverage_corridor_lookahead" default="0.80" />
-  <arg name="coverage_corridor_min_width" default="0.50" />
-  <arg name="coverage_corridor_lateral_extent" default="0.60" />
-  <arg name="coverage_corridor_depth_bin" default="0.20" />
-  <arg name="coverage_corridor_min_side_points" default="2" />
-  <arg name="coverage_corridor_cluster_gap" default="0.08" />
-  <arg name="coverage_corridor_compact_max_span" default="0.30" />
-  <arg name="coverage_teb_min_obstacle_dist" default="0.22" />
-  <arg name="coverage_teb_inflation_dist" default="0.30" />
-  <arg name="coverage_teb_weight_inflation" default="0.20" />
   <arg name="coverage_max_vel_x" default="0.55" />
   <arg name="coverage_max_vel_y" default="0.55" />
   <arg name="coverage_max_vel_theta" default="1.20" />
@@ -131,17 +120,6 @@
     <param name="coverage_translation_min_clearance" value="$(arg coverage_translation_min_clearance)" />
     <param name="coverage_translation_clearance_tolerance" value="$(arg coverage_translation_clearance_tolerance)" />
     <param name="coverage_translation_sector_half_angle_deg" value="$(arg coverage_translation_sector_half_angle_deg)" />
-    <param name="coverage_corridor_guard_enabled" value="$(arg coverage_corridor_guard_enabled)" />
-    <param name="coverage_corridor_lookahead" value="$(arg coverage_corridor_lookahead)" />
-    <param name="coverage_corridor_min_width" value="$(arg coverage_corridor_min_width)" />
-    <param name="coverage_corridor_lateral_extent" value="$(arg coverage_corridor_lateral_extent)" />
-    <param name="coverage_corridor_depth_bin" value="$(arg coverage_corridor_depth_bin)" />
-    <param name="coverage_corridor_min_side_points" value="$(arg coverage_corridor_min_side_points)" />
-    <param name="coverage_corridor_cluster_gap" value="$(arg coverage_corridor_cluster_gap)" />
-    <param name="coverage_corridor_compact_max_span" value="$(arg coverage_corridor_compact_max_span)" />
-    <param name="coverage_teb_min_obstacle_dist" value="$(arg coverage_teb_min_obstacle_dist)" />
-    <param name="coverage_teb_inflation_dist" value="$(arg coverage_teb_inflation_dist)" />
-    <param name="coverage_teb_weight_inflation" value="$(arg coverage_teb_weight_inflation)" />
     <param name="coverage_max_vel_x" value="$(arg coverage_max_vel_x)" />
     <param name="coverage_max_vel_y" value="$(arg coverage_max_vel_y)" />
     <param name="coverage_max_vel_theta" value="$(arg coverage_max_vel_theta)" />
