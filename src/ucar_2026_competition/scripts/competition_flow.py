@@ -53,6 +53,7 @@ from ucar_2026_competition.logic import (
     traffic_decision_from_payload,
     task2_announcement_required,
     task2_navigation_outcome,
+    task2_remembered_anchor_ready,
     trigger_delivery_state,
 )
 
@@ -177,6 +178,7 @@ class CompetitionFlow:
             "~ocr_memory_min_score", 0.55))
         self.task2_warehouse_memory = {}
         self.current_coverage_anchor = None
+        self.task2_trigger_anchor = 0
         self.vision_trigger_latched = False
         self.trigger_request_pending = False
         self.trigger_request_started_at = 0.0
@@ -530,7 +532,16 @@ class CompetitionFlow:
                     rospy.loginfo(
                         "task2 warehouse memory: category=%s anchor=%d score=%.3f",
                         category, anchor, score)
-        if category == self.ocr_target and payload.get("target_bbox"):
+        with self.lock:
+            trigger_anchor = self.task2_trigger_anchor
+            observed_anchor = self.current_coverage_anchor
+        anchor_ready = task2_remembered_anchor_ready(
+            trigger_anchor, observed_anchor)
+        if (
+            category == self.ocr_target
+            and payload.get("target_bbox")
+            and anchor_ready
+        ):
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
             self.ocr_target, category, time.monotonic())
@@ -543,7 +554,9 @@ class CompetitionFlow:
             self.ocr_filter.required,
             bool(payload.get("target_bbox")),
         )
-        if (confirmed and category == self.ocr_target and payload.get("target_bbox") and
+        if (
+                confirmed and category == self.ocr_target
+                and payload.get("target_bbox") and anchor_ready and
                 not self.vision_trigger_latched):
             self.vision_trigger_latched = True
             self.trigger_request_pending = True
@@ -560,6 +573,15 @@ class CompetitionFlow:
                 self.ocr_filter.hit_count,
                 self.ocr_filter.required,
             )
+        elif (
+            confirmed and category == self.ocr_target
+            and payload.get("target_bbox") and not anchor_ready
+        ):
+            rospy.loginfo_throttle(
+                1.0,
+                "task2 remembered target visible during transit; "
+                "waiting to reach anchor %d before local rescan and docking",
+                trigger_anchor)
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()
@@ -570,11 +592,32 @@ class CompetitionFlow:
                 anchor = None
             with self.lock:
                 self.current_coverage_anchor = anchor
+                trigger_anchor = self.task2_trigger_anchor
+            if trigger_anchor and anchor == trigger_anchor:
+                self.ocr_filter.reset()
+                rospy.loginfo(
+                    "task2 reached remembered anchor %d; reset OCR evidence "
+                    "and require a fresh local scan before docking",
+                    anchor)
             rospy.loginfo("task2 observing coverage anchor: %s", anchor)
             return
         if status.startswith("coverage_anchor_transit:"):
+            try:
+                transit_anchor = int(status.rsplit(":", 1)[1])
+            except (TypeError, ValueError):
+                transit_anchor = None
             with self.lock:
                 self.current_coverage_anchor = None
+                if (
+                    self.task2_trigger_anchor
+                    and transit_anchor
+                    and transit_anchor != self.task2_trigger_anchor
+                ):
+                    rospy.logwarn(
+                        "task2 remembered anchor %d could not lock the target; "
+                        "releasing local-scan gate for fallback coverage",
+                        self.task2_trigger_anchor)
+                    self.task2_trigger_anchor = 0
             return
         if status != self.navigator_status:
             rospy.loginfo("task2 navigator status: %s", status)
@@ -1399,11 +1442,13 @@ class CompetitionFlow:
         self.trigger_acknowledged = False
         self.navigator_status = ""
         with self.lock:
-            self.current_coverage_anchor = None
-            for memory_filter in self.ocr_memory_filters.values():
-                memory_filter.reset()
             preferred_anchor, skipped_anchors = task2_semantic_coverage_hint(
                 self.task2_warehouse_memory, category)
+            self.current_coverage_anchor = None
+            self.task2_trigger_anchor = (
+                preferred_anchor if phase == "simulation" else 0)
+            for memory_filter in self.ocr_memory_filters.values():
+                memory_filter.reset()
         if phase == "simulation" and preferred_anchor:
             rospy.loginfo(
                 "task2 semantic memory: prioritizing remembered %s anchor %d; "
@@ -1612,6 +1657,8 @@ class CompetitionFlow:
             self.trigger_request_pending = False
             self.trigger_service_accepted = False
             self.trigger_acknowledged = False
+            with self.lock:
+                self.task2_trigger_anchor = 0
             self.stop_child("factory_ocr")
             self.stop_child("factory_navigator")
             self.safe_stop(cancel_navigation=True)
@@ -1715,7 +1762,7 @@ class CompetitionFlow:
                     "task3 fixed-deadline announcement failed: %s", exc)
                 self.publish_status(
                     "task3", "announcement_failed",
-                    "fixed 100-second announcement could not be delivered",
+                    "fixed-duration announcement could not be delivered",
                     str(exc))
                 return
             self.simulation_announcement_done.set()
@@ -1738,7 +1785,7 @@ class CompetitionFlow:
 
     def task3(self):
         duration = max(0.0, float(rospy.get_param(
-            "~simulation_fixed_duration_sec", 100.0)))
+            "~simulation_fixed_duration_sec", 120.0)))
         self.simulation_announcement_generation += 1
         generation = self.simulation_announcement_generation
         self.simulation_announcement_done.clear()
@@ -1788,7 +1835,8 @@ class CompetitionFlow:
                     self.publish_status(
                         "task3", "running",
                         "simulation task started; completion will be announced "
-                        "at 100 seconds regardless of result")
+                        "at {:.1f} seconds regardless of result".format(
+                            duration))
                     decoder = JsonLineBuffer()
                     done_received = False
                     while (
@@ -1839,7 +1887,7 @@ class CompetitionFlow:
                 self.publish_status(
                     "task3", "success_waiting_deadline",
                     "simulation succeeded early; waiting for fixed "
-                    "100-second announcement")
+                    "{:.1f}-second announcement".format(duration))
 
             while (
                 time.monotonic() < deadline
@@ -1974,6 +2022,76 @@ class CompetitionFlow:
             self.stop_child("traffic_light")
             self.safe_stop(cancel_navigation=True)
 
+    def advance_after_track_finish(self):
+        distance = max(0.0, float(rospy.get_param(
+            "~finish_extra_forward_distance_m", 0.08)))
+        speed = abs(float(rospy.get_param(
+            "~finish_extra_forward_speed_mps", 0.05)))
+        timeout = max(1.0, float(rospy.get_param(
+            "~finish_extra_forward_timeout_sec", 4.0)))
+        stale_sec = max(0.1, float(rospy.get_param(
+            "~finish_extra_forward_odom_stale_sec", 0.5)))
+        if distance <= 0.0:
+            return True
+        if speed <= 0.0:
+            self.publish_status(
+                "task5", "extra_forward_skipped",
+                "extra finish distance configured but speed is zero")
+            return False
+
+        self.safe_stop(cancel_navigation=True)
+        ready_deadline = time.monotonic() + 1.0
+        start_pose = None
+        while time.monotonic() < ready_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            with self.lock:
+                pose = self.base_pose
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            if pose is not None and odom_age <= stale_sec:
+                start_pose = pose
+                break
+            rospy.sleep(0.05)
+        if start_pose is None:
+            self.publish_status(
+                "task5", "extra_forward_skipped",
+                "no fresh odometry for final 8cm movement")
+            return False
+
+        self.publish_status(
+            "task5", "extra_forward",
+            "track endpoint confirmed; advancing {:.3f}m".format(distance))
+        command = Twist()
+        command.linear.x = speed
+        moved = 0.0
+        deadline = time.monotonic() + timeout
+        try:
+            rate = rospy.Rate(30)
+            while time.monotonic() < deadline and not rospy.is_shutdown():
+                self.check_abort()
+                with self.lock:
+                    pose = self.base_pose
+                    odom_age = time.monotonic() - self.qr_odom_received_at
+                if pose is None or odom_age > stale_sec:
+                    self.publish_status(
+                        "task5", "extra_forward_incomplete",
+                        "odometry became stale during final movement")
+                    return False
+                moved = math.hypot(
+                    pose[0] - start_pose[0], pose[1] - start_pose[1])
+                if moved >= distance:
+                    self.publish_status(
+                        "task5", "extra_forward_completed",
+                        "advanced {:.3f}m after endpoint".format(moved))
+                    return True
+                self.cmd_pub.publish(command)
+                rate.sleep()
+            self.publish_status(
+                "task5", "extra_forward_incomplete",
+                "final movement timed out after {:.3f}m".format(moved))
+            return False
+        finally:
+            self.safe_stop(cancel_navigation=True)
+
     def task5(self):
         decision = self.traffic_decision or rospy.get_param("~traffic_decision", "").strip().lower()
         if decision not in TRACK_CONFIG:
@@ -1998,6 +2116,7 @@ class CompetitionFlow:
         finally:
             self.stop_child("line_follow")
             self.safe_stop(cancel_navigation=True)
+        self.advance_after_track_finish()
         self.announce("task5")
         self.publish_status("task5", "completed", "competition completed")
 

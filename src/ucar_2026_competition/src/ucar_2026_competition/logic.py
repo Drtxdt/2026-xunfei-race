@@ -121,6 +121,19 @@ def task2_navigation_outcome(status, timed_out=False):
     return "waiting"
 
 
+def task2_remembered_anchor_ready(required_anchor, observed_anchor):
+    """Gate a remembered target until the robot is observing that exact anchor."""
+    try:
+        required = int(required_anchor or 0)
+    except (TypeError, ValueError):
+        required = 0
+    try:
+        observed = int(observed_anchor or 0)
+    except (TypeError, ValueError):
+        observed = 0
+    return required <= 0 or observed == required
+
+
 def task4_start_action(skip_stop_line_approach, traffic_pose_configured):
     """Select whether task4 starts at the line or navigates to it."""
     if bool(skip_stop_line_approach):
