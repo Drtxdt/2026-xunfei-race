@@ -97,6 +97,30 @@ def task4_handoff_required(previous_stage, current_stage):
             str(previous_stage or "").strip().lower() in ("task2", "task3"))
 
 
+TASK2_RECOVERABLE_NAVIGATION_FAILURES = frozenset((
+    "failed",
+    "centering_failed",
+    "parking_staging_failed",
+    "parking_recenter_failed",
+    "parking_wall_fit_failed",
+    "parking_docking_failed",
+    "parking_validation_failed",
+    "coverage_recovery_disable_failed",
+))
+
+
+def task2_navigation_outcome(status, timed_out=False):
+    """Classify factory navigation without turning parking failure into a pause."""
+    normalized = str(status or "").strip().lower()
+    if normalized == "arrived":
+        return "arrived"
+    if normalized == "centered":
+        return "centered"
+    if bool(timed_out) or normalized in TASK2_RECOVERABLE_NAVIGATION_FAILURES:
+        return "continue"
+    return "waiting"
+
+
 def task4_start_action(skip_stop_line_approach, traffic_pose_configured):
     """Select whether task4 starts at the line or navigates to it."""
     if bool(skip_stop_line_approach):

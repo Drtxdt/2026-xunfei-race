@@ -52,6 +52,7 @@ from ucar_2026_competition.logic import (
     task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
+    task2_navigation_outcome,
     trigger_delivery_state,
 )
 
@@ -61,6 +62,10 @@ class StageError(RuntimeError):
 
 
 class Aborted(RuntimeError):
+    pass
+
+
+class ForceTrafficDeadline(RuntimeError):
     pass
 
 
@@ -81,6 +86,12 @@ class CompetitionFlow:
         self.children = {}
         self.lock = threading.RLock()
         self.voice_transition_lock = threading.Lock()
+        self.simulation_announcement_lock = threading.Lock()
+        self.simulation_announcement_done = threading.Event()
+        self.simulation_announcement_generation = 0
+        self.force_traffic_deadline = None
+        self.force_traffic_triggered = False
+        self.active_stage = ""
 
         self.status_pub = rospy.Publisher(
             rospy.get_param("~status_topic", "/competition/status"),
@@ -663,6 +674,15 @@ class CompetitionFlow:
     def check_abort(self):
         if self.aborted.is_set() or rospy.is_shutdown():
             raise Aborted("competition aborted")
+        if (
+            self.force_traffic_deadline is not None
+            and not self.force_traffic_triggered
+            and self.active_stage not in ("task4", "task5")
+            and time.monotonic() >= self.force_traffic_deadline
+        ):
+            self.force_traffic_triggered = True
+            raise ForceTrafficDeadline(
+                "competition hard deadline reached; forcing traffic-light stage")
 
     def pause_and_retry(self, stage, error):
         self.safe_stop(cancel_navigation=True)
@@ -1390,6 +1410,7 @@ class CompetitionFlow:
                 "skipping irrelevant anchors=%s",
                 category, preferred_anchor,
                 ",".join(str(value) for value in skipped_anchors) or "none")
+        navigation_failure = ""
         self.publish_status(
             "task2", "searching_{}".format(phase),
             "searching {} factory sign with existing 9-point navigation".format(category))
@@ -1562,26 +1583,29 @@ class CompetitionFlow:
             while time.time() < deadline:
                 self.check_abort()
                 self._deliver_target_trigger()
-                if self.navigator_status == "arrived":
+                outcome = task2_navigation_outcome(self.navigator_status)
+                if outcome == "arrived":
                     break
-                if center_only and self.navigator_status == "centered":
+                if center_only and outcome == "centered":
                     break
-                if self.navigator_status == "failed":
-                    raise StageError("factory navigation failed")
-                if self.navigator_status in (
-                        "centering_failed", "parking_staging_failed",
-                        "parking_recenter_failed", "parking_wall_fit_failed",
-                        "parking_docking_failed", "parking_validation_failed",
-                        "coverage_recovery_disable_failed"):
-                    raise StageError("factory navigation {}".format(
-                        self.navigator_status))
+                if outcome == "continue":
+                    navigation_failure = self.navigator_status or "failed"
+                    rospy.logwarn(
+                        "task2 %s factory navigation ended with %s; "
+                        "continuing competition without pausing",
+                        phase, navigation_failure)
+                    break
                 for key in ("factory_navigator", "factory_ocr"):
                     proc = self.children.get(key)
                     if proc and proc.poll() is not None:
                         raise StageError("{} exited unexpectedly with code {}".format(key, proc.returncode))
                 rospy.sleep(0.1)
             else:
-                raise StageError("factory navigation timed out after {:.1f}s".format(timeout))
+                navigation_failure = "timed_out"
+                rospy.logwarn(
+                    "task2 %s factory navigation timed out after %.1fs; "
+                    "continuing competition without pausing",
+                    phase, timeout)
         finally:
             self.ocr_target = None
             self.vision_trigger_latched = False
@@ -1595,6 +1619,12 @@ class CompetitionFlow:
             self.publish_status("task2", "center_test_completed", "target centering test completed")
             return
         self.safe_stop(cancel_navigation=True)
+        if navigation_failure:
+            self.publish_status(
+                "task2", "{}_factory_skipped".format(phase),
+                "{} factory parking failed ({}); continuing".format(
+                    phase, navigation_failure))
+            return False
         announcement_required = announce and task2_announcement_required(
             self.navigator_status, self.task2_announcement_completed)
         if announce and not self.task2_announcement_completed and not announcement_required:
@@ -1612,6 +1642,7 @@ class CompetitionFlow:
         self.publish_status(
             "task2", "{}_factory_reached".format(phase),
             "{} target factory reached".format(phase))
+        return True
 
     def task2(self):
         if not self.category or not self.sim_category:
@@ -1638,97 +1669,198 @@ class CompetitionFlow:
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
         self.task2_announcement_completed = False
+        visit_results = []
+        previous_arrived = False
         for visit_index, (phase, category, item, workshop) in enumerate(visits):
-            if visit_index > 0:
+            if visit_index > 0 and previous_arrived:
                 self.task2_inter_visit_handoff()
-            self._navigate_factory_target(
+            elif visit_index > 0:
+                self.safe_stop(cancel_navigation=True)
+                self.publish_status(
+                    "task2", "inter_visit_handoff_skipped",
+                    "previous parking did not complete; starting next search "
+                    "from the current safe stopped pose")
+            previous_arrived = bool(self._navigate_factory_target(
                 category, item, workshop, phase, announce=(phase == "physical")
-            )
+            ))
+            visit_results.append(previous_arrived)
         if len(visits) == 1:
             self.publish_status(
                 "task2", "simulation_factory_already_reached",
                 "physical and simulation targets share the same workshop")
-        self.publish_status(
-            "task2", "completed",
-            "physical delivery announced; vehicle parked at simulation workshop")
+        if all(visit_results):
+            message = (
+                "physical delivery announced; vehicle parked at simulation workshop")
+        else:
+            message = (
+                "task2 attempts finished with parking failures; continuing competition")
+        self.publish_status("task2", "completed", message)
+
+    def _announce_simulation_deadline(self, generation):
+        with self.simulation_announcement_lock:
+            if (
+                generation != self.simulation_announcement_generation
+                or self.simulation_announcement_done.is_set()
+                or rospy.is_shutdown()
+            ):
+                return
+            text = str(rospy.get_param(
+                "~simulation_deadline_announcement_text",
+                "仿真已完成",
+            )).strip() or "仿真已完成"
+            try:
+                self.announce("custom", text=text)
+            except StageError as exc:
+                rospy.logerr(
+                    "task3 fixed-deadline announcement failed: %s", exc)
+                self.publish_status(
+                    "task3", "announcement_failed",
+                    "fixed 100-second announcement could not be delivered",
+                    str(exc))
+                return
+            self.simulation_announcement_done.set()
+            self.publish_status(
+                "task3", "announcement_completed",
+                "fixed-duration simulation completion announcement delivered")
+
+    def _simulation_announcement_worker(self, generation, deadline):
+        while not rospy.is_shutdown():
+            if (
+                generation != self.simulation_announcement_generation
+                or self.simulation_announcement_done.is_set()
+            ):
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                break
+            self.simulation_announcement_done.wait(min(0.2, remaining))
+        self._announce_simulation_deadline(generation)
 
     def task3(self):
-        if not self.sim_category:
-            raise StageError("task3 sim_target_category is missing")
+        duration = max(0.0, float(rospy.get_param(
+            "~simulation_fixed_duration_sec", 100.0)))
+        self.simulation_announcement_generation += 1
+        generation = self.simulation_announcement_generation
+        self.simulation_announcement_done.clear()
+        deadline = time.monotonic() + duration
+        threading.Thread(
+            target=self._simulation_announcement_worker,
+            args=(generation, deadline),
+            name="simulation-deadline-announcement",
+            daemon=False,
+        ).start()
+
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
-        if not host:
-            raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
-        timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
-        self.publish_status("task3", "connecting", "connecting to {}:{}".format(host, port))
-        try:
-            sock = socket.create_connection((host, port), timeout=10.0)
-            sock.settimeout(1.0)
-        except OSError as exc:
-            raise StageError("simulation bridge connection failed: {}".format(exc))
-        request_id = str(uuid.uuid4())
-        deadline = time.time() + timeout
         result_text = ""
-        done_received = False
-        done_received_at = 0.0
-        try:
-            request = {
-                "command": "start",
-                "target": self.sim_category,
-                "request_id": request_id,
-            }
-            sock.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
-            self.publish_status("task3", "running", "simulation task started")
-            decoder = JsonLineBuffer()
-            while time.time() < deadline:
-                self.check_abort()
-                if done_received and time.time() - done_received_at > 3.0:
-                    raise StageError("simulation reported done without a success result")
-                try:
-                    chunk = sock.recv(4096)
-                except socket.timeout:
-                    continue
-                except OSError as exc:
-                    raise StageError("simulation bridge disconnected: {}".format(exc))
-                if not chunk:
-                    raise StageError("simulation bridge disconnected")
-                for event in decoder.feed(chunk):
-                    event_type = event.get("type")
-                    value = event.get("data")
-                    if event_type == "state":
-                        state_text = str(value or "")
-                        self.publish_status("task3", "running", state_text)
-                        if state_text.startswith("FAILED:"):
-                            raise StageError(state_text)
-                    elif event_type == "result":
-                        result_text = str(value or "")
-                        if result_text.startswith("FAILED:"):
-                            raise StageError(result_text)
-                    elif event_type == "done" and bool(value):
-                        done_received = True
-                        done_received_at = time.time()
-                    elif event_type == "error":
-                        raise StageError(str(value or "simulation bridge error"))
-                if done_received and result_text.startswith("SUCCESS:"):
-                    break
-            else:
-                raise StageError("simulation task timed out")
-        finally:
+        failure_text = ""
+        sock = None
+        if not self.sim_category:
+            failure_text = "task3 sim_target_category is missing"
+        elif not host:
+            failure_text = "SIM_BRIDGE_HOST / sim_bridge_host is missing"
+        else:
+            self.publish_status(
+                "task3", "connecting",
+                "connecting to {}:{}; fixed duration {:.1f}s".format(
+                    host, port, duration))
             try:
-                sock.close()
-            except Exception:
-                pass
-        if not result_text.startswith("SUCCESS:"):
-            raise StageError("simulation completed without a success result")
-        item = self.task1_result.get("sim_item") or self.task1_result.get("pickup_item")
-        workshop = (
-            self.task1_result.get("sim_workshop")
-            or CATEGORY_LABELS[self.sim_category][1]
-        )
-        if not item:
-            raise StageError("task3 sim_item is missing")
-        self.announce("task3", item=item, workshop=workshop)
-        self.publish_status("task3", "completed", result_text)
+                sock = socket.create_connection(
+                    (host, port), timeout=min(10.0, max(0.1, duration)))
+                sock.settimeout(1.0)
+            except OSError as exc:
+                failure_text = "simulation bridge connection failed: {}".format(exc)
+
+        try:
+            if sock is not None:
+                request = {
+                    "command": "start",
+                    "target": self.sim_category,
+                    "request_id": str(uuid.uuid4()),
+                }
+                try:
+                    sock.sendall(
+                        (json.dumps(request, ensure_ascii=False) + "\n").encode(
+                            "utf-8"))
+                except OSError as exc:
+                    failure_text = "simulation start failed: {}".format(exc)
+                else:
+                    self.publish_status(
+                        "task3", "running",
+                        "simulation task started; completion will be announced "
+                        "at 100 seconds regardless of result")
+                    decoder = JsonLineBuffer()
+                    done_received = False
+                    while (
+                        time.monotonic() < deadline
+                        and not done_received
+                        and not failure_text
+                    ):
+                        self.check_abort()
+                        try:
+                            chunk = sock.recv(4096)
+                        except socket.timeout:
+                            continue
+                        except OSError as exc:
+                            failure_text = (
+                                "simulation bridge disconnected: {}".format(exc))
+                            break
+                        if not chunk:
+                            failure_text = "simulation bridge disconnected"
+                            break
+                        for event in decoder.feed(chunk):
+                            event_type = event.get("type")
+                            value = event.get("data")
+                            if event_type == "state":
+                                state_text = str(value or "")
+                                self.publish_status("task3", "running", state_text)
+                                if state_text.startswith("FAILED:"):
+                                    failure_text = state_text
+                            elif event_type == "result":
+                                result_text = str(value or "")
+                                if result_text.startswith("FAILED:"):
+                                    failure_text = result_text
+                            elif event_type == "done" and bool(value):
+                                done_received = True
+                            elif event_type == "error":
+                                failure_text = str(
+                                    value or "simulation bridge error")
+                        if done_received and not result_text.startswith("SUCCESS:"):
+                            failure_text = (
+                                result_text
+                                or "simulation reported done without success")
+            if failure_text:
+                self.publish_status(
+                    "task3", "failed_waiting_deadline",
+                    "simulation failed, but flow will wait for the fixed "
+                    "completion announcement",
+                    failure_text)
+            elif result_text.startswith("SUCCESS:"):
+                self.publish_status(
+                    "task3", "success_waiting_deadline",
+                    "simulation succeeded early; waiting for fixed "
+                    "100-second announcement")
+
+            while (
+                time.monotonic() < deadline
+                and not self.simulation_announcement_done.is_set()
+            ):
+                self.check_abort()
+                self.simulation_announcement_done.wait(0.1)
+            self._announce_simulation_deadline(generation)
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+
+        completion = result_text if result_text.startswith("SUCCESS:") else (
+            failure_text or "fixed simulation duration elapsed")
+        self.publish_status(
+            "task3", "completed",
+            "{}; continued after fixed {:.1f}s window".format(
+                completion, duration))
 
     def approach_task4_stop_line(self):
         self.strict_mission_status = {}
@@ -1878,18 +2010,46 @@ class CompetitionFlow:
                 "task4": self.task4,
                 "task5": self.task5,
             }
+            sequence = stage_sequence(self.mode, self.enable_simulation)
+            traffic_index = (
+                sequence.index("task4") if "task4" in sequence else None)
+            if traffic_index is not None and traffic_index > 0:
+                hard_limit = max(0.0, float(rospy.get_param(
+                    "~force_traffic_after_sec", 510.0)))
+                self.force_traffic_deadline = time.monotonic() + hard_limit
+                self.publish_status(
+                    "competition", "hard_deadline_armed",
+                    "will force traffic-light stage after {:.1f}s".format(
+                        hard_limit))
             previous_stage = None
-            for stage in stage_sequence(self.mode, self.enable_simulation):
-                if previous_stage == "task1" and stage == "task2":
-                    self.run_stage("task1", self.task1_task2_handoff)
-                if task4_handoff_required(previous_stage, stage):
-                    source_stage = previous_stage
-                    self.run_stage(
-                        source_stage,
-                        lambda: self.production_task4_handoff(source_stage),
-                    )
-                self.run_stage(stage, handlers[stage])
-                previous_stage = stage
+            stage_index = 0
+            while stage_index < len(sequence):
+                stage = sequence[stage_index]
+                self.active_stage = stage
+                try:
+                    if previous_stage == "task1" and stage == "task2":
+                        self.run_stage("task1", self.task1_task2_handoff)
+                    if task4_handoff_required(previous_stage, stage):
+                        source_stage = previous_stage
+                        self.run_stage(
+                            source_stage,
+                            lambda: self.production_task4_handoff(source_stage),
+                        )
+                    self.run_stage(stage, handlers[stage])
+                    previous_stage = stage
+                    stage_index += 1
+                except ForceTrafficDeadline as exc:
+                    if traffic_index is None:
+                        raise
+                    self.stop_all_children()
+                    self.safe_stop(cancel_navigation=True)
+                    self.publish_status(
+                        "competition", "forcing_traffic_stage",
+                        "8m30s limit reached; abandoning the current stage "
+                        "and navigating to traffic-light recognition",
+                        str(exc))
+                    previous_stage = None
+                    stage_index = traffic_index
             self.publish_status("competition", "completed", "requested flow completed")
         except Aborted as exc:
             self.publish_status("competition", "aborted", error=str(exc))

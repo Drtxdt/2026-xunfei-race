@@ -108,6 +108,12 @@ coverage_anchor_yaw_timeout_sec: 20.0
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003
 sim_timeout_sec: 900.0
+# 仿真从发起任务开始固定运行100秒；无论成功、失败或断线，到点都播报“仿真已完成”并继续。
+simulation_fixed_duration_sec: 100.0
+simulation_deadline_announcement_text: "仿真已完成"
+
+# 总流程启动510秒（8分30秒）后抢占任务1/2/3，直接进入红绿灯识别点导航。
+force_traffic_after_sec: 510.0
 
 # 交通灯坐标必须经实车标定后显式设置。未设置时流程安全暂停。
 traffic_pose_configured: false

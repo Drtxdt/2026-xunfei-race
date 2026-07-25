@@ -345,12 +345,16 @@ namespace ucarController
             catch (const std::exception &e)
             {
                 ROS_ERROR("AIcarController writeLoop: %s\n", e.what());
+                if (!ros::ok())
+                    break;
                 ROS_ERROR("AIcarController writeLoop error, waitfor reopen serial port\n");
                 setSerial();
                 openSerial();
             }
             catch (...)
             {
+                if (!ros::ok())
+                    break;
                 ROS_ERROR("AIcarController writeLoop error, waitfor reopen serial port\n");
                 setSerial();
                 openSerial();
@@ -589,12 +593,16 @@ namespace ucarController
             catch (const std::exception &e)
             {
                 ROS_ERROR("AIcarController readLoop: %s\n", e.what());
+                if (!ros::ok())
+                    break;
                 ROS_ERROR("AIcarController readLoop error, try to reopen serial port\n");
                 setSerial();
                 openSerial();
             }
             catch (...)
             {
+                if (!ros::ok())
+                    break;
                 ROS_ERROR("AIcarController readLoop error, try to reopen serial port\n");
                 setSerial();
                 openSerial();

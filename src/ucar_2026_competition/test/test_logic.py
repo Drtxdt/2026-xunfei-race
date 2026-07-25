@@ -34,6 +34,7 @@ from ucar_2026_competition.logic import (
     task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
+    task2_navigation_outcome,
     trigger_delivery_state,
 )
 
@@ -56,6 +57,24 @@ class CompetitionLogicTest(unittest.TestCase):
                 {"daily": 3, "electronics": 3}, "electronics"),
             (3, ()),
         )
+
+    def test_task2_parking_failures_continue_instead_of_pausing(self):
+        self.assertEqual(
+            task2_navigation_outcome("centering_failed"), "continue")
+        self.assertEqual(
+            task2_navigation_outcome("parking_validation_failed"), "continue")
+        self.assertEqual(
+            task2_navigation_outcome("", timed_out=True), "continue")
+        self.assertEqual(task2_navigation_outcome("arrived"), "arrived")
+
+    def test_hard_competition_and_simulation_deadlines_are_configured(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            content = stream.read()
+        self.assertIn("force_traffic_after_sec: 510.0", content)
+        self.assertIn("simulation_fixed_duration_sec: 100.0", content)
+        self.assertIn('simulation_deadline_announcement_text: "仿真已完成"', content)
 
     def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
         flow_path = os.path.abspath(os.path.join(
