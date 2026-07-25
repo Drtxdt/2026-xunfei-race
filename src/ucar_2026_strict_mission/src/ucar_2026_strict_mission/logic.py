@@ -46,6 +46,48 @@ def lateral_displacement(start_pose, current_pose):
     return -delta_x * math.sin(start_yaw) + delta_y * math.cos(start_yaw)
 
 
+def select_final_advance(
+    measured_distance_m,
+    measurement_age_sec,
+    target_clearance_m,
+    maximum_advance_m,
+    no_vision_fallback_m,
+    max_measurement_age_sec,
+    minimum_command_m=0.0,
+):
+    """Choose a bounded final advance from a fresh stop-line measurement."""
+    target = float(target_clearance_m)
+    maximum = float(maximum_advance_m)
+    fallback = float(no_vision_fallback_m)
+    max_age = float(max_measurement_age_sec)
+    minimum = float(minimum_command_m)
+    if target < 0.0:
+        raise ValueError("target clearance must be non-negative")
+    if maximum < 0.0:
+        raise ValueError("maximum advance must be non-negative")
+    if not 0.0 <= fallback <= maximum:
+        raise ValueError("no-vision fallback must be within the advance limit")
+    if max_age <= 0.0:
+        raise ValueError("measurement age limit must be positive")
+    if not 0.0 <= minimum <= maximum:
+        raise ValueError("minimum command must be within the advance limit")
+
+    measurement_is_fresh = False
+    measured = None
+    if measured_distance_m is not None and measurement_age_sec is not None:
+        measured = float(measured_distance_m)
+        age = float(measurement_age_sec)
+        measurement_is_fresh = measured >= 0.0 and 0.0 <= age <= max_age
+
+    if not measurement_is_fresh:
+        return fallback, "no_vision_fallback"
+
+    advance = min(maximum, max(0.0, measured - target))
+    if advance < minimum:
+        return 0.0, "visual_hold"
+    return advance, "visual_distance"
+
+
 def heading_alignment_command(error_rad, tolerance_rad, kp, min_speed,
                               max_speed):
     """Return a bounded angular command, or zero inside the tolerance."""

@@ -35,6 +35,7 @@ from ucar_2026_competition.logic import (
     CATEGORY_LABELS,
     base_is_stopped,
     build_task1_instruction,
+    final_advance_completed,
     TemporalTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
@@ -2163,18 +2164,31 @@ class CompetitionFlow:
                     distance = status.get("visual_stop_distance_m")
                     planned = float(status.get("final_advance_m") or 0.0)
                     progress = float(status.get("final_progress_m") or 0.0)
-                    min_progress = float(rospy.get_param(
-                        "~task4_min_final_progress_m", 0.125))
-                    if planned < min_progress or progress < min_progress:
+                    source = str(
+                        status.get("final_advance_source") or "").strip()
+                    valid_sources = (
+                        "visual_distance",
+                        "visual_hold",
+                        "no_vision_fallback",
+                    )
+                    tolerance = float(rospy.get_param(
+                        "~task4_final_progress_tolerance_m", 0.008))
+                    if source not in valid_sources:
                         raise StageError(
-                            "task4 stop-line clearance not verified: "
+                            "task4 final advance source not verified: {}".format(
+                                source or "missing"))
+                    if not final_advance_completed(
+                            planned, progress, tolerance):
+                        raise StageError(
+                            "task4 final advance incomplete: "
                             "planned={:.3f}m progress={:.3f}m "
-                            "required={:.3f}m".format(
-                                planned, progress, min_progress))
+                            "tolerance={:.3f}m".format(
+                                planned, progress, tolerance))
                     self.publish_status(
                         "task4", "stop_line_reached",
                         "vehicle held before stop line; visual_distance_m={} "
-                        "final_progress_m={:.3f}".format(distance, progress))
+                        "final_advance_source={} final_progress_m={:.3f}".format(
+                            distance, source, progress))
                     return
                 if state == "FAULT":
                     raise StageError(

@@ -131,6 +131,16 @@ def base_is_stopped(linear_x, linear_y, angular_z,
             abs(float(angular_z)) <= abs(float(angular_tolerance)))
 
 
+def final_advance_completed(planned_m, progress_m, tolerance_m=0.008):
+    """Accept a completed variable-length final advance within odometry tolerance."""
+    planned = float(planned_m)
+    progress = float(progress_m)
+    tolerance = float(tolerance_m)
+    if planned < 0.0 or progress < 0.0 or tolerance < 0.0:
+        return False
+    return progress + tolerance >= planned
+
+
 def target_bbox_ratios(bbox, image_width, image_height):
     """Return normalized width, height, and area for a polygonal target box."""
     try:

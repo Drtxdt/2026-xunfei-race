@@ -17,6 +17,7 @@ from ucar_2026_competition.logic import (
     build_task1_instruction,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
+    final_advance_completed,
     JsonLineBuffer,
     TRACK_CONFIG,
     TemporalTargetFilter,
@@ -44,6 +45,11 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_variable_final_advance_completion(self):
+        self.assertTrue(final_advance_completed(0.048, 0.047, 0.008))
+        self.assertTrue(final_advance_completed(0.0, 0.0, 0.008))
+        self.assertFalse(final_advance_completed(0.13, 0.10, 0.008))
+
     def test_normalizes_calibrated_no_workshop_anchors(self):
         self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
         self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))

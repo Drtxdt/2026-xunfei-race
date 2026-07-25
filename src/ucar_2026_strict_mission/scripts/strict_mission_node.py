@@ -33,6 +33,7 @@ from ucar_2026_strict_mission.logic import (
     lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
+    select_final_advance,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -60,8 +61,11 @@ class StrictMissionNode:
         self.line_search_direction = 1.0
         self.line_search_reversals = 0
         self.last_distance_m = None
+        self.last_distance_at = 0.0
         self.last_stop_line_color = None
         self.visual_stop_distance_m = None
+        self.planned_final_advance_m = 0.0
+        self.final_advance_source = "unplanned"
         self.final_progress_m = 0.0
         self.final_lateral_drift_m = 0.0
         self.final_yaw_drift_deg = 0.0
@@ -107,6 +111,23 @@ class StrictMissionNode:
         if not 0.0 <= self.final_advance_m <= 0.20:
             raise ValueError(
                 "final_advance_m must be within [0.0, 0.20]")
+        self.final_target_clearance_m = float(rospy.get_param(
+            "~final_advance_target_clearance_m", 0.05))
+        self.final_no_vision_fallback_m = float(rospy.get_param(
+            "~final_advance_no_vision_m", 0.13))
+        self.final_visual_max_age_sec = float(rospy.get_param(
+            "~final_advance_visual_max_age_sec", 0.75))
+        self.final_minimum_command_m = float(rospy.get_param(
+            "~final_advance_min_command_m", 0.015))
+        select_final_advance(
+            None,
+            None,
+            self.final_target_clearance_m,
+            self.final_advance_m,
+            self.final_no_vision_fallback_m,
+            self.final_visual_max_age_sec,
+            self.final_minimum_command_m,
+        )
         self.precision_start_m = float(rospy.get_param(
             "~precision_start_m", 0.14))
         self.line_yaw_tolerance_rad = math.radians(float(rospy.get_param(
@@ -189,7 +210,9 @@ class StrictMissionNode:
             "detail": detail,
             "distance_m": self.last_distance_m,
             "visual_stop_distance_m": self.visual_stop_distance_m,
-            "final_advance_m": self.final_advance_m,
+            "final_advance_m": self.planned_final_advance_m,
+            "final_advance_limit_m": self.final_advance_m,
+            "final_advance_source": self.final_advance_source,
             "final_progress_m": self.final_progress_m,
             "final_lateral_drift_m": self.final_lateral_drift_m,
             "final_yaw_drift_deg": self.final_yaw_drift_deg,
@@ -437,7 +460,9 @@ class StrictMissionNode:
         self.line_search_direction = 1.0
         self.line_search_reversals = 0
         distance = self.calibration.distance_for_ratio(bottom_ratio)
-        self.last_distance_m = distance
+        with self.lock:
+            self.last_distance_m = distance
+            self.last_distance_at = now if distance is not None else 0.0
         if distance is None:
             self.publish_stop()
             self.band_filter.reset()
@@ -504,7 +529,7 @@ class StrictMissionNode:
                 line_center_error_ratio=center_error,
                 line_angle_deg=math.degrees(angle_error),
                 line_color=self.last_stop_line_color,
-                final_advance_m=self.final_advance_m,
+                final_advance_limit_m=self.final_advance_m,
                 stop_confirm_hits=self.band_filter.hits,
             )
         else:
@@ -803,13 +828,52 @@ class StrictMissionNode:
             return
         raise RuntimeError("staging heading alignment timed out")
 
+    def plan_final_advance(self):
+        now = time.monotonic()
+        with self.lock:
+            measured_distance = self.last_distance_m
+            measured_at = self.last_distance_at
+        measurement_age = (
+            None if measured_distance is None or measured_at <= 0.0
+            else max(0.0, now - measured_at))
+        distance, source = select_final_advance(
+            measured_distance,
+            measurement_age,
+            self.final_target_clearance_m,
+            self.final_advance_m,
+            self.final_no_vision_fallback_m,
+            self.final_visual_max_age_sec,
+            self.final_minimum_command_m,
+        )
+        with self.lock:
+            self.planned_final_advance_m = distance
+            self.final_advance_source = source
+        rospy.logwarn(
+            "TASK4_FINAL_ADVANCE planned=%.3fm source=%s "
+            "measured=%s age=%s target=%.3fm",
+            distance,
+            source,
+            "none" if measured_distance is None
+            else "{:.3f}m".format(measured_distance),
+            "none" if measurement_age is None
+            else "{:.3f}s".format(measurement_age),
+            self.final_target_clearance_m,
+        )
+        return distance
+
     def advance_final_offset(self):
-        distance = self.final_advance_m
+        distance = self.planned_final_advance_m
         with self.lock:
             self.final_progress_m = 0.0
             self.final_lateral_drift_m = 0.0
             self.final_yaw_drift_deg = 0.0
         if distance <= 0.0:
+            self.publish_stop()
+            self.publish_status(
+                "final advance not required; target clearance already met",
+                final_advance_m=distance,
+                final_progress_m=0.0,
+            )
             return
         stale_limit = max(0.05, float(rospy.get_param(
             "~final_advance_odom_stale_sec", 0.30)))
@@ -932,6 +996,11 @@ class StrictMissionNode:
             with self.lock:
                 self.state = "APPROACH_LINE"
                 self.last_image_at = time.monotonic()
+                self.last_distance_m = None
+                self.last_distance_at = 0.0
+                self.visual_stop_distance_m = None
+                self.planned_final_advance_m = 0.0
+                self.final_advance_source = "unplanned"
                 self.line_missing_since = None
                 self.line_search_origin_yaw = (
                     self.odom_pose[2] if self.odom_pose else None)
@@ -964,11 +1033,13 @@ class StrictMissionNode:
                     visual_distance_m=self.last_distance_m,
                     fallback_timeout_sec=fallback_timeout,
                 )
+            planned_advance = self.plan_final_advance()
             with self.lock:
                 self.state = "FINAL_ADVANCE"
             self.publish_status(
                 "starting guarded final stop-line advance",
-                final_advance_m=self.final_advance_m,
+                final_advance_m=planned_advance,
+                final_advance_source=self.final_advance_source,
             )
             self.advance_final_offset()
             with self.lock:

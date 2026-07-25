@@ -18,6 +18,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
+    select_final_advance,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -58,18 +59,19 @@ class OdometryProgressTests(unittest.TestCase):
             0.0,
         )
 
-    def test_competition_requires_completed_final_advance(self):
+    def test_competition_requires_completed_planned_final_advance(self):
         competition_root = PACKAGE_ROOT.parent / "ucar_2026_competition"
         config = (
             competition_root / "config" / "competition.yaml"
         ).read_text(encoding="utf-8")
-        self.assertIn("task4_min_final_progress_m: 0.125", config)
+        self.assertIn("task4_final_progress_tolerance_m: 0.008", config)
 
         flow = (
             competition_root / "scripts" / "competition_flow.py"
         ).read_text(encoding="utf-8")
         self.assertIn('status.get("final_progress_m")', flow)
-        self.assertIn("task4 stop-line clearance not verified", flow)
+        self.assertIn("final_advance_completed", flow)
+        self.assertIn("task4 final advance incomplete", flow)
 
     def test_calibrated_advance_uses_verified_hard_stop_distance(self):
         config = json.loads(
@@ -78,6 +80,12 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertEqual(
             config["calibrated_final_advance_fallback_sec"], 2.0)
         self.assertEqual(config["final_advance_m"], 0.20)
+        self.assertEqual(
+            config["final_advance_target_clearance_m"], 0.05)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.13)
+        self.assertEqual(
+            config["final_advance_visual_max_age_sec"], 0.75)
+        self.assertEqual(config["final_advance_min_command_m"], 0.015)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
         self.assertGreaterEqual(
             config["final_advance_creep_speed_mps"], 0.030)
@@ -97,6 +105,38 @@ class OdometryProgressTests(unittest.TestCase):
             "using calibrated guarded final advance",
             node_source,
         )
+        self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
+
+    def test_fresh_visual_distance_selects_only_required_clearance(self):
+        distance, source = select_final_advance(
+            0.0983333333,
+            0.14,
+            0.05,
+            0.20,
+            0.13,
+            0.75,
+            0.015,
+        )
+        self.assertAlmostEqual(distance, 0.0483333333)
+        self.assertEqual(source, "visual_distance")
+
+    def test_visual_distance_caps_long_advance_and_holds_near_line(self):
+        distance, source = select_final_advance(
+            0.2525, 0.10, 0.05, 0.20, 0.13, 0.75, 0.015)
+        self.assertEqual(distance, 0.20)
+        self.assertEqual(source, "visual_distance")
+
+        distance, source = select_final_advance(
+            0.058, 0.10, 0.05, 0.20, 0.13, 0.75, 0.015)
+        self.assertEqual(distance, 0.0)
+        self.assertEqual(source, "visual_hold")
+
+    def test_stale_or_missing_visual_distance_uses_safe_fallback(self):
+        for measured, age in ((None, None), (0.098, 0.80)):
+            distance, source = select_final_advance(
+                measured, age, 0.05, 0.20, 0.13, 0.75, 0.015)
+            self.assertEqual(distance, 0.13)
+            self.assertEqual(source, "no_vision_fallback")
 
     def test_task4_tightens_and_restores_teb_goal_tolerances(self):
         config = json.loads(
