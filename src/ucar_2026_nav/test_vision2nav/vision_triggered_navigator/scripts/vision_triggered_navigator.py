@@ -149,7 +149,7 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_min_clearance", 0.28)))
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
-                "~coverage_translation_min_clearance", 0.30)))
+                "~coverage_translation_min_clearance", 0.00)))
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
@@ -1294,11 +1294,11 @@ class VisionTriggeredNavigator(object):
 
         known, max_cost, _blocked = self._coverage_pose_cost(x, y)
         if should_skip_coverage_anchor(known, max_cost, self.lethal_cost):
-            self.cmd_vel_pub.publish(Twist())
             rospy.logwarn(
-                "[vision_triggered_navigator] 精确锚点%d footprint被锥桶占据(cost=%d)，仅跳过该原始点: (%.4f, %.4f, %.4f).",
+                "[vision_triggered_navigator] 锚点%d footprint代价为致命值(cost=%d)，"
+                "但标定点禁止跳过；继续交给move_base规划并重试: "
+                "(%.4f, %.4f, %.4f).",
                 patrol_idx + 1, max_cost, x, y, yaw)
-            return "skipped_blocked"
 
         rospy.loginfo(
             "[vision_triggered_navigator] 精确锚点%d: (%.4f, %.4f, %.4f)",
@@ -1351,39 +1351,43 @@ class VisionTriggeredNavigator(object):
                 rospy.logerr(
                     "[vision_triggered_navigator] 精确锚点%d的odom航向闭环失败.",
                     patrol_idx + 1)
-                return "skipped_failed"
+                return "failed"
             if self.current_goal_near_observation:
                 navigation_reached = True
                 break
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
-            if (self.current_goal_rotation_stall and
-                    attempt < self.coverage_goal_retry_count):
+            if attempt < self.coverage_goal_retry_count:
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
-                    return "skipped_failed"
+                    return "failed"
                 self._publish_status("coverage_goal_retry")
                 rospy.logwarn(
-                    "[vision_triggered_navigator] 精确锚点%d清理costmap后仅重试同一标定坐标一次.",
-                    patrol_idx + 1)
+                    "[vision_triggered_navigator] 锚点%d未到达，清理costmap后"
+                    "重试同一标定坐标（第%d/%d次尝试）.",
+                    patrol_idx + 1, attempt + 2,
+                    self.coverage_goal_retry_count + 1)
                 if not self._clear_costmaps_and_wait():
-                    return "skipped_failed"
+                    return "failed"
                 continue
             break
         if not navigation_reached:
             self.cmd_vel_pub.publish(Twist())
-            rospy.logwarn(
-                "[vision_triggered_navigator] 精确锚点%d导航未成功(state=%s timeout=%s rotation_stall=%s)，不生成替代坐标，进入下一原始点.",
+            rospy.logerr(
+                "[vision_triggered_navigator] 精确锚点%d导航未成功"
+                "(state=%s timeout=%s rotation_stall=%s)，"
+                "保留为失败点，禁止进入下一点.",
                 patrol_idx + 1, str(result), self.current_goal_timed_out,
                 self.current_goal_rotation_stall)
-            return "skipped_failed"
+            return "failed"
         if not self._wait_navigation_idle():
             self.cmd_vel_pub.publish(Twist())
             rospy.logerr(
-                "[vision_triggered_navigator] 精确锚点%d到达后move_base未释放控制权，禁止观察自转并进入下一原始点.",
+                "[vision_triggered_navigator] 精确锚点%d到达后move_base未释放控制权，"
+                "禁止观察自转，也禁止进入下一点.",
                 patrol_idx + 1)
-            return "skipped_failed"
+            return "failed"
 
         self.cmd_vel_pub.publish(Twist())
         initial_hold_at = rospy.get_time()
@@ -1396,15 +1400,15 @@ class VisionTriggeredNavigator(object):
         if self.current_goal_near_observation:
             rospy.loginfo(
                 "[vision_triggered_navigator] coverage anchor=%d "
-                "state=blocked_observed rotations=skipped",
+                "state=near_observation rotations=continuing",
                 patrol_idx + 1)
-            return "covered"
         if not self.perform_rotations(point.get("rotations", [])):
             self.cmd_vel_pub.publish(Twist())
             rospy.logwarn(
-                "[vision_triggered_navigator] 精确锚点%d步进扫描未完成，不重访，进入下一原始点.",
+                "[vision_triggered_navigator] 精确锚点%d步进扫描未完成，"
+                "禁止进入下一点.",
                 patrol_idx + 1)
-            return "skipped_scan_failed"
+            return "failed"
         if self.triggered:
             return "triggered"
         rospy.loginfo(
@@ -2430,6 +2434,14 @@ class VisionTriggeredNavigator(object):
                     if outcome == "triggered":
                         state = "VISION"
                         continue
+                    if outcome != "covered":
+                        rospy.logerr(
+                            "[vision_triggered_navigator] coverage anchor=%d "
+                            "failed; stop at this anchor instead of skipping "
+                            "ahead.",
+                            point_idx + 1)
+                        self._publish_status("coverage_anchor_failed")
+                        break
                     coverage_position += 1
                     continue
 

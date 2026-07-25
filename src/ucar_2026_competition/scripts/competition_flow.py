@@ -1669,19 +1669,23 @@ class CompetitionFlow:
         self.trigger_service_accepted = False
         self.trigger_acknowledged = False
         self.navigator_status = ""
+        resume_coverage_enabled = bool_param(
+            "~task2_resume_coverage_enabled", False)
         with self.lock:
             self.current_coverage_anchor = None
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
-            preferred_anchor, skipped_anchors = task2_resumed_coverage_hint(
-                self.task2_warehouse_memory,
-                category,
-                self.last_coverage_anchor if phase == "simulation" else None,
-                len(rospy.get_param(
-                    "/vision_triggered_navigator/patrol_points", [])) or 9,
-            )
             anchor_count = len(rospy.get_param(
                 "/vision_triggered_navigator/patrol_points", [])) or 9
+            if resume_coverage_enabled:
+                preferred_anchor, skipped_anchors = task2_resumed_coverage_hint(
+                    self.task2_warehouse_memory,
+                    category,
+                    self.last_coverage_anchor if phase == "simulation" else None,
+                    anchor_count,
+                )
+            else:
+                preferred_anchor, skipped_anchors = 0, ()
             no_workshop_anchors = normalize_coverage_anchor_ids(
                 rospy.get_param("~task2_no_workshop_anchors", []),
                 anchor_count,
@@ -1745,9 +1749,12 @@ class CompetitionFlow:
                     "navigate_to_end_after_trigger": False,
                     "coverage_search_mode": True,
                     "coverage_start_nearest": (
+                        resume_coverage_enabled and
                         phase == "simulation" and not preferred_anchor),
                     "coverage_preferred_anchor": (
-                        preferred_anchor if phase == "simulation" else 0),
+                        preferred_anchor
+                        if resume_coverage_enabled and phase == "simulation"
+                        else 0),
                     "coverage_skip_anchors": ",".join(
                         str(value) for value in skipped_anchors),
                     "coverage_abort_fail_fast_count": (
@@ -1757,7 +1764,7 @@ class CompetitionFlow:
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.28),
                     "coverage_translation_min_clearance": rospy.get_param(
-                        "~coverage_translation_min_clearance", 0.30),
+                        "~coverage_translation_min_clearance", 0.00),
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(
