@@ -93,6 +93,7 @@ class CompetitionFlow:
         self.simulation_announcement_lock = threading.Lock()
         self.simulation_announcement_done = threading.Event()
         self.simulation_announcement_generation = 0
+        self.simulation_announcement_deadline = None
         self.force_traffic_deadline = None
         self.force_traffic_triggered = False
         self.active_stage = ""
@@ -1850,6 +1851,33 @@ class CompetitionFlow:
             self.simulation_announcement_done.wait(min(0.2, remaining))
         self._announce_simulation_deadline(generation)
 
+    def wait_for_simulation_announcement_before_task4(self):
+        if (
+            self.simulation_announcement_generation <= 0
+            or self.simulation_announcement_done.is_set()
+        ):
+            return
+        deadline = self.simulation_announcement_deadline
+        self.publish_status(
+            "task3", "holding_in_warehouse",
+            "holding the vehicle stopped in the simulation warehouse until "
+            "the completion announcement finishes")
+        wait_limit = (
+            float(deadline) + 15.0
+            if deadline is not None else time.monotonic() + 15.0)
+        while (
+            not self.simulation_announcement_done.is_set()
+            and time.monotonic() < wait_limit
+            and not rospy.is_shutdown()
+        ):
+            self.check_abort()
+            self.safe_stop(cancel_navigation=True)
+            self.simulation_announcement_done.wait(0.1)
+        if not self.simulation_announcement_done.is_set():
+            self._announce_simulation_deadline(
+                self.simulation_announcement_generation)
+        self.safe_stop(cancel_navigation=True)
+
     def task3(self):
         duration = max(0.0, float(rospy.get_param(
             "~simulation_fixed_duration_sec", 120.0)))
@@ -1857,6 +1885,7 @@ class CompetitionFlow:
         generation = self.simulation_announcement_generation
         self.simulation_announcement_done.clear()
         deadline = time.monotonic() + duration
+        self.simulation_announcement_deadline = deadline
         threading.Thread(
             target=self._simulation_announcement_worker,
             args=(generation, deadline),
@@ -2019,9 +2048,19 @@ class CompetitionFlow:
                         "vehicle held before stop line; distance_m={}".format(distance))
                     return
                 if state == "FAULT":
+                    reason = str(
+                        status.get("error")
+                        or status.get("detail")
+                        or "unknown fault")
+                    if "stop line lost" in reason.lower():
+                        self.publish_status(
+                            "task4", "stop_line_degraded",
+                            "stop line was lost near the approach; holding the "
+                            "current pose and continuing traffic-light recognition",
+                            reason)
+                        return False
                     raise StageError(
-                        "strict stop-line approach failed: {}".format(
-                            status.get("error") or status.get("detail") or "unknown fault"))
+                        "strict stop-line approach failed: {}".format(reason))
                 proc = self.children.get("strict_line")
                 if proc and proc.poll() is not None:
                     raise StageError("strict stop-line approach exited unexpectedly")
@@ -2224,6 +2263,8 @@ class CompetitionFlow:
                 stage = sequence[stage_index]
                 self.active_stage = stage
                 try:
+                    if stage == "task4":
+                        self.wait_for_simulation_announcement_before_task4()
                     if previous_stage == "task1" and stage == "task2":
                         self.run_stage("task1", self.task1_task2_handoff)
                     if task4_handoff_required(previous_stage, stage):

@@ -161,7 +161,14 @@ class StrictMissionNode:
             data=json.dumps(payload, ensure_ascii=False, sort_keys=True)))
 
     def publish_stop(self):
-        self.cmd_pub.publish(Twist())
+        if rospy.is_shutdown():
+            return
+        try:
+            self.cmd_pub.publish(Twist())
+        except rospy.ROSException:
+            # roslaunch may close publishers before a 20 Hz watchdog callback
+            # already in flight returns during child-process shutdown.
+            return
 
     def set_fault(self, reason):
         with self.lock:
@@ -516,6 +523,8 @@ class StrictMissionNode:
         self.track_status[topic] = str(msg.data).strip()
 
     def watchdog_callback(self, _event):
+        if rospy.is_shutdown():
+            return
         with self.lock:
             state = self.state
             last_image_at = self.last_image_at
@@ -708,6 +717,10 @@ class StrictMissionNode:
 
     def shutdown(self):
         self.shutdown_event.set()
+        try:
+            self.watchdog.shutdown()
+        except Exception:
+            pass
         try:
             self.move_base.cancel_all_goals()
         except Exception:
