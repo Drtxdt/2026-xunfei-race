@@ -2,7 +2,8 @@
 #include <Eigen/Eigen>
 namespace ucarController
 {
-    baseBringup::baseBringup() : x_(0), y_(0), th_(0)
+    baseBringup::baseBringup()
+        : processThread_(NULL), writeThread_(NULL), x_(0), y_(0), th_(0)
     {
         ros::NodeHandle pravite_nh("~"); // 私有命名空间，用于获取参数
         // param: 参数名称（字符串)、输出变量（引用传递）、默认值（可选）
@@ -359,6 +360,18 @@ namespace ucarController
 
     baseBringup::~baseBringup()
     {
+        if (processThread_)
+        {
+            processThread_->join();
+            delete processThread_;
+            processThread_ = NULL;
+        }
+        if (writeThread_)
+        {
+            writeThread_->join();
+            delete writeThread_;
+            writeThread_ = NULL;
+        }
         if (serial_.isOpen())
             serial_.close();
     }

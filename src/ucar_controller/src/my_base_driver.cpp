@@ -71,7 +71,8 @@ namespace ucarController
 
   MahonyFilter mahonyFilter;
 
-  baseBringup::baseBringup() : x_(0), y_(0), th_(0)
+  baseBringup::baseBringup()
+      : processThread_(NULL), writeThread_(NULL), x_(0), y_(0), th_(0)
   {
     ros::NodeHandle pravite_nh("~");
     pravite_nh.param("provide_odom_tf", provide_odom_tf_, true);
@@ -421,6 +422,18 @@ namespace ucarController
 
   baseBringup::~baseBringup()
   {
+    if (processThread_)
+    {
+      processThread_->join();
+      delete processThread_;
+      processThread_ = NULL;
+    }
+    if (writeThread_)
+    {
+      writeThread_->join();
+      delete writeThread_;
+      writeThread_ = NULL;
+    }
     if (serial_.isOpen())
       serial_.close();
   }

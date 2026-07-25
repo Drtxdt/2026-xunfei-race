@@ -35,6 +35,7 @@ from navigator_logic import (
     parking_footprint_inside,
     parking_goal_from_wall,
     ray_segment_intersection,
+    remembered_coverage_order,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
     sensor_is_fresh,
@@ -120,6 +121,16 @@ def test_second_search_starts_nearest_and_preserves_cyclic_route():
         {"x": 3.0, "y": 0.0},
     ]
     assert cyclic_coverage_order(points, 2.1, 0.0) == [2, 3, 0, 1]
+
+
+def test_remembered_warehouse_is_visited_directly_with_safe_fallback():
+    assert remembered_coverage_order(9, 7, (2, 4)) == [
+        6, 0, 2, 4, 5, 7, 8,
+    ]
+
+
+def test_remembered_target_anchor_is_never_skipped():
+    assert remembered_coverage_order(4, 3, (1, 3)) == [2, 1, 3]
 
 
 def test_measured_quadrilateral_wall_normals_point_inward():
