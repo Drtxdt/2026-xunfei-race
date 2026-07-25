@@ -1795,7 +1795,7 @@ class CompetitionFlow:
                     "coverage_rotation_min_clearance": rospy.get_param(
                         "~coverage_rotation_min_clearance", 0.28),
                     "coverage_translation_min_clearance": rospy.get_param(
-                        "~coverage_translation_min_clearance", 0.00),
+                        "~coverage_translation_min_clearance", 0.28),
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(

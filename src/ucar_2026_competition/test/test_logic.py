@@ -89,7 +89,7 @@ class CompetitionLogicTest(unittest.TestCase):
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
         with open(config_path, "r", encoding="utf-8") as stream:
             config = stream.read()
-        self.assertIn("coverage_translation_min_clearance: 0.00", config)
+        self.assertIn("coverage_translation_min_clearance: 0.28", config)
         self.assertIn(
             "coverage_translation_sector_half_angle_deg: 35.0", config)
         self.assertIn("coverage_max_vel_x: 0.55", config)

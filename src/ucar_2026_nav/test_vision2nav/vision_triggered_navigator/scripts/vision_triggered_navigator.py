@@ -167,7 +167,7 @@ class VisionTriggeredNavigator(object):
                 "~coverage_rotation_consensus_history_size", 9)))
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
-                "~coverage_translation_min_clearance", 0.00)))
+                "~coverage_translation_min_clearance", 0.28)))
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
@@ -1505,6 +1505,31 @@ class VisionTriggeredNavigator(object):
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
+            if self.current_goal_clearance_stop:
+                self.cmd_vel_pub.publish(Twist())
+                if not self._wait_navigation_idle():
+                    return "failed"
+                self._publish_status(
+                    "coverage_translation_clearance_hold:{}".format(
+                        patrol_idx + 1))
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 精确锚点%d行驶方向被近距离"
+                    "障碍物阻挡；保持停车识别%.2fs后继续下一锚点，"
+                    "禁止再次向同一障碍物冲刺.",
+                    patrol_idx + 1, self.coverage_candidate_hold)
+                hold_started = rospy.get_time()
+                self._hold_scan_step(
+                    "锚点{}平移安全静止识别".format(patrol_idx + 1),
+                    hold_started,
+                    minimum_dwell=self.coverage_candidate_hold,
+                )
+                if self.triggered:
+                    return "triggered"
+                rospy.loginfo(
+                    "[vision_triggered_navigator] coverage anchor=%d "
+                    "state=covered translation_clearance_hold=true",
+                    patrol_idx + 1)
+                return "covered"
             if attempt < self.coverage_goal_retry_count:
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():

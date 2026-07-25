@@ -781,3 +781,48 @@ def test_all_direct_task2_rotations_have_lidar_clearance_guards():
             and isinstance(node.func, ast.Attribute)
         }
         assert "_rotation_clearance_safe" in called
+
+
+def test_translation_clearance_guard_uses_motion_sector_and_skips_blocked_anchor():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+    controller = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "VisionTriggeredNavigator")
+    methods = {
+        node.name: node for node in controller.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    motion_calls = {
+        node.func.id
+        for node in ast.walk(methods["_coverage_motion_clearance"])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+    }
+    assert "polar_sector_min" in motion_calls
+
+    clearance_if = next(
+        node for node in ast.walk(methods["_visit_coverage_point"])
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Attribute)
+        and node.test.attr == "current_goal_clearance_stop"
+    )
+    called = {
+        node.func.attr
+        for node in ast.walk(clearance_if)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+    }
+    returned = {
+        node.value.value
+        for node in ast.walk(clearance_if)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+    }
+    assert "_wait_navigation_idle" in called
+    assert "_hold_scan_step" in called
+    assert "covered" in returned

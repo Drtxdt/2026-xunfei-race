@@ -54,8 +54,8 @@ coverage_rotation_consensus_window_sec: 0.35
 coverage_rotation_consensus_min_samples: 3
 coverage_rotation_resample_timeout_sec: 0.25
 coverage_rotation_consensus_history_size: 9
-# 交由 move_base/costmap 绕障；设为 0 禁用会误取消整个位点的激光平移门槛。
-coverage_translation_min_clearance: 0.00
+# 只检查当前平移方向，避免TEB在锥桶前轨迹不可行时仍继续贴近。
+coverage_translation_min_clearance: 0.28
 coverage_translation_sector_half_angle_deg: 35.0
 coverage_max_vel_x: 0.55
 coverage_max_vel_y: 0.55
