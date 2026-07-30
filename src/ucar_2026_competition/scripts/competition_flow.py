@@ -1847,11 +1847,33 @@ class CompetitionFlow:
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(
-                        "~coverage_max_vel_x", 0.55),
+                        "~coverage_max_vel_x", 0.65),
                     "coverage_max_vel_y": rospy.get_param(
-                        "~coverage_max_vel_y", 0.55),
+                        "~coverage_max_vel_y", 0.65),
                     "coverage_max_vel_theta": rospy.get_param(
-                        "~coverage_max_vel_theta", 1.20),
+                        "~coverage_max_vel_theta", 1.35),
+                    "coverage_cruise_vel_x": rospy.get_param(
+                        "~coverage_cruise_vel_x", 0.55),
+                    "coverage_cruise_vel_y": rospy.get_param(
+                        "~coverage_cruise_vel_y", 0.55),
+                    "coverage_cruise_vel_theta": rospy.get_param(
+                        "~coverage_cruise_vel_theta", 1.20),
+                    "coverage_caution_vel_x": rospy.get_param(
+                        "~coverage_caution_vel_x", 0.38),
+                    "coverage_caution_vel_y": rospy.get_param(
+                        "~coverage_caution_vel_y", 0.38),
+                    "coverage_caution_vel_theta": rospy.get_param(
+                        "~coverage_caution_vel_theta", 0.80),
+                    "coverage_caution_enter_clearance": rospy.get_param(
+                        "~coverage_caution_enter_clearance", 0.45),
+                    "coverage_caution_exit_clearance": rospy.get_param(
+                        "~coverage_caution_exit_clearance", 0.55),
+                    "coverage_fast_exit_clearance": rospy.get_param(
+                        "~coverage_fast_exit_clearance", 0.75),
+                    "coverage_fast_enter_clearance": rospy.get_param(
+                        "~coverage_fast_enter_clearance", 0.90),
+                    "coverage_speed_update_min_interval_sec": rospy.get_param(
+                        "~coverage_speed_update_min_interval_sec", 0.50),
                     "coverage_rotation_max_yaw_deg": rospy.get_param(
                         "~coverage_rotation_max_yaw_deg", 45.0),
                     "target_center_steering_sign": rospy.get_param(

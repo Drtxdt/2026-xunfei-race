@@ -64,6 +64,40 @@ def obstacle_clearance_requires_stop(nearest_range, min_clearance,
             abs(float(min_clearance)))
 
 
+def coverage_speed_profile(clearance, current_profile,
+                           caution_enter_clearance,
+                           caution_exit_clearance,
+                           fast_exit_clearance,
+                           fast_enter_clearance):
+    """Select a hysteretic coverage speed profile from lidar clearance."""
+    caution_enter = float(caution_enter_clearance)
+    caution_exit = float(caution_exit_clearance)
+    fast_exit = float(fast_exit_clearance)
+    fast_enter = float(fast_enter_clearance)
+    if not (0.0 <= caution_enter <= caution_exit <
+            fast_exit <= fast_enter):
+        raise ValueError("coverage speed clearance thresholds are invalid")
+
+    profile = str(current_profile or "cruise").strip().lower()
+    if profile not in ("caution", "cruise", "fast"):
+        profile = "cruise"
+    if clearance is None:
+        return "cruise"
+    value = float(clearance)
+    if not math.isfinite(value) or value < 0.0:
+        return "cruise"
+
+    if profile == "fast" and value >= fast_exit:
+        return "fast"
+    if profile == "caution" and value <= caution_exit:
+        return "caution"
+    if value <= caution_enter:
+        return "caution"
+    if value >= fast_enter:
+        return "fast"
+    return "cruise"
+
+
 def parking_rotation_obstacle_clearance(
         samples, wall_fit, lidar_forward_offset=0.0,
         front_half_angle=math.radians(35.0),

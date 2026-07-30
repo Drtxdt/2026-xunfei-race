@@ -26,9 +26,20 @@
   <arg name="coverage_rotation_min_clearance" default="0.28" />
   <arg name="coverage_translation_min_clearance" default="0.00" />
   <arg name="coverage_translation_sector_half_angle_deg" default="35.0" />
-  <arg name="coverage_max_vel_x" default="0.55" />
-  <arg name="coverage_max_vel_y" default="0.55" />
-  <arg name="coverage_max_vel_theta" default="1.20" />
+  <arg name="coverage_max_vel_x" default="0.65" />
+  <arg name="coverage_max_vel_y" default="0.65" />
+  <arg name="coverage_max_vel_theta" default="1.35" />
+  <arg name="coverage_cruise_vel_x" default="0.55" />
+  <arg name="coverage_cruise_vel_y" default="0.55" />
+  <arg name="coverage_cruise_vel_theta" default="1.20" />
+  <arg name="coverage_caution_vel_x" default="0.38" />
+  <arg name="coverage_caution_vel_y" default="0.38" />
+  <arg name="coverage_caution_vel_theta" default="0.80" />
+  <arg name="coverage_caution_enter_clearance" default="0.45" />
+  <arg name="coverage_caution_exit_clearance" default="0.55" />
+  <arg name="coverage_fast_exit_clearance" default="0.75" />
+  <arg name="coverage_fast_enter_clearance" default="0.90" />
+  <arg name="coverage_speed_update_min_interval_sec" default="0.50" />
   <arg name="target_topic" default="/vision/target" />
   <arg name="target_center_steering_sign" default="-1.0" />
   <arg name="camera_boresight_yaw_offset" default="0.0" />
@@ -126,6 +137,17 @@
     <param name="coverage_max_vel_x" value="$(arg coverage_max_vel_x)" />
     <param name="coverage_max_vel_y" value="$(arg coverage_max_vel_y)" />
     <param name="coverage_max_vel_theta" value="$(arg coverage_max_vel_theta)" />
+    <param name="coverage_cruise_vel_x" value="$(arg coverage_cruise_vel_x)" />
+    <param name="coverage_cruise_vel_y" value="$(arg coverage_cruise_vel_y)" />
+    <param name="coverage_cruise_vel_theta" value="$(arg coverage_cruise_vel_theta)" />
+    <param name="coverage_caution_vel_x" value="$(arg coverage_caution_vel_x)" />
+    <param name="coverage_caution_vel_y" value="$(arg coverage_caution_vel_y)" />
+    <param name="coverage_caution_vel_theta" value="$(arg coverage_caution_vel_theta)" />
+    <param name="coverage_caution_enter_clearance" value="$(arg coverage_caution_enter_clearance)" />
+    <param name="coverage_caution_exit_clearance" value="$(arg coverage_caution_exit_clearance)" />
+    <param name="coverage_fast_exit_clearance" value="$(arg coverage_fast_exit_clearance)" />
+    <param name="coverage_fast_enter_clearance" value="$(arg coverage_fast_enter_clearance)" />
+    <param name="coverage_speed_update_min_interval_sec" value="$(arg coverage_speed_update_min_interval_sec)" />
     <param name="target_topic" value="$(arg target_topic)" />
     <param name="target_center_steering_sign" value="$(arg target_center_steering_sign)" />
     <param name="camera_boresight_yaw_offset" value="$(arg camera_boresight_yaw_offset)" />

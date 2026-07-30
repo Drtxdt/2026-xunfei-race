@@ -21,6 +21,7 @@ from navigator_logic import (
     coverage_anchor_order,
     coverage_near_anchor_action,
     coverage_position_needs_yaw_alignment,
+    coverage_speed_profile,
     coverage_timeout_decision,
     cyclic_coverage_order,
     costmap_value_at,
@@ -106,6 +107,94 @@ def test_parking_clearance_tolerance_absorbs_only_five_mm_jitter():
     assert not obstacle_clearance_requires_stop(0.275, 0.28, 0.005)
     assert obstacle_clearance_requires_stop(0.274, 0.28, 0.005)
     assert obstacle_clearance_requires_stop(None, 0.28, 0.005)
+
+
+def test_coverage_speed_profile_accelerates_only_with_open_clearance():
+    thresholds = (0.45, 0.55, 0.75, 0.90)
+    assert coverage_speed_profile(None, "fast", *thresholds) == "cruise"
+    assert coverage_speed_profile(0.91, "cruise", *thresholds) == "fast"
+    assert coverage_speed_profile(0.80, "fast", *thresholds) == "fast"
+    assert coverage_speed_profile(0.74, "fast", *thresholds) == "cruise"
+    assert coverage_speed_profile(0.44, "cruise", *thresholds) == "caution"
+    assert coverage_speed_profile(0.50, "caution", *thresholds) == "caution"
+    assert coverage_speed_profile(0.56, "caution", *thresholds) == "cruise"
+
+
+def test_coverage_speed_profile_rejects_overlapping_thresholds():
+    with pytest.raises(ValueError):
+        coverage_speed_profile(1.0, "cruise", 0.55, 0.45, 0.75, 0.90)
+
+
+def test_coverage_speed_profile_is_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(float(config["coverage_max_vel_x"]), 0.65)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.55)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.38)
+    assert math.isclose(
+        float(config["coverage_fast_enter_clearance"]), 0.90)
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "coverage_cruise_vel_x",
+            "coverage_caution_vel_x",
+            "coverage_caution_enter_clearance",
+            "coverage_caution_exit_clearance",
+            "coverage_fast_exit_clearance",
+            "coverage_fast_enter_clearance"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_visual_parking_restores_cruise_speed_profile():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and
+        node.name == "VisionTriggeredNavigator")
+    run_method = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and node.name == "run")
+    vision_branch = next(
+        node for node in ast.walk(run_method)
+        if isinstance(node, ast.If) and
+        any(isinstance(item, ast.Constant) and item.value == "VISION"
+            for item in ast.walk(node.test)))
+    calls = [
+        item
+        for statement in vision_branch.body
+        for item in ast.walk(statement)
+        if isinstance(item, ast.Call) and
+        isinstance(item.func, ast.Attribute) and
+        item.func.attr == "_set_coverage_speed_profile"
+    ]
+    assert any(
+        call.args and isinstance(call.args[0], ast.Constant) and
+        call.args[0].value == "cruise" and
+        any(keyword.arg == "force" and
+            isinstance(keyword.value, ast.Constant) and
+            keyword.value.value is True
+            for keyword in call.keywords)
+        for call in calls)
 
 
 def test_parking_clearance_tolerance_is_wired_through_launch():

@@ -29,6 +29,7 @@ from navigator_logic import (
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
     coverage_position_needs_yaw_alignment,
+    coverage_speed_profile,
     coverage_timeout_decision,
     cyclic_coverage_order,
     docking_command,
@@ -175,11 +176,56 @@ class VisionTriggeredNavigator(object):
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_x", 0.55)))
+            "~coverage_max_vel_x", 0.65)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_y", 0.55)))
+            "~coverage_max_vel_y", 0.65)))
         self.coverage_max_vel_theta = max(0.10, float(rospy.get_param(
-            "~coverage_max_vel_theta", 1.20)))
+            "~coverage_max_vel_theta", 1.35)))
+        self.coverage_cruise_vel_x = min(
+            self.coverage_max_vel_x,
+            max(0.05, float(rospy.get_param(
+                "~coverage_cruise_vel_x", 0.55))))
+        self.coverage_cruise_vel_y = min(
+            self.coverage_max_vel_y,
+            max(0.05, float(rospy.get_param(
+                "~coverage_cruise_vel_y", 0.55))))
+        self.coverage_cruise_vel_theta = min(
+            self.coverage_max_vel_theta,
+            max(0.10, float(rospy.get_param(
+                "~coverage_cruise_vel_theta", 1.20))))
+        self.coverage_caution_vel_x = min(
+            self.coverage_cruise_vel_x,
+            max(0.05, float(rospy.get_param(
+                "~coverage_caution_vel_x", 0.38))))
+        self.coverage_caution_vel_y = min(
+            self.coverage_cruise_vel_y,
+            max(0.05, float(rospy.get_param(
+                "~coverage_caution_vel_y", 0.38))))
+        self.coverage_caution_vel_theta = min(
+            self.coverage_cruise_vel_theta,
+            max(0.10, float(rospy.get_param(
+                "~coverage_caution_vel_theta", 0.80))))
+        self.coverage_caution_enter_clearance = max(0.0, float(
+            rospy.get_param(
+                "~coverage_caution_enter_clearance", 0.45)))
+        self.coverage_caution_exit_clearance = max(0.0, float(
+            rospy.get_param(
+                "~coverage_caution_exit_clearance", 0.55)))
+        self.coverage_fast_exit_clearance = max(0.0, float(
+            rospy.get_param("~coverage_fast_exit_clearance", 0.75)))
+        self.coverage_fast_enter_clearance = max(0.0, float(
+            rospy.get_param("~coverage_fast_enter_clearance", 0.90)))
+        self.coverage_speed_update_min_interval = max(0.0, float(
+            rospy.get_param(
+                "~coverage_speed_update_min_interval_sec", 0.50)))
+        coverage_speed_profile(
+            None,
+            "cruise",
+            self.coverage_caution_enter_clearance,
+            self.coverage_caution_exit_clearance,
+            self.coverage_fast_exit_clearance,
+            self.coverage_fast_enter_clearance,
+        )
         self.coverage_goal_retry_count = max(0, int(rospy.get_param(
             "~coverage_goal_retry_count", 1)))
         self.coverage_anchor_position_tolerance = max(0.01, float(rospy.get_param(
@@ -487,6 +533,8 @@ class VisionTriggeredNavigator(object):
         self._move_base_reconfigure_client = None
         self._saved_move_base_recovery = None
         self._saved_teb_coverage_config = None
+        self._coverage_speed_profile = None
+        self._coverage_speed_updated_at = 0.0
         rospy.on_shutdown(self._restore_final_tolerances)
         rospy.on_shutdown(self._restore_move_base_recovery)
         self._publish_status("ready")
@@ -1053,6 +1101,12 @@ class VisionTriggeredNavigator(object):
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
         self.current_goal_clearance_stop = False
+        if (self.coverage_search_mode and
+                not self._set_coverage_speed_profile(
+                    "cruise", force=True)):
+            self.current_goal_clearance_stop = True
+            self._publish_status("coverage_speed_profile_failed")
+            return actionlib.GoalStatus.ABORTED
 
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = self.map_frame
@@ -1095,6 +1149,20 @@ class VisionTriggeredNavigator(object):
                 elapsed = now - started
                 clearance, minimum, motion = (
                     self._coverage_motion_clearance(now))
+                speed_clearance = (
+                    self.scan_all_min if sensor_is_fresh(
+                        self.scan_received_at, now, self.scan_stale)
+                    else None)
+                if not self._adapt_coverage_speed(speed_clearance):
+                    self.current_goal_clearance_stop = True
+                    self._publish_status("coverage_speed_profile_failed")
+                    rospy.logerr(
+                        "[vision_triggered_navigator] failed to apply a "
+                        "safe coverage speed profile; canceling the "
+                        "current anchor.")
+                    self.cancel_goal()
+                    self.cmd_vel_pub.publish(Twist())
+                    break
                 if (minimum is not None and minimum > 0.0 and
                         sensor_is_fresh(
                             self.scan_received_at, now, self.scan_stale) and
@@ -2442,6 +2510,82 @@ class VisionTriggeredNavigator(object):
                      self.parking_docking_timeout)
         return False
 
+    def _coverage_speed_limits(self, profile):
+        if profile == "fast":
+            return (
+                self.coverage_max_vel_x,
+                self.coverage_max_vel_y,
+                self.coverage_max_vel_theta,
+            )
+        if profile == "caution":
+            return (
+                self.coverage_caution_vel_x,
+                self.coverage_caution_vel_y,
+                self.coverage_caution_vel_theta,
+            )
+        return (
+            self.coverage_cruise_vel_x,
+            self.coverage_cruise_vel_y,
+            self.coverage_cruise_vel_theta,
+        )
+
+    def _set_coverage_speed_profile(self, profile, force=False):
+        if profile == self._coverage_speed_profile:
+            return True
+        if self._planner_client is None:
+            return False
+        now = rospy.get_time()
+        ranks = {"caution": 0, "cruise": 1, "fast": 2}
+        current_rank = ranks.get(self._coverage_speed_profile, 1)
+        target_rank = ranks.get(profile, 1)
+        if (not force and target_rank > current_rank and
+                now - self._coverage_speed_updated_at <
+                self.coverage_speed_update_min_interval):
+            return True
+        vel_x, vel_y, vel_theta = self._coverage_speed_limits(profile)
+        try:
+            updated = self._planner_client.update_configuration({
+                "max_vel_x": vel_x,
+                "max_vel_y": vel_y,
+                "max_vel_theta": vel_theta,
+            })
+            if (float(updated.get("max_vel_x", float("inf"))) >
+                    vel_x + 1e-6 or
+                    float(updated.get("max_vel_y", float("inf"))) >
+                    vel_y + 1e-6 or
+                    float(updated.get("max_vel_theta", float("inf"))) >
+                    vel_theta + 1e-6):
+                raise RuntimeError("TEB rejected coverage velocity limits")
+            self._coverage_speed_profile = profile
+            self._coverage_speed_updated_at = now
+            rospy.loginfo(
+                "[vision_triggered_navigator] coverage speed profile=%s "
+                "limits=(%.2f, %.2f, %.2f)",
+                profile, vel_x, vel_y, vel_theta)
+            return True
+        except Exception as exc:
+            if target_rank > current_rank:
+                rospy.logwarn(
+                    "[vision_triggered_navigator] coverage speed upgrade "
+                    "failed; keeping profile=%s: %s",
+                    self._coverage_speed_profile, str(exc))
+                return True
+            rospy.logerr(
+                "[vision_triggered_navigator] required coverage speed "
+                "downgrade failed: %s", str(exc))
+            return False
+
+    def _adapt_coverage_speed(self, clearance):
+        profile = coverage_speed_profile(
+            clearance,
+            self._coverage_speed_profile,
+            self.coverage_caution_enter_clearance,
+            self.coverage_caution_exit_clearance,
+            self.coverage_fast_exit_clearance,
+            self.coverage_fast_enter_clearance,
+        )
+        return self._set_coverage_speed_profile(profile)
+
     def _disable_move_base_recovery_for_coverage(self):
         """Deterministically prevent move_base from executing recovery spins."""
         if not self.coverage_search_mode:
@@ -2491,22 +2635,24 @@ class VisionTriggeredNavigator(object):
             })
             planner_updated = self._planner_client.update_configuration({
                 "oscillation_recovery": False,
-                "max_vel_x": self.coverage_max_vel_x,
-                "max_vel_y": self.coverage_max_vel_y,
-                "max_vel_theta": self.coverage_max_vel_theta,
+                "max_vel_x": self.coverage_cruise_vel_x,
+                "max_vel_y": self.coverage_cruise_vel_y,
+                "max_vel_theta": self.coverage_cruise_vel_theta,
             })
             if (bool(updated.get("recovery_behavior_enabled", True)) or
                     bool(updated.get("clearing_rotation_allowed", True)) or
                     bool(planner_updated.get("oscillation_recovery", True)) or
                     float(planner_updated.get("max_vel_x", float("inf"))) >
-                    self.coverage_max_vel_x + 1e-6 or
+                    self.coverage_cruise_vel_x + 1e-6 or
                     float(planner_updated.get("max_vel_y", float("inf"))) >
-                    self.coverage_max_vel_y + 1e-6 or
+                    self.coverage_cruise_vel_y + 1e-6 or
                     float(planner_updated.get(
                         "max_vel_theta", float("inf"))) >
-                    self.coverage_max_vel_theta + 1e-6):
+                    self.coverage_cruise_vel_theta + 1e-6):
                 raise RuntimeError(
                     "move_base rejected coverage safety configuration")
+            self._coverage_speed_profile = "cruise"
+            self._coverage_speed_updated_at = rospy.get_time()
             self._publish_status("coverage_recovery_disabled")
             rospy.logwarn(
                 "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复行为和清障旋转；退出时自动恢复.")
@@ -2523,6 +2669,8 @@ class VisionTriggeredNavigator(object):
         saved_teb = self._saved_teb_coverage_config
         self._saved_move_base_recovery = None
         self._saved_teb_coverage_config = None
+        self._coverage_speed_profile = None
+        self._coverage_speed_updated_at = 0.0
         try:
             if saved and self._move_base_reconfigure_client is not None:
                 self._move_base_reconfigure_client.update_configuration(saved)
@@ -2882,6 +3030,15 @@ class VisionTriggeredNavigator(object):
             elif state == "VISION":
                 rospy.loginfo("[vision_triggered_navigator] === 视觉触发阶段 ===")
                 self.cancel_goal()
+                if (self.coverage_search_mode and
+                        not self._set_coverage_speed_profile(
+                            "cruise", force=True)):
+                    self.cmd_vel_pub.publish(Twist())
+                    self._publish_status("coverage_speed_profile_failed")
+                    rospy.logerr(
+                        "[vision_triggered_navigator] failed to restore the "
+                        "cruise profile before visual parking.")
+                    break
                 self._hold_stopped(self.coverage_scan_settle)
                 self._publish_status("target_locked")
                 initial_center_error = None
