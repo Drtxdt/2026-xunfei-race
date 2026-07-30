@@ -1019,7 +1019,7 @@ class CompetitionFlow:
             raise StageError(
                 "{}->task4 costmap refresh produced no fresh scan/costmap snapshot".format(
                     source_stage))
-        if bool_param("~task4_internal_waypoint_enabled", True):
+        if bool_param("~task4_internal_waypoint_enabled", False):
             waypoint_x = float(rospy.get_param(
                 "~task4_internal_waypoint_x", 1.2660))
             waypoint_y = float(rospy.get_param(

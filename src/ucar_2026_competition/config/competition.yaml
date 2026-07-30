@@ -113,8 +113,8 @@ task4_factory_egress_reverse_speed_mps: 0.08
 task4_factory_egress_rear_clearance_m: 0.28
 task4_factory_egress_sensor_stale_sec: 0.5
 task4_factory_egress_timeout_sec: 7.0
-# 从最终车间先走生产区内部的已验证观察点，再交给停止线导航。
-task4_internal_waypoint_enabled: true
+# 默认从最终车间直接交给停止线导航；仅在现场确认需要绕行时手动启用内部点。
+task4_internal_waypoint_enabled: false
 task4_internal_waypoint_x: 1.2660
 task4_internal_waypoint_y: -2.8863
 task4_internal_waypoint_yaw: -1.5443

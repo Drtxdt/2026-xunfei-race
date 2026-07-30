@@ -427,11 +427,22 @@ class CompetitionLogicTest(unittest.TestCase):
             "task4_factory_egress_reverse_distance_m: 0.32", content)
         self.assertIn(
             "task4_factory_egress_rear_clearance_m: 0.28", content)
-        self.assertIn("task4_internal_waypoint_enabled: true", content)
+        self.assertIn("task4_internal_waypoint_enabled: false", content)
         self.assertIn("task4_internal_waypoint_x: 1.2660", content)
         self.assertIn("task4_internal_waypoint_y: -2.8863", content)
         self.assertIn(
             "task2_second_search_abort_fail_fast_count: 0", content)
+
+    def test_task4_routes_directly_to_stop_line_by_default(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts",
+            "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow_source = stream.read()
+        self.assertIn(
+            'bool_param("~task4_internal_waypoint_enabled", False)',
+            flow_source,
+        )
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")

@@ -78,11 +78,11 @@ class OdometryProgressTests(unittest.TestCase):
             (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
                 encoding="utf-8"))
         self.assertEqual(
-            config["calibrated_final_advance_fallback_sec"], 2.0)
+            config["calibrated_final_advance_fallback_sec"], 8.0)
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
             config["final_advance_target_clearance_m"], 0.05)
-        self.assertEqual(config["final_advance_no_vision_m"], 0.13)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.18)
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
@@ -94,8 +94,8 @@ class OdometryProgressTests(unittest.TestCase):
             config["final_advance_speed_mps"],
         )
         self.assertGreater(
-            config["line_search_delay_sec"],
             config["calibrated_final_advance_fallback_sec"],
+            config["line_search_delay_sec"],
         )
 
         node_source = (
@@ -105,6 +105,7 @@ class OdometryProgressTests(unittest.TestCase):
             "using calibrated guarded final advance",
             node_source,
         )
+        self.assertIn('"~final_advance_no_vision_m", 0.18)', node_source)
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
 
     def test_fresh_visual_distance_selects_only_required_clearance(self):
@@ -113,7 +114,7 @@ class OdometryProgressTests(unittest.TestCase):
             0.14,
             0.05,
             0.20,
-            0.13,
+            0.18,
             0.75,
             0.015,
         )
@@ -122,20 +123,20 @@ class OdometryProgressTests(unittest.TestCase):
 
     def test_visual_distance_caps_long_advance_and_holds_near_line(self):
         distance, source = select_final_advance(
-            0.2525, 0.10, 0.05, 0.20, 0.13, 0.75, 0.015)
+            0.2525, 0.10, 0.05, 0.20, 0.18, 0.75, 0.015)
         self.assertEqual(distance, 0.20)
         self.assertEqual(source, "visual_distance")
 
         distance, source = select_final_advance(
-            0.058, 0.10, 0.05, 0.20, 0.13, 0.75, 0.015)
+            0.058, 0.10, 0.05, 0.20, 0.18, 0.75, 0.015)
         self.assertEqual(distance, 0.0)
         self.assertEqual(source, "visual_hold")
 
     def test_stale_or_missing_visual_distance_uses_safe_fallback(self):
         for measured, age in ((None, None), (0.098, 0.80)):
             distance, source = select_final_advance(
-                measured, age, 0.05, 0.20, 0.13, 0.75, 0.015)
-            self.assertEqual(distance, 0.13)
+                measured, age, 0.05, 0.20, 0.18, 0.75, 0.015)
+            self.assertEqual(distance, 0.18)
             self.assertEqual(source, "no_vision_fallback")
 
     def test_task4_tightens_and_restores_teb_goal_tolerances(self):

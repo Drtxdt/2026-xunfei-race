@@ -114,7 +114,7 @@ class StrictMissionNode:
         self.final_target_clearance_m = float(rospy.get_param(
             "~final_advance_target_clearance_m", 0.05))
         self.final_no_vision_fallback_m = float(rospy.get_param(
-            "~final_advance_no_vision_m", 0.13))
+            "~final_advance_no_vision_m", 0.18))
         self.final_visual_max_age_sec = float(rospy.get_param(
             "~final_advance_visual_max_age_sec", 0.75))
         self.final_minimum_command_m = float(rospy.get_param(
