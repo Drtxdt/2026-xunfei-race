@@ -44,6 +44,7 @@ from ucar_2026_competition.logic import (
     normalize_category,
     normalize_coverage_anchor_ids,
     normalize_task4_staging_pose,
+    non_target_observation_is_actionable,
     parse_task1_categories,
     qr_values_from_payload,
     scan_sector_min,
@@ -107,6 +108,10 @@ class CompetitionFlow:
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=2)
         self.vision_target_pub = rospy.Publisher(
             "/vision/target", String, queue_size=10)
+        self.vision_non_target_topic = rospy.get_param(
+            "~task2_non_target_topic", "/vision/non_target_observation")
+        self.vision_non_target_pub = rospy.Publisher(
+            self.vision_non_target_topic, String, queue_size=10)
 
         self.wakeup_received = False
         self.voice_prompt_started = False
@@ -174,6 +179,10 @@ class CompetitionFlow:
         }
         self.ocr_memory_min_score = float(rospy.get_param(
             "~ocr_memory_min_score", 0.55))
+        self.task2_non_target_early_exit = bool_param(
+            "~task2_non_target_early_exit", True)
+        self.ocr_non_target_min_score = float(rospy.get_param(
+            "~task2_non_target_early_exit_min_score", 0.62))
         self.ocr_trigger_min_bbox_width_ratio = float(rospy.get_param(
             "~task2_trigger_min_bbox_width_ratio", 0.09))
         self.ocr_trigger_min_bbox_height_ratio = float(rospy.get_param(
@@ -181,6 +190,7 @@ class CompetitionFlow:
         self.ocr_trigger_min_bbox_area_ratio = float(rospy.get_param(
             "~task2_trigger_min_bbox_area_ratio", 0.006))
         self.task2_warehouse_memory = {}
+        self.task2_non_target_announced = set()
         self.current_coverage_anchor = None
         self.last_coverage_anchor = None
         self.vision_trigger_latched = False
@@ -558,6 +568,7 @@ class CompetitionFlow:
             self.ocr_trigger_min_bbox_height_ratio,
             self.ocr_trigger_min_bbox_area_ratio,
         )
+        non_target_event = None
         if (memory_confirmed and payload.get("target_bbox") and
                 score >= self.ocr_memory_min_score):
             with self.lock:
@@ -584,6 +595,36 @@ class CompetitionFlow:
                         "task2 warehouse memory: category=%s anchor=%d "
                         "score=%.3f area=%.4f odom_yaw=%.3f",
                         category, anchor, score, area_ratio, yaw)
+                if non_target_observation_is_actionable(
+                        self.ocr_target,
+                        category,
+                        memory_confirmed,
+                        trigger_eligible,
+                        score,
+                        self.ocr_non_target_min_score,
+                        anchor):
+                    event_key = (int(anchor), category)
+                    if event_key not in self.task2_non_target_announced:
+                        self.task2_non_target_announced.add(event_key)
+                        non_target_event = {
+                            "category": category,
+                            "anchor": int(anchor),
+                            "score": score,
+                            "area_ratio": area_ratio,
+                            "odom_yaw": yaw,
+                            "confirmed": True,
+                        }
+        if non_target_event is not None:
+            self.vision_non_target_pub.publish(String(
+                data=json.dumps(non_target_event, ensure_ascii=False)))
+            rospy.loginfo(
+                "task2 non-target early-exit notice: category=%s anchor=%d "
+                "score=%.3f area=%.4f",
+                non_target_event["category"],
+                non_target_event["anchor"],
+                non_target_event["score"],
+                non_target_event["area_ratio"],
+            )
         if category == self.ocr_target and trigger_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
@@ -1733,6 +1774,7 @@ class CompetitionFlow:
             "~task2_resume_coverage_enabled", True)
         with self.lock:
             self.current_coverage_anchor = None
+            self.task2_non_target_announced = set()
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
             anchor_count = len(rospy.get_param(
@@ -1814,6 +1856,9 @@ class CompetitionFlow:
                     "trigger_mode": "vision",
                     "vision_topic": "/vision/detected",
                     "target_topic": "/vision/target",
+                    "non_target_topic": self.vision_non_target_topic,
+                    "coverage_non_target_early_exit": (
+                        self.task2_non_target_early_exit),
                     "trigger_service": self.trigger_service_name,
                     "publish_initial_pose": (
                         False if self.mode == "task1_task2" else

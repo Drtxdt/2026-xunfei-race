@@ -378,6 +378,26 @@ def normalize_category(value):
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)
 
 
+def non_target_observation_is_actionable(
+        target_category, observed_category, memory_confirmed,
+        bbox_eligible, score, minimum_score, anchor):
+    """Accept only a close, repeated non-target sign at a known anchor."""
+    target = normalize_category(target_category)
+    observed = normalize_category(observed_category)
+    try:
+        anchor_id = int(anchor)
+        confidence = float(score)
+        threshold = float(minimum_score)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        target and observed and observed != target and
+        bool(memory_confirmed) and bool(bbox_eligible) and
+        anchor_id > 0 and math.isfinite(confidence) and
+        confidence >= threshold
+    )
+
+
 def scan_sector_min(ranges, angle_min, angle_increment, center_angle,
                     half_angle, range_min=0.0, range_max=float("inf")):
     """Return the nearest finite lidar sample in a wrapped angular sector."""

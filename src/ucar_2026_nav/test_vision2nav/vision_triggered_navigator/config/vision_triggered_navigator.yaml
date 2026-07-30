@@ -40,6 +40,8 @@ coverage_skip_anchors: ""
 coverage_failed_revisit_limit: 1
 coverage_abort_fail_fast_count: 0
 target_topic: "/vision/target"
+non_target_topic: "/vision/non_target_observation"
+coverage_non_target_early_exit: true
 # 精确锚点先执行25秒软时限；仍在有效接近时最多延长到40秒。
 coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0

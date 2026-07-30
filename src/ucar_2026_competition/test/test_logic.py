@@ -25,6 +25,7 @@ from ucar_2026_competition.logic import (
     normalize_angle,
     normalize_coverage_anchor_ids,
     normalize_task4_staging_pose,
+    non_target_observation_is_actionable,
     parse_category,
     parse_task1_categories,
     qr_values_from_payload,
@@ -65,6 +66,9 @@ class CompetitionLogicTest(unittest.TestCase):
             "task2_remembered_heading_confirm_sec: 1.2", config)
         self.assertIn(
             "task2_remembered_heading_scan_half_angle_deg: 18.0", config)
+        self.assertIn("task2_non_target_early_exit: true", config)
+        self.assertIn(
+            "task2_non_target_early_exit_min_score: 0.62", config)
 
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
@@ -83,6 +87,24 @@ class CompetitionLogicTest(unittest.TestCase):
             '"coverage_preferred_odom_yaw_enabled": (', flow)
         self.assertIn(
             '"coverage_preferred_odom_yaw": remembered_odom_yaw', flow)
+        self.assertIn(
+            '"coverage_non_target_early_exit": (', flow)
+        self.assertIn(
+            "task2 non-target early-exit notice:", flow)
+
+    def test_non_target_early_exit_requires_reliable_close_evidence(self):
+        self.assertTrue(non_target_observation_is_actionable(
+            "food", "daily", True, True, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "food", True, True, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", False, True, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", True, False, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", True, True, 0.61, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", True, True, 0.71, 0.62, None))
 
     def test_task2_coverage_navigation_has_cone_safety_limits(self):
         config_path = os.path.abspath(os.path.join(

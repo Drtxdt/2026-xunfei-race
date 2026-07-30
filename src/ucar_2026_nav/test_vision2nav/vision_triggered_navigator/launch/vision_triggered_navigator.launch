@@ -41,6 +41,8 @@
   <arg name="coverage_fast_enter_clearance" default="0.90" />
   <arg name="coverage_speed_update_min_interval_sec" default="0.50" />
   <arg name="target_topic" default="/vision/target" />
+  <arg name="non_target_topic" default="/vision/non_target_observation" />
+  <arg name="coverage_non_target_early_exit" default="true" />
   <arg name="target_center_steering_sign" default="-1.0" />
   <arg name="camera_boresight_yaw_offset" default="0.0" />
   <arg name="center_only" default="false" />
@@ -149,6 +151,8 @@
     <param name="coverage_fast_enter_clearance" value="$(arg coverage_fast_enter_clearance)" />
     <param name="coverage_speed_update_min_interval_sec" value="$(arg coverage_speed_update_min_interval_sec)" />
     <param name="target_topic" value="$(arg target_topic)" />
+    <param name="non_target_topic" value="$(arg non_target_topic)" />
+    <param name="coverage_non_target_early_exit" value="$(arg coverage_non_target_early_exit)" />
     <param name="target_center_steering_sign" value="$(arg target_center_steering_sign)" />
     <param name="camera_boresight_yaw_offset" value="$(arg camera_boresight_yaw_offset)" />
     <param name="center_only" value="$(arg center_only)" />

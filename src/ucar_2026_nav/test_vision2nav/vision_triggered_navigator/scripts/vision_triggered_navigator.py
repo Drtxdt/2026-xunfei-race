@@ -28,6 +28,7 @@ from navigator_logic import (
     coverage_anchor_order,
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
+    coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
     coverage_speed_profile,
     coverage_timeout_decision,
@@ -135,6 +136,10 @@ class VisionTriggeredNavigator(object):
         # 任务2专用的覆盖优先模式。默认关闭，保证原独立导航行为不变。
         self.coverage_search_mode = rospy.get_param("~coverage_search_mode", False)
         self.target_topic = rospy.get_param("~target_topic", "/vision/target")
+        self.non_target_topic = rospy.get_param(
+            "~non_target_topic", "/vision/non_target_observation")
+        self.coverage_non_target_early_exit = bool(rospy.get_param(
+            "~coverage_non_target_early_exit", True))
         legacy_coverage_timeout = float(rospy.get_param(
             "~coverage_goal_timeout_sec", 25.0))
         self.coverage_goal_soft_timeout = max(0.1, float(rospy.get_param(
@@ -499,8 +504,17 @@ class VisionTriggeredNavigator(object):
         self.target_payload_at = 0.0
         self.last_target_payload = None
         self.last_centered_error = None
+        self.coverage_observation_lock = threading.Lock()
+        self.active_coverage_anchor = 0
+        self.coverage_non_target_observation = None
         if self.coverage_search_mode:
             rospy.Subscriber(self.target_topic, String, self._target_cb, queue_size=10)
+            rospy.Subscriber(
+                self.non_target_topic,
+                String,
+                self._non_target_cb,
+                queue_size=10,
+            )
 
         self.triggered = False
         self.trigger_lock = threading.Lock()
@@ -754,6 +768,42 @@ class VisionTriggeredNavigator(object):
             self.last_target_payload = payload
         except (TypeError, ValueError, KeyError):
             return
+
+    def _non_target_cb(self, msg):
+        """Latch one reliable non-target workshop at the active anchor."""
+        try:
+            payload = json.loads(msg.data)
+            anchor = int(payload.get("anchor"))
+            category = str(payload.get("category") or "").strip().lower()
+            confirmed = bool(payload.get("confirmed"))
+        except (TypeError, ValueError, KeyError):
+            return
+        with self.coverage_observation_lock:
+            if (not confirmed or
+                    not coverage_non_target_observation_matches(
+                        self.active_coverage_anchor,
+                        anchor,
+                        category,
+                        self.coverage_non_target_early_exit)):
+                return
+            self.coverage_non_target_observation = (
+                anchor, category, rospy.get_time())
+        self._publish_status(
+            "coverage_non_target_observed:{}:{}".format(anchor, category))
+        rospy.loginfo(
+            "[vision_triggered_navigator] anchor %d confirmed non-target "
+            "workshop=%s; remaining angles at this anchor are redundant.",
+            anchor, category)
+
+    def _current_non_target_category(self):
+        with self.coverage_observation_lock:
+            observation = self.coverage_non_target_observation
+            if observation is None:
+                return None
+            anchor, category, _stamp = observation
+            if anchor != self.active_coverage_anchor:
+                return None
+            return category
 
     def publish_initial_pose_to_amcl(self):
         """发布 /initialpose 给 AMCL 做初始定位"""
@@ -1351,6 +1401,8 @@ class VisionTriggeredNavigator(object):
         rate = rospy.Rate(20)
         while not rospy.is_shutdown() and not self.triggered:
             self.cmd_vel_pub.publish(Twist())
+            if self._current_non_target_category() is not None:
+                break
             candidate_at = self.target_payload_at
             new_deadline = scan_dwell_deadline(
                 started,
@@ -1393,6 +1445,9 @@ class VisionTriggeredNavigator(object):
             if self.triggered:
                 self.cmd_vel_pub.publish(Twist())
                 return True
+            if self._current_non_target_category() is not None:
+                self.cmd_vel_pub.publish(Twist())
+                return True
             scan_started = rospy.get_time()
             completed_progress = 0.0
             attempt_angle = step_angle
@@ -1421,6 +1476,9 @@ class VisionTriggeredNavigator(object):
 
             while not rospy.is_shutdown() and not self.triggered:
                 now = rospy.get_time()
+                if self._current_non_target_category() is not None:
+                    self.cmd_vel_pub.publish(Twist())
+                    return True
                 if not self._rotation_clearance_safe(
                         self.coverage_rotation_min_clearance, "观察点扫描"):
                     self._publish_status("coverage_scan_clearance_hold")
@@ -1598,7 +1656,8 @@ class VisionTriggeredNavigator(object):
     def perform_rotations(self, rotations):
         """顺序执行一组自转动作"""
         for rot in rotations:
-            if self.triggered:
+            if (self.triggered or
+                    self._current_non_target_category() is not None):
                 break
             direction = rot.get("direction", "left")
             duration = rot.get("duration", 0.0)
@@ -1608,6 +1667,9 @@ class VisionTriggeredNavigator(object):
 
     def _visit_coverage_point(self, point, patrol_idx):
         """Visit one calibrated anchor once, then perform its original scan."""
+        with self.coverage_observation_lock:
+            self.active_coverage_anchor = patrol_idx + 1
+            self.coverage_non_target_observation = None
         x, y, yaw = exact_observation_target(point)
         if self.triggered:
             return "triggered"
@@ -1782,6 +1844,13 @@ class VisionTriggeredNavigator(object):
                                   self.coverage_scan_dwell))
         if self.triggered:
             return "triggered"
+        non_target_category = self._current_non_target_category()
+        if non_target_category is not None:
+            rospy.loginfo(
+                "[vision_triggered_navigator] 精确锚点%d已确认非目标车间%s，"
+                "结束该点剩余转角并保留识别记忆.",
+                patrol_idx + 1, non_target_category)
+            return "covered"
         if self.current_goal_near_observation:
             rospy.loginfo(
                 "[vision_triggered_navigator] coverage anchor=%d "
@@ -1796,6 +1865,12 @@ class VisionTriggeredNavigator(object):
             return "failed"
         if self.triggered:
             return "triggered"
+        non_target_category = self._current_non_target_category()
+        if non_target_category is not None:
+            rospy.loginfo(
+                "[vision_triggered_navigator] 精确锚点%d扫描中确认非目标车间%s，"
+                "剩余扫描已去重.",
+                patrol_idx + 1, non_target_category)
         rospy.loginfo(
             "[vision_triggered_navigator] coverage anchor=%d state=covered exact=true",
             patrol_idx + 1)

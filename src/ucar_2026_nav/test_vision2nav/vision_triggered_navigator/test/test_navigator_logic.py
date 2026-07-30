@@ -20,6 +20,7 @@ from navigator_logic import (
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
     coverage_near_anchor_action,
+    coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
     coverage_speed_profile,
     coverage_timeout_decision,
@@ -125,6 +126,15 @@ def test_coverage_speed_profile_rejects_overlapping_thresholds():
         coverage_speed_profile(1.0, "cruise", 0.55, 0.45, 0.75, 0.90)
 
 
+def test_non_target_scan_exit_matches_only_the_active_anchor():
+    assert coverage_non_target_observation_matches(2, 2, "daily", True)
+    assert not coverage_non_target_observation_matches(
+        2, 3, "daily", True)
+    assert not coverage_non_target_observation_matches(2, 2, "", True)
+    assert not coverage_non_target_observation_matches(
+        2, 2, "daily", False)
+
+
 def test_coverage_speed_profile_is_wired_through_launch():
     package_dir = os.path.abspath(os.path.join(
         os.path.dirname(__file__), ".."))
@@ -158,6 +168,39 @@ def test_coverage_speed_profile_is_wired_through_launch():
             "coverage_fast_enter_clearance"):
         assert name in launch_args
         assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_non_target_early_exit_is_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["coverage_non_target_early_exit"] is True
+    assert config["non_target_topic"] == "/vision/non_target_observation"
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in ("non_target_topic", "coverage_non_target_early_exit"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "remaining angles at this anchor are redundant" in source
+    assert "剩余扫描已去重" in source
 
 
 def test_visual_parking_restores_cruise_speed_profile():

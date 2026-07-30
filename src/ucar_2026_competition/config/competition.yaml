@@ -164,6 +164,10 @@ task2_resume_coverage_enabled: true
 task2_second_search_abort_fail_fast_count: 0
 task2_remembered_heading_confirm_sec: 1.2
 task2_remembered_heading_scan_half_angle_deg: 18.0
+# 连续确认近距离非目标厂牌后结束当前观察点剩余转角；第二轮继续复用仓库记忆。
+task2_non_target_early_exit: true
+task2_non_target_early_exit_min_score: 0.62
+task2_non_target_topic: /vision/non_target_observation
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003

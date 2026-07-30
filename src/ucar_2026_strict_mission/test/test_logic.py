@@ -13,6 +13,7 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ApproachPolicy,
     ConsecutiveBandFilter,
     DistanceCalibration,
+    StableLineDistanceFilter,
     forward_progress,
     heading_alignment_command,
     lateral_displacement,
@@ -78,7 +79,7 @@ class OdometryProgressTests(unittest.TestCase):
             (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
                 encoding="utf-8"))
         self.assertEqual(
-            config["calibrated_final_advance_fallback_sec"], 8.0)
+            config["calibrated_final_advance_fallback_sec"], 3.0)
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
             config["final_advance_target_clearance_m"], 0.05)
@@ -86,6 +87,9 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
+        self.assertEqual(config["final_advance_visual_bias_m"], 0.03)
+        self.assertEqual(config["final_visual_confirm_frames"], 3)
+        self.assertEqual(config["final_visual_max_spread_m"], 0.02)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
         self.assertGreaterEqual(
             config["final_advance_creep_speed_mps"], 0.030)
@@ -106,7 +110,13 @@ class OdometryProgressTests(unittest.TestCase):
             node_source,
         )
         self.assertIn('"~final_advance_no_vision_m", 0.18)', node_source)
+        self.assertIn(
+            '"~calibrated_final_advance_fallback_sec", 3.0)',
+            node_source,
+        )
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
+        self.assertIn("confirmed_color=%s", node_source)
+        self.assertIn("candidate_color=%s", node_source)
 
     def test_unconfirmed_visual_candidate_cannot_shorten_hard_fallback(self):
         node_source = (
@@ -141,6 +151,59 @@ class OdometryProgressTests(unittest.TestCase):
         )
         self.assertAlmostEqual(distance, 0.0483333333)
         self.assertEqual(source, "visual_distance")
+
+    def test_visual_distance_bias_compensates_real_car_far_range_error(self):
+        distance, source = select_final_advance(
+            0.198,
+            0.10,
+            0.05,
+            0.20,
+            0.18,
+            0.75,
+            0.015,
+            0.03,
+        )
+        self.assertAlmostEqual(distance, 0.178)
+        self.assertEqual(source, "visual_distance")
+
+        distance, source = select_final_advance(
+            0.058,
+            0.10,
+            0.05,
+            0.20,
+            0.18,
+            0.75,
+            0.015,
+            0.03,
+        )
+        self.assertEqual(distance, 0.0)
+        self.assertEqual(source, "visual_hold")
+
+    def test_stable_line_distance_requires_same_color_consensus(self):
+        distance_filter = StableLineDistanceFilter(
+            required=3, max_spread_m=0.02)
+        self.assertIsNone(distance_filter.push(0.198, "yellow"))
+        self.assertIsNone(distance_filter.push(0.202, "yellow"))
+        self.assertAlmostEqual(
+            distance_filter.push(0.196, "yellow"), 0.198)
+        self.assertEqual(distance_filter.hits, 3)
+
+        self.assertIsNone(distance_filter.push(0.195, "white"))
+        self.assertEqual(distance_filter.hits, 1)
+        self.assertIsNone(distance_filter.push(0.196, "white"))
+        self.assertAlmostEqual(
+            distance_filter.push(0.194, "white"), 0.195)
+
+    def test_stable_line_distance_rejects_spread_and_misalignment(self):
+        distance_filter = StableLineDistanceFilter(
+            required=3, max_spread_m=0.01)
+        self.assertIsNone(distance_filter.push(0.18, "yellow"))
+        self.assertIsNone(distance_filter.push(0.19, "yellow"))
+        self.assertIsNone(distance_filter.push(0.22, "yellow"))
+        self.assertEqual(distance_filter.hits, 1)
+        self.assertIsNone(
+            distance_filter.push(0.20, "yellow", aligned=False))
+        self.assertEqual(distance_filter.hits, 0)
 
     def test_visual_distance_caps_long_advance_and_holds_near_line(self):
         distance, source = select_final_advance(

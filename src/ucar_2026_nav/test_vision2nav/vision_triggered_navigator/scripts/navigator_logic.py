@@ -98,6 +98,19 @@ def coverage_speed_profile(clearance, current_profile,
     return "cruise"
 
 
+def coverage_non_target_observation_matches(
+        active_anchor, observed_anchor, category, enabled=True):
+    """Return whether a confirmed non-target observation belongs here."""
+    if not enabled or not str(category or "").strip():
+        return False
+    try:
+        active = int(active_anchor)
+        observed = int(observed_anchor)
+    except (TypeError, ValueError):
+        return False
+    return active > 0 and active == observed
+
+
 def parking_rotation_obstacle_clearance(
         samples, wall_fit, lidar_forward_offset=0.0,
         front_half_angle=math.radians(35.0),

@@ -54,6 +54,7 @@ def select_final_advance(
     no_vision_fallback_m,
     max_measurement_age_sec,
     minimum_command_m=0.0,
+    measurement_bias_m=0.0,
 ):
     """Choose a bounded final advance from a fresh stop-line measurement."""
     target = float(target_clearance_m)
@@ -61,6 +62,7 @@ def select_final_advance(
     fallback = float(no_vision_fallback_m)
     max_age = float(max_measurement_age_sec)
     minimum = float(minimum_command_m)
+    bias = float(measurement_bias_m)
     if target < 0.0:
         raise ValueError("target clearance must be non-negative")
     if maximum < 0.0:
@@ -71,6 +73,9 @@ def select_final_advance(
         raise ValueError("measurement age limit must be positive")
     if not 0.0 <= minimum <= maximum:
         raise ValueError("minimum command must be within the advance limit")
+    if not 0.0 <= bias <= target:
+        raise ValueError(
+            "measurement bias must be between zero and target clearance")
 
     measurement_is_fresh = False
     measured = None
@@ -82,10 +87,55 @@ def select_final_advance(
     if not measurement_is_fresh:
         return fallback, "no_vision_fallback"
 
-    advance = min(maximum, max(0.0, measured - target))
-    if advance < minimum:
+    raw_advance = max(0.0, measured - target)
+    if raw_advance < minimum:
         return 0.0, "visual_hold"
+    advance = min(maximum, raw_advance + bias)
     return advance, "visual_distance"
+
+
+class StableLineDistanceFilter:
+    """Confirm a same-color stop-line distance over consecutive frames."""
+
+    def __init__(self, required=3, max_spread_m=0.02):
+        self.required = max(1, int(required))
+        self.max_spread_m = max(0.0, float(max_spread_m))
+        self.reset()
+
+    @property
+    def hits(self):
+        return len(self.samples)
+
+    def reset(self):
+        self.color = None
+        self.samples = []
+
+    def push(self, distance_m, color, aligned=True):
+        color_value = str(color or "").strip().lower()
+        try:
+            distance = float(distance_m)
+        except (TypeError, ValueError):
+            self.reset()
+            return None
+        if (not aligned or color_value not in ("yellow", "white") or
+                not math.isfinite(distance) or distance < 0.0):
+            self.reset()
+            return None
+        if self.color != color_value:
+            self.color = color_value
+            self.samples = []
+        self.samples.append(distance)
+        self.samples = self.samples[-self.required:]
+        if len(self.samples) < self.required:
+            return None
+        if max(self.samples) - min(self.samples) > self.max_spread_m:
+            self.samples = [distance]
+            return None
+        ordered = sorted(self.samples)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return 0.5 * (ordered[middle - 1] + ordered[middle])
 
 
 def heading_alignment_command(error_rad, tolerance_rad, kp, min_speed,
