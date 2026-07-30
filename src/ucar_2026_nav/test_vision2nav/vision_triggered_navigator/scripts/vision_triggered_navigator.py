@@ -192,11 +192,11 @@ class VisionTriggeredNavigator(object):
         self.coverage_cruise_vel_x = min(
             self.coverage_max_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_x", 0.60))))
+                "~coverage_cruise_vel_x", 0.65))))
         self.coverage_cruise_vel_y = min(
             self.coverage_max_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_y", 0.60))))
+                "~coverage_cruise_vel_y", 0.65))))
         self.coverage_cruise_vel_theta = min(
             self.coverage_max_vel_theta,
             max(0.10, float(rospy.get_param(
@@ -204,15 +204,15 @@ class VisionTriggeredNavigator(object):
         self.coverage_caution_vel_x = min(
             self.coverage_cruise_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_x", 0.44))))
+                "~coverage_caution_vel_x", 0.50))))
         self.coverage_caution_vel_y = min(
             self.coverage_cruise_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_y", 0.44))))
+                "~coverage_caution_vel_y", 0.50))))
         self.coverage_caution_vel_theta = min(
             self.coverage_cruise_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_caution_vel_theta", 0.95))))
+                "~coverage_caution_vel_theta", 1.05))))
         self.coverage_caution_enter_clearance = max(0.0, float(
             rospy.get_param(
                 "~coverage_caution_enter_clearance", 0.45)))

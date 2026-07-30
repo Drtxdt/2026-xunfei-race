@@ -1900,17 +1900,17 @@ class CompetitionFlow:
                     "coverage_max_vel_theta": rospy.get_param(
                         "~coverage_max_vel_theta", 1.35),
                     "coverage_cruise_vel_x": rospy.get_param(
-                        "~coverage_cruise_vel_x", 0.60),
+                        "~coverage_cruise_vel_x", 0.65),
                     "coverage_cruise_vel_y": rospy.get_param(
-                        "~coverage_cruise_vel_y", 0.60),
+                        "~coverage_cruise_vel_y", 0.65),
                     "coverage_cruise_vel_theta": rospy.get_param(
                         "~coverage_cruise_vel_theta", 1.20),
                     "coverage_caution_vel_x": rospy.get_param(
-                        "~coverage_caution_vel_x", 0.44),
+                        "~coverage_caution_vel_x", 0.50),
                     "coverage_caution_vel_y": rospy.get_param(
-                        "~coverage_caution_vel_y", 0.44),
+                        "~coverage_caution_vel_y", 0.50),
                     "coverage_caution_vel_theta": rospy.get_param(
-                        "~coverage_caution_vel_theta", 0.95),
+                        "~coverage_caution_vel_theta", 1.05),
                     "coverage_caution_enter_clearance": rospy.get_param(
                         "~coverage_caution_enter_clearance", 0.45),
                     "coverage_caution_exit_clearance": rospy.get_param(

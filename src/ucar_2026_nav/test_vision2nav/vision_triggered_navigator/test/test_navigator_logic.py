@@ -153,9 +153,9 @@ def test_coverage_speed_profile_is_wired_through_launch():
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     assert math.isclose(float(config["coverage_max_vel_x"]), 0.65)
-    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.60)
-    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.44)
-    assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.95)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.65)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.50)
+    assert math.isclose(float(config["coverage_caution_vel_theta"]), 1.05)
     assert math.isclose(
         float(config["coverage_fast_enter_clearance"]), 0.90)
 
