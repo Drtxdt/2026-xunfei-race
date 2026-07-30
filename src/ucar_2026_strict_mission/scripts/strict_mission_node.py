@@ -64,6 +64,7 @@ class StrictMissionNode:
         self.last_distance_at = 0.0
         self.last_stop_line_color = None
         self.visual_stop_distance_m = None
+        self.visual_stop_distance_at = 0.0
         self.planned_final_advance_m = 0.0
         self.final_advance_source = "unplanned"
         self.final_progress_m = 0.0
@@ -520,6 +521,7 @@ class StrictMissionNode:
             self.publish_stop()
             with self.lock:
                 self.visual_stop_distance_m = distance
+                self.visual_stop_distance_at = now
                 self.state = "VISUAL_CONFIRM"
                 self.parked_event.set()
             self.publish_status(
@@ -831,8 +833,9 @@ class StrictMissionNode:
     def plan_final_advance(self):
         now = time.monotonic()
         with self.lock:
-            measured_distance = self.last_distance_m
-            measured_at = self.last_distance_at
+            measured_distance = self.visual_stop_distance_m
+            measured_at = self.visual_stop_distance_at
+            candidate_distance = self.last_distance_m
         measurement_age = (
             None if measured_distance is None or measured_at <= 0.0
             else max(0.0, now - measured_at))
@@ -850,11 +853,13 @@ class StrictMissionNode:
             self.final_advance_source = source
         rospy.logwarn(
             "TASK4_FINAL_ADVANCE planned=%.3fm source=%s "
-            "measured=%s age=%s target=%.3fm",
+            "confirmed=%s candidate=%s age=%s target=%.3fm",
             distance,
             source,
             "none" if measured_distance is None
             else "{:.3f}m".format(measured_distance),
+            "none" if candidate_distance is None
+            else "{:.3f}m".format(candidate_distance),
             "none" if measurement_age is None
             else "{:.3f}s".format(measurement_age),
             self.final_target_clearance_m,
@@ -999,6 +1004,7 @@ class StrictMissionNode:
                 self.last_distance_m = None
                 self.last_distance_at = 0.0
                 self.visual_stop_distance_m = None
+                self.visual_stop_distance_at = 0.0
                 self.planned_final_advance_m = 0.0
                 self.final_advance_source = "unplanned"
                 self.line_missing_since = None
@@ -1030,7 +1036,8 @@ class StrictMissionNode:
                 self.publish_status(
                     "visual alignment window complete; calibrated final "
                     "advance armed",
-                    visual_distance_m=self.last_distance_m,
+                    visual_candidate_distance_m=self.last_distance_m,
+                    visual_confirmed_distance_m=self.visual_stop_distance_m,
                     fallback_timeout_sec=fallback_timeout,
                 )
             planned_advance = self.plan_final_advance()

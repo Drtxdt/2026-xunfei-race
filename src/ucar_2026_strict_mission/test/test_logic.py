@@ -108,6 +108,27 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn('"~final_advance_no_vision_m", 0.18)', node_source)
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
 
+    def test_unconfirmed_visual_candidate_cannot_shorten_hard_fallback(self):
+        node_source = (
+            PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "measured_distance = self.visual_stop_distance_m",
+            node_source,
+        )
+        self.assertIn(
+            "measured_at = self.visual_stop_distance_at",
+            node_source,
+        )
+        self.assertIn(
+            "candidate_distance = self.last_distance_m",
+            node_source,
+        )
+        distance, source = select_final_advance(
+            None, None, 0.05, 0.20, 0.18, 0.75, 0.015)
+        self.assertEqual(distance, 0.18)
+        self.assertEqual(source, "no_vision_fallback")
+
     def test_fresh_visual_distance_selects_only_required_clearance(self):
         distance, source = select_final_advance(
             0.0983333333,
