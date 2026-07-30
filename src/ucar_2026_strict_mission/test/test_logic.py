@@ -83,12 +83,11 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
             config["final_advance_target_clearance_m"], 0.05)
-        self.assertEqual(config["final_advance_no_vision_m"], 0.13)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.155)
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
         self.assertEqual(config["final_advance_visual_bias_m"], 0.03)
-        self.assertEqual(config["final_candidate_safety_bias_m"], 0.01)
         self.assertEqual(config["final_visual_confirm_frames"], 3)
         self.assertEqual(config["final_visual_max_spread_m"], 0.02)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
@@ -110,7 +109,7 @@ class OdometryProgressTests(unittest.TestCase):
             "using calibrated guarded final advance",
             node_source,
         )
-        self.assertIn('"~final_advance_no_vision_m", 0.13)', node_source)
+        self.assertIn('"~final_advance_no_vision_m", 0.155)', node_source)
         self.assertIn(
             '"~calibrated_final_advance_fallback_sec", 3.0)',
             node_source,
@@ -118,9 +117,8 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
         self.assertIn("confirmed_color=%s", node_source)
         self.assertIn("candidate_color=%s", node_source)
-        self.assertIn("candidate_bias=%.3fm", node_source)
 
-    def test_fresh_unconfirmed_line_candidate_caps_hard_fallback(self):
+    def test_unconfirmed_visual_candidate_is_diagnostic_only(self):
         node_source = (
             PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
         ).read_text(encoding="utf-8")
@@ -136,85 +134,22 @@ class OdometryProgressTests(unittest.TestCase):
             "candidate_distance = self.last_distance_m",
             node_source,
         )
-        for candidate, color, expected in (
-                (0.073, "yellow", 0.033),
-                (0.198, "white", 0.13)):
-            distance, source = select_final_advance(
-                None,
-                None,
-                0.05,
-                0.20,
-                0.13,
-                0.75,
-                0.015,
-                0.03,
-                candidate_distance_m=candidate,
-                candidate_age_sec=0.10,
-                candidate_color=color,
-                candidate_safety_bias_m=0.01,
-            )
-            self.assertAlmostEqual(distance, expected)
-            self.assertEqual(source, "candidate_safety_cap")
-
-    def test_candidate_safety_cap_rejects_stale_invalid_or_untyped_data(self):
-        for candidate, age, color in (
-                (0.073, 0.80, "yellow"),
-                (0.073, 0.10, None),
-                (0.073, 0.10, "red"),
-                (-0.10, 0.10, "white"),
-                (float("nan"), 0.10, "yellow")):
-            distance, source = select_final_advance(
-                None,
-                None,
-                0.05,
-                0.20,
-                0.13,
-                0.75,
-                0.015,
-                0.03,
-                candidate_distance_m=candidate,
-                candidate_age_sec=age,
-                candidate_color=color,
-                candidate_safety_bias_m=0.01,
-            )
-            self.assertEqual(distance, 0.13)
-            self.assertEqual(source, "no_vision_fallback")
-
-    def test_candidate_safety_cap_never_increases_hard_fallback(self):
+        self.assertNotIn(
+            "candidate_distance_m=candidate_distance",
+            node_source,
+        )
         distance, source = select_final_advance(
             None,
             None,
             0.05,
             0.20,
-            0.13,
+            0.155,
             0.75,
             0.015,
             0.03,
-            candidate_distance_m=0.50,
-            candidate_age_sec=0.10,
-            candidate_color="yellow",
-            candidate_safety_bias_m=0.01,
         )
-        self.assertEqual(distance, 0.13)
-        self.assertEqual(source, "candidate_safety_cap")
-
-    def test_confirmed_visual_distance_has_priority_over_candidate_cap(self):
-        distance, source = select_final_advance(
-            0.198,
-            0.10,
-            0.05,
-            0.20,
-            0.13,
-            0.75,
-            0.015,
-            0.03,
-            candidate_distance_m=0.073,
-            candidate_age_sec=0.10,
-            candidate_color="yellow",
-            candidate_safety_bias_m=0.01,
-        )
-        self.assertAlmostEqual(distance, 0.178)
-        self.assertEqual(source, "visual_distance")
+        self.assertEqual(distance, 0.155)
+        self.assertEqual(source, "no_vision_fallback")
 
     def test_fresh_visual_distance_selects_only_required_clearance(self):
         distance, source = select_final_advance(
@@ -296,8 +231,8 @@ class OdometryProgressTests(unittest.TestCase):
     def test_stale_or_missing_visual_distance_uses_safe_fallback(self):
         for measured, age in ((None, None), (0.098, 0.80)):
             distance, source = select_final_advance(
-                measured, age, 0.05, 0.20, 0.13, 0.75, 0.015)
-            self.assertEqual(distance, 0.13)
+                measured, age, 0.05, 0.20, 0.155, 0.75, 0.015)
+            self.assertEqual(distance, 0.155)
             self.assertEqual(source, "no_vision_fallback")
 
     def test_task4_tightens_and_restores_teb_goal_tolerances(self):

@@ -51,14 +51,6 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertTrue(final_advance_completed(0.0, 0.0, 0.008))
         self.assertFalse(final_advance_completed(0.13, 0.10, 0.008))
 
-    def test_task4_accepts_candidate_distance_as_safety_only_source(self):
-        flow_path = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "scripts",
-            "competition_flow.py"))
-        with open(flow_path, "r", encoding="utf-8") as stream:
-            flow_source = stream.read()
-        self.assertIn('"candidate_safety_cap"', flow_source)
-
     def test_normalizes_calibrated_no_workshop_anchors(self):
         self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
         self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))

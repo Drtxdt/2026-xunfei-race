@@ -55,19 +55,14 @@ def select_final_advance(
     max_measurement_age_sec,
     minimum_command_m=0.0,
     measurement_bias_m=0.0,
-    candidate_distance_m=None,
-    candidate_age_sec=None,
-    candidate_color=None,
-    candidate_safety_bias_m=0.0,
 ):
-    """Choose a bounded final advance from confirmed or candidate vision."""
+    """Choose a bounded final advance from confirmed stop-line vision."""
     target = float(target_clearance_m)
     maximum = float(maximum_advance_m)
     fallback = float(no_vision_fallback_m)
     max_age = float(max_measurement_age_sec)
     minimum = float(minimum_command_m)
     bias = float(measurement_bias_m)
-    candidate_bias = float(candidate_safety_bias_m)
     if target < 0.0:
         raise ValueError("target clearance must be non-negative")
     if maximum < 0.0:
@@ -81,9 +76,6 @@ def select_final_advance(
     if not 0.0 <= bias <= target:
         raise ValueError(
             "measurement bias must be between zero and target clearance")
-    if not 0.0 <= candidate_bias <= target:
-        raise ValueError(
-            "candidate safety bias must be between zero and target clearance")
 
     measurement_is_fresh = False
     measured = None
@@ -100,27 +92,6 @@ def select_final_advance(
             )
 
     if not measurement_is_fresh:
-        candidate_is_fresh = False
-        candidate = None
-        color = str(candidate_color or "").strip().lower()
-        if candidate_distance_m is not None and candidate_age_sec is not None:
-            try:
-                candidate = float(candidate_distance_m)
-                candidate_age = float(candidate_age_sec)
-            except (TypeError, ValueError):
-                candidate = None
-            else:
-                candidate_is_fresh = (
-                    color in ("yellow", "white") and
-                    math.isfinite(candidate) and
-                    math.isfinite(candidate_age) and
-                    candidate >= 0.0 and
-                    0.0 <= candidate_age <= max_age
-                )
-        if candidate_is_fresh:
-            candidate_limit = max(
-                0.0, candidate - target + candidate_bias)
-            return min(fallback, candidate_limit), "candidate_safety_cap"
         return fallback, "no_vision_fallback"
 
     raw_advance = max(0.0, measured - target)
