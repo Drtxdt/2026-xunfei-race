@@ -1894,23 +1894,23 @@ class CompetitionFlow:
                     "coverage_translation_sector_half_angle_deg": rospy.get_param(
                         "~coverage_translation_sector_half_angle_deg", 35.0),
                     "coverage_max_vel_x": rospy.get_param(
-                        "~coverage_max_vel_x", 0.65),
+                        "~coverage_max_vel_x", 0.72),
                     "coverage_max_vel_y": rospy.get_param(
-                        "~coverage_max_vel_y", 0.65),
+                        "~coverage_max_vel_y", 0.72),
                     "coverage_max_vel_theta": rospy.get_param(
-                        "~coverage_max_vel_theta", 1.35),
+                        "~coverage_max_vel_theta", 1.45),
                     "coverage_cruise_vel_x": rospy.get_param(
-                        "~coverage_cruise_vel_x", 0.65),
+                        "~coverage_cruise_vel_x", 0.70),
                     "coverage_cruise_vel_y": rospy.get_param(
-                        "~coverage_cruise_vel_y", 0.65),
+                        "~coverage_cruise_vel_y", 0.70),
                     "coverage_cruise_vel_theta": rospy.get_param(
-                        "~coverage_cruise_vel_theta", 1.20),
+                        "~coverage_cruise_vel_theta", 1.30),
                     "coverage_caution_vel_x": rospy.get_param(
-                        "~coverage_caution_vel_x", 0.50),
+                        "~coverage_caution_vel_x", 0.53),
                     "coverage_caution_vel_y": rospy.get_param(
-                        "~coverage_caution_vel_y", 0.50),
+                        "~coverage_caution_vel_y", 0.53),
                     "coverage_caution_vel_theta": rospy.get_param(
-                        "~coverage_caution_vel_theta", 1.05),
+                        "~coverage_caution_vel_theta", 1.12),
                     "coverage_caution_enter_clearance": rospy.get_param(
                         "~coverage_caution_enter_clearance", 0.45),
                     "coverage_caution_exit_clearance": rospy.get_param(
