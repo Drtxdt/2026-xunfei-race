@@ -49,6 +49,7 @@
   "final_advance_visual_max_age_sec": 0.75,
   "final_advance_min_command_m": 0.015,
   "final_advance_visual_bias_m": 0.03,
+  "final_candidate_safety_bias_m": 0.01,
   "final_visual_confirm_frames": 3,
   "final_visual_max_spread_m": 0.02,
   "final_advance_speed_mps": 0.045,

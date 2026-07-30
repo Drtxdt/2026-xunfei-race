@@ -129,6 +129,8 @@ class StrictMissionNode:
             "~final_advance_min_command_m", 0.015))
         self.final_visual_bias_m = float(rospy.get_param(
             "~final_advance_visual_bias_m", 0.03))
+        self.final_candidate_safety_bias_m = float(rospy.get_param(
+            "~final_candidate_safety_bias_m", 0.01))
         select_final_advance(
             None,
             None,
@@ -138,6 +140,7 @@ class StrictMissionNode:
             self.final_visual_max_age_sec,
             self.final_minimum_command_m,
             self.final_visual_bias_m,
+            candidate_safety_bias_m=self.final_candidate_safety_bias_m,
         )
         self.precision_start_m = float(rospy.get_param(
             "~precision_start_m", 0.14))
@@ -885,6 +888,10 @@ class StrictMissionNode:
             self.final_visual_max_age_sec,
             self.final_minimum_command_m,
             self.final_visual_bias_m,
+            candidate_distance_m=candidate_distance,
+            candidate_age_sec=candidate_age,
+            candidate_color=candidate_color,
+            candidate_safety_bias_m=self.final_candidate_safety_bias_m,
         )
         with self.lock:
             self.planned_final_advance_m = distance
@@ -893,7 +900,7 @@ class StrictMissionNode:
             "TASK4_FINAL_ADVANCE planned=%.3fm source=%s "
             "confirmed=%s confirmed_color=%s age=%s "
             "candidate=%s candidate_color=%s candidate_age=%s "
-            "target=%.3fm visual_bias=%.3fm",
+            "target=%.3fm visual_bias=%.3fm candidate_bias=%.3fm",
             distance,
             source,
             "none" if measured_distance is None
@@ -908,6 +915,7 @@ class StrictMissionNode:
             else "{:.3f}s".format(candidate_age),
             self.final_target_clearance_m,
             self.final_visual_bias_m,
+            self.final_candidate_safety_bias_m,
         )
         return distance
 

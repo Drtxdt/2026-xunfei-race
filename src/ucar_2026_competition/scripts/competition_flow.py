@@ -2286,6 +2286,7 @@ class CompetitionFlow:
                     valid_sources = (
                         "visual_distance",
                         "visual_hold",
+                        "candidate_safety_cap",
                         "no_vision_fallback",
                     )
                     tolerance = float(rospy.get_param(
