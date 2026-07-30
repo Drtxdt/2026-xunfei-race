@@ -83,7 +83,7 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
             config["final_advance_target_clearance_m"], 0.05)
-        self.assertEqual(config["final_advance_no_vision_m"], 0.18)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.13)
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
@@ -110,7 +110,7 @@ class OdometryProgressTests(unittest.TestCase):
             "using calibrated guarded final advance",
             node_source,
         )
-        self.assertIn('"~final_advance_no_vision_m", 0.18)', node_source)
+        self.assertIn('"~final_advance_no_vision_m", 0.13)', node_source)
         self.assertIn(
             '"~calibrated_final_advance_fallback_sec", 3.0)',
             node_source,
@@ -138,13 +138,13 @@ class OdometryProgressTests(unittest.TestCase):
         )
         for candidate, color, expected in (
                 (0.073, "yellow", 0.033),
-                (0.198, "white", 0.158)):
+                (0.198, "white", 0.13)):
             distance, source = select_final_advance(
                 None,
                 None,
                 0.05,
                 0.20,
-                0.18,
+                0.13,
                 0.75,
                 0.015,
                 0.03,
@@ -168,7 +168,7 @@ class OdometryProgressTests(unittest.TestCase):
                 None,
                 0.05,
                 0.20,
-                0.18,
+                0.13,
                 0.75,
                 0.015,
                 0.03,
@@ -177,7 +177,7 @@ class OdometryProgressTests(unittest.TestCase):
                 candidate_color=color,
                 candidate_safety_bias_m=0.01,
             )
-            self.assertEqual(distance, 0.18)
+            self.assertEqual(distance, 0.13)
             self.assertEqual(source, "no_vision_fallback")
 
     def test_candidate_safety_cap_never_increases_hard_fallback(self):
@@ -186,7 +186,7 @@ class OdometryProgressTests(unittest.TestCase):
             None,
             0.05,
             0.20,
-            0.18,
+            0.13,
             0.75,
             0.015,
             0.03,
@@ -195,7 +195,7 @@ class OdometryProgressTests(unittest.TestCase):
             candidate_color="yellow",
             candidate_safety_bias_m=0.01,
         )
-        self.assertEqual(distance, 0.18)
+        self.assertEqual(distance, 0.13)
         self.assertEqual(source, "candidate_safety_cap")
 
     def test_confirmed_visual_distance_has_priority_over_candidate_cap(self):
@@ -204,7 +204,7 @@ class OdometryProgressTests(unittest.TestCase):
             0.10,
             0.05,
             0.20,
-            0.18,
+            0.13,
             0.75,
             0.015,
             0.03,
@@ -296,8 +296,8 @@ class OdometryProgressTests(unittest.TestCase):
     def test_stale_or_missing_visual_distance_uses_safe_fallback(self):
         for measured, age in ((None, None), (0.098, 0.80)):
             distance, source = select_final_advance(
-                measured, age, 0.05, 0.20, 0.18, 0.75, 0.015)
-            self.assertEqual(distance, 0.18)
+                measured, age, 0.05, 0.20, 0.13, 0.75, 0.015)
+            self.assertEqual(distance, 0.13)
             self.assertEqual(source, "no_vision_fallback")
 
     def test_task4_tightens_and_restores_teb_goal_tolerances(self):
