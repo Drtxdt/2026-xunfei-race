@@ -1859,6 +1859,8 @@ class CompetitionFlow:
                     "non_target_topic": self.vision_non_target_topic,
                     "coverage_non_target_early_exit": (
                         self.task2_non_target_early_exit),
+                    "coverage_non_target_min_scan_steps": rospy.get_param(
+                        "~coverage_non_target_min_scan_steps", 2),
                     "trigger_service": self.trigger_service_name,
                     "publish_initial_pose": (
                         False if self.mode == "task1_task2" else
@@ -1898,17 +1900,17 @@ class CompetitionFlow:
                     "coverage_max_vel_theta": rospy.get_param(
                         "~coverage_max_vel_theta", 1.35),
                     "coverage_cruise_vel_x": rospy.get_param(
-                        "~coverage_cruise_vel_x", 0.55),
+                        "~coverage_cruise_vel_x", 0.60),
                     "coverage_cruise_vel_y": rospy.get_param(
-                        "~coverage_cruise_vel_y", 0.55),
+                        "~coverage_cruise_vel_y", 0.60),
                     "coverage_cruise_vel_theta": rospy.get_param(
                         "~coverage_cruise_vel_theta", 1.20),
                     "coverage_caution_vel_x": rospy.get_param(
-                        "~coverage_caution_vel_x", 0.38),
+                        "~coverage_caution_vel_x", 0.44),
                     "coverage_caution_vel_y": rospy.get_param(
-                        "~coverage_caution_vel_y", 0.38),
+                        "~coverage_caution_vel_y", 0.44),
                     "coverage_caution_vel_theta": rospy.get_param(
-                        "~coverage_caution_vel_theta", 0.80),
+                        "~coverage_caution_vel_theta", 0.95),
                     "coverage_caution_enter_clearance": rospy.get_param(
                         "~coverage_caution_enter_clearance", 0.45),
                     "coverage_caution_exit_clearance": rospy.get_param(

@@ -29,12 +29,12 @@
   <arg name="coverage_max_vel_x" default="0.65" />
   <arg name="coverage_max_vel_y" default="0.65" />
   <arg name="coverage_max_vel_theta" default="1.35" />
-  <arg name="coverage_cruise_vel_x" default="0.55" />
-  <arg name="coverage_cruise_vel_y" default="0.55" />
+  <arg name="coverage_cruise_vel_x" default="0.60" />
+  <arg name="coverage_cruise_vel_y" default="0.60" />
   <arg name="coverage_cruise_vel_theta" default="1.20" />
-  <arg name="coverage_caution_vel_x" default="0.38" />
-  <arg name="coverage_caution_vel_y" default="0.38" />
-  <arg name="coverage_caution_vel_theta" default="0.80" />
+  <arg name="coverage_caution_vel_x" default="0.44" />
+  <arg name="coverage_caution_vel_y" default="0.44" />
+  <arg name="coverage_caution_vel_theta" default="0.95" />
   <arg name="coverage_caution_enter_clearance" default="0.45" />
   <arg name="coverage_caution_exit_clearance" default="0.55" />
   <arg name="coverage_fast_exit_clearance" default="0.75" />
@@ -43,6 +43,7 @@
   <arg name="target_topic" default="/vision/target" />
   <arg name="non_target_topic" default="/vision/non_target_observation" />
   <arg name="coverage_non_target_early_exit" default="true" />
+  <arg name="coverage_non_target_min_scan_steps" default="2" />
   <arg name="target_center_steering_sign" default="-1.0" />
   <arg name="camera_boresight_yaw_offset" default="0.0" />
   <arg name="center_only" default="false" />
@@ -153,6 +154,7 @@
     <param name="target_topic" value="$(arg target_topic)" />
     <param name="non_target_topic" value="$(arg non_target_topic)" />
     <param name="coverage_non_target_early_exit" value="$(arg coverage_non_target_early_exit)" />
+    <param name="coverage_non_target_min_scan_steps" value="$(arg coverage_non_target_min_scan_steps)" />
     <param name="target_center_steering_sign" value="$(arg target_center_steering_sign)" />
     <param name="camera_boresight_yaw_offset" value="$(arg camera_boresight_yaw_offset)" />
     <param name="center_only" value="$(arg center_only)" />

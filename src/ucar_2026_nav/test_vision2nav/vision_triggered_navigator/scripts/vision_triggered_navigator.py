@@ -28,6 +28,7 @@ from navigator_logic import (
     coverage_anchor_order,
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
+    coverage_non_target_early_exit_ready,
     coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
     coverage_speed_profile,
@@ -140,6 +141,8 @@ class VisionTriggeredNavigator(object):
             "~non_target_topic", "/vision/non_target_observation")
         self.coverage_non_target_early_exit = bool(rospy.get_param(
             "~coverage_non_target_early_exit", True))
+        self.coverage_non_target_min_scan_steps = max(0, int(rospy.get_param(
+            "~coverage_non_target_min_scan_steps", 2)))
         legacy_coverage_timeout = float(rospy.get_param(
             "~coverage_goal_timeout_sec", 25.0))
         self.coverage_goal_soft_timeout = max(0.1, float(rospy.get_param(
@@ -189,11 +192,11 @@ class VisionTriggeredNavigator(object):
         self.coverage_cruise_vel_x = min(
             self.coverage_max_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_x", 0.55))))
+                "~coverage_cruise_vel_x", 0.60))))
         self.coverage_cruise_vel_y = min(
             self.coverage_max_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_y", 0.55))))
+                "~coverage_cruise_vel_y", 0.60))))
         self.coverage_cruise_vel_theta = min(
             self.coverage_max_vel_theta,
             max(0.10, float(rospy.get_param(
@@ -201,15 +204,15 @@ class VisionTriggeredNavigator(object):
         self.coverage_caution_vel_x = min(
             self.coverage_cruise_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_x", 0.38))))
+                "~coverage_caution_vel_x", 0.44))))
         self.coverage_caution_vel_y = min(
             self.coverage_cruise_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_y", 0.38))))
+                "~coverage_caution_vel_y", 0.44))))
         self.coverage_caution_vel_theta = min(
             self.coverage_cruise_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_caution_vel_theta", 0.80))))
+                "~coverage_caution_vel_theta", 0.95))))
         self.coverage_caution_enter_clearance = max(0.0, float(
             rospy.get_param(
                 "~coverage_caution_enter_clearance", 0.45)))
@@ -507,6 +510,8 @@ class VisionTriggeredNavigator(object):
         self.coverage_observation_lock = threading.Lock()
         self.active_coverage_anchor = 0
         self.coverage_non_target_observation = None
+        self.coverage_completed_scan_steps = 0
+        self.coverage_non_target_defer_logged = False
         if self.coverage_search_mode:
             rospy.Subscriber(self.target_topic, String, self._target_cb, queue_size=10)
             rospy.Subscriber(
@@ -788,12 +793,34 @@ class VisionTriggeredNavigator(object):
                 return
             self.coverage_non_target_observation = (
                 anchor, category, rospy.get_time())
+            completed_steps = self.coverage_completed_scan_steps
+            early_exit_ready = coverage_non_target_early_exit_ready(
+                completed_steps, self.coverage_non_target_min_scan_steps)
+            defer_log_needed = (
+                not early_exit_ready and
+                not self.coverage_non_target_defer_logged)
+            if defer_log_needed:
+                self.coverage_non_target_defer_logged = True
         self._publish_status(
             "coverage_non_target_observed:{}:{}".format(anchor, category))
-        rospy.loginfo(
-            "[vision_triggered_navigator] anchor %d confirmed non-target "
-            "workshop=%s; remaining angles at this anchor are redundant.",
-            anchor, category)
+        if early_exit_ready:
+            rospy.loginfo(
+                "[vision_triggered_navigator] anchor %d confirmed non-target "
+                "workshop=%s after deliberate scan steps=%d/%d; "
+                "remaining angles at this anchor are redundant.",
+                anchor, category, completed_steps,
+                self.coverage_non_target_min_scan_steps)
+        elif defer_log_needed:
+            self._publish_status(
+                "coverage_non_target_deferred:{}:{}/{}".format(
+                    anchor, completed_steps,
+                    self.coverage_non_target_min_scan_steps))
+            rospy.loginfo(
+                "[vision_triggered_navigator] anchor %d remembered non-target "
+                "workshop=%s, but early exit is deferred until deliberate "
+                "scan steps reach %d/%d.",
+                anchor, category, completed_steps,
+                self.coverage_non_target_min_scan_steps)
 
     def _current_non_target_category(self):
         with self.coverage_observation_lock:
@@ -803,7 +830,37 @@ class VisionTriggeredNavigator(object):
             anchor, category, _stamp = observation
             if anchor != self.active_coverage_anchor:
                 return None
+            if not coverage_non_target_early_exit_ready(
+                    self.coverage_completed_scan_steps,
+                    self.coverage_non_target_min_scan_steps):
+                return None
             return category
+
+    def _record_completed_coverage_scan_step(self):
+        """Count one reached scan heading after its stationary OCR dwell."""
+        with self.coverage_observation_lock:
+            self.coverage_completed_scan_steps += 1
+            completed_steps = self.coverage_completed_scan_steps
+            anchor = self.active_coverage_anchor
+            observation = self.coverage_non_target_observation
+            early_exit_ready = coverage_non_target_early_exit_ready(
+                completed_steps, self.coverage_non_target_min_scan_steps)
+        self._publish_status(
+            "coverage_scan_steps:{}:{}/{}".format(
+                anchor, completed_steps,
+                self.coverage_non_target_min_scan_steps))
+        rospy.loginfo(
+            "[vision_triggered_navigator] anchor %d deliberate scan step "
+            "completed=%d minimum_before_non_target_exit=%d.",
+            anchor, completed_steps, self.coverage_non_target_min_scan_steps)
+        if observation is not None and early_exit_ready:
+            observed_anchor, category, _stamp = observation
+            if observed_anchor == anchor:
+                rospy.loginfo(
+                    "[vision_triggered_navigator] anchor %d minimum deliberate "
+                    "scan coverage is satisfied; remembered non-target "
+                    "workshop=%s may now end the remaining angles.",
+                    anchor, category)
 
     def publish_initial_pose_to_amcl(self):
         """发布 /initialpose 给 AMCL 做初始定位"""
@@ -1423,6 +1480,10 @@ class VisionTriggeredNavigator(object):
                 break
             rate.sleep()
         self.cmd_vel_pub.publish(Twist())
+        return (
+            not rospy.is_shutdown() and
+            not self.triggered and
+            rospy.get_time() >= deadline)
 
     def _step_scan(self, direction, duration):
         """Run a TF-closed-loop stop-and-look sweep for task2 coverage mode."""
@@ -1612,8 +1673,10 @@ class VisionTriggeredNavigator(object):
             rospy.loginfo(
                 "[vision_triggered_navigator] 步进%d/%d到位 heading=%.1fdeg，停车识别.",
                 step_index, len(steps), heading)
-            self._hold_scan_step(
+            dwell_completed = self._hold_scan_step(
                 "步进{}/{}".format(step_index, len(steps)), scan_started)
+            if dwell_completed:
+                self._record_completed_coverage_scan_step()
         return True
 
     def rotate(self, direction, duration):
@@ -1670,6 +1733,8 @@ class VisionTriggeredNavigator(object):
         with self.coverage_observation_lock:
             self.active_coverage_anchor = patrol_idx + 1
             self.coverage_non_target_observation = None
+            self.coverage_completed_scan_steps = 0
+            self.coverage_non_target_defer_logged = False
         x, y, yaw = exact_observation_target(point)
         if self.triggered:
             return "triggered"

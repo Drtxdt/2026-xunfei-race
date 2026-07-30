@@ -69,6 +69,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("task2_non_target_early_exit: true", config)
         self.assertIn(
             "task2_non_target_early_exit_min_score: 0.62", config)
+        self.assertIn("coverage_non_target_min_scan_steps: 2", config)
 
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
@@ -89,6 +90,8 @@ class CompetitionLogicTest(unittest.TestCase):
             '"coverage_preferred_odom_yaw": remembered_odom_yaw', flow)
         self.assertIn(
             '"coverage_non_target_early_exit": (', flow)
+        self.assertIn(
+            '"coverage_non_target_min_scan_steps": rospy.get_param(', flow)
         self.assertIn(
             "task2 non-target early-exit notice:", flow)
 
@@ -117,8 +120,9 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_max_vel_x: 0.65", config)
         self.assertIn("coverage_max_vel_y: 0.65", config)
         self.assertIn("coverage_max_vel_theta: 1.35", config)
-        self.assertIn("coverage_cruise_vel_x: 0.55", config)
-        self.assertIn("coverage_caution_vel_x: 0.38", config)
+        self.assertIn("coverage_cruise_vel_x: 0.60", config)
+        self.assertIn("coverage_caution_vel_x: 0.44", config)
+        self.assertIn("coverage_caution_vel_theta: 0.95", config)
         self.assertIn("coverage_fast_enter_clearance: 0.90", config)
         self.assertIn("coverage_scan_angular_speed: 0.50", config)
         self.assertIn("coverage_scan_dwell_sec: 0.45", config)

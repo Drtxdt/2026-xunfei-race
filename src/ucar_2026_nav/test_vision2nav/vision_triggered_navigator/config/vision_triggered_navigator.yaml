@@ -42,6 +42,7 @@ coverage_abort_fail_fast_count: 0
 target_topic: "/vision/target"
 non_target_topic: "/vision/non_target_observation"
 coverage_non_target_early_exit: true
+coverage_non_target_min_scan_steps: 2
 # 精确锚点先执行25秒软时限；仍在有效接近时最多延长到40秒。
 coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0
@@ -62,12 +63,12 @@ coverage_translation_sector_half_angle_deg: 35.0
 coverage_max_vel_x: 0.65
 coverage_max_vel_y: 0.65
 coverage_max_vel_theta: 1.35
-coverage_cruise_vel_x: 0.55
-coverage_cruise_vel_y: 0.55
+coverage_cruise_vel_x: 0.60
+coverage_cruise_vel_y: 0.60
 coverage_cruise_vel_theta: 1.20
-coverage_caution_vel_x: 0.38
-coverage_caution_vel_y: 0.38
-coverage_caution_vel_theta: 0.80
+coverage_caution_vel_x: 0.44
+coverage_caution_vel_y: 0.44
+coverage_caution_vel_theta: 0.95
 coverage_caution_enter_clearance: 0.45
 coverage_caution_exit_clearance: 0.55
 coverage_fast_exit_clearance: 0.75

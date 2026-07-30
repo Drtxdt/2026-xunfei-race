@@ -111,6 +111,17 @@ def coverage_non_target_observation_matches(
     return active > 0 and active == observed
 
 
+def coverage_non_target_early_exit_ready(
+        completed_scan_steps, minimum_scan_steps):
+    """Return whether deliberate scan coverage permits a non-target exit."""
+    try:
+        completed = int(completed_scan_steps)
+        minimum = int(minimum_scan_steps)
+    except (TypeError, ValueError):
+        return False
+    return completed >= max(0, minimum)
+
+
 def parking_rotation_obstacle_clearance(
         samples, wall_fit, lidar_forward_offset=0.0,
         front_half_angle=math.radians(35.0),

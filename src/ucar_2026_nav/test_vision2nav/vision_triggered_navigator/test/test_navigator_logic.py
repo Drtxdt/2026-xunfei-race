@@ -20,6 +20,7 @@ from navigator_logic import (
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
     coverage_near_anchor_action,
+    coverage_non_target_early_exit_ready,
     coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
     coverage_speed_profile,
@@ -135,6 +136,15 @@ def test_non_target_scan_exit_matches_only_the_active_anchor():
         2, 2, "daily", False)
 
 
+def test_non_target_scan_exit_waits_for_minimum_deliberate_steps():
+    assert not coverage_non_target_early_exit_ready(0, 2)
+    assert not coverage_non_target_early_exit_ready(1, 2)
+    assert coverage_non_target_early_exit_ready(2, 2)
+    assert coverage_non_target_early_exit_ready(3, 2)
+    assert coverage_non_target_early_exit_ready(0, 0)
+    assert not coverage_non_target_early_exit_ready("invalid", 2)
+
+
 def test_coverage_speed_profile_is_wired_through_launch():
     package_dir = os.path.abspath(os.path.join(
         os.path.dirname(__file__), ".."))
@@ -143,8 +153,9 @@ def test_coverage_speed_profile_is_wired_through_launch():
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     assert math.isclose(float(config["coverage_max_vel_x"]), 0.65)
-    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.55)
-    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.38)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.60)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.44)
+    assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.95)
     assert math.isclose(
         float(config["coverage_fast_enter_clearance"]), 0.90)
 
@@ -178,6 +189,7 @@ def test_non_target_early_exit_is_wired_through_launch():
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     assert config["coverage_non_target_early_exit"] is True
+    assert int(config["coverage_non_target_min_scan_steps"]) == 2
     assert config["non_target_topic"] == "/vision/non_target_observation"
 
     launch_path = os.path.join(
@@ -191,7 +203,10 @@ def test_non_target_early_exit_is_wired_through_launch():
         item.attrib["name"]: item.attrib.get("value")
         for item in root.find("node").findall("param")
     }
-    for name in ("non_target_topic", "coverage_non_target_early_exit"):
+    for name in (
+            "non_target_topic",
+            "coverage_non_target_early_exit",
+            "coverage_non_target_min_scan_steps"):
         assert name in launch_args
         assert node_params[name] == "$(arg {})".format(name)
 
@@ -199,6 +214,7 @@ def test_non_target_early_exit_is_wired_through_launch():
         package_dir, "scripts", "vision_triggered_navigator.py")
     with open(script_path, "r", encoding="utf-8") as stream:
         source = stream.read()
+    assert "early exit is deferred until deliberate" in source
     assert "remaining angles at this anchor are redundant" in source
     assert "剩余扫描已去重" in source
 
