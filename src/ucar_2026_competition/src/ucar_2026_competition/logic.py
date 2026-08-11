@@ -181,6 +181,21 @@ def target_bbox_is_close_enough(
     )
 
 
+def task2_target_trigger_is_eligible(bbox_is_close, active_anchor):
+    """Only lock a close OCR target while stopped at a coverage anchor.
+
+    The navigator deliberately clears its active anchor during transit.  This
+    prevents an oblique sign glimpse between cones from interrupting move_base
+    and turning an arbitrary transit pose into the parking approach origin.
+    """
+    if not bool(bbox_is_close):
+        return False
+    try:
+        return int(active_anchor) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 class ConsecutiveTargetFilter:
     def __init__(self, required=3):
         self.required = max(1, int(required))

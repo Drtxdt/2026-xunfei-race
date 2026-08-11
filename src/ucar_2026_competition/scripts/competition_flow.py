@@ -52,6 +52,7 @@ from ucar_2026_competition.logic import (
     stage_sequence,
     task2_delivery_targets,
     task2_resumed_coverage_hint,
+    task2_target_trigger_is_eligible,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -568,6 +569,10 @@ class CompetitionFlow:
             self.ocr_trigger_min_bbox_height_ratio,
             self.ocr_trigger_min_bbox_area_ratio,
         )
+        with self.lock:
+            active_anchor = self.current_coverage_anchor
+        target_trigger_eligible = task2_target_trigger_is_eligible(
+            trigger_eligible, active_anchor)
         non_target_event = None
         if (memory_confirmed and payload.get("target_bbox") and
                 score >= self.ocr_memory_min_score):
@@ -625,27 +630,30 @@ class CompetitionFlow:
                 non_target_event["score"],
                 non_target_event["area_ratio"],
             )
-        if category == self.ocr_target and trigger_eligible:
+        if category == self.ocr_target and target_trigger_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
             self.ocr_target,
-            category if trigger_eligible else None,
+            category if target_trigger_eligible else None,
             time.monotonic(),
         )
         rospy.loginfo_throttle(
             0.5,
             "task2 OCR filter: target=%s observed=%s hits=%d/%d "
-            "bbox=%s trigger_eligible=%s bbox_ratio=%s",
+            "bbox=%s close=%s anchor=%s trigger_eligible=%s bbox_ratio=%s",
             self.ocr_target,
             category or "none",
             self.ocr_filter.hit_count,
             self.ocr_filter.required,
             bool(bbox),
             trigger_eligible,
+            active_anchor or "transit",
+            target_trigger_eligible,
             ("%.3f/%.3f/%.4f" % bbox_ratios
              if bbox_ratios is not None else "invalid"),
         )
-        if (confirmed and category == self.ocr_target and trigger_eligible and
+        if (confirmed and category == self.ocr_target and
+                target_trigger_eligible and
                 not self.vision_trigger_latched):
             self.vision_trigger_latched = True
             self.trigger_request_pending = True
@@ -672,9 +680,15 @@ class CompetitionFlow:
                 self.trigger_service_accepted = False
                 self.trigger_acknowledged = False
                 self.ocr_filter.reset()
+                self.current_coverage_anchor = None
             rospy.logwarn(
-                "task2 target centering lost; rearmed OCR at the current anchor")
-        if status.startswith("coverage_anchor_observing:"):
+                "task2 target centering lost; rearmed OCR for a fresh "
+                "stationary anchor observation")
+        observing_prefixes = (
+            "coverage_anchor_observing:",
+            "coverage_remembered_heading_observing:",
+        )
+        if status.startswith(observing_prefixes):
             try:
                 anchor = int(status.rsplit(":", 1)[1])
             except (TypeError, ValueError):
@@ -1883,6 +1897,8 @@ class CompetitionFlow:
                         "~task2_remembered_heading_scan_half_angle_deg", 18.0),
                     "coverage_skip_anchors": ",".join(
                         str(value) for value in skipped_anchors),
+                    "coverage_failed_revisit_limit": rospy.get_param(
+                        "~coverage_failed_revisit_limit", 1),
                     "coverage_abort_fail_fast_count": (
                         max(0, int(rospy.get_param(
                             "~task2_second_search_abort_fail_fast_count", 0)))

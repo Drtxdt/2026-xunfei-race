@@ -131,6 +131,8 @@ coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0
 coverage_goal_progress_window_sec: 5.0
 coverage_goal_min_progress: 0.03
+# 随机锥桶导致精确观察点不可达时，先离开受困区域，再有限重访一次。
+coverage_failed_revisit_limit: 1
 coverage_anchor_observation_radius: 0.45
 coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_rotation_watchdog_window_sec: 5.0

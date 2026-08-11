@@ -34,6 +34,7 @@ from ucar_2026_competition.logic import (
     stage_sequence,
     task2_delivery_targets,
     task2_resumed_coverage_hint,
+    task2_target_trigger_is_eligible,
     task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
@@ -179,6 +180,12 @@ class CompetitionLogicTest(unittest.TestCase):
     def test_task2_rejects_malformed_ocr_box_for_centering(self):
         self.assertFalse(target_bbox_is_close_enough([], 640, 480))
         self.assertFalse(target_bbox_is_close_enough([[1, 2]], 640, 480))
+
+    def test_task2_target_trigger_requires_stationary_coverage_anchor(self):
+        self.assertTrue(task2_target_trigger_is_eligible(True, 9))
+        self.assertFalse(task2_target_trigger_is_eligible(True, None))
+        self.assertFalse(task2_target_trigger_is_eligible(True, 0))
+        self.assertFalse(task2_target_trigger_is_eligible(False, 9))
 
     def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
         memory = {

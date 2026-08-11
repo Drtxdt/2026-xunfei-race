@@ -45,6 +45,7 @@ from navigator_logic import (
     parking_rotation_obstacle_clearance,
     polar_sector_min,
     ray_segment_intersection,
+    requeue_failed_coverage_anchor,
     rotation_clearance_allows_near_wall,
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
@@ -593,6 +594,31 @@ def test_coverage_anchor_order_skips_confirmed_irrelevant_anchors():
         skipped_anchors=(2, 4),
         nearest_order=[3, 4, 0, 1, 2],
     ) == [4, 0, 2]
+
+
+def test_failed_coverage_anchor_is_deferred_behind_remaining_route():
+    order, queued, recovery = requeue_failed_coverage_anchor(
+        [0, 1, 2], position=0, failed_anchor=0,
+        revisit_count=0, revisit_limit=1, anchor_count=3)
+    assert queued
+    assert recovery is None
+    assert order == [0, 1, 2, 0]
+
+
+def test_tail_failure_relocates_before_its_single_revisit():
+    order, queued, recovery = requeue_failed_coverage_anchor(
+        list(range(9)), position=8, failed_anchor=8,
+        revisit_count=0, revisit_limit=1, anchor_count=9)
+    assert queued
+    assert recovery == 0
+    assert order[-2:] == [0, 8]
+
+    unchanged, queued, recovery = requeue_failed_coverage_anchor(
+        order, position=len(order) - 1, failed_anchor=8,
+        revisit_count=1, revisit_limit=1, anchor_count=9)
+    assert not queued
+    assert recovery is None
+    assert unchanged == order
 
 
 def test_measured_quadrilateral_wall_normals_point_inward():
