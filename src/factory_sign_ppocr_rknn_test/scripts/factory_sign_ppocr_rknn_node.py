@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import json
+import math
 import os
 import re
 import time
@@ -219,6 +220,68 @@ def select_category_box(texts: Sequence[OCRText], category: Optional[str], class
         return None
     matches.sort(key=lambda value: (value[0], value[1]), reverse=True)
     return matches[0][2]
+
+
+def _box_bounds(box):
+    if len(box) != 4:
+        return None
+    xs = [float(point[0]) for point in box]
+    ys = [float(point[1]) for point in box]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _bounds_box(bounds):
+    x0, y0, x1, y1 = bounds
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+
+
+def select_factory_sign_box(texts: Sequence[OCRText],
+                            category: Optional[str], classifier):
+    """Return the category box joined with a nearby workshop-label line."""
+    target = select_category_box(texts, category, classifier)
+    if target is None:
+        return None
+    target_bounds = _box_bounds(target.box)
+    if target_bounds is None:
+        return target
+
+    tx0, ty0, tx1, ty1 = target_bounds
+    target_cx = 0.5 * (tx0 + tx1)
+    target_cy = 0.5 * (ty0 + ty1)
+    target_w = max(1.0, tx1 - tx0)
+    target_h = max(1.0, ty1 - ty0)
+    companions = []
+    for item in texts:
+        if item is target:
+            continue
+        normalized = classifier._normalize(item.text)
+        if not any(token in normalized for token in (
+                "加工车间", "生产车间", "加工车", "生产车", "车间")):
+            continue
+        bounds = _box_bounds(item.box)
+        if bounds is None:
+            continue
+        x0, y0, x1, y1 = bounds
+        width = max(1.0, x1 - x0)
+        height = max(1.0, y1 - y0)
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        dx = abs(cx - target_cx)
+        dy = abs(cy - target_cy)
+        if (dx > 1.5 * max(target_w, width) + 10.0 or
+                dy > 2.5 * max(target_h, height) + 10.0):
+            continue
+        companions.append((math.hypot(dx, dy), bounds))
+
+    if not companions:
+        return target
+    _distance, companion = min(companions, key=lambda value: value[0])
+    cx0, cy0, cx1, cy1 = companion
+    merged = _bounds_box((
+        min(tx0, cx0), min(ty0, cy0),
+        max(tx1, cx1), max(ty1, cy1),
+    ))
+    return OCRText(text=target.text, score=target.score, box=merged)
 
 
 class VoteWindow:
@@ -822,7 +885,8 @@ class FactorySignPPOCRRknnNode:
         self.last_result = result
         self.last_confirmed = confirmed
         spoken = self._maybe_speak(confirmed) if confirmed and self.enable_speech else False
-        target_item = select_category_box(result.texts, confirmed, self.classifier)
+        target_item = select_factory_sign_box(
+            result.texts, confirmed, self.classifier)
         target_box = []
         target_center_x = None
         target_center_y = None

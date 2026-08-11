@@ -4,6 +4,7 @@ import ast
 import math
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 import yaml
 import pytest
@@ -17,7 +18,12 @@ from navigator_logic import (
     center_angular_command,
     center_step_angle,
     coverage_motion_is_rotation_stall,
+    coverage_anchor_order,
+    coverage_near_anchor_action,
+    coverage_non_target_early_exit_ready,
+    coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
+    coverage_speed_profile,
     coverage_timeout_decision,
     cyclic_coverage_order,
     costmap_value_at,
@@ -31,12 +37,19 @@ from navigator_logic import (
     lidar_base_wall_distance,
     lidar_requires_stop,
     normalize_angle,
+    obstacle_clearance_requires_stop,
     parking_footprint_margins,
     parking_footprint_inside,
     parking_goal_from_wall,
+    parking_recenter_required,
+    parking_rotation_obstacle_clearance,
+    polar_sector_min,
     ray_segment_intersection,
+    rotation_clearance_allows_near_wall,
+    rotation_clearance_consensus,
     rotation_clearance_is_safe,
     scan_dwell_deadline,
+    scan_step_timeout_extension,
     sensor_is_fresh,
     should_retry_coverage_goal,
     staging_pose_reached,
@@ -63,6 +76,8 @@ MEASURED_CORNERS = [
 def test_one_shot_trigger_is_idempotent():
     latched, accepted = latch_trigger(False)
     assert latched and accepted
+    latched, accepted = latch_trigger(latched)
+    assert latched and not accepted
 
 
 def test_in_place_rotation_requires_fresh_all_around_clearance():
@@ -70,8 +85,388 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(0.29, 0.1, 0.30)
     assert not rotation_clearance_is_safe(None, 0.1, 0.30)
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
-    latched, accepted = latch_trigger(latched)
-    assert latched and not accepted
+
+
+def test_rotation_clearance_consensus_absorbs_only_small_lidar_jitter():
+    samples = [(9.80, 0.279), (9.90, 0.280), (10.00, 0.279)]
+    safe, median, count = rotation_clearance_consensus(
+        samples, now=10.0, min_clearance=0.28, tolerance=0.005)
+    assert safe
+    assert math.isclose(median, 0.279)
+    assert count == 3
+
+    unsafe, median, count = rotation_clearance_consensus(
+        [(9.80, 0.274), (9.90, 0.274), (10.00, 0.274)],
+        now=10.0, min_clearance=0.28, tolerance=0.005)
+    assert not unsafe
+    assert math.isclose(median, 0.274)
+    assert count == 3
+
+
+def test_parking_clearance_tolerance_absorbs_only_five_mm_jitter():
+    assert not obstacle_clearance_requires_stop(0.279, 0.28, 0.005)
+    assert not obstacle_clearance_requires_stop(0.278, 0.28, 0.005)
+    assert not obstacle_clearance_requires_stop(0.275, 0.28, 0.005)
+    assert obstacle_clearance_requires_stop(0.274, 0.28, 0.005)
+    assert obstacle_clearance_requires_stop(None, 0.28, 0.005)
+
+
+def test_coverage_speed_profile_accelerates_only_with_open_clearance():
+    thresholds = (0.45, 0.55, 0.75, 0.90)
+    assert coverage_speed_profile(None, "fast", *thresholds) == "cruise"
+    assert coverage_speed_profile(0.91, "cruise", *thresholds) == "fast"
+    assert coverage_speed_profile(0.80, "fast", *thresholds) == "fast"
+    assert coverage_speed_profile(0.74, "fast", *thresholds) == "cruise"
+    assert coverage_speed_profile(0.44, "cruise", *thresholds) == "caution"
+    assert coverage_speed_profile(0.50, "caution", *thresholds) == "caution"
+    assert coverage_speed_profile(0.56, "caution", *thresholds) == "cruise"
+
+
+def test_coverage_speed_profile_rejects_overlapping_thresholds():
+    with pytest.raises(ValueError):
+        coverage_speed_profile(1.0, "cruise", 0.55, 0.45, 0.75, 0.90)
+
+
+def test_non_target_scan_exit_matches_only_the_active_anchor():
+    assert coverage_non_target_observation_matches(2, 2, "daily", True)
+    assert not coverage_non_target_observation_matches(
+        2, 3, "daily", True)
+    assert not coverage_non_target_observation_matches(2, 2, "", True)
+    assert not coverage_non_target_observation_matches(
+        2, 2, "daily", False)
+
+
+def test_non_target_scan_exit_waits_for_minimum_deliberate_steps():
+    assert not coverage_non_target_early_exit_ready(0, 2)
+    assert not coverage_non_target_early_exit_ready(1, 2)
+    assert coverage_non_target_early_exit_ready(2, 2)
+    assert coverage_non_target_early_exit_ready(3, 2)
+    assert coverage_non_target_early_exit_ready(0, 0)
+    assert not coverage_non_target_early_exit_ready("invalid", 2)
+
+
+def test_coverage_speed_profile_is_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(float(config["coverage_max_vel_x"]), 0.72)
+    assert math.isclose(float(config["coverage_max_vel_theta"]), 1.45)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.70)
+    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 1.30)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.53)
+    assert math.isclose(float(config["coverage_caution_vel_theta"]), 1.12)
+    assert math.isclose(
+        float(config["coverage_fast_enter_clearance"]), 0.90)
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "coverage_cruise_vel_x",
+            "coverage_caution_vel_x",
+            "coverage_caution_enter_clearance",
+            "coverage_caution_exit_clearance",
+            "coverage_fast_exit_clearance",
+            "coverage_fast_enter_clearance"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_non_target_early_exit_is_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["coverage_non_target_early_exit"] is True
+    assert int(config["coverage_non_target_min_scan_steps"]) == 2
+    assert config["non_target_topic"] == "/vision/non_target_observation"
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "non_target_topic",
+            "coverage_non_target_early_exit",
+            "coverage_non_target_min_scan_steps"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "early exit is deferred until deliberate" in source
+    assert "remaining angles at this anchor are redundant" in source
+    assert "剩余扫描已去重" in source
+
+
+def test_visual_parking_restores_cruise_speed_profile():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and
+        node.name == "VisionTriggeredNavigator")
+    run_method = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and node.name == "run")
+    vision_branch = next(
+        node for node in ast.walk(run_method)
+        if isinstance(node, ast.If) and
+        any(isinstance(item, ast.Constant) and item.value == "VISION"
+            for item in ast.walk(node.test)))
+    calls = [
+        item
+        for statement in vision_branch.body
+        for item in ast.walk(statement)
+        if isinstance(item, ast.Call) and
+        isinstance(item.func, ast.Attribute) and
+        item.func.attr == "_set_coverage_speed_profile"
+    ]
+    assert any(
+        call.args and isinstance(call.args[0], ast.Constant) and
+        call.args[0].value == "cruise" and
+        any(keyword.arg == "force" and
+            isinstance(keyword.value, ast.Constant) and
+            keyword.value.value is True
+            for keyword in call.keywords)
+        for call in calls)
+
+
+def test_parking_clearance_tolerance_is_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(
+        float(config["parking_obstacle_clearance_tolerance"]), 0.005)
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    assert launch_args["parking_obstacle_clearance_tolerance"] == "0.005"
+    assert node_params["parking_obstacle_clearance_tolerance"] == (
+        "$(arg parking_obstacle_clearance_tolerance)")
+
+
+def test_parking_rotation_filters_logged_wall_return_beyond_front_sector():
+    normal_angle = -0.047
+    wall_fit = {
+        "normal": (math.cos(normal_angle), math.sin(normal_angle)),
+        "distance": 0.306,
+    }
+    samples = [
+        (math.radians(36.0), 0.267),
+        (math.radians(-40.0), 0.310),
+        (math.radians(90.0), 0.80),
+    ]
+    clearance = parking_rotation_obstacle_clearance(
+        samples, wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isclose(clearance, 0.80)
+    assert not obstacle_clearance_requires_stop(
+        clearance, 0.28, 0.005)
+    wall_only_clearance = parking_rotation_obstacle_clearance(
+        samples[:2], wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isinf(wall_only_clearance)
+    assert not obstacle_clearance_requires_stop(
+        wall_only_clearance, 0.28, 0.005)
+
+
+def test_parking_rotation_keeps_cone_that_protrudes_from_fitted_wall():
+    normal_angle = -0.047
+    wall_fit = {
+        "normal": (math.cos(normal_angle), math.sin(normal_angle)),
+        "distance": 0.306,
+    }
+    samples = [
+        (math.radians(36.0), 0.267),
+        (math.radians(60.0), 0.267),
+        (math.radians(90.0), 0.80),
+    ]
+    clearance = parking_rotation_obstacle_clearance(
+        samples, wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isclose(clearance, 0.267)
+    assert obstacle_clearance_requires_stop(
+        clearance, 0.28, 0.005)
+
+
+def test_parking_rotation_never_filters_wall_like_return_inside_footprint():
+    wall_fit = {
+        "normal": (1.0, 0.0),
+        "distance": 0.20,
+    }
+    samples = [(math.radians(36.0), 0.16)]
+    clearance = parking_rotation_obstacle_clearance(
+        samples, wall_fit, 0.08, math.radians(35.0), 0.0225, 0.235)
+    assert math.isclose(clearance, 0.16)
+    assert obstacle_clearance_requires_stop(
+        clearance, 0.28, 0.005)
+
+
+def test_parking_rotation_requires_evidence_without_a_trusted_wall():
+    samples = [(math.radians(36.0), 0.267)]
+    assert parking_rotation_obstacle_clearance(
+        samples, None, 0.08, math.radians(35.0), 0.0225) is None
+
+
+def test_rotation_clearance_consensus_requires_enough_fresh_samples():
+    safe, median, count = rotation_clearance_consensus(
+        [(9.00, 0.50), (9.90, 0.279)],
+        now=10.0, min_clearance=0.28, tolerance=0.005,
+        max_sample_age=0.35, min_samples=3)
+    assert not safe
+    assert median is None
+    assert count == 1
+
+
+def test_close_continuous_wall_can_use_rotation_clearance_exception():
+    distance = 0.264
+    samples = []
+    for degrees in range(-50, 51, 2):
+        angle = math.radians(degrees)
+        samples.append((angle, distance / math.cos(angle)))
+    assert rotation_clearance_allows_near_wall(
+        samples,
+        scan_age=0.1,
+        min_clearance=0.28,
+        lidar_forward_offset=0.08,
+        footprint_radius=0.215,
+    )
+
+
+def test_compact_cone_cannot_use_rotation_clearance_exception():
+    samples = [
+        (math.radians(degrees), 0.264 + 0.002 * abs(degrees - 90))
+        for degrees in range(84, 97, 2)
+    ]
+    assert not rotation_clearance_allows_near_wall(
+        samples,
+        scan_age=0.1,
+        min_clearance=0.28,
+        lidar_forward_offset=0.08,
+        footprint_radius=0.215,
+    )
+
+
+def test_stale_scan_cannot_use_rotation_clearance_exception():
+    samples = [(0.0, 0.264)] * 20
+    assert not rotation_clearance_allows_near_wall(
+        samples,
+        scan_age=0.6,
+        min_clearance=0.28,
+        max_scan_age=0.5,
+    )
+
+
+def test_polar_sector_min_wraps_and_ignores_other_directions():
+    samples = [
+        (math.radians(179.0), 0.42),
+        (math.radians(-179.0), 0.31),
+        (0.0, 0.10),
+        (float("nan"), 0.01),
+    ]
+    assert polar_sector_min(
+        samples, math.pi, math.radians(10.0)) == pytest.approx(0.31)
+    assert polar_sector_min(
+        samples, 0.5 * math.pi, math.radians(10.0)) is None
+
+
+def test_navigation_node_imports_rotation_clearance_helper():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    imported_names = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "navigator_logic"
+        for alias in node.names
+    }
+    assert "rotation_clearance_allows_near_wall" in imported_names
+    assert "rotation_clearance_is_safe" in imported_names
+
+
+def test_coverage_navigation_reports_transit_and_observation_anchor_ids():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    constants = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "coverage_anchor_transit:{}" in constants
+    assert "coverage_anchor_observing:{}" in constants
+
+
+def test_remembered_target_uses_saved_heading_and_short_scan_only():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VisionTriggeredNavigator"
+    )
+    method_names = {
+        node.name for node in navigator.body if isinstance(node, ast.FunctionDef)
+    }
+    assert "_align_remembered_odom_yaw" in method_names
+    assert "_scan_remembered_heading_window" in method_names
+
+    constants = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "coverage_remembered_heading_observing:{}" in constants
+    assert (
+        "[vision_triggered_navigator] Remembered target was not "
+        "confirmed at anchor %d within the short scan; continue to "
+        "the remaining anchors without repeating this anchor's full "
+        "rotation plan."
+    ) in constants
 
 
 def test_clearance_block_preserves_stationary_scan():
@@ -96,12 +491,78 @@ def test_clearance_block_preserves_stationary_scan():
         and isinstance(node.test.op, ast.Not)
         and isinstance(node.test.operand, ast.Call)
         and isinstance(node.test.operand.func, ast.Attribute)
-        and node.test.operand.func.attr == "_rotation_clearance_is_safe"
+        and node.test.operand.func.attr == "_rotation_clearance_safe"
     )
     returns = [node for node in clearance_if.body if isinstance(node, ast.Return)]
     assert len(returns) == 1
     assert isinstance(returns[0].value, ast.Constant)
     assert returns[0].value.value is True
+
+
+def test_anchor_yaw_clearance_block_holds_and_continues_coverage():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "VisionTriggeredNavigator"
+    )
+    visit = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_visit_coverage_point"
+    )
+    clearance_if = next(
+        node for node in ast.walk(visit)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Attribute)
+        and node.test.attr == "rotation_clearance_blocked"
+    )
+    called = {
+        node.func.attr
+        for node in ast.walk(clearance_if)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+    }
+    returned = {
+        node.value.value
+        for node in ast.walk(clearance_if)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Constant)
+    }
+    assert "_hold_scan_step" in called
+    assert "covered" in returned
+    assert "failed" not in returned
+
+
+def test_centering_loss_rearms_coverage_search_instead_of_stopping():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+
+    constants = {
+        node.value for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert "centering_retry_pending" in constants
+    assert "centering_recovering" in constants
+
+    assignments = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute)
+            and target.attr == "triggered"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and node.value.value is False
+    ]
+    assert assignments
 
 
 def test_coverage_goal_retries_aborted_timeout_and_rotation_stall_once():
@@ -112,6 +573,42 @@ def test_coverage_goal_retries_aborted_timeout_and_rotation_stall_once():
     assert not should_retry_coverage_goal(3, False, False, 0, 1)
 
 
+def test_exhausted_coverage_navigation_is_skipped_without_requeue():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert 'return "navigation_failed"' in source
+    assert '"coverage_anchor_skipped:{}"' in source
+    assert "requeue_failed_coverage_anchor" not in source
+    assert "coverage_anchor_deferred" not in source
+
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert int(config["coverage_goal_retry_count"]) == 1
+    assert "coverage_failed_revisit_limit" not in config
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    assert launch_args["coverage_goal_retry_count"] == "1"
+    assert node_params["coverage_goal_retry_count"] == (
+        "$(arg coverage_goal_retry_count)")
+    assert "coverage_failed_revisit_limit" not in launch_args
+
+
 def test_second_search_starts_nearest_and_preserves_cyclic_route():
     points = [
         {"x": 0.0, "y": 0.0},
@@ -120,6 +617,18 @@ def test_second_search_starts_nearest_and_preserves_cyclic_route():
         {"x": 3.0, "y": 0.0},
     ]
     assert cyclic_coverage_order(points, 2.1, 0.0) == [2, 3, 0, 1]
+
+
+def test_coverage_anchor_order_resumes_at_explicit_anchor():
+    assert coverage_anchor_order(5, preferred_anchor=3) == [2, 3, 4, 0, 1]
+
+
+def test_coverage_anchor_order_skips_confirmed_irrelevant_anchors():
+    assert coverage_anchor_order(
+        5,
+        skipped_anchors=(2, 4),
+        nearest_order=[3, 4, 0, 1, 2],
+    ) == [4, 0, 2]
 
 
 def test_measured_quadrilateral_wall_normals_point_inward():
@@ -233,6 +742,14 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
     assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
 
 
+def test_near_blocked_anchor_becomes_stationary_observation():
+    assert coverage_near_anchor_action(0.46, None, 0.0) == "outside"
+    assert coverage_near_anchor_action(0.44, None, 0.0) == "start"
+    assert coverage_near_anchor_action(0.42, 0.44, 3.1) == "observe"
+    assert coverage_near_anchor_action(0.40, 0.44, 2.9) == "reset"
+    assert coverage_near_anchor_action(0.40, 0.40, 3.0) == "observe"
+
+
 def test_successful_staging_goal_uses_bounded_handoff_envelope():
     current = (0.122, 0.0, 0.080)
     goal = (0.0, 0.0, 0.0)
@@ -250,6 +767,13 @@ def test_recenter_requires_a_fresh_target_sample_before_motion():
     assert target_sample_is_fresh(-0.02, 9.6, 10.0, 0.8)
     assert not target_sample_is_fresh(None, 9.9, 10.0, 0.8)
     assert not target_sample_is_fresh(-0.02, 9.0, 10.0, 0.8)
+
+
+def test_recenter_preserves_an_initial_alignment_already_in_tolerance():
+    assert not parking_recenter_required(0.061, 0.08)
+    assert not parking_recenter_required(-0.061, 0.08)
+    assert parking_recenter_required(0.081, 0.08)
+    assert parking_recenter_required(None, 0.08)
 
 
 def test_cost_query_uses_coordinates_already_transformed_to_costmap_frame():
@@ -348,6 +872,92 @@ def test_scan_dwell_extends_for_candidate_but_is_bounded():
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 0.0, 1.2, 2.0), 10.65)
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 10.2, 1.2, 2.0), 11.4)
     assert math.isclose(scan_dwell_deadline(10.0, 0.65, 11.8, 1.2, 2.0), 12.0)
+
+
+def test_slow_scan_step_gets_bounded_time_to_finish_remaining_angle():
+    extra = scan_step_timeout_extension(
+        math.radians(13.0),
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=0.2,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+    )
+    assert 1.8 < extra < 2.2
+
+    capped = scan_step_timeout_extension(
+        math.radians(1.0),
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=0.1,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+    )
+    assert math.isclose(capped, 3.0)
+
+
+def test_stalled_scan_step_does_not_extend_indefinitely():
+    assert scan_step_timeout_extension(
+        math.radians(13.0),
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=1.0,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+        progress_fresh_sec=0.8,
+    ) == 0.0
+    assert scan_step_timeout_extension(
+        0.0,
+        math.radians(20.0),
+        elapsed=2.7,
+        progress_age=0.0,
+        commanded_speed=0.50,
+        max_extra_sec=3.0,
+    ) == 0.0
+
+
+def test_scan_step_recovery_is_configured_and_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(float(config["coverage_scan_step_max_extra_sec"]), 3.0)
+    assert int(config["coverage_scan_step_retry_count"]) == 1
+    assert math.isclose(
+        float(config["coverage_scan_step_retry_settle_sec"]), 0.20)
+    assert math.isclose(float(config["coverage_scan_progress_fresh_sec"]), 0.8)
+    assert math.isclose(
+        float(config["coverage_scan_progress_epsilon_deg"]), 0.5)
+
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    root = ET.parse(launch_path).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "coverage_scan_step_max_extra_sec",
+            "coverage_scan_step_retry_count",
+            "coverage_scan_step_retry_settle_sec",
+            "coverage_scan_progress_fresh_sec",
+            "coverage_scan_progress_epsilon_deg"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "scan_step_timeout_extension(" in source
+    assert "retry_index < self.coverage_scan_step_retry_count" in source
+    assert "attempt_angle = remaining_angle" in source
 
 
 def test_docking_errors_are_expressed_in_robot_body_frame():
@@ -517,3 +1127,27 @@ def test_corrected_staging_pose_finishes_three_phase_docking_within_15s(label):
     assert elapsed < 15.0
     assert docking_within_tolerance(
         (normal_error, tangent_error, yaw_error), 0.015, 0.02, 0.035)
+
+
+def test_all_direct_task2_rotations_have_lidar_clearance_guards():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+    controller = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "VisionTriggeredNavigator")
+    methods = {
+        node.name: node for node in controller.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    for method_name in ("_step_scan", "rotate", "_rotate_center_step"):
+        called = {
+            node.func.attr
+            for node in ast.walk(methods[method_name])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        assert "_rotation_clearance_safe" in called

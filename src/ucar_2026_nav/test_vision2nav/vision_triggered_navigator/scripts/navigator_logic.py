@@ -27,6 +27,172 @@ def rotation_clearance_is_safe(nearest_range, scan_age, min_clearance,
             float(nearest_range) >= abs(float(min_clearance)))
 
 
+def rotation_clearance_consensus(samples, now, min_clearance,
+                                 tolerance=0.005, max_sample_age=0.35,
+                                 min_samples=3):
+    """Return ``(safe, median, count)`` for recent all-around scan minima."""
+    values = []
+    now = float(now)
+    max_sample_age = abs(float(max_sample_age))
+    for stamp, distance in samples or ():
+        if distance is None:
+            continue
+        age = now - float(stamp)
+        distance = float(distance)
+        if (0.0 <= age <= max_sample_age and math.isfinite(distance) and
+                distance >= 0.0):
+            values.append(distance)
+    required = max(1, int(min_samples))
+    if len(values) < required:
+        return False, None, len(values)
+    values.sort()
+    middle = len(values) // 2
+    if len(values) % 2:
+        median = values[middle]
+    else:
+        median = 0.5 * (values[middle - 1] + values[middle])
+    safe = median + abs(float(tolerance)) >= abs(float(min_clearance))
+    return safe, median, len(values)
+
+
+def obstacle_clearance_requires_stop(nearest_range, min_clearance,
+                                     tolerance=0.0):
+    """Return whether a directional obstacle reading must stop motion."""
+    if nearest_range is None:
+        return True
+    return (float(nearest_range) + abs(float(tolerance)) <
+            abs(float(min_clearance)))
+
+
+def coverage_speed_profile(clearance, current_profile,
+                           caution_enter_clearance,
+                           caution_exit_clearance,
+                           fast_exit_clearance,
+                           fast_enter_clearance):
+    """Select a hysteretic coverage speed profile from lidar clearance."""
+    caution_enter = float(caution_enter_clearance)
+    caution_exit = float(caution_exit_clearance)
+    fast_exit = float(fast_exit_clearance)
+    fast_enter = float(fast_enter_clearance)
+    if not (0.0 <= caution_enter <= caution_exit <
+            fast_exit <= fast_enter):
+        raise ValueError("coverage speed clearance thresholds are invalid")
+
+    profile = str(current_profile or "cruise").strip().lower()
+    if profile not in ("caution", "cruise", "fast"):
+        profile = "cruise"
+    if clearance is None:
+        return "cruise"
+    value = float(clearance)
+    if not math.isfinite(value) or value < 0.0:
+        return "cruise"
+
+    if profile == "fast" and value >= fast_exit:
+        return "fast"
+    if profile == "caution" and value <= caution_exit:
+        return "caution"
+    if value <= caution_enter:
+        return "caution"
+    if value >= fast_enter:
+        return "fast"
+    return "cruise"
+
+
+def coverage_non_target_observation_matches(
+        active_anchor, observed_anchor, category, enabled=True):
+    """Return whether a confirmed non-target observation belongs here."""
+    if not enabled or not str(category or "").strip():
+        return False
+    try:
+        active = int(active_anchor)
+        observed = int(observed_anchor)
+    except (TypeError, ValueError):
+        return False
+    return active > 0 and active == observed
+
+
+def coverage_non_target_early_exit_ready(
+        completed_scan_steps, minimum_scan_steps):
+    """Return whether deliberate scan coverage permits a non-target exit."""
+    try:
+        completed = int(completed_scan_steps)
+        minimum = int(minimum_scan_steps)
+    except (TypeError, ValueError):
+        return False
+    return completed >= max(0, minimum)
+
+
+def parking_rotation_obstacle_clearance(
+        samples, wall_fit, lidar_forward_offset=0.0,
+        front_half_angle=math.radians(35.0),
+        wall_residual_tolerance=0.02,
+        minimum_base_clearance=0.0):
+    """Return nearest rotation obstacle after removing a trusted front wall.
+
+    Parking already validates ``wall_fit`` for span, orientation, residual,
+    and temporal continuity.  At close range that same wall extends beyond
+    the fixed front angular sector, so an angle-only exclusion can mistake it
+    for a side obstacle.  Returns infinity when every non-front return belongs
+    to the fitted wall, and ``None`` when no usable non-front evidence exists.
+    """
+    if not wall_fit:
+        return None
+    try:
+        nx, ny = [float(value) for value in wall_fit["normal"]]
+        wall_distance = float(wall_fit["distance"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    normal_length = math.hypot(nx, ny)
+    if (normal_length <= 1e-9 or not math.isfinite(wall_distance)):
+        return None
+    nx /= normal_length
+    ny /= normal_length
+    wall_distance /= normal_length
+
+    offset = float(lidar_forward_offset)
+    half_angle = abs(float(front_half_angle))
+    residual_limit = abs(float(wall_residual_tolerance))
+    base_clearance = max(0.0, float(minimum_base_clearance))
+    nearest = None
+    wall_return_count = 0
+    for angle, distance in samples or ():
+        angle = normalize_angle(float(angle))
+        distance = float(distance)
+        if (not math.isfinite(angle) or not math.isfinite(distance) or
+                distance <= 0.0 or abs(angle) <= half_angle):
+            continue
+        point_x = offset + distance * math.cos(angle)
+        point_y = distance * math.sin(angle)
+        wall_residual = abs(
+            point_x * nx + point_y * ny - wall_distance)
+        if (wall_residual <= residual_limit and
+                math.hypot(point_x, point_y) >= base_clearance):
+            wall_return_count += 1
+            continue
+        nearest = distance if nearest is None else min(nearest, distance)
+    if nearest is not None:
+        return nearest
+    if wall_return_count:
+        return float("inf")
+    return None
+
+
+def polar_sector_min(samples, center_angle, half_angle):
+    """Return the nearest valid polar sample in a wrapped angular sector."""
+    nearest = None
+    center_angle = float(center_angle)
+    half_angle = abs(float(half_angle))
+    for angle, distance in samples or ():
+        angle = float(angle)
+        distance = float(distance)
+        if not math.isfinite(angle) or not math.isfinite(distance):
+            continue
+        if abs(normalize_angle(angle - center_angle)) > half_angle:
+            continue
+        nearest = distance if nearest is None else min(nearest, distance)
+    return nearest
+
+
 def cyclic_coverage_order(points, robot_x, robot_y):
     """Start at the nearest anchor while preserving the calibrated cycle."""
     if not points:
@@ -40,6 +206,37 @@ def cyclic_coverage_order(points, robot_x, robot_y):
         ),
     )
     return list(range(nearest, len(points))) + list(range(0, nearest))
+
+
+def coverage_anchor_order(count, preferred_anchor=0, skipped_anchors=(),
+                          nearest_order=None):
+    """Build a one-pass zero-based coverage order.
+
+    Public anchor parameters are one-based.  An explicit remembered anchor
+    wins; otherwise the caller may provide an order beginning at the nearest
+    current anchor.  Confirmed irrelevant anchors are omitted.
+    """
+    count = max(0, int(count))
+    if count == 0:
+        return []
+    preferred = int(preferred_anchor or 0)
+    if 1 <= preferred <= count:
+        start = preferred - 1
+        order = list(range(start, count)) + list(range(0, start))
+    elif nearest_order is not None:
+        order = [int(index) for index in nearest_order
+                 if 0 <= int(index) < count]
+    else:
+        order = list(range(count))
+    skipped = set()
+    for anchor in skipped_anchors or ():
+        try:
+            anchor = int(anchor)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= anchor <= count:
+            skipped.add(anchor - 1)
+    return [index for index in order if index not in skipped]
 
 
 def should_retry_coverage_goal(result, rotation_stall, timed_out,
@@ -308,6 +505,77 @@ def fit_wall_line(points, min_points=12, min_span=0.25,
     }
 
 
+def rotation_clearance_allows_near_wall(
+        samples, scan_age, min_clearance, max_scan_age=0.5,
+        lidar_forward_offset=0.0, footprint_radius=0.215,
+        footprint_margin=0.02, wall_range_band=0.16,
+        wall_min_points=10, wall_min_span=0.25,
+        wall_max_residual=0.02):
+    """Allow a conservative close-range turn only beside a continuous wall.
+
+    The ordinary all-around threshold remains the first line of defence.  This
+    exception is for calibrated observation poses where the lidar can be less
+    than that threshold from a wall although the wall remains outside the
+    chassis rotation envelope.  A compact return such as a cone cannot satisfy
+    the required line span and nearest-point agreement.
+    """
+    if not (0.0 <= float(scan_age) <= abs(float(max_scan_age))):
+        return False
+    valid = [
+        (normalize_angle(float(angle)), float(distance))
+        for angle, distance in samples or ()
+        if (math.isfinite(float(angle)) and
+            math.isfinite(float(distance)) and float(distance) > 0.0)
+    ]
+    if not valid:
+        return False
+
+    nearest_angle, nearest_range = min(valid, key=lambda item: item[1])
+    if nearest_range >= abs(float(min_clearance)):
+        return True
+
+    offset = float(lidar_forward_offset)
+    base_points = [
+        (offset + distance * math.cos(angle),
+         distance * math.sin(angle))
+        for angle, distance in valid
+    ]
+    nearest_base_range = min(math.hypot(x, y) for x, y in base_points)
+    required_base_range = (
+        abs(float(footprint_radius)) + abs(float(footprint_margin)))
+    if nearest_base_range < required_base_range:
+        return False
+
+    maximum_wall_range = (
+        abs(float(min_clearance)) + abs(float(wall_range_band)))
+    wall_half_angle = math.radians(60.0)
+    wall_points = [
+        (offset + distance * math.cos(angle),
+         distance * math.sin(angle))
+        for angle, distance in valid
+        if (distance <= maximum_wall_range and
+            abs(normalize_angle(angle - nearest_angle)) <= wall_half_angle)
+    ]
+    fit = fit_wall_line(
+        wall_points,
+        min_points=wall_min_points,
+        min_span=wall_min_span,
+        max_residual=wall_max_residual,
+    )
+    if fit is None:
+        return False
+
+    nearest_point = (
+        offset + nearest_range * math.cos(nearest_angle),
+        nearest_range * math.sin(nearest_angle),
+    )
+    nx, ny = fit["normal"]
+    nearest_residual = abs(
+        nearest_point[0] * nx + nearest_point[1] * ny - fit["distance"])
+    return nearest_residual <= max(
+        0.01, abs(float(wall_max_residual)) * 1.5)
+
+
 def wall_fit_matches_expected(fit, expected_normal_angle,
                               maximum_error=math.radians(20.0)):
     if not fit:
@@ -361,6 +629,29 @@ def coverage_position_needs_yaw_alignment(distance, yaw_error,
             abs(float(yaw_error)) > abs(float(yaw_tolerance)))
 
 
+def coverage_near_anchor_action(distance, baseline_distance, elapsed,
+                                observation_radius=0.45,
+                                stall_timeout=3.0,
+                                minimum_progress=0.03):
+    """Decide whether a blocked near-anchor goal should become an observation.
+
+    Exact observation coordinates can be occupied by a cone or inflated
+    costmap cell.  Once the robot is close enough to see the sign, measurable
+    progress restarts the short watchdog; otherwise a stalled goal is handed
+    over to the stationary scan instead of waiting for the global timeout.
+    """
+    distance = float(distance)
+    if distance > abs(float(observation_radius)):
+        return "outside"
+    if baseline_distance is None:
+        return "start"
+    if float(baseline_distance) - distance >= abs(float(minimum_progress)):
+        return "reset"
+    if max(0.0, float(elapsed)) >= max(0.0, float(stall_timeout)):
+        return "observe"
+    return "continue"
+
+
 def coverage_timeout_decision(elapsed, window_progress,
                               soft_timeout=25.0, hard_timeout=40.0,
                               minimum_progress=0.03):
@@ -385,6 +676,13 @@ def target_sample_is_fresh(target_error, received_at, now, timeout):
     """Return whether an OCR target box can safely start recentering."""
     return (target_error is not None and
             sensor_is_fresh(received_at, now, timeout))
+
+
+def parking_recenter_required(initial_center_error, tolerance):
+    """Return whether staging should run another visual centering pass."""
+    if initial_center_error is None:
+        return True
+    return abs(float(initial_center_error)) > abs(float(tolerance))
 
 
 def wall_normal_distance(pose, wall_point, inward_normal):
@@ -446,6 +744,36 @@ def split_scan_angle(total_angle, step_angle):
         result.append(current)
         remaining -= current
     return result
+
+
+def scan_step_timeout_extension(progress, target, elapsed, progress_age,
+                                commanded_speed, max_extra_sec,
+                                progress_fresh_sec=0.8,
+                                min_progress=math.radians(0.5),
+                                reserve_sec=0.35):
+    """Return bounded extra time while a scan step is still making progress."""
+    progress = max(0.0, float(progress))
+    target = max(0.0, float(target))
+    remaining = max(0.0, target - progress)
+    max_extra_sec = max(0.0, float(max_extra_sec))
+    if remaining <= 1e-6 or max_extra_sec <= 0.0:
+        return 0.0
+    if progress < max(0.0, float(min_progress)):
+        return 0.0
+    if float(progress_age) > max(0.0, float(progress_fresh_sec)):
+        return 0.0
+
+    commanded_speed = abs(float(commanded_speed))
+    if commanded_speed <= 1e-6:
+        return 0.0
+    measured_speed = progress / max(0.05, float(elapsed))
+    conservative_speed = max(
+        0.03,
+        commanded_speed * 0.15,
+        min(commanded_speed, measured_speed * 0.75),
+    )
+    estimate = remaining / conservative_speed + max(0.0, float(reserve_sec))
+    return min(max_extra_sec, estimate)
 
 
 def scan_dwell_deadline(started_at, dwell_sec, candidate_at,

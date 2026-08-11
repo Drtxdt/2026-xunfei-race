@@ -37,6 +37,132 @@ def forward_progress(start_pose, current_pose):
     return delta_x * math.cos(start_yaw) + delta_y * math.sin(start_yaw)
 
 
+def lateral_displacement(start_pose, current_pose):
+    """Return signed odometry displacement across the starting heading."""
+    start_x, start_y, start_yaw = (float(value) for value in start_pose)
+    current_x, current_y = (float(value) for value in current_pose[:2])
+    delta_x = current_x - start_x
+    delta_y = current_y - start_y
+    return -delta_x * math.sin(start_yaw) + delta_y * math.cos(start_yaw)
+
+
+def select_final_advance(
+    measured_distance_m,
+    measurement_age_sec,
+    target_clearance_m,
+    maximum_advance_m,
+    no_vision_fallback_m,
+    max_measurement_age_sec,
+    minimum_command_m=0.0,
+    measurement_bias_m=0.0,
+):
+    """Choose a bounded final advance from confirmed stop-line vision."""
+    target = float(target_clearance_m)
+    maximum = float(maximum_advance_m)
+    fallback = float(no_vision_fallback_m)
+    max_age = float(max_measurement_age_sec)
+    minimum = float(minimum_command_m)
+    bias = float(measurement_bias_m)
+    if target < 0.0:
+        raise ValueError("target clearance must be non-negative")
+    if maximum < 0.0:
+        raise ValueError("maximum advance must be non-negative")
+    if not 0.0 <= fallback <= maximum:
+        raise ValueError("no-vision fallback must be within the advance limit")
+    if max_age <= 0.0:
+        raise ValueError("measurement age limit must be positive")
+    if not 0.0 <= minimum <= maximum:
+        raise ValueError("minimum command must be within the advance limit")
+    if not 0.0 <= bias <= target:
+        raise ValueError(
+            "measurement bias must be between zero and target clearance")
+
+    measurement_is_fresh = False
+    measured = None
+    if measured_distance_m is not None and measurement_age_sec is not None:
+        try:
+            measured = float(measured_distance_m)
+            age = float(measurement_age_sec)
+        except (TypeError, ValueError):
+            measured = None
+        else:
+            measurement_is_fresh = (
+                math.isfinite(measured) and math.isfinite(age) and
+                measured >= 0.0 and 0.0 <= age <= max_age
+            )
+
+    if not measurement_is_fresh:
+        return fallback, "no_vision_fallback"
+
+    raw_advance = max(0.0, measured - target)
+    if raw_advance < minimum:
+        return 0.0, "visual_hold"
+    advance = min(maximum, raw_advance + bias)
+    return advance, "visual_distance"
+
+
+class StableLineDistanceFilter:
+    """Confirm a same-color stop-line distance over consecutive frames."""
+
+    def __init__(self, required=3, max_spread_m=0.02):
+        self.required = max(1, int(required))
+        self.max_spread_m = max(0.0, float(max_spread_m))
+        self.reset()
+
+    @property
+    def hits(self):
+        return len(self.samples)
+
+    def reset(self):
+        self.color = None
+        self.samples = []
+
+    def push(self, distance_m, color, aligned=True):
+        color_value = str(color or "").strip().lower()
+        try:
+            distance = float(distance_m)
+        except (TypeError, ValueError):
+            self.reset()
+            return None
+        if (not aligned or color_value not in ("yellow", "white") or
+                not math.isfinite(distance) or distance < 0.0):
+            self.reset()
+            return None
+        if self.color != color_value:
+            self.color = color_value
+            self.samples = []
+        self.samples.append(distance)
+        self.samples = self.samples[-self.required:]
+        if len(self.samples) < self.required:
+            return None
+        if max(self.samples) - min(self.samples) > self.max_spread_m:
+            self.samples = [distance]
+            return None
+        ordered = sorted(self.samples)
+        middle = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[middle]
+        return 0.5 * (ordered[middle - 1] + ordered[middle])
+
+
+def heading_alignment_command(error_rad, tolerance_rad, kp, min_speed,
+                              max_speed):
+    """Return a bounded angular command, or zero inside the tolerance."""
+    error = math.atan2(math.sin(float(error_rad)), math.cos(float(error_rad)))
+    tolerance = float(tolerance_rad)
+    minimum = float(min_speed)
+    maximum = float(max_speed)
+    if tolerance <= 0.0:
+        raise ValueError("heading tolerance must be positive")
+    if minimum <= 0.0 or maximum < minimum:
+        raise ValueError("heading speed bounds are invalid")
+    if abs(error) <= tolerance:
+        return 0.0
+    command = float(kp) * error
+    magnitude = min(maximum, max(minimum, abs(command)))
+    return math.copysign(magnitude, command)
+
+
 def lowest_horizontal_band(row_occupancies, min_occupancy, max_band_rows,
                            min_band_rows=2):
     """Return the lowest credible wide horizontal band as (start, end)."""
@@ -214,6 +340,8 @@ def line_alignment_command(
     lateral_kp,
     lateral_limit,
     lateral_sign,
+    yaw_min=0.0,
+    lateral_min=0.0,
 ):
     """Return (mode, lateral_mps, yaw_rps, aligned) for stop-line alignment."""
     angle = float(angle_error_rad)
@@ -224,13 +352,21 @@ def line_alignment_command(
         raise ValueError("line alignment tolerances must be positive")
     if float(yaw_limit) <= 0.0 or float(lateral_limit) <= 0.0:
         raise ValueError("line alignment speed limits must be positive")
+    if not 0.0 <= float(yaw_min) <= float(yaw_limit):
+        raise ValueError("minimum yaw speed is outside its limit")
+    if not 0.0 <= float(lateral_min) <= float(lateral_limit):
+        raise ValueError("minimum lateral speed is outside its limit")
     if abs(angle) > yaw_tolerance:
         yaw = float(yaw_sign) * float(yaw_kp) * angle
         yaw = max(-float(yaw_limit), min(float(yaw_limit), yaw))
+        if abs(yaw) < float(yaw_min):
+            yaw = math.copysign(float(yaw_min), yaw)
         return "yaw", 0.0, yaw, False
     if abs(center) > center_tolerance:
         lateral = float(lateral_sign) * float(lateral_kp) * center
         lateral = max(
             -float(lateral_limit), min(float(lateral_limit), lateral))
+        if abs(lateral) < float(lateral_min):
+            lateral = math.copysign(float(lateral_min), lateral)
         return "lateral", lateral, 0.0, False
     return "forward", 0.0, 0.0, True

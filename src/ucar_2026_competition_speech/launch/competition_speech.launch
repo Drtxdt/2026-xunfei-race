@@ -1,6 +1,8 @@
 <launch>
   <arg name="speak_topic" default="/speak" />
   <arg name="chars_per_second" default="3.0" />
+  <arg name="startup_sec" default="1.0" />
+  <arg name="tail_sec" default="0.2" />
   <arg name="finish_status_topic" default="" />
   <arg name="finish_status_value" default="finish" />
 
@@ -11,6 +13,8 @@
         required="true">
     <param name="speak_topic" value="$(arg speak_topic)" />
     <param name="chars_per_second" value="$(arg chars_per_second)" />
+    <param name="startup_sec" value="$(arg startup_sec)" />
+    <param name="tail_sec" value="$(arg tail_sec)" />
     <param name="finish_status_topic" value="$(arg finish_status_topic)" />
     <param name="finish_status_value" value="$(arg finish_status_value)" />
   </node>

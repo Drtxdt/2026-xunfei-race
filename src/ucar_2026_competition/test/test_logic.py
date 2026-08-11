@@ -17,11 +17,15 @@ from ucar_2026_competition.logic import (
     build_task1_instruction,
     ConsecutiveTargetFilter,
     DirectedYawAccumulator,
+    final_advance_completed,
     JsonLineBuffer,
     TRACK_CONFIG,
     TemporalTargetFilter,
     normalize_category,
     normalize_angle,
+    normalize_coverage_anchor_ids,
+    normalize_task4_staging_pose,
+    non_target_observation_is_actionable,
     parse_category,
     parse_task1_categories,
     qr_values_from_payload,
@@ -29,16 +33,290 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_prewarm_reusable,
+    task2_resumed_coverage_hint,
+    task2_target_trigger_is_eligible,
     task2_semantic_coverage_hint,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
     task2_announcement_required,
+    target_bbox_is_close_enough,
+    target_bbox_ratios,
     trigger_delivery_state,
 )
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_task2_prewarm_reuse_requires_matching_live_physical_pair(self):
+        self.assertTrue(task2_prewarm_reusable(
+            True, "physical", "food", "food", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            False, "physical", "food", "food", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "simulation", "food", "food", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "physical", "food", "daily", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "physical", "food", "food", False, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "physical", "food", "food", True, False))
+
+    def test_task2_prewarm_starts_after_spark_and_releases_after_fresh_ocr(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow")
+        methods = {
+            node.name: node for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        reasoning_calls = [
+            node for node in ast.walk(methods["_start_task1_reasoning_if_ready"])
+            if isinstance(node, ast.Call)
+        ]
+        spark_start_line = next(
+            node.lineno for node in reasoning_calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "start")
+        prewarm_line = next(
+            node.lineno for node in reasoning_calls
+            if isinstance(node.func, ast.Attribute) and
+            node.func.attr == "_prewarm_task2")
+        self.assertLess(spark_start_line, prewarm_line)
+
+        navigation_calls = [
+            node for node in ast.walk(methods["_navigate_factory_target"])
+            if isinstance(node, ast.Call) and
+            isinstance(node.func, ast.Attribute)
+        ]
+        start_children_line = next(
+            node.lineno for node in navigation_calls
+            if node.func.attr == "_start_factory_children")
+        release_line = next(
+            node.lineno for node in navigation_calls
+            if node.func.attr == "_release_factory_navigation")
+        self.assertLess(start_children_line, release_line)
+
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        self.assertIn('"start_paused": bool(start_paused)', source)
+        self.assertIn('self.ocr_last_message_at = 0.0', source)
+        self.assertIn('while time.time() < ocr_ready_deadline', source)
+        self.assertIn('self.factory_navigation_start_service', source)
+
+    def test_task2_prewarm_and_retry_parameters_are_wired(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = stream.read()
+        self.assertIn("task2_prewarm_enabled: true", config)
+        self.assertIn(
+            'factory_navigation_start_service: '
+            '"/vision_triggered_navigator/start_navigation"', config)
+        self.assertIn("coverage_goal_retry_count: 1", config)
+        self.assertNotIn("coverage_failed_revisit_limit", config)
+
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "flow_node.launch"))
+        root = ET.parse(launch_path).getroot()
+        launch_args = {
+            node.attrib["name"]: node.attrib.get("default")
+            for node in root.findall("arg")
+        }
+        node_params = {
+            node.attrib["name"]: node.attrib.get("value")
+            for node in root.find("node").findall("param")
+        }
+        for name, default in (
+                ("task2_prewarm_enabled", "true"),
+                ("factory_navigation_start_service",
+                 "/vision_triggered_navigator/start_navigation"),
+                ("coverage_goal_retry_count", "1")):
+            self.assertEqual(launch_args[name], default)
+            self.assertEqual(node_params[name], "$(arg {})".format(name))
+
+    def test_turn_track_startup_forward_is_exactly_five_centimeters_shorter(self):
+        package_dir = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "..",
+            "ucar_2026_track_end_stop"))
+        for config_name, source_name in (
+                ("track_end_stop.yaml", "track_end_stop_node.cpp"),
+                ("right_track_end_stop.yaml", "right_track_end_stop_node.cpp")):
+            values = {}
+            config_path = os.path.join(package_dir, "config", config_name)
+            with open(config_path, "r", encoding="utf-8") as stream:
+                for line in stream:
+                    line = line.split("#", 1)[0].strip()
+                    if not line or ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    values[key.strip()] = value.strip()
+            speed = float(values["startup_forward_speed"])
+            duration = float(values["startup_forward_duration"])
+            self.assertAlmostEqual(speed, 0.16)
+            self.assertAlmostEqual(duration, 1.8875)
+            self.assertAlmostEqual(speed * duration, 0.302)
+            self.assertAlmostEqual(
+                float(values["startup_turn_duration"]), 3.85)
+            self.assertAlmostEqual(
+                float(values["startup_enter_duration"]), 1.8)
+
+            source_path = os.path.join(package_dir, "src", source_name)
+            with open(source_path, "r", encoding="utf-8") as stream:
+                source = stream.read()
+            self.assertIn(
+                '"startup_forward_duration", startup_forward_duration_, '
+                '1.8875', source)
+            self.assertNotIn(
+                "startup_forward_duration_ -= 0.05 / startup_forward_speed_",
+                source)
+
+    def test_variable_final_advance_completion(self):
+        self.assertTrue(final_advance_completed(0.048, 0.047, 0.008))
+        self.assertTrue(final_advance_completed(0.0, 0.0, 0.008))
+        self.assertFalse(final_advance_completed(0.13, 0.10, 0.008))
+
+    def test_normalizes_calibrated_no_workshop_anchors(self):
+        self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
+        self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))
+
+    def test_task2_resumes_coverage_by_default(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = stream.read()
+        self.assertIn("task2_no_workshop_anchors: []", config)
+        self.assertIn("task2_resume_coverage_enabled: true", config)
+        self.assertIn(
+            "task2_remembered_heading_confirm_sec: 1.2", config)
+        self.assertIn(
+            "task2_remembered_heading_scan_half_angle_deg: 18.0", config)
+        self.assertIn("task2_non_target_early_exit: true", config)
+        self.assertIn(
+            "task2_non_target_early_exit_min_score: 0.62", config)
+        self.assertIn("coverage_non_target_min_scan_steps: 2", config)
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow = stream.read()
+        self.assertIn(
+            '"~task2_resume_coverage_enabled", True', flow)
+        self.assertIn(
+            'rospy.get_param("~task2_no_workshop_anchors", [])', flow)
+        self.assertIn(
+            'set(skipped_anchors).union(no_workshop_anchors)', flow)
+        self.assertIn(
+            '"coverage_skip_anchors": ",".join(', flow)
+        self.assertIn('"odom_yaw": float(yaw)', flow)
+        self.assertIn(
+            '"coverage_preferred_odom_yaw_enabled": search_context[', flow)
+        self.assertIn(
+            '"coverage_preferred_odom_yaw": search_context[', flow)
+        self.assertIn(
+            '"coverage_non_target_early_exit": self.task2_non_target_early_exit',
+            flow)
+        self.assertIn(
+            '"coverage_non_target_min_scan_steps": rospy.get_param(', flow)
+        self.assertIn(
+            "task2 non-target early-exit notice:", flow)
+
+    def test_non_target_early_exit_requires_reliable_close_evidence(self):
+        self.assertTrue(non_target_observation_is_actionable(
+            "food", "daily", True, True, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "food", True, True, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", False, True, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", True, False, 0.71, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", True, True, 0.61, 0.62, 2))
+        self.assertFalse(non_target_observation_is_actionable(
+            "food", "daily", True, True, 0.71, 0.62, None))
+
+    def test_task2_coverage_navigation_has_cone_safety_limits(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = stream.read()
+        self.assertIn("coverage_translation_min_clearance: 0.00", config)
+        self.assertIn(
+            "coverage_translation_sector_half_angle_deg: 35.0", config)
+        self.assertIn("coverage_max_vel_x: 0.72", config)
+        self.assertIn("coverage_max_vel_y: 0.72", config)
+        self.assertIn("coverage_max_vel_theta: 1.45", config)
+        self.assertIn("coverage_cruise_vel_x: 0.70", config)
+        self.assertIn("coverage_cruise_vel_theta: 1.30", config)
+        self.assertIn("coverage_caution_vel_x: 0.53", config)
+        self.assertIn("coverage_caution_vel_theta: 1.12", config)
+        self.assertIn("coverage_fast_enter_clearance: 0.90", config)
+        self.assertIn("coverage_scan_angular_speed: 0.50", config)
+        self.assertIn("coverage_scan_dwell_sec: 0.45", config)
+        self.assertIn("task2_trigger_min_bbox_width_ratio: 0.09", config)
+        self.assertIn("parking_obstacle_min_clearance: 0.28", config)
+        self.assertIn(
+            "parking_obstacle_clearance_tolerance: 0.005", config)
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow = stream.read()
+        self.assertIn(
+            '"parking_obstacle_clearance_tolerance": 0.005', flow)
+        self.assertIn(
+            'args[name] = rospy.get_param("~" + param_name, default)', flow)
+
+    def test_task4_retired_staging_pose_is_migrated(self):
+        pose, migrated = normalize_task4_staging_pose(
+            0.3195, -3.00, -1.5596)
+        self.assertTrue(migrated)
+        self.assertEqual(pose, (0.2395, -3.10, -1.5596))
+
+    def test_task4_current_and_custom_staging_poses_are_preserved(self):
+        current, migrated = normalize_task4_staging_pose(
+            0.2395, -3.10, -1.5596)
+        self.assertFalse(migrated)
+        self.assertEqual(current, (0.2395, -3.10, -1.5596))
+
+        custom, migrated = normalize_task4_staging_pose(1.0, 2.0, 0.5)
+        self.assertFalse(migrated)
+        self.assertEqual(custom, (1.0, 2.0, 0.5))
+
+    def test_task2_rejects_distant_ocr_box_for_centering(self):
+        bbox = [[100, 100], [151, 100], [151, 125], [100, 125]]
+        self.assertEqual(
+            target_bbox_ratios(bbox, 640, 480),
+            (51.0 / 640.0, 25.0 / 480.0, 1275.0 / (640.0 * 480.0)),
+        )
+        self.assertFalse(target_bbox_is_close_enough(bbox, 640, 480))
+
+    def test_task2_accepts_near_ocr_box_for_centering(self):
+        bbox = [[100, 100], [179, 100], [179, 136], [100, 136]]
+        self.assertTrue(target_bbox_is_close_enough(bbox, 640, 480))
+
+    def test_task2_accepts_logged_food_short_word_box_at_calibrated_threshold(self):
+        bbox = [[100, 100], [160, 100], [160, 134], [100, 134]]
+        self.assertTrue(target_bbox_is_close_enough(
+            bbox, 640, 480, 0.09, 0.06, 0.006))
+
+    def test_task2_still_rejects_distant_food_short_word_box(self):
+        bbox = [[100, 100], [135, 100], [135, 128], [100, 128]]
+        self.assertFalse(target_bbox_is_close_enough(
+            bbox, 640, 480, 0.09, 0.06, 0.006))
+
+    def test_task2_rejects_malformed_ocr_box_for_centering(self):
+        self.assertFalse(target_bbox_is_close_enough([], 640, 480))
+        self.assertFalse(target_bbox_is_close_enough([[1, 2]], 640, 480))
+
+    def test_task2_target_trigger_requires_stationary_coverage_anchor(self):
+        self.assertTrue(task2_target_trigger_is_eligible(True, 9))
+        self.assertFalse(task2_target_trigger_is_eligible(True, None))
+        self.assertFalse(task2_target_trigger_is_eligible(True, 0))
+        self.assertFalse(task2_target_trigger_is_eligible(False, 9))
+
     def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
         memory = {
             "daily": {"anchor": 2, "score": 0.71},
@@ -55,6 +333,31 @@ class CompetitionLogicTest(unittest.TestCase):
             task2_semantic_coverage_hint(
                 {"daily": 3, "electronics": 3}, "electronics"),
             (3, ()),
+        )
+
+    def test_task2_second_search_resumes_after_last_observed_anchor(self):
+        self.assertEqual(
+            task2_resumed_coverage_hint(
+                {"daily": {"anchor": 2}},
+                "food",
+                last_anchor=5,
+                anchor_count=9,
+            ),
+            (6, (1, 2, 3, 4, 5)),
+        )
+
+    def test_task2_remembered_target_wins_over_resume_anchor(self):
+        self.assertEqual(
+            task2_resumed_coverage_hint(
+                {
+                    "food": {"anchor": 3},
+                    "daily": {"anchor": 2},
+                },
+                "food",
+                last_anchor=7,
+                anchor_count=9,
+            ),
+            (3, (2,)),
         )
 
     def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
@@ -90,6 +393,59 @@ class CompetitionLogicTest(unittest.TestCase):
         }
         self.assertIn("total_steps", assigned_names)
 
+    def test_transition_speech_overlaps_only_stationary_preparation(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow"
+        )
+        methods = {
+            node.name: node
+            for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+        }
+
+        def called(method_name):
+            return {
+                node.func.attr
+                for node in ast.walk(methods[method_name])
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+            }
+
+        self.assertIn("_start_transition_announcement", called("task1"))
+        self.assertIn(
+            "_wait_transition_announcement", called("task1_task2_handoff"))
+        self.assertIn("_start_transition_announcement", called("task3"))
+        self.assertIn(
+            "_wait_transition_announcement", called("production_task4_handoff"))
+        self.assertIn(
+            "_back_out_of_factory_bay", called("production_task4_handoff"))
+        self.assertIn("navigate", called("production_task4_handoff"))
+        handoff_calls = [
+            node for node in ast.walk(methods["production_task4_handoff"])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        ]
+        back_out_line = next(
+            node.lineno for node in handoff_calls
+            if node.func.attr == "_back_out_of_factory_bay")
+        internal_route_line = next(
+            node.lineno for node in handoff_calls
+            if node.func.attr == "navigate")
+        announcement_line = next(
+            node.lineno for node in handoff_calls
+            if node.func.attr == "_wait_transition_announcement")
+        self.assertLess(back_out_line, internal_route_line)
+        self.assertLess(internal_route_line, announcement_line)
+        self.assertLess(back_out_line, announcement_line)
+        self.assertIn("_start_announcement", called("task4"))
+        self.assertIn("_wait_announcement", called("task4"))
+        self.assertIn("stop_child", called("task4"))
+
     def test_competition_config_uses_faster_safe_qr_scan(self):
         config_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "config", "competition.yaml"))
@@ -101,22 +457,55 @@ class CompetitionLogicTest(unittest.TestCase):
                     continue
                 key, value = line.split(":", 1)
                 config[key.strip()] = value.strip()
-        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.35)
+        self.assertEqual(float(config["qr_scan_angular_speed"]), 0.60)
         self.assertAlmostEqual(
             float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
+        self.assertAlmostEqual(
+            float(config["qr_scan_total_angle_rad"]), 2.0 * math.pi)
         self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
-        self.assertEqual(float(config["qr_decoder_warmup_sec"]), 1.2)
-        self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 3.0)
+        self.assertGreaterEqual(
+            float(config["qr_scan_stationary_hold_sec"]), 0.2)
+        self.assertGreaterEqual(
+            float(config["qr_scan_stop_timeout_sec"]), 1.0)
+        self.assertEqual(float(config["qr_decoder_warmup_sec"]), 0.4)
+        self.assertEqual(float(config["qr_decoder_ready_timeout_sec"]), 6.0)
+        self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 20.0)
+        self.assertEqual(float(config["qr_scan_pending_idle_sec"]), 0.5)
         self.assertAlmostEqual(
             float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
         self.assertGreaterEqual(
-            int(config["coverage_navigation_candidate_pause_count"]), 1)
-        self.assertGreaterEqual(
-            float(config["coverage_candidate_hold_sec"]), 1.0)
-        self.assertGreaterEqual(
-            float(config["coverage_scan_max_dwell_sec"]),
-            float(config["coverage_candidate_hold_sec"]))
-        self.assertEqual(float(config["coverage_rotation_min_clearance"]), 0.28)
+            float(config["qr_rotation_min_clearance"]), 0.28)
+
+    def test_qr_decoder_retries_network_and_reports_pending_work(self):
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "qr_decoder.launch"))
+        with open(launch_path, "r", encoding="utf-8") as stream:
+            launch = stream.read()
+        self.assertIn("--status-topic $(arg status_topic)", launch)
+        self.assertIn("--fetch-retries $(arg fetch_retries)", launch)
+        self.assertIn("--retry-backoff $(arg retry_backoff)", launch)
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow"
+        )
+        scan = next(
+            node for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "scan_qr_at_current_pose"
+        )
+        calls = {
+            node.func.attr
+            for node in ast.walk(scan)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        }
+        self.assertIn("_wait_for_qr_decoder_ready", calls)
+        self.assertIn("_drain_qr_results", calls)
 
     def test_normalize_angle(self):
         self.assertAlmostEqual(normalize_angle(3.0 * 3.141592653589793), -3.141592653589793)
@@ -200,8 +589,27 @@ class CompetitionLogicTest(unittest.TestCase):
             content = stream.read()
         self.assertIn("task2_inter_visit_reverse_distance_m: 0.32", content)
         self.assertIn("task2_inter_visit_rear_clearance_m: 0.28", content)
+        self.assertIn("task4_factory_egress_enabled: true", content)
+        self.assertIn(
+            "task4_factory_egress_reverse_distance_m: 0.32", content)
+        self.assertIn(
+            "task4_factory_egress_rear_clearance_m: 0.28", content)
+        self.assertIn("task4_internal_waypoint_enabled: false", content)
+        self.assertIn("task4_internal_waypoint_x: 1.2660", content)
+        self.assertIn("task4_internal_waypoint_y: -2.8863", content)
         self.assertIn(
             "task2_second_search_abort_fail_fast_count: 0", content)
+
+    def test_task4_routes_directly_to_stop_line_by_default(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts",
+            "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow_source = stream.read()
+        self.assertIn(
+            'bool_param("~task4_internal_waypoint_enabled", False)',
+            flow_source,
+        )
 
     def test_ocr_alias(self):
         self.assertEqual(normalize_category("electronic"), "electronics")

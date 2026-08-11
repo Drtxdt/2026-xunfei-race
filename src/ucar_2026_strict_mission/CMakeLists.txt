@@ -4,12 +4,14 @@ project(ucar_2026_strict_mission)
 find_package(catkin REQUIRED COMPONENTS
   actionlib
   cv_bridge
+  dynamic_reconfigure
   geometry_msgs
   move_base_msgs
   rospy
   sensor_msgs
   std_msgs
   std_srvs
+  tf2_ros
 )
 
 catkin_python_setup()

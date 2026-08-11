@@ -39,10 +39,27 @@ TRACK_CONFIG = {
     ),
 }
 
+TASK4_STAGING_CALIBRATED = (0.2395, -3.10, -1.5596)
+TASK4_STAGING_RETIRED = (0.3195, -3.00, -1.5596)
+
 
 def normalize_angle(angle):
     """Normalize an angle to [-pi, pi)."""
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def normalize_task4_staging_pose(x, y, yaw):
+    """Migrate the retired task4 staging calibration while preserving custom poses."""
+    pose = (float(x), float(y), float(yaw))
+    retired = (
+        abs(pose[0] - TASK4_STAGING_RETIRED[0]) <= 0.002
+        and abs(pose[1] - TASK4_STAGING_RETIRED[1]) <= 0.002
+        and abs(normalize_angle(
+            pose[2] - TASK4_STAGING_RETIRED[2])) <= 0.02
+    )
+    if retired:
+        return TASK4_STAGING_CALIBRATED, True
+    return pose, False
 
 
 class DirectedYawAccumulator:
@@ -112,6 +129,80 @@ def base_is_stopped(linear_x, linear_y, angular_z,
     return (math.hypot(float(linear_x), float(linear_y)) <=
             abs(float(linear_tolerance)) and
             abs(float(angular_z)) <= abs(float(angular_tolerance)))
+
+
+def final_advance_completed(planned_m, progress_m, tolerance_m=0.008):
+    """Accept a completed variable-length final advance within odometry tolerance."""
+    planned = float(planned_m)
+    progress = float(progress_m)
+    tolerance = float(tolerance_m)
+    if planned < 0.0 or progress < 0.0 or tolerance < 0.0:
+        return False
+    return progress + tolerance >= planned
+
+
+def target_bbox_ratios(bbox, image_width, image_height):
+    """Return normalized width, height, and area for a polygonal target box."""
+    try:
+        image_width = float(image_width)
+        image_height = float(image_height)
+        points = [
+            (float(point[0]), float(point[1]))
+            for point in bbox
+            if isinstance(point, (list, tuple)) and len(point) >= 2
+        ]
+    except (TypeError, ValueError):
+        return None
+    if image_width <= 1.0 or image_height <= 1.0 or len(points) < 2:
+        return None
+    width = max(point[0] for point in points) - min(point[0] for point in points)
+    height = max(point[1] for point in points) - min(point[1] for point in points)
+    if width <= 0.0 or height <= 0.0:
+        return None
+    return (
+        width / image_width,
+        height / image_height,
+        width * height / (image_width * image_height),
+    )
+
+
+def target_bbox_is_close_enough(
+        bbox, image_width, image_height,
+        min_width_ratio=0.11, min_height_ratio=0.06, min_area_ratio=0.006):
+    """Reject distant OCR signs that are too small for reliable centering."""
+    ratios = target_bbox_ratios(bbox, image_width, image_height)
+    if ratios is None:
+        return False
+    width_ratio, height_ratio, area_ratio = ratios
+    return (
+        width_ratio >= float(min_width_ratio)
+        and height_ratio >= float(min_height_ratio)
+        and area_ratio >= float(min_area_ratio)
+    )
+
+
+def task2_target_trigger_is_eligible(bbox_is_close, active_anchor):
+    """Only lock a close OCR target while stopped at a coverage anchor.
+
+    The navigator deliberately clears its active anchor during transit.  This
+    prevents an oblique sign glimpse between cones from interrupting move_base
+    and turning an arbitrary transit pose into the parking approach origin.
+    """
+    if not bool(bbox_is_close):
+        return False
+    try:
+        return int(active_anchor) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def task2_prewarm_reusable(enabled, phase, expected_category,
+                           prewarmed_category, ocr_alive, navigator_alive):
+    """Reuse only a complete physical-search prewarm with matching OCR class."""
+    return bool(
+        enabled and phase == "physical" and expected_category and
+        expected_category == prewarmed_category and
+        ocr_alive and navigator_alive)
 
 
 class ConsecutiveTargetFilter:
@@ -263,9 +354,72 @@ def task2_semantic_coverage_hint(memory, target_category):
     return preferred, tuple(sorted(skipped))
 
 
+def task2_resumed_coverage_hint(memory, target_category, last_anchor,
+                                anchor_count=9):
+    """Prefer remembered target, otherwise continue through unvisited anchors."""
+    preferred, skipped = task2_semantic_coverage_hint(memory, target_category)
+    if preferred:
+        return preferred, skipped
+    try:
+        last_anchor = int(last_anchor)
+    except (TypeError, ValueError):
+        last_anchor = 0
+    anchor_count = max(0, int(anchor_count))
+    if anchor_count and 1 <= last_anchor <= anchor_count:
+        if last_anchor < anchor_count:
+            preferred = last_anchor + 1
+            skipped = tuple(sorted(
+                set(skipped).union(range(1, last_anchor + 1))))
+        else:
+            # A complete first pass can only avoid rescanning when the target
+            # was remembered. Fall back to a full pass if memory was empty.
+            preferred = 0
+    return preferred, skipped
+
+
+def normalize_coverage_anchor_ids(value, anchor_count=9):
+    """Return sorted, unique one-based anchor IDs from ROS list/string input."""
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        values = (value,)
+    anchor_count = max(0, int(anchor_count))
+    anchors = set()
+    for item in values:
+        try:
+            anchor = int(str(item).strip())
+        except (TypeError, ValueError):
+            continue
+        if 1 <= anchor <= anchor_count:
+            anchors.add(anchor)
+    return tuple(sorted(anchors))
+
+
 def normalize_category(value):
     text = str(value or "").strip().lower()
     return OCR_CATEGORY_ALIASES.get(text) or parse_category(text)
+
+
+def non_target_observation_is_actionable(
+        target_category, observed_category, memory_confirmed,
+        bbox_eligible, score, minimum_score, anchor):
+    """Accept only a close, repeated non-target sign at a known anchor."""
+    target = normalize_category(target_category)
+    observed = normalize_category(observed_category)
+    try:
+        anchor_id = int(anchor)
+        confidence = float(score)
+        threshold = float(minimum_score)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        target and observed and observed != target and
+        bool(memory_confirmed) and bool(bbox_eligible) and
+        anchor_id > 0 and math.isfinite(confidence) and
+        confidence >= threshold
+    )
 
 
 def scan_sector_min(ranges, angle_min, angle_increment, center_angle,

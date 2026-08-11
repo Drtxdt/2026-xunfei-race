@@ -72,6 +72,8 @@ class QRCollectAndDecode:
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
 
         self.pub = rospy.Publisher(args.pub_topic, String, queue_size=10)
+        self.status_pub = rospy.Publisher(
+            args.status_topic, String, queue_size=10, latch=True)
         self.sub = rospy.Subscriber(args.topic, Image, self.image_cb, queue_size=1)
         rospy.on_shutdown(lambda: self.fetch_executor.shutdown(wait=False))
 
@@ -83,6 +85,18 @@ class QRCollectAndDecode:
             self.decode_interval,
             ",".join("{:.2f}".format(value) for value in self.decode_scales),
         )
+        self.publish_decoder_status("ready")
+
+    def publish_decoder_status(self, state):
+        with self.url_lock:
+            pending_count = len(self.pending_urls)
+        payload = {
+            "stamp": time.time(),
+            "state": str(state),
+            "pending_count": pending_count,
+        }
+        self.status_pub.publish(String(
+            data=json.dumps(payload, ensure_ascii=False, separators=(",", ":"))))
 
     @staticmethod
     def parse_decode_scales(value):
@@ -144,6 +158,7 @@ class QRCollectAndDecode:
             if url in self.pending_urls or now < self.url_next_allowed.get(url, 0.0):
                 return
             self.pending_urls.add(url)
+        self.publish_decoder_status("fetching")
         self.fetch_executor.submit(self.resolve_and_publish_url, url)
 
     def resolve_and_publish_url(self, url):
@@ -172,6 +187,9 @@ class QRCollectAndDecode:
             with self.url_lock:
                 self.pending_urls.discard(url)
                 self.url_next_allowed[url] = time.time() + self.args.repeat_period
+                pending_count = len(self.pending_urls)
+            self.publish_decoder_status(
+                "fetching" if pending_count else "idle")
 
     def publish_results(self, results, stamp):
         payload = {"stamp": stamp, "count": len(results), "items": results}
@@ -257,11 +275,23 @@ class QRCollectAndDecode:
             if url in self.url_cache:
                 return self.url_cache[url]
 
-        result = self.fetch_url(url)
-        if result and result.get("code") == 200:
-            with self.url_lock:
-                self.url_cache[url] = result
-            rospy.loginfo("QR URL cached: %s -> %s", url, result.get("result"))
+        attempts = max(1, int(self.args.fetch_retries))
+        result = None
+        for attempt in range(1, attempts + 1):
+            result = self.fetch_url(url)
+            if result and result.get("code") == 200:
+                with self.url_lock:
+                    self.url_cache[url] = result
+                rospy.loginfo(
+                    "QR URL cached on attempt %d/%d: %s -> %s",
+                    attempt, attempts, url, result.get("result"))
+                return result
+            if attempt < attempts and not rospy.is_shutdown():
+                rospy.logwarn(
+                    "QR URL attempt %d/%d failed; retrying %s: %s",
+                    attempt, attempts, url,
+                    (result or {}).get("error") or "invalid response")
+                time.sleep(max(0.0, float(self.args.retry_backoff)) * attempt)
         return result
 
     def resolve_qr_url(self, url):
@@ -326,12 +356,18 @@ def main():
     parser.add_argument('--topic', default='/usb_cam/image_raw', help='camera image topic')
     parser.add_argument('--output', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'yolo_dataset', 'qr_images'), help='QR image save dir')
     parser.add_argument('--pub-topic', default='/qr_code_data', help='publish decoded QR json to this topic')
+    parser.add_argument('--status-topic', default='/qr_decoder/status',
+                        help='publish decoder readiness and pending URL count')
     parser.add_argument('--fetch', action='store_true', help='if QR content is URL, request it and parse JSON')
     parser.add_argument('--save-on-detect', action='store_true', help='save image whenever QR is detected')
     parser.add_argument('--save-all', action='store_true', help='save raw images periodically even if no QR is detected')
     parser.add_argument('--interval', type=float, default=0.5, help='save interval when --save-all enabled')
     parser.add_argument('--repeat-period', type=float, default=2.0, help='republish same QR result after seconds')
     parser.add_argument('--timeout', type=float, default=3.0, help='HTTP timeout seconds')
+    parser.add_argument('--fetch-retries', type=int, default=3,
+                        help='HTTP attempts retained after a QR leaves the camera view')
+    parser.add_argument('--retry-backoff', type=float, default=0.20,
+                        help='base seconds between URL fetch retries')
     parser.add_argument('--decode-interval', type=float, default=0.10,
                         help='minimum seconds between decode attempts')
     parser.add_argument('--decode-scales', default='1.0,1.5,2.0',
