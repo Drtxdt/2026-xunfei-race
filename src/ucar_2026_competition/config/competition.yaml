@@ -173,7 +173,9 @@ task2_non_target_early_exit_min_score: 0.62
 task2_non_target_topic: /vision/non_target_observation
 
 # 仿真独立 ROS Master，通过 TCP 协同。
+sim_bridge_host: 127.0.0.1
 sim_bridge_port: 26003
+sim_connect_timeout_sec: 120.0
 sim_timeout_sec: 900.0
 
 # 交通灯坐标必须经实车标定后显式设置。未设置时流程安全暂停。

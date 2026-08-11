@@ -1,0 +1,21 @@
+<launch>
+  <arg name="sim_workspace" default="$(optenv UCAR_SIM_WS)"/>
+  <arg name="sim_master_port" default="11312"/>
+  <arg name="sim_bridge_host" default="127.0.0.1"/>
+  <arg name="sim_bridge_port" default="26003"/>
+  <arg name="sim_gui" default="true"/>
+  <arg name="sim_startup_timeout_sec" default="120"/>
+
+  <node pkg="ucar_2026_competition"
+        type="local_sim_supervisor.py"
+        name="local_sim_supervisor"
+        output="screen"
+        required="true">
+    <param name="sim_workspace" value="$(arg sim_workspace)"/>
+    <param name="sim_master_port" value="$(arg sim_master_port)"/>
+    <param name="sim_bridge_host" value="$(arg sim_bridge_host)"/>
+    <param name="sim_bridge_port" value="$(arg sim_bridge_port)"/>
+    <param name="sim_gui" value="$(arg sim_gui)"/>
+    <param name="sim_startup_timeout_sec" value="$(arg sim_startup_timeout_sec)"/>
+  </node>
+</launch>

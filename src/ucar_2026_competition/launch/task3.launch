@@ -4,8 +4,9 @@
   <arg name="start_external_voice" default="true" />
   <arg name="sim_item" default="" />
   <arg name="sim_workshop" default="" />
-  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST)" />
+  <arg name="sim_bridge_host" default="127.0.0.1" />
   <arg name="sim_bridge_port" default="26003" />
+  <arg name="sim_connect_timeout_sec" default="120" />
   <include file="$(find ucar_2026_competition)/launch/common_core.launch">
     <arg name="start_speech" value="true" />
     <arg name="start_tts" value="$(arg start_external_voice)" />
@@ -17,5 +18,6 @@
     <arg name="sim_workshop" value="$(arg sim_workshop)" />
     <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
     <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+    <arg name="sim_connect_timeout_sec" value="$(arg sim_connect_timeout_sec)" />
   </include>
 </launch>

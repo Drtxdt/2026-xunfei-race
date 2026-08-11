@@ -2,8 +2,14 @@
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
   <arg name="enable_simulation" default="true" />
-  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
+  <arg name="start_local_sim" default="true" />
+  <arg name="sim_workspace" default="$(optenv UCAR_SIM_WS)" />
+  <arg name="sim_master_port" default="11312" />
+  <arg name="sim_bridge_host" default="127.0.0.1" />
   <arg name="sim_bridge_port" default="26003" />
+  <arg name="sim_gui" default="true" />
+  <arg name="sim_startup_timeout_sec" default="120" />
+  <arg name="sim_connect_timeout_sec" default="120" />
   <arg name="traffic_pose_configured" default="true" />
   <arg name="traffic_x" default="0.2395" />
   <arg name="traffic_y" default="-3.10" />
@@ -45,6 +51,17 @@
   <arg name="parking_wall_fit_max_normal_error_deg" default="20.0" />
   <arg name="trigger_ack_timeout_sec" default="2.0" />
 
+  <group if="$(eval enable_simulation and start_local_sim)">
+    <include file="$(find ucar_2026_competition)/launch/local_sim.launch">
+      <arg name="sim_workspace" value="$(arg sim_workspace)" />
+      <arg name="sim_master_port" value="$(arg sim_master_port)" />
+      <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+      <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+      <arg name="sim_gui" value="$(arg sim_gui)" />
+      <arg name="sim_startup_timeout_sec" value="$(arg sim_startup_timeout_sec)" />
+    </include>
+  </group>
+
   <include file="$(find ucar_2026_competition)/launch/common_core.launch">
     <arg name="start_nav" value="true" />
     <arg name="start_camera" value="true" />
@@ -61,6 +78,7 @@
     <arg name="enable_simulation" value="$(arg enable_simulation)" />
     <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
     <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+    <arg name="sim_connect_timeout_sec" value="$(arg sim_connect_timeout_sec)" />
     <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
     <arg name="traffic_x" value="$(arg traffic_x)" />
     <arg name="traffic_y" value="$(arg traffic_y)" />

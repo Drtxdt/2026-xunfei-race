@@ -2,10 +2,12 @@
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
   <arg name="sim_category" default="" />
+  <arg name="sim_target_category" default="$(arg sim_category)" />
   <arg name="sim_item" default="" />
   <arg name="sim_workshop" default="" />
-  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
+  <arg name="sim_bridge_host" default="127.0.0.1" />
   <arg name="sim_bridge_port" default="26003" />
+  <arg name="sim_connect_timeout_sec" default="120" />
   <arg name="traffic_pose_configured" default="true" />
   <arg name="traffic_x" default="0.2395" />
   <arg name="traffic_y" default="-3.10" />
@@ -22,11 +24,12 @@
   <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
     <arg name="start_stage" value="task3_task4" />
     <arg name="debug" value="$(arg debug)" />
-    <arg name="sim_category" value="$(arg sim_category)" />
+    <arg name="sim_target_category" value="$(arg sim_target_category)" />
     <arg name="sim_item" value="$(arg sim_item)" />
     <arg name="sim_workshop" value="$(arg sim_workshop)" />
     <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
     <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
+    <arg name="sim_connect_timeout_sec" value="$(arg sim_connect_timeout_sec)" />
     <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
     <arg name="traffic_x" value="$(arg traffic_x)" />
     <arg name="traffic_y" value="$(arg traffic_y)" />

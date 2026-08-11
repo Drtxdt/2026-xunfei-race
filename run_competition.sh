@@ -42,7 +42,9 @@ python3 -c 'import websocket' 2>/dev/null || {
   exit 1
 }
 [[ -n "${XF_SPARK_API_PASSWORD:-}" ]] || { echo "XF_SPARK_API_PASSWORD is not set." >&2; exit 1; }
-[[ -n "${SIM_BRIDGE_HOST:-}" ]] || { echo "SIM_BRIDGE_HOST is not set." >&2; exit 1; }
+
+SIM_BRIDGE_HOST_VALUE="${SIM_BRIDGE_HOST:-127.0.0.1}"
+START_LOCAL_SIM_VALUE="${START_LOCAL_SIM:-true}"
 
 source "$ROS_SETUP"
 source "$CURRENT_SETUP"
@@ -98,10 +100,11 @@ else
 fi
 
 echo "Competition logs: $LOG_DIR"
-echo "Simulation bridge: $SIM_BRIDGE_HOST:${SIM_BRIDGE_PORT:-26003}"
+echo "Simulation bridge: $SIM_BRIDGE_HOST_VALUE:${SIM_BRIDGE_PORT:-26003}"
 roslaunch ucar_2026_competition full_competition.launch \
   debug:="$DEBUG" \
-  sim_bridge_host:="$SIM_BRIDGE_HOST" \
+  start_local_sim:="$START_LOCAL_SIM_VALUE" \
+  sim_bridge_host:="$SIM_BRIDGE_HOST_VALUE" \
   sim_bridge_port:="${SIM_BRIDGE_PORT:-26003}" \
   traffic_pose_configured:="$TRAFFIC_CONFIGURED" \
   traffic_x:="$TRAFFIC_X_VALUE" \

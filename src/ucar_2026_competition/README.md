@@ -1,29 +1,39 @@
 # 智慧工厂比赛总控
 
-正式比赛推荐从工作空间根目录执行：
+首次部署时，把仿真 Catkin 工作空间写入 Ubuntu 的 `~/.bashrc`。该目录必须包含
+`devel/setup.bash` 和 `src/car3/package.xml`：
 
 ```bash
-export XF_SPARK_API_PASSWORD='你的 APIPassword'
-export SIM_BRIDGE_HOST='仿真电脑 IP'
-# 完成实车标定后再设置；未设置时任务3结束后会安全暂停。
-export TRAFFIC_X='...'
-export TRAFFIC_Y='...'
-export TRAFFIC_YAW='...'
-bash run_competition.sh
+export UCAR_SIM_WS=/home/<用户名>/2026-race-nav/gazebo_ws
 ```
 
-调试模式会启动 RViz：
+正式比赛只需执行一个命令：
 
 ```bash
-bash run_competition.sh --debug
+roslaunch ucar_2026_competition full_competition.launch
 ```
+
+该入口在实车主 ROS Master 上运行比赛流程，同时在本机
+`127.0.0.1:11312` 启动隔离的 Gazebo ROS Master，并将任务三 TCP 桥绑定到
+`127.0.0.1:26003`。Gazebo 默认显示图形界面；仿真启动失败、超时或中途退出时，
+整套比赛会立即终止并回收第二个 roscore 和 Gazebo 进程组。
+
+关闭仿真可使用 `enable_simulation:=false`。远程联调仍受支持：
+
+```bash
+roslaunch ucar_2026_competition full_competition.launch \
+  start_local_sim:=false sim_bridge_host:=192.168.1.20
+```
+
+`run_competition.sh` 保留为调试入口，默认同样使用本机桥，不再要求设置
+`SIM_BRIDGE_HOST`。
 
 五个子任务可以独立启动：
 
 ```bash
 roslaunch ucar_2026_competition task1.launch
 roslaunch ucar_2026_competition task2.launch target_category:=daily target_item:=牙膏 target_workshop:=日用品加工车间 sim_target_category:=food sim_item:=香蕉 sim_workshop:=食品加工车间
-roslaunch ucar_2026_competition task3.launch sim_target_category:=food sim_item:=香蕉 sim_workshop:=食品加工车间 sim_bridge_host:=192.168.1.20
+roslaunch ucar_2026_competition task3.launch sim_target_category:=food sim_item:=香蕉 sim_workshop:=食品加工车间
 roslaunch ucar_2026_competition task4.launch traffic_pose_configured:=true traffic_x:="$TRAFFIC_X" traffic_y:="$TRAFFIC_Y" traffic_yaw:="$TRAFFIC_YAW"
 roslaunch ucar_2026_competition task5.launch traffic_decision:=left
 ```
@@ -51,12 +61,6 @@ roslaunch ucar_2026_competition task1_task2.launch debug:=true 2>&1 | tee task1_
 只有导航发布`arrived`后，流程才播报“已将[货品名称]放入[仓库类别]”。
 
 任务2在 OCR 两次命中后通过同步服务请求导航锁存目标，并等待导航状态确认；2 秒内没有收到服务和状态双重确认时会停车并报告 `trigger_delivery_failed`。move_base只驶到距墙0.55m的预停点，最后约33cm使用激光拟合的实际墙面控制距离和垂直度、使用odom控制厂牌切向位置。车辆不会将场地吸附为40个固定格点，只有完整footprint具有至少2cm框内余量才发布`arrived`。
-
-仿真电脑在 `fangzhen` 仓库根目录启动独立 ROS Master、Gazebo、任务3和 TCP 桥：
-
-```bash
-bash run_task3_sim.sh
-```
 
 流程暂停后，可先修改总控节点私有参数，再恢复当前阶段：
 

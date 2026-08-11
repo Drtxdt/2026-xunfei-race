@@ -2208,21 +2208,39 @@ class CompetitionFlow:
             "task2", "completed",
             "physical delivery announced; vehicle parked at simulation workshop")
 
+    def _connect_sim_bridge(self, host, port, timeout):
+        if timeout <= 0:
+            raise StageError("sim_connect_timeout_sec must be positive")
+        deadline = time.monotonic() + timeout
+        last_error = None
+        while time.monotonic() < deadline:
+            self.check_abort()
+            remaining = deadline - time.monotonic()
+            try:
+                sock = socket.create_connection(
+                    (host, port), timeout=min(2.0, max(0.1, remaining)))
+                sock.settimeout(1.0)
+                return sock
+            except OSError as exc:
+                last_error = exc
+                rospy.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+        raise StageError(
+            "simulation bridge connection timed out after {:.1f}s: {}".format(
+                timeout, last_error or "no connection"))
+
     def task3(self):
         if not self.sim_category:
             raise StageError("task3 sim_target_category is missing")
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
         if not host:
-            raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
+            raise StageError("sim_bridge_host is missing")
+        connect_timeout = float(rospy.get_param("~sim_connect_timeout_sec", 120.0))
         timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
         self.publish_status("task3", "connecting", "connecting to {}:{}".format(host, port))
-        try:
-            sock = socket.create_connection((host, port), timeout=10.0)
-            sock.settimeout(1.0)
-        except OSError as exc:
-            raise StageError("simulation bridge connection failed: {}".format(exc))
+        sock = self._connect_sim_bridge(host, port, connect_timeout)
         request_id = str(uuid.uuid4())
+        # The task execution budget begins only after a bridge connection exists.
         deadline = time.time() + timeout
         result_text = ""
         done_received = False
