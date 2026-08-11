@@ -48,6 +48,8 @@ class LocalSimSupervisor:
             queue_size=10,
         )
         self.sim_launch = None
+        self.sim_output_thread = None
+        self.silence_child_output = threading.Event()
         self.environment = None
         rospy.on_shutdown(self.shutdown)
 
@@ -80,7 +82,36 @@ class LocalSimSupervisor:
 
     @staticmethod
     def _spawn(command, environment):
-        return subprocess.Popen(command, env=environment, start_new_session=True)
+        return subprocess.Popen(
+            command,
+            env=environment,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+
+    def _relay_sim_output(self):
+        """Relay normal simulator logs, but drain silently during shutdown."""
+        stream = None if self.sim_launch is None else self.sim_launch.stdout
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                if not self.silence_child_output.is_set():
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+        except (OSError, ValueError):
+            pass
+
+    def _start_output_relay(self):
+        self.sim_output_thread = threading.Thread(
+            target=self._relay_sim_output,
+            name="local-sim-output",
+        )
+        self.sim_output_thread.daemon = True
+        self.sim_output_thread.start()
 
     @staticmethod
     def _process_exit(process):
@@ -158,6 +189,7 @@ class LocalSimSupervisor:
         command = build_launch_command(self.gui, self.bridge_host, self.bridge_port)
         rospy.loginfo("Starting isolated simulator: %s", " ".join(command))
         self.sim_launch = self._spawn(command, self.environment)
+        self._start_output_relay()
         self._wait_for_simulator(deadline)
         self.publish_status("ready")
         rospy.loginfo(
@@ -197,7 +229,15 @@ class LocalSimSupervisor:
                 rospy.logwarn("%s did not stop after %s", label, signal_name)
 
     def shutdown(self):
+        # Once the primary ROS master begins shutting down, Gazebo's ROS
+        # plugins can emit a large XmlRpc connection-refused storm.  Continue
+        # draining the pipe so children cannot block, but do not surrender the
+        # user's terminal to teardown noise.
+        self.silence_child_output.set()
         self._stop_process_group(self.sim_launch, "simulator roslaunch")
+        if (self.sim_output_thread is not None and
+                self.sim_output_thread is not threading.current_thread()):
+            self.sim_output_thread.join(timeout=0.5)
         if hasattr(self, "status_pub"):
             try:
                 self.publish_status("stopped")

@@ -26,6 +26,7 @@ if SCRIPT_DIR not in sys.path:
 from navigator_logic import (
     build_quadrilateral_walls,
     coverage_anchor_order,
+    coverage_escape_direction,
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
     coverage_non_target_early_exit_ready,
@@ -162,6 +163,24 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_max_yaw_deg", 90.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
             "~coverage_rotation_min_clearance", 0.28)))
+        self.coverage_escape_enabled = bool(rospy.get_param(
+            "~coverage_escape_enabled", True))
+        self.coverage_escape_distance = max(0.0, float(rospy.get_param(
+            "~coverage_escape_distance", 0.18)))
+        self.coverage_escape_speed = max(0.02, float(rospy.get_param(
+            "~coverage_escape_speed", 0.08)))
+        self.coverage_escape_entry_clearance = max(
+            self.coverage_rotation_min_clearance,
+            float(rospy.get_param("~coverage_escape_entry_clearance", 0.46)))
+        self.coverage_escape_stop_clearance = max(
+            self.coverage_rotation_min_clearance,
+            float(rospy.get_param("~coverage_escape_stop_clearance", 0.28)))
+        self.coverage_escape_sector_half_angle = math.radians(abs(float(
+            rospy.get_param("~coverage_escape_sector_half_angle_deg", 30.0))))
+        self.coverage_escape_timeout = max(0.5, float(rospy.get_param(
+            "~coverage_escape_timeout_sec", 4.0)))
+        self.coverage_escape_max_attempts = max(0, int(rospy.get_param(
+            "~coverage_escape_max_attempts", 2)))
         self.coverage_rotation_clearance_tolerance = max(0.0, float(
             rospy.get_param(
                 "~coverage_rotation_clearance_tolerance", 0.005)))
@@ -539,6 +558,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
         self.current_goal_clearance_stop = False
+        self.current_goal_rotation_clearance_stop = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
@@ -1208,6 +1228,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
         self.current_goal_clearance_stop = False
+        self.current_goal_rotation_clearance_stop = False
         if (self.coverage_search_mode and
                 not self._set_coverage_speed_profile(
                     "cruise", force=True)):
@@ -1275,6 +1296,8 @@ class VisionTriggeredNavigator(object):
                             self.scan_received_at, now, self.scan_stale) and
                         (clearance is None or clearance < minimum)):
                     self.current_goal_clearance_stop = True
+                    self.current_goal_rotation_clearance_stop = (
+                        motion == "rotation")
                     self._publish_status("coverage_clearance_stop")
                     rospy.logwarn(
                         "[vision_triggered_navigator] coverage navigation "
@@ -1728,6 +1751,95 @@ class VisionTriggeredNavigator(object):
                 return False
         return True
 
+    def _attempt_coverage_escape(self, patrol_idx, attempt):
+        """Translate through the clearest corridor after a blocked rotation."""
+        self.cmd_vel_pub.publish(Twist())
+        if not self.coverage_escape_enabled or self.coverage_escape_distance <= 0.0:
+            return False
+        if not self._wait_navigation_idle():
+            rospy.logerr(
+                "[vision_triggered_navigator] 脱困前move_base未释放控制权，保持停车.")
+            return False
+        now = rospy.get_time()
+        if (not self._odom_is_fresh() or
+                not sensor_is_fresh(
+                    self.scan_received_at, now, self.scan_stale)):
+            rospy.logwarn(
+                "[vision_triggered_navigator] 锚点%d脱困所需/odom或/scan不新鲜，"
+                "拒绝直接控制.", patrol_idx + 1)
+            return False
+        selected = coverage_escape_direction(
+            self.scan_polar_samples,
+            self.coverage_escape_entry_clearance,
+            self.coverage_escape_sector_half_angle,
+        )
+        if selected is None:
+            rospy.logwarn(
+                "[vision_triggered_navigator] 锚点%d四向净空均不足%.3fm，"
+                "无法安全平移脱困.",
+                patrol_idx + 1, self.coverage_escape_entry_clearance)
+            self._publish_status(
+                "coverage_escape_blocked:{}".format(patrol_idx + 1))
+            return False
+
+        unit_x, unit_y, label, initial_clearance, angle = selected
+        start_x, start_y, _start_yaw = self.odom_pose
+        deadline = now + self.coverage_escape_timeout
+        self._publish_status(
+            "coverage_escape_start:{}:{}".format(patrol_idx + 1, label))
+        rospy.logwarn(
+            "[vision_triggered_navigator] 锚点%d旋转受阻，执行第%d次受限平移脱困: "
+            "%s，初始净空%.3fm，目标距离%.3fm，速度%.3fm/s.",
+            patrol_idx + 1, attempt, label, initial_clearance,
+            self.coverage_escape_distance, self.coverage_escape_speed)
+        rate = rospy.Rate(20)
+        succeeded = False
+        try:
+            while not rospy.is_shutdown() and rospy.get_time() < deadline:
+                now = rospy.get_time()
+                if (not self._odom_is_fresh() or
+                        not sensor_is_fresh(
+                            self.scan_received_at, now, self.scan_stale)):
+                    rospy.logerr(
+                        "[vision_triggered_navigator] 脱困期间传感器超时，立即停车.")
+                    break
+                travelled = math.hypot(
+                    self.odom_pose[0] - start_x, self.odom_pose[1] - start_y)
+                if travelled >= self.coverage_escape_distance:
+                    succeeded = True
+                    break
+                clearance = polar_sector_min(
+                    self.scan_polar_samples, angle,
+                    self.coverage_escape_sector_half_angle)
+                if obstacle_clearance_requires_stop(
+                        clearance, self.coverage_escape_stop_clearance):
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] 脱困方向%s净空%s低于%.3fm，"
+                        "立即停车.", label,
+                        "missing" if clearance is None else
+                        "{:.3f}m".format(clearance),
+                        self.coverage_escape_stop_clearance)
+                    break
+                command = Twist()
+                command.linear.x = unit_x * self.coverage_escape_speed
+                command.linear.y = unit_y * self.coverage_escape_speed
+                self.cmd_vel_pub.publish(command)
+                rate.sleep()
+        finally:
+            self.cmd_vel_pub.publish(Twist())
+
+        if succeeded:
+            self.rotation_clearance_blocked = False
+            self._publish_status(
+                "coverage_escape_completed:{}".format(patrol_idx + 1))
+            rospy.loginfo(
+                "[vision_triggered_navigator] 锚点%d受限平移脱困完成，"
+                "将重试同一锚点.", patrol_idx + 1)
+            return True
+        self._publish_status(
+            "coverage_escape_failed:{}".format(patrol_idx + 1))
+        return False
+
     def _visit_coverage_point(self, point, patrol_idx):
         """Visit one calibrated anchor once, then perform its original scan."""
         with self.coverage_observation_lock:
@@ -1752,7 +1864,9 @@ class VisionTriggeredNavigator(object):
             patrol_idx + 1, x, y, yaw)
         result = None
         navigation_reached = False
-        for attempt in range(self.coverage_goal_retry_count + 1):
+        attempt = 0
+        escape_attempts = 0
+        while attempt <= self.coverage_goal_retry_count:
             result = self.send_goal(x, y, yaw)
             if self.triggered:
                 return "triggered"
@@ -1830,6 +1944,18 @@ class VisionTriggeredNavigator(object):
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
+            if ((self.current_goal_rotation_clearance_stop or
+                 self.current_goal_rotation_stall) and
+                    escape_attempts < self.coverage_escape_max_attempts):
+                escape_attempts += 1
+                if self._attempt_coverage_escape(patrol_idx, escape_attempts):
+                    self._publish_status(
+                        "coverage_escape_retry:{}".format(patrol_idx + 1))
+                    if not self._clear_costmaps_and_wait():
+                        return "failed"
+                    # Recovery does not consume the normal retry budget: retry
+                    # this same anchor instead of rapidly burning later ones.
+                    continue
             if attempt < self.coverage_goal_retry_count:
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
@@ -1842,6 +1968,7 @@ class VisionTriggeredNavigator(object):
                     self.coverage_goal_retry_count + 1)
                 if not self._clear_costmaps_and_wait():
                     return "failed"
+                attempt += 1
                 continue
             break
         if not navigation_reached:

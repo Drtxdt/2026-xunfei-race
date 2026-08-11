@@ -124,6 +124,25 @@ class RemoteRobotHelperTest(unittest.TestCase):
 
 
 class RemoteRobotLaunchContractTest(unittest.TestCase):
+    def test_remote_output_is_silenced_before_shutdown_signals(self):
+        path = os.path.join(PACKAGE_ROOT, "scripts", "robot_supervisor.py")
+        with open(path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=path)
+        supervisor = next(node for node in tree.body
+                          if isinstance(node, ast.ClassDef)
+                          and node.name == "RobotSupervisor")
+        shutdown = next(node for node in supervisor.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "shutdown")
+        calls = [node for node in ast.walk(shutdown) if isinstance(node, ast.Call)]
+        silence_line = next(node.lineno for node in calls
+                            if isinstance(node.func, ast.Attribute)
+                            and node.func.attr == "set")
+        stop_line = next(node.lineno for node in calls
+                         if isinstance(node.func, ast.Attribute)
+                         and node.func.attr == "_stop_process_group")
+        self.assertLess(silence_line, stop_line)
+
     def test_full_launch_forwards_physical_arguments_to_required_supervisor(self):
         root = ET.parse(os.path.join(PACKAGE_ROOT, "launch", "full_competition.launch")).getroot()
         node = root.find("node[@type='robot_supervisor.py']")

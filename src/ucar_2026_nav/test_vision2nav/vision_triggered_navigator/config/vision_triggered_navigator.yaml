@@ -51,6 +51,15 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 45.0
 coverage_rotation_min_clearance: 0.28
+# 原地旋转被锥桶夹住时，只沿雷达最宽的车体坐标轴低速平移，再重试同一锚点。
+coverage_escape_enabled: true
+coverage_escape_distance: 0.18
+coverage_escape_speed: 0.08
+coverage_escape_entry_clearance: 0.46
+coverage_escape_stop_clearance: 0.28
+coverage_escape_sector_half_angle_deg: 30.0
+coverage_escape_timeout_sec: 4.0
+coverage_escape_max_attempts: 2
 coverage_rotation_clearance_tolerance: 0.005
 coverage_rotation_consensus_window_sec: 0.35
 coverage_rotation_consensus_min_samples: 3

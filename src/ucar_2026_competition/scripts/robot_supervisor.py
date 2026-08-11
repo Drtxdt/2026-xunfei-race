@@ -40,6 +40,7 @@ class RobotSupervisor:
             raise RobotDeploymentError("SSH and robot startup timeouts must be positive")
         self.launch_arguments = dict(rospy.get_param("~physical_launch_arguments", {}))
         self.process = None
+        self.silence_child_output = threading.Event()
         self.status_pub = rospy.Publisher(
             "/competition/robot_supervisor/status", String, queue_size=1, latch=True)
         rospy.on_shutdown(self.shutdown)
@@ -105,7 +106,8 @@ class RobotSupervisor:
                 text = line.rstrip()
                 recent_output.append(text)
                 del recent_output[:-20]
-                print("[robot] {}".format(text), flush=True)
+                if not self.silence_child_output.is_set():
+                    print("[robot] {}".format(text), flush=True)
                 if text.startswith("ROBOT_COMPETITION_READY "):
                     ready.set()
 
@@ -158,6 +160,7 @@ class RobotSupervisor:
                 continue
 
     def shutdown(self):
+        self.silence_child_output.set()
         self._stop_process_group(self.process)
 
 

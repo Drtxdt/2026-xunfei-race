@@ -1874,6 +1874,14 @@ class CompetitionFlow:
         }
         forwarded_defaults = {
             "coverage_rotation_min_clearance": 0.28,
+            "coverage_escape_enabled": True,
+            "coverage_escape_distance": 0.18,
+            "coverage_escape_speed": 0.08,
+            "coverage_escape_entry_clearance": 0.46,
+            "coverage_escape_stop_clearance": 0.28,
+            "coverage_escape_sector_half_angle_deg": 30.0,
+            "coverage_escape_timeout_sec": 4.0,
+            "coverage_escape_max_attempts": 2,
             "coverage_translation_min_clearance": 0.00,
             "coverage_translation_sector_half_angle_deg": 35.0,
             "coverage_max_vel_x": 0.72,

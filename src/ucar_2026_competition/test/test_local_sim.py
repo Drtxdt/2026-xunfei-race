@@ -187,6 +187,36 @@ class LocalSimLaunchContractTest(unittest.TestCase):
             if isinstance(node.func, ast.Attribute) and node.func.attr == "_spawn")
         self.assertLess(wait_line, spawn_line)
 
+    def test_simulator_output_is_silenced_before_shutdown_signals(self):
+        sim_path = os.path.join(PACKAGE_ROOT, "scripts", "local_sim_supervisor.py")
+        with open(sim_path, "r", encoding="utf-8") as stream:
+            sim_tree = ast.parse(stream.read(), filename=sim_path)
+        sim_class = next(node for node in sim_tree.body
+                         if isinstance(node, ast.ClassDef)
+                         and node.name == "LocalSimSupervisor")
+        shutdown = next(node for node in sim_class.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "shutdown")
+        calls = [node for node in ast.walk(shutdown) if isinstance(node, ast.Call)]
+        silence_line = next(
+            node.lineno for node in calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "set")
+        stop_line = next(
+            node.lineno for node in calls
+            if isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_stop_process_group")
+        self.assertLess(silence_line, stop_line)
+
+        spawn = next(node for node in sim_class.body
+                     if isinstance(node, ast.FunctionDef) and node.name == "_spawn")
+        popen = next(node for node in ast.walk(spawn)
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Attribute)
+                     and node.func.attr == "Popen")
+        keywords = {item.arg: item.value for item in popen.keywords}
+        self.assertIn("stdout", keywords)
+        self.assertIn("stderr", keywords)
+
     def test_reusable_launch_has_required_supervisor(self):
         root = ET.parse(os.path.join(PACKAGE_ROOT, "launch", "local_sim.launch")).getroot()
         args = {node.attrib["name"]: node.attrib.get("default") for node in root.findall("arg")}

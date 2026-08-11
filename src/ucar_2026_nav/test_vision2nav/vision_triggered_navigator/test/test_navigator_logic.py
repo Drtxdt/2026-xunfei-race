@@ -19,6 +19,7 @@ from navigator_logic import (
     center_step_angle,
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
+    coverage_escape_direction,
     coverage_near_anchor_action,
     coverage_non_target_early_exit_ready,
     coverage_non_target_observation_matches,
@@ -85,6 +86,31 @@ def test_in_place_rotation_requires_fresh_all_around_clearance():
     assert not rotation_clearance_is_safe(0.29, 0.1, 0.30)
     assert not rotation_clearance_is_safe(None, 0.1, 0.30)
     assert not rotation_clearance_is_safe(1.0, 0.6, 0.30, max_scan_age=0.5)
+
+
+def test_coverage_escape_chooses_clearest_cardinal_corridor():
+    samples = []
+    for center, distance in (
+            (0.0, 0.70), (math.pi, 1.20),
+            (0.5 * math.pi, 0.35), (-0.5 * math.pi, 0.60)):
+        samples.extend((center + offset, distance)
+                       for offset in (-0.1, 0.0, 0.1))
+    selected = coverage_escape_direction(samples, 0.46)
+    assert selected is not None
+    unit_x, unit_y, label, clearance, angle = selected
+    assert (unit_x, unit_y, label) == (-1.0, 0.0, "rear")
+    assert clearance == pytest.approx(1.20)
+    assert abs(abs(angle) - math.pi) < 1e-9
+
+
+def test_coverage_escape_rejects_when_every_corridor_is_too_narrow():
+    samples = [
+        (0.0, 0.45),
+        (math.pi, 0.44),
+        (0.5 * math.pi, 0.30),
+        (-0.5 * math.pi, 0.40),
+    ]
+    assert coverage_escape_direction(samples, 0.46) is None
 
 
 def test_rotation_clearance_consensus_absorbs_only_small_lidar_jitter():
