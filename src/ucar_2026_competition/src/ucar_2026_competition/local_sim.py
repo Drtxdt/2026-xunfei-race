@@ -2,9 +2,11 @@
 """Pure helpers for launching the bundled simulator in an isolated ROS environment."""
 
 import os
+import ipaddress
 import signal
 import socket
 import subprocess
+from urllib.parse import urlparse
 
 
 class LocalSimConfigError(ValueError):
@@ -27,6 +29,21 @@ def validate_port(value, name):
     if port < 1 or port > 65535:
         raise LocalSimConfigError("{} must be between 1 and 65535".format(name))
     return port
+
+
+def validate_control_master_uri(value):
+    uri = str(value or "").strip()
+    parsed = urlparse(uri)
+    if parsed.scheme != "http" or parsed.hostname not in ("localhost", "127.0.0.1", "::1"):
+        raise LocalSimConfigError(
+            "Ubuntu control ROS_MASTER_URI must be local; unset ROS_MASTER_URI before launch")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise LocalSimConfigError("Ubuntu control ROS_MASTER_URI has an invalid port")
+    if port != 11311:
+        raise LocalSimConfigError("Ubuntu control ROS master must use port 11311")
+    return uri
 
 
 def validate_workspace(path):
@@ -91,9 +108,9 @@ def parse_null_environment(payload):
     return result
 
 
-def build_isolated_environment(workspace, master_port, source=None, runner=subprocess.run):
+def build_isolated_environment(workspace, master_uri, source=None, runner=subprocess.run):
     workspace = validate_workspace(workspace)
-    master_port = validate_port(master_port, "sim_master_port")
+    master_uri = validate_control_master_uri(master_uri)
     sim_setup = os.path.join(workspace, "devel", "setup.bash")
     if not os.path.isfile(ROS_SETUP):
         raise LocalSimConfigError("ROS Noetic setup not found at {}".format(ROS_SETUP))
@@ -115,7 +132,7 @@ def build_isolated_environment(workspace, master_port, source=None, runner=subpr
         raise LocalSimConfigError("failed to source simulator workspace: {}".format(stderr or "unknown error"))
 
     environment = parse_null_environment(completed.stdout)
-    environment["ROS_MASTER_URI"] = "http://127.0.0.1:{}".format(master_port)
+    environment["ROS_MASTER_URI"] = master_uri
     environment["ROS_HOSTNAME"] = "127.0.0.1"
     environment.pop("ROS_IP", None)
     return environment
@@ -123,8 +140,13 @@ def build_isolated_environment(workspace, master_port, source=None, runner=subpr
 
 def build_launch_command(gui, bridge_host, bridge_port):
     bridge_port = validate_port(bridge_port, "sim_bridge_port")
-    if bridge_host != "127.0.0.1":
-        raise LocalSimConfigError("the managed local simulator bridge must bind to 127.0.0.1")
+    try:
+        address = ipaddress.ip_address(str(bridge_host).strip())
+    except ValueError:
+        raise LocalSimConfigError("simulator bridge host must be a concrete IP address")
+    if address.is_unspecified or address.is_loopback:
+        raise LocalSimConfigError(
+            "simulator bridge must bind to the Ubuntu address reachable from the robot")
     return [
         "roslaunch",
         "car3",
@@ -132,7 +154,7 @@ def build_launch_command(gui, bridge_host, bridge_port):
         "target:=wait",
         "start_bridge:=true",
         "gui:={}".format("true" if gui else "false"),
-        "bridge_host:={}".format(bridge_host),
+        "bridge_host:={}".format(address),
         "bridge_port:={}".format(bridge_port),
     ]
 
@@ -148,3 +170,43 @@ def ensure_port_available(host, port, name):
     finally:
         probe.close()
     return port
+
+
+def ssh_target_host(target):
+    value = str(target or "").strip()
+    if not value:
+        raise LocalSimConfigError(
+            "robot SSH target is empty; export UCAR_ROBOT_HOST as user@host")
+    host = value.rsplit("@", 1)[-1]
+    if host.startswith("[") and host.endswith("]"):
+        host = host[1:-1]
+    if not host or any(character.isspace() for character in host):
+        raise LocalSimConfigError("invalid robot SSH target: {}".format(value))
+    return host
+
+
+def route_source_address(target, resolver=socket.getaddrinfo, socket_factory=socket.socket):
+    host = ssh_target_host(target)
+    try:
+        candidates = resolver(host, 22, socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as exc:
+        raise LocalSimConfigError("cannot resolve robot host {}: {}".format(host, exc))
+    if not candidates:
+        raise LocalSimConfigError("cannot resolve robot host {}".format(host))
+
+    probe = socket_factory(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(candidates[0][4])
+        source = probe.getsockname()[0]
+    except OSError as exc:
+        raise LocalSimConfigError("cannot determine Ubuntu route to {}: {}".format(host, exc))
+    finally:
+        probe.close()
+    try:
+        address = ipaddress.ip_address(source)
+    except ValueError:
+        raise LocalSimConfigError("route returned invalid Ubuntu address: {}".format(source))
+    if address.is_loopback or address.is_unspecified:
+        raise LocalSimConfigError(
+            "robot route resolved to unusable Ubuntu address {}".format(source))
+    return str(address)

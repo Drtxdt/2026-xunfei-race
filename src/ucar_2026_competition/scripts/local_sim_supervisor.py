@@ -18,6 +18,7 @@ from ucar_2026_competition.local_sim import (
     build_isolated_environment,
     build_launch_command,
     ensure_port_available,
+    route_source_address,
     validate_port,
     validate_workspace,
 )
@@ -26,8 +27,8 @@ from ucar_2026_competition.local_sim import (
 class LocalSimSupervisor:
     def __init__(self):
         self.workspace = validate_workspace(rospy.get_param("~sim_workspace", ""))
-        self.master_port = validate_port(rospy.get_param("~sim_master_port", 11312), "sim_master_port")
-        self.bridge_host = str(rospy.get_param("~sim_bridge_host", "127.0.0.1")).strip()
+        self.robot_ssh_target = str(rospy.get_param("~robot_ssh_target", "")).strip()
+        self.bridge_host = route_source_address(self.robot_ssh_target)
         self.bridge_port = validate_port(rospy.get_param("~sim_bridge_port", 26003), "sim_bridge_port")
         self.gui = bool(rospy.get_param("~sim_gui", True))
         self.startup_timeout = float(rospy.get_param("~sim_startup_timeout_sec", 120.0))
@@ -37,7 +38,6 @@ class LocalSimSupervisor:
             raise LocalSimConfigError("sim_gui is true but DISPLAY is not set")
 
         self.status_pub = rospy.Publisher("/competition/local_sim/status", String, queue_size=1, latch=True)
-        self.roscore = None
         self.sim_launch = None
         self.environment = None
         rospy.on_shutdown(self.shutdown)
@@ -55,10 +55,7 @@ class LocalSimSupervisor:
         return None if process is None else process.poll()
 
     def _assert_children_alive(self):
-        roscore_exit = self._process_exit(self.roscore)
         launch_exit = self._process_exit(self.sim_launch)
-        if roscore_exit is not None:
-            raise RuntimeError("isolated roscore exited with code {}".format(roscore_exit))
         if self.sim_launch is not None and launch_exit is not None:
             raise RuntimeError("simulator roslaunch exited with code {}".format(launch_exit))
 
@@ -97,15 +94,6 @@ class LocalSimSupervisor:
             return False
         return completed.returncode == 0
 
-    def _wait_for_master(self, deadline):
-        while not rospy.is_shutdown() and time.monotonic() < deadline:
-            if self.roscore.poll() is not None:
-                raise RuntimeError("isolated roscore exited with code {}".format(self.roscore.returncode))
-            if self._tcp_ready("127.0.0.1", self.master_port):
-                return
-            time.sleep(0.2)
-        raise RuntimeError("isolated ROS master did not become ready before timeout")
-
     def _wait_for_simulator(self, deadline):
         bridge_ready = False
         controller_ready = False
@@ -127,21 +115,19 @@ class LocalSimSupervisor:
 
     def run(self):
         self.publish_status("starting")
-        ensure_port_available("127.0.0.1", self.master_port, "sim_master_port")
         ensure_port_available(self.bridge_host, self.bridge_port, "sim_bridge_port")
-        self.environment = build_isolated_environment(self.workspace, self.master_port)
+        master_uri = os.environ.get("ROS_MASTER_URI", "http://127.0.0.1:11311")
+        self.environment = build_isolated_environment(self.workspace, master_uri)
 
         deadline = time.monotonic() + self.startup_timeout
-        self.roscore = self._spawn(["roscore", "-p", str(self.master_port)], self.environment)
-        self._wait_for_master(deadline)
-        self.publish_status("master_ready")
-
         command = build_launch_command(self.gui, self.bridge_host, self.bridge_port)
         rospy.loginfo("Starting isolated simulator: %s", " ".join(command))
         self.sim_launch = self._spawn(command, self.environment)
         self._wait_for_simulator(deadline)
         self.publish_status("ready")
-        rospy.loginfo("Local simulator is ready on ROS master 127.0.0.1:%d", self.master_port)
+        rospy.loginfo(
+            "Local simulator is ready on Ubuntu ROS master; bridge=%s:%d",
+            self.bridge_host, self.bridge_port)
 
         next_health_check = 0.0
         while not rospy.is_shutdown():
@@ -177,7 +163,6 @@ class LocalSimSupervisor:
 
     def shutdown(self):
         self._stop_process_group(self.sim_launch, "simulator roslaunch")
-        self._stop_process_group(self.roscore, "isolated roscore")
         if hasattr(self, "status_pub"):
             try:
                 self.publish_status("stopped")

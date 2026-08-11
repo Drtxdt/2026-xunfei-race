@@ -699,9 +699,9 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(task4_handoff_required("task2", "task3"))
         self.assertFalse(task4_handoff_required(None, "task4"))
 
-    def test_full_launch_exposes_optional_simulation_parameter(self):
+    def test_physical_launch_exposes_optional_simulation_parameter(self):
         launch_path = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "launch", "full_competition.launch"))
+            os.path.dirname(__file__), "..", "launch", "physical_competition.launch"))
         root = ET.parse(launch_path).getroot()
         launch_args = {item.attrib["name"]: item.attrib.get("default")
                        for item in root.findall("arg")}

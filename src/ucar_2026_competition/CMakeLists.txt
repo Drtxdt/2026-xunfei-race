@@ -24,6 +24,8 @@ catkin_install_python(PROGRAMS
   scripts/external_voice_nodes.py
   scripts/fixed_command_iat.py
   scripts/local_sim_supervisor.py
+  scripts/robot_supervisor.py
+  scripts/robot_competition_agent.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

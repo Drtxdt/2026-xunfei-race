@@ -1,11 +1,17 @@
 <launch>
+  <!-- Ubuntu-only official entrypoint. Physical nodes are launched over SSH. -->
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
   <arg name="enable_simulation" default="true" />
   <arg name="start_local_sim" default="true" />
+  <arg name="competition_workspace" default="$(optenv UCAR_COMPETITION_WS)" />
   <arg name="sim_workspace" default="$(optenv UCAR_SIM_WS)" />
-  <arg name="sim_master_port" default="11312" />
-  <arg name="sim_bridge_host" default="127.0.0.1" />
+  <arg name="robot_ssh_target" default="$(optenv UCAR_ROBOT_HOST)" />
+  <arg name="robot_workspace" default="$(optenv UCAR_ROBOT_WS /home/ucar/2026-xunfei-race)" />
+  <arg name="robot_environment_file" default="$(optenv UCAR_ROBOT_ENV /home/ucar/.config/ucar_2026/robot_env.sh)" />
+  <arg name="ssh_connect_timeout_sec" default="8" />
+  <arg name="robot_startup_timeout_sec" default="30" />
+  <arg name="sim_bridge_host" default="" />
   <arg name="sim_bridge_port" default="26003" />
   <arg name="sim_gui" default="true" />
   <arg name="sim_startup_timeout_sec" default="120" />
@@ -54,70 +60,72 @@
   <group if="$(eval enable_simulation and start_local_sim)">
     <include file="$(find ucar_2026_competition)/launch/local_sim.launch">
       <arg name="sim_workspace" value="$(arg sim_workspace)" />
-      <arg name="sim_master_port" value="$(arg sim_master_port)" />
-      <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+      <arg name="robot_ssh_target" value="$(arg robot_ssh_target)" />
       <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
       <arg name="sim_gui" value="$(arg sim_gui)" />
       <arg name="sim_startup_timeout_sec" value="$(arg sim_startup_timeout_sec)" />
     </include>
   </group>
 
-  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
-    <arg name="start_nav" value="true" />
-    <arg name="start_camera" value="true" />
-    <arg name="start_speech" value="true" />
-    <arg name="start_asr" value="$(arg start_external_voice)" />
-    <arg name="start_tts" value="$(arg start_external_voice)" />
-    <arg name="start_llm" value="true" />
-    <arg name="start_rviz" value="$(arg debug)" />
-  </include>
-
-  <include file="$(find ucar_2026_competition)/launch/flow_node.launch">
-    <arg name="start_stage" value="full" />
-    <arg name="debug" value="$(arg debug)" />
-    <arg name="enable_simulation" value="$(arg enable_simulation)" />
-    <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
-    <arg name="sim_bridge_port" value="$(arg sim_bridge_port)" />
-    <arg name="sim_connect_timeout_sec" value="$(arg sim_connect_timeout_sec)" />
-    <arg name="traffic_pose_configured" value="$(arg traffic_pose_configured)" />
-    <arg name="traffic_x" value="$(arg traffic_x)" />
-    <arg name="traffic_y" value="$(arg traffic_y)" />
-    <arg name="traffic_yaw" value="$(arg traffic_yaw)" />
-    <arg name="parking_normal_offset" value="$(arg parking_normal_offset)" />
-    <arg name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
-    <arg name="parking_goal_offset" value="$(arg parking_goal_offset)" />
-    <arg name="parking_staging_offset" value="$(arg parking_staging_offset)" />
-    <arg name="parking_staging_timeout_sec" value="$(arg parking_staging_timeout_sec)" />
-    <arg name="parking_staging_position_tolerance" value="$(arg parking_staging_position_tolerance)" />
-    <arg name="parking_staging_yaw_tolerance" value="$(arg parking_staging_yaw_tolerance)" />
-    <arg name="parking_docking_timeout_sec" value="$(arg parking_docking_timeout_sec)" />
-    <arg name="parking_dock_max_x" value="$(arg parking_dock_max_x)" />
-    <arg name="parking_dock_max_y" value="$(arg parking_dock_max_y)" />
-    <arg name="parking_dock_max_yaw" value="$(arg parking_dock_max_yaw)" />
-    <arg name="parking_dock_min_yaw" value="$(arg parking_dock_min_yaw)" />
-    <arg name="parking_dock_normal_tolerance" value="$(arg parking_dock_normal_tolerance)" />
-    <arg name="parking_dock_tangent_tolerance" value="$(arg parking_dock_tangent_tolerance)" />
-    <arg name="parking_dock_yaw_tolerance" value="$(arg parking_dock_yaw_tolerance)" />
-    <arg name="parking_min_wall_distance" value="$(arg parking_min_wall_distance)" />
-    <arg name="parking_lidar_stop_distance" value="$(arg parking_lidar_stop_distance)" />
-    <arg name="parking_recenter_tolerance" value="$(arg parking_recenter_tolerance)" />
-    <arg name="parking_recenter_timeout_sec" value="$(arg parking_recenter_timeout_sec)" />
-    <arg name="parking_recenter_initial_wait_sec" value="$(arg parking_recenter_initial_wait_sec)" />
-    <arg name="coverage_goal_soft_timeout_sec" value="$(arg coverage_goal_soft_timeout_sec)" />
-    <arg name="coverage_goal_hard_timeout_sec" value="$(arg coverage_goal_hard_timeout_sec)" />
-    <arg name="coverage_goal_progress_window_sec" value="$(arg coverage_goal_progress_window_sec)" />
-    <arg name="coverage_goal_min_progress" value="$(arg coverage_goal_min_progress)" />
-    <arg name="coverage_anchor_observation_radius" value="$(arg coverage_anchor_observation_radius)" />
-    <arg name="coverage_near_anchor_stall_timeout_sec" value="$(arg coverage_near_anchor_stall_timeout_sec)" />
-    <arg name="coverage_rotation_min_clearance" value="$(arg coverage_rotation_min_clearance)" />
-    <arg name="parking_wall_fit_half_angle_deg" value="$(arg parking_wall_fit_half_angle_deg)" />
-    <arg name="parking_wall_fit_min_points" value="$(arg parking_wall_fit_min_points)" />
-    <arg name="parking_wall_fit_min_span" value="$(arg parking_wall_fit_min_span)" />
-    <arg name="parking_wall_fit_near_min_span" value="$(arg parking_wall_fit_near_min_span)" />
-    <arg name="parking_wall_fit_max_distance_jump" value="$(arg parking_wall_fit_max_distance_jump)" />
-    <arg name="parking_wall_fit_max_normal_jump_deg" value="$(arg parking_wall_fit_max_normal_jump_deg)" />
-    <arg name="parking_wall_fit_max_residual" value="$(arg parking_wall_fit_max_residual)" />
-    <arg name="parking_wall_fit_max_normal_error_deg" value="$(arg parking_wall_fit_max_normal_error_deg)" />
-    <arg name="trigger_ack_timeout_sec" value="$(arg trigger_ack_timeout_sec)" />
-  </include>
+  <node pkg="ucar_2026_competition"
+        type="robot_supervisor.py"
+        name="robot_supervisor"
+        output="screen"
+        required="true">
+    <param name="robot_ssh_target" value="$(arg robot_ssh_target)" />
+    <param name="competition_workspace" value="$(arg competition_workspace)" />
+    <param name="robot_workspace" value="$(arg robot_workspace)" />
+    <param name="robot_environment_file" value="$(arg robot_environment_file)" />
+    <param name="ssh_connect_timeout_sec" value="$(arg ssh_connect_timeout_sec)" />
+    <param name="robot_startup_timeout_sec" value="$(arg robot_startup_timeout_sec)" />
+    <rosparam param="physical_launch_arguments" subst_value="true">
+      debug: "$(arg debug)"
+      start_external_voice: "$(arg start_external_voice)"
+      enable_simulation: "$(arg enable_simulation)"
+      use_external_sim_bridge: "$(eval enable_simulation and not start_local_sim)"
+      sim_bridge_host: "$(arg sim_bridge_host)"
+      sim_bridge_port: "$(arg sim_bridge_port)"
+      sim_connect_timeout_sec: "$(arg sim_connect_timeout_sec)"
+      traffic_pose_configured: "$(arg traffic_pose_configured)"
+      traffic_x: "$(arg traffic_x)"
+      traffic_y: "$(arg traffic_y)"
+      traffic_yaw: "$(arg traffic_yaw)"
+      parking_normal_offset: "$(arg parking_normal_offset)"
+      parking_tangent_offset: "$(arg parking_tangent_offset)"
+      parking_goal_offset: "$(arg parking_goal_offset)"
+      parking_staging_offset: "$(arg parking_staging_offset)"
+      parking_staging_timeout_sec: "$(arg parking_staging_timeout_sec)"
+      parking_staging_position_tolerance: "$(arg parking_staging_position_tolerance)"
+      parking_staging_yaw_tolerance: "$(arg parking_staging_yaw_tolerance)"
+      parking_docking_timeout_sec: "$(arg parking_docking_timeout_sec)"
+      parking_dock_max_x: "$(arg parking_dock_max_x)"
+      parking_dock_max_y: "$(arg parking_dock_max_y)"
+      parking_dock_max_yaw: "$(arg parking_dock_max_yaw)"
+      parking_dock_min_yaw: "$(arg parking_dock_min_yaw)"
+      parking_dock_normal_tolerance: "$(arg parking_dock_normal_tolerance)"
+      parking_dock_tangent_tolerance: "$(arg parking_dock_tangent_tolerance)"
+      parking_dock_yaw_tolerance: "$(arg parking_dock_yaw_tolerance)"
+      parking_min_wall_distance: "$(arg parking_min_wall_distance)"
+      parking_lidar_stop_distance: "$(arg parking_lidar_stop_distance)"
+      parking_recenter_tolerance: "$(arg parking_recenter_tolerance)"
+      parking_recenter_timeout_sec: "$(arg parking_recenter_timeout_sec)"
+      parking_recenter_initial_wait_sec: "$(arg parking_recenter_initial_wait_sec)"
+      coverage_goal_soft_timeout_sec: "$(arg coverage_goal_soft_timeout_sec)"
+      coverage_goal_hard_timeout_sec: "$(arg coverage_goal_hard_timeout_sec)"
+      coverage_goal_progress_window_sec: "$(arg coverage_goal_progress_window_sec)"
+      coverage_goal_min_progress: "$(arg coverage_goal_min_progress)"
+      coverage_anchor_observation_radius: "$(arg coverage_anchor_observation_radius)"
+      coverage_near_anchor_stall_timeout_sec: "$(arg coverage_near_anchor_stall_timeout_sec)"
+      coverage_rotation_min_clearance: "$(arg coverage_rotation_min_clearance)"
+      parking_wall_fit_half_angle_deg: "$(arg parking_wall_fit_half_angle_deg)"
+      parking_wall_fit_min_points: "$(arg parking_wall_fit_min_points)"
+      parking_wall_fit_min_span: "$(arg parking_wall_fit_min_span)"
+      parking_wall_fit_near_min_span: "$(arg parking_wall_fit_near_min_span)"
+      parking_wall_fit_max_distance_jump: "$(arg parking_wall_fit_max_distance_jump)"
+      parking_wall_fit_max_normal_jump_deg: "$(arg parking_wall_fit_max_normal_jump_deg)"
+      parking_wall_fit_max_residual: "$(arg parking_wall_fit_max_residual)"
+      parking_wall_fit_max_normal_error_deg: "$(arg parking_wall_fit_max_normal_error_deg)"
+      trigger_ack_timeout_sec: "$(arg trigger_ack_timeout_sec)"
+    </rosparam>
+  </node>
 </launch>

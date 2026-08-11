@@ -1,34 +1,104 @@
 # 智慧工厂比赛总控
 
-首次部署时，把仿真 Catkin 工作空间写入 Ubuntu 的 `~/.bashrc`。该目录必须包含
-`devel/setup.bash` 和 `src/car3/package.xml`：
+## 运行位置
+
+- **Windows**：只用于修改和推送代码，不运行 ROS。
+- **Ubuntu 20.04 控制机**：正式比赛唯一的命令入口，同时运行 Gazebo。
+- **小车**：运行全部实车节点；由 Ubuntu 通过免密 SSH 自动启动，正式比赛时不要手动登录启动。
+
+Ubuntu 和小车各有自己的 `:11311` ROS Master。两边不共享 ROS 话题，只通过
+任务三 TCP 协议通信；不再使用 Ubuntu `:11312`。
+
+## 一次性部署
+
+Ubuntu 使用两个独立的 Catkin 工作空间：
 
 ```bash
-export UCAR_SIM_WS=/home/<用户名>/2026-race-nav/gazebo_ws
+cd /home/txdt
+git clone -b sim git@github.com:Drtxdt/2026-xunfei-race.git
+cd /home/txdt/2026-xunfei-race
+catkin_make --pkg \
+  ucar_2026_competition_speech \
+  ucar_2026_smart_factory_llm \
+  ucar_2026_competition
+
+cd /home/txdt/2026-race-nav/gazebo_ws
+catkin_make
 ```
 
-正式比赛只需执行一个命令：
+在 Ubuntu 的 `~/.bashrc` 写入：
+
+```bash
+export UCAR_COMPETITION_WS=/home/txdt/2026-xunfei-race
+export UCAR_SIM_WS=/home/txdt/2026-race-nav/gazebo_ws
+export UCAR_ROBOT_HOST=ucar@<小车当前IP>
+export UCAR_ROBOT_WS=/home/ucar/2026-xunfei-race
+export UCAR_ROBOT_ENV=/home/ucar/.config/ucar_2026/robot_env.sh
+
+unset ROS_MASTER_URI ROS_IP ROS_HOSTNAME
+source /opt/ros/noetic/setup.bash
+source "$UCAR_SIM_WS/devel/setup.bash"
+source "$UCAR_COMPETITION_WS/devel/setup.bash"
+```
+
+Ubuntu 配置免密 SSH：
+
+```bash
+test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+ssh-copy-id "$UCAR_ROBOT_HOST"
+ssh -o BatchMode=yes "$UCAR_ROBOT_HOST" true
+```
+
+小车只在赛前部署时通过 SSH 执行：
+
+```bash
+cd /home/ucar
+git clone -b sim git@github.com:Drtxdt/2026-xunfei-race.git
+cd /home/ucar/2026-xunfei-race
+catkin_make
+```
+
+随后在小车端创建
+`~/.config/ucar_2026/robot_env.sh`：
+
+```bash
+export XF_SPARK_API_PASSWORD='轮换后的新密码'
+export ROBOT_WS=/home/ucar/ucar_ws
+export IAT_CREDENTIALS_FILE=/home/ucar/.config/ucar_2026/iat_credentials.json
+```
+
+随后执行：
+
+```bash
+chmod 600 ~/.config/ucar_2026/robot_env.sh
+```
+
+Ubuntu 和小车的比赛仓库必须位于同一 Git commit 且没有未提交改动，否则监督器
+会拒绝启动。仿真仓库的 `src/car3/config/task3.yaml` 可保留本机标定修改，不参与该检查。
+更新仿真仓库时不得使用 `git reset --hard` 或覆盖该文件。
+
+## 正式比赛
+
+只在 **Ubuntu 控制机**执行：
 
 ```bash
 roslaunch ucar_2026_competition full_competition.launch
 ```
 
-该入口在实车主 ROS Master 上运行比赛流程，同时在本机
-`127.0.0.1:11312` 启动隔离的 Gazebo ROS Master，并将任务三 TCP 桥绑定到
-`127.0.0.1:26003`。Gazebo 默认显示图形界面；仿真启动失败、超时或中途退出时，
-整套比赛会立即终止并回收第二个 roscore 和 Gazebo 进程组。
+该入口自动选择通往小车的 Ubuntu 网卡地址、启动 Gazebo，并通过 SSH 启动小车的
+`physical_competition.launch`。Gazebo、SSH、小车实车 launch 任一失败或退出时，
+整套比赛都会停止并清理两端进程组。
 
-关闭仿真可使用 `enable_simulation:=false`。远程联调仍受支持：
+关闭仿真可使用：
 
 ```bash
-roslaunch ucar_2026_competition full_competition.launch \
-  start_local_sim:=false sim_bridge_host:=192.168.1.20
+roslaunch ucar_2026_competition full_competition.launch enable_simulation:=false
 ```
 
-`run_competition.sh` 保留为调试入口，默认同样使用本机桥，不再要求设置
-`SIM_BRIDGE_HOST`。
+外部仿真调试使用 `start_local_sim:=false sim_bridge_host:=<外部桥地址>`。
+`run_competition.sh` 仅是 Ubuntu 调试包装器，不是正式入口。
 
-五个子任务可以独立启动：
+以下五个子任务命令只用于调试，均在 **小车 SSH 会话**中执行：
 
 ```bash
 roslaunch ucar_2026_competition task1.launch
@@ -62,7 +132,7 @@ roslaunch ucar_2026_competition task1_task2.launch debug:=true 2>&1 | tee task1_
 
 任务2在 OCR 两次命中后通过同步服务请求导航锁存目标，并等待导航状态确认；2 秒内没有收到服务和状态双重确认时会停车并报告 `trigger_delivery_failed`。move_base只驶到距墙0.55m的预停点，最后约33cm使用激光拟合的实际墙面控制距离和垂直度、使用odom控制厂牌切向位置。车辆不会将场地吸附为40个固定格点，只有完整footprint具有至少2cm框内余量才发布`arrived`。
 
-流程暂停后，可先修改总控节点私有参数，再恢复当前阶段：
+流程暂停后，以下命令同样必须在 **小车 SSH 会话**中执行：
 
 ```bash
 rosparam set /competition_flow/traffic_x 1.23
