@@ -17,6 +17,7 @@ class RobotDeploymentError(ValueError):
 
 
 LAUNCH_ARG_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+ROBOT_COMPETITION_SENTINEL_NODES = frozenset(("/competition_flow",))
 
 
 def validate_competition_workspace(path):
@@ -62,6 +63,38 @@ def repository_revision(workspace, runner=subprocess.run):
         raise RobotDeploymentError(
             "Ubuntu competition repository has uncommitted changes; commit or clean it before launch")
     return revision.stdout.strip()
+
+
+def validate_reusable_robot_master(runner=subprocess.run):
+    """Accept the vendor roscore, but reject an already-running competition."""
+    environment = dict(os.environ)
+    environment["ROS_MASTER_URI"] = "http://127.0.0.1:11311"
+    environment.pop("ROS_IP", None)
+    environment.pop("ROS_HOSTNAME", None)
+    try:
+        completed = runner(
+            ["rosnode", "list"],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RobotDeploymentError(
+            "existing robot ROS master is not healthy: {}".format(exc))
+    if completed.returncode != 0:
+        raise RobotDeploymentError(
+            "existing robot ROS master is not healthy: {}".format(
+                completed.stderr.strip() or completed.stdout.strip()
+                or "rosnode list failed"))
+    nodes = {line.strip() for line in completed.stdout.splitlines() if line.strip()}
+    conflicts = sorted(nodes.intersection(ROBOT_COMPETITION_SENTINEL_NODES))
+    if conflicts:
+        raise RobotDeploymentError(
+            "physical competition is already running: {}".format(
+                ", ".join(conflicts)))
+    return nodes
 
 
 def encode_launch_arguments(arguments):

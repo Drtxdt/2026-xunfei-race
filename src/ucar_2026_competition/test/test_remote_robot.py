@@ -21,6 +21,7 @@ from ucar_2026_competition.remote_robot import (
     repository_revision,
     resolve_physical_launch_arguments,
     ssh_base_command,
+    validate_reusable_robot_master,
 )
 
 
@@ -100,6 +101,26 @@ class RemoteRobotHelperTest(unittest.TestCase):
         runner = mock.Mock(side_effect=[clean_revision, dirty_status])
         with self.assertRaises(RobotDeploymentError):
             repository_revision("/workspace", runner=runner)
+
+    def test_vendor_roscore_is_reused_but_running_competition_is_rejected(self):
+        vendor_master = mock.Mock(returncode=0, stdout="/rosout\n", stderr="")
+        self.assertEqual(
+            validate_reusable_robot_master(runner=mock.Mock(return_value=vendor_master)),
+            {"/rosout"},
+        )
+        occupied_master = mock.Mock(
+            returncode=0,
+            stdout="/rosout\n/competition_flow\n",
+            stderr="",
+        )
+        with self.assertRaisesRegex(RobotDeploymentError, "already running"):
+            validate_reusable_robot_master(
+                runner=mock.Mock(return_value=occupied_master))
+
+    def test_unhealthy_existing_robot_master_is_rejected(self):
+        failed = mock.Mock(returncode=1, stdout="", stderr="master unavailable")
+        with self.assertRaisesRegex(RobotDeploymentError, "not healthy"):
+            validate_reusable_robot_master(runner=mock.Mock(return_value=failed))
 
 
 class RemoteRobotLaunchContractTest(unittest.TestCase):

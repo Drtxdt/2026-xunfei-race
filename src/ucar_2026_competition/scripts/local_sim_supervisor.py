@@ -15,7 +15,7 @@ from std_msgs.msg import String
 
 from ucar_2026_competition.local_sim import (
     LocalSimConfigError,
-    TERMINATION_STEPS,
+    SIM_TERMINATION_STEPS,
     build_isolated_environment,
     build_launch_command,
     ensure_port_available,
@@ -184,7 +184,7 @@ class LocalSimSupervisor:
             process_group = os.getpgid(process.pid)
         except (OSError, ProcessLookupError):
             return
-        for sig, timeout in TERMINATION_STEPS:
+        for sig, timeout in SIM_TERMINATION_STEPS:
             try:
                 os.killpg(process_group, sig)
             except (OSError, ProcessLookupError):

@@ -16,6 +16,7 @@ from ucar_2026_competition.remote_robot import (
     RobotDeploymentError,
     decode_launch_arguments,
     resolve_physical_launch_arguments,
+    validate_reusable_robot_master,
 )
 
 
@@ -64,10 +65,11 @@ def validate_runtime(arguments, launch_arguments):
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     probe.settimeout(0.3)
     try:
-        if probe.connect_ex(("127.0.0.1", 11311)) == 0:
-            fail("robot ROS master port 11311 is already in use")
+        master_is_running = probe.connect_ex(("127.0.0.1", 11311)) == 0
     finally:
         probe.close()
+    if master_is_running:
+        validate_reusable_robot_master()
     return workspace
 
 

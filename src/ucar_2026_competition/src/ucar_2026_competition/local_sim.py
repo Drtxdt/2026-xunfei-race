@@ -20,6 +20,14 @@ TERMINATION_STEPS = (
     (getattr(signal, "SIGKILL", 9), 1.0),
 )
 
+# Gazebo sometimes ignores graceful shutdown while plugins are still loading.
+# Keep Ctrl+C responsive without shortening the robot-side grace period.
+SIM_TERMINATION_STEPS = (
+    (signal.SIGINT, 2.0),
+    (signal.SIGTERM, 1.0),
+    (getattr(signal, "SIGKILL", 9), 0.5),
+)
+
 
 def validate_port(value, name):
     try:

@@ -15,6 +15,7 @@ if PACKAGE_SRC not in sys.path:
 
 from ucar_2026_competition.local_sim import (
     LocalSimConfigError,
+    SIM_TERMINATION_STEPS,
     TERMINATION_STEPS,
     build_isolated_environment,
     build_launch_command,
@@ -138,6 +139,14 @@ class LocalSimHelperTest(unittest.TestCase):
         self.assertEqual(
             [item[0] for item in TERMINATION_STEPS],
             [signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGKILL", 9)],
+        )
+        self.assertEqual(
+            [item[0] for item in SIM_TERMINATION_STEPS],
+            [signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGKILL", 9)],
+        )
+        self.assertLess(
+            sum(item[1] for item in SIM_TERMINATION_STEPS),
+            sum(item[1] for item in TERMINATION_STEPS),
         )
 
 
