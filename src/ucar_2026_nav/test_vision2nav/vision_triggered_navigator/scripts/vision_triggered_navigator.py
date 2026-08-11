@@ -206,6 +206,19 @@ class VisionTriggeredNavigator(object):
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
+        self.coverage_teb_min_obstacle_dist = max(0.0, float(rospy.get_param(
+            "~coverage_teb_min_obstacle_dist", 0.22)))
+        self.coverage_teb_inflation_dist = max(
+            self.coverage_teb_min_obstacle_dist,
+            float(rospy.get_param("~coverage_teb_inflation_dist", 0.30)))
+        self.coverage_teb_weight_inflation = max(0.0, float(rospy.get_param(
+            "~coverage_teb_weight_inflation", 0.20)))
+        self.coverage_teb_weight_kinematics_nh = max(0.0, float(
+            rospy.get_param("~coverage_teb_weight_kinematics_nh", 5.0)))
+        self.coverage_teb_weight_forward_drive = max(0.0, float(
+            rospy.get_param("~coverage_teb_weight_forward_drive", 20.0)))
+        self.coverage_teb_min_turning_radius = max(0.0, float(
+            rospy.get_param("~coverage_teb_min_turning_radius", 0.0)))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
             "~coverage_max_vel_x", 0.35)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
@@ -2900,6 +2913,12 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x",
                 "max_vel_y",
                 "max_vel_theta",
+                "min_obstacle_dist",
+                "inflation_dist",
+                "weight_inflation",
+                "weight_kinematics_nh",
+                "weight_kinematics_forward_drive",
+                "min_turning_radius",
             )
             planner_missing = [
                 name for name in planner_required
@@ -2921,6 +2940,13 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x": self.coverage_cruise_vel_x,
                 "max_vel_y": self.coverage_cruise_vel_y,
                 "max_vel_theta": self.coverage_cruise_vel_theta,
+                "min_obstacle_dist": self.coverage_teb_min_obstacle_dist,
+                "inflation_dist": self.coverage_teb_inflation_dist,
+                "weight_inflation": self.coverage_teb_weight_inflation,
+                "weight_kinematics_nh": self.coverage_teb_weight_kinematics_nh,
+                "weight_kinematics_forward_drive": (
+                    self.coverage_teb_weight_forward_drive),
+                "min_turning_radius": self.coverage_teb_min_turning_radius,
             })
             if (bool(updated.get("recovery_behavior_enabled", True)) or
                     bool(updated.get("clearing_rotation_allowed", True)) or
@@ -2931,14 +2957,21 @@ class VisionTriggeredNavigator(object):
                     self.coverage_cruise_vel_y + 1e-6 or
                     float(planner_updated.get(
                         "max_vel_theta", float("inf"))) >
-                    self.coverage_cruise_vel_theta + 1e-6):
+                    self.coverage_cruise_vel_theta + 1e-6 or
+                    float(planner_updated.get("min_obstacle_dist", -1.0)) <
+                    self.coverage_teb_min_obstacle_dist - 1e-6 or
+                    float(planner_updated.get("inflation_dist", -1.0)) <
+                    self.coverage_teb_inflation_dist - 1e-6):
                 raise RuntimeError(
                     "move_base rejected coverage safety configuration")
             self._coverage_speed_profile = "cruise"
             self._coverage_speed_updated_at = rospy.get_time()
             self._publish_status("coverage_recovery_disabled")
             rospy.logwarn(
-                "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复行为和清障旋转；退出时自动恢复.")
+                "[vision_triggered_navigator] 任务2临时安全配置已启用: "
+                "TEB obstacle=%.2f inflation=%.2f；退出时自动恢复任务1参数.",
+                self.coverage_teb_min_obstacle_dist,
+                self.coverage_teb_inflation_dist)
             return True
         except Exception as exc:
             rospy.logerr(
@@ -2964,7 +2997,17 @@ class VisionTriggeredNavigator(object):
             if saved_teb and self._planner_client is not None:
                 self._planner_client.update_configuration(saved_teb)
                 rospy.loginfo(
-                    "[vision_triggered_navigator] 已恢复TEB oscillation_recovery=%s.",
+                    "[vision_triggered_navigator] 已恢复任务1 TEB配置: "
+                    "speed=(%.2f,%.2f,%.2f) obstacle=%.2f inflation=%.2f "
+                    "nh=%.1f forward=%.1f radius=%.2f recovery=%s.",
+                    float(saved_teb["max_vel_x"]),
+                    float(saved_teb["max_vel_y"]),
+                    float(saved_teb["max_vel_theta"]),
+                    float(saved_teb["min_obstacle_dist"]),
+                    float(saved_teb["inflation_dist"]),
+                    float(saved_teb["weight_kinematics_nh"]),
+                    float(saved_teb["weight_kinematics_forward_drive"]),
+                    float(saved_teb["min_turning_radius"]),
                     bool(saved_teb["oscillation_recovery"]))
         except Exception as exc:
             rospy.logerr(

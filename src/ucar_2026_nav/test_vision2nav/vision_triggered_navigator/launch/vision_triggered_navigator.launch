@@ -36,6 +36,12 @@
   <arg name="coverage_translation_min_clearance" default="0.00" />
   <arg name="coverage_translation_safety_margin" default="0.15" />
   <arg name="coverage_translation_sector_half_angle_deg" default="35.0" />
+  <arg name="coverage_teb_min_obstacle_dist" default="0.22" />
+  <arg name="coverage_teb_inflation_dist" default="0.30" />
+  <arg name="coverage_teb_weight_inflation" default="0.20" />
+  <arg name="coverage_teb_weight_kinematics_nh" default="5.0" />
+  <arg name="coverage_teb_weight_forward_drive" default="20.0" />
+  <arg name="coverage_teb_min_turning_radius" default="0.0" />
   <arg name="coverage_max_vel_x" default="0.35" />
   <arg name="coverage_max_vel_y" default="0.30" />
   <arg name="coverage_max_vel_theta" default="0.80" />
@@ -157,6 +163,12 @@
     <param name="coverage_translation_min_clearance" value="$(arg coverage_translation_min_clearance)" />
     <param name="coverage_translation_safety_margin" value="$(arg coverage_translation_safety_margin)" />
     <param name="coverage_translation_sector_half_angle_deg" value="$(arg coverage_translation_sector_half_angle_deg)" />
+    <param name="coverage_teb_min_obstacle_dist" value="$(arg coverage_teb_min_obstacle_dist)" />
+    <param name="coverage_teb_inflation_dist" value="$(arg coverage_teb_inflation_dist)" />
+    <param name="coverage_teb_weight_inflation" value="$(arg coverage_teb_weight_inflation)" />
+    <param name="coverage_teb_weight_kinematics_nh" value="$(arg coverage_teb_weight_kinematics_nh)" />
+    <param name="coverage_teb_weight_forward_drive" value="$(arg coverage_teb_weight_forward_drive)" />
+    <param name="coverage_teb_min_turning_radius" value="$(arg coverage_teb_min_turning_radius)" />
     <param name="coverage_max_vel_x" value="$(arg coverage_max_vel_x)" />
     <param name="coverage_max_vel_y" value="$(arg coverage_max_vel_y)" />
     <param name="coverage_max_vel_theta" value="$(arg coverage_max_vel_theta)" />

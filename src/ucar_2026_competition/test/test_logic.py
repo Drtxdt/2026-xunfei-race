@@ -248,6 +248,9 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn(
             "coverage_translation_sector_half_angle_deg: 35.0", config)
         self.assertIn("coverage_translation_safety_margin: 0.15", config)
+        self.assertIn("coverage_teb_min_obstacle_dist: 0.22", config)
+        self.assertIn("coverage_teb_inflation_dist: 0.30", config)
+        self.assertIn("coverage_teb_weight_kinematics_nh: 5.0", config)
         self.assertIn("coverage_max_vel_x: 0.35", config)
         self.assertIn("coverage_max_vel_y: 0.30", config)
         self.assertIn("coverage_max_vel_theta: 0.80", config)
@@ -269,6 +272,7 @@ class CompetitionLogicTest(unittest.TestCase):
             flow = stream.read()
         self.assertIn(
             '"parking_obstacle_clearance_tolerance": 0.005', flow)
+        self.assertIn('"coverage_teb_min_obstacle_dist": 0.22', flow)
         self.assertIn(
             'args[name] = rospy.get_param("~" + param_name, default)', flow)
 

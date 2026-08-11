@@ -143,6 +143,13 @@ coverage_rotation_min_clearance: 0.36
 coverage_translation_min_clearance: 0.00
 coverage_translation_safety_margin: 0.15
 coverage_translation_sector_half_angle_deg: 35.0
+# 仅在任务2导航节点存活期间动态覆盖TEB；任务1继续使用导航队原始参数。
+coverage_teb_min_obstacle_dist: 0.22
+coverage_teb_inflation_dist: 0.30
+coverage_teb_weight_inflation: 0.20
+coverage_teb_weight_kinematics_nh: 5.0
+coverage_teb_weight_forward_drive: 20.0
+coverage_teb_min_turning_radius: 0.0
 coverage_max_vel_x: 0.35
 coverage_max_vel_y: 0.30
 coverage_max_vel_theta: 0.80

@@ -6,8 +6,8 @@ local_costmap:
   width: 3.0
   height: 3.0
   resolution: 0.03 #0.05
-  update_frequency: 10.0
-  publish_frequency: 5.0
+  update_frequency: 5.0 #10
+  publish_frequency: 2.0 #10.0
   transform_tolerance: 0.5 #1.0
   track_unknown_space: false           
   always_send_full_costmap: true
@@ -31,6 +31,5 @@ local_costmap:
       }    
   
   inflation_layer:                    
-    # 真实车体由footprint负责致命碰撞；额外膨胀给锥桶底座和制动留余量。
-    inflation_radius: 0.30
-    cost_scaling_factor: 6.0
+    inflation_radius: 0.12 #！0.05 #0.8
+    cost_scaling_factor: 10.0

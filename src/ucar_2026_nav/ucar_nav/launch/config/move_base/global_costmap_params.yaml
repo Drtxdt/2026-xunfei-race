@@ -6,7 +6,7 @@
 global_costmap:
   global_frame: map
   robot_base_frame: base_link
-  update_frequency: 5.0         # 随机锥桶必须进入全局重规划，而非只靠局部临时绕行。
+  update_frequency: 1.0 #0.5    # 1s更新一次
   publish_frequency: 1.0 #0.5   # 代价发布频率
   static_map: true              # 是否使用静态地图作为基础地图
   rolling_window: false         # 关闭滚动窗口模式（全局地图通常不需要）
@@ -15,7 +15,7 @@ global_costmap:
   always_send_full_costmap: false # 只发送更新部分代价地图
   plugins:
     - {name: static_layer,    type: "costmap_2d::StaticLayer"}
-    - {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
+    #- {name: obstacle_layer,  type: "costmap_2d::ObstacleLayer"}
     - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
     
 
@@ -24,18 +24,18 @@ global_costmap:
     subscribe_to_updates: true
 
   inflation_layer:                    # 膨胀层参数
-    inflation_radius: 0.30
-    cost_scaling_factor: 6.0
+    inflation_radius: 0.50
+    cost_scaling_factor: 10.0
 
-  obstacle_layer:
-    enabled: true
-    obstacle_range: 7.0
-    raytrace_range: 7.0
-    track_unknown_space: false
-    observation_sources: laser_scan_sensor
-    laser_scan_sensor: {
-      data_type: LaserScan,
-      topic: /scan,
-      marking: true,
-      clearing: true
-    }
+  # obstacle_layer:
+  #   enabled: true
+  #   obstacle_range: 10.0      # 全局可以设置更大范围
+  #   raytrace_range: 10.0
+  #   track_unknown_space: false  # 全局不需要追踪未知区域
+  #   observation_sources: laser_scan_sensor
+  #   laser_scan_sensor: {
+  #     data_type: LaserScan,
+  #     topic: /scan,
+  #     marking: true,
+  #     clearing: true
+  #   }

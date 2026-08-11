@@ -202,6 +202,8 @@ def test_coverage_speed_profile_is_wired_through_launch():
     assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.50)
     assert math.isclose(
         float(config["coverage_translation_safety_margin"]), 0.15)
+    assert math.isclose(float(config["coverage_teb_min_obstacle_dist"]), 0.22)
+    assert math.isclose(float(config["coverage_teb_inflation_dist"]), 0.30)
     assert math.isclose(
         float(config["coverage_fast_enter_clearance"]), 0.90)
 
@@ -220,6 +222,12 @@ def test_coverage_speed_profile_is_wired_through_launch():
             "coverage_cruise_vel_x",
             "coverage_caution_vel_x",
             "coverage_translation_safety_margin",
+            "coverage_teb_min_obstacle_dist",
+            "coverage_teb_inflation_dist",
+            "coverage_teb_weight_inflation",
+            "coverage_teb_weight_kinematics_nh",
+            "coverage_teb_weight_forward_drive",
+            "coverage_teb_min_turning_radius",
             "coverage_caution_enter_clearance",
             "coverage_caution_exit_clearance",
             "coverage_fast_exit_clearance",
@@ -766,7 +774,7 @@ def test_rules_aligned_eleven_anchor_order_preserves_calibrated_points():
     ]
 
 
-def test_move_base_models_real_body_and_global_dynamic_cones():
+def test_task1_shared_move_base_configuration_remains_original_and_lightweight():
     package_dir = os.path.abspath(os.path.join(
         os.path.dirname(__file__), ".."))
     planner_dir = os.path.abspath(os.path.join(
@@ -778,19 +786,40 @@ def test_move_base_models_real_body_and_global_dynamic_cones():
     with open(os.path.join(planner_dir, "global_costmap_params.yaml"),
               "r", encoding="utf-8") as stream:
         global_costmap = yaml.safe_load(stream)["global_costmap"]
+    with open(os.path.join(planner_dir, "local_costmap_params.yaml"),
+              "r", encoding="utf-8") as stream:
+        local_costmap = yaml.safe_load(stream)["local_costmap"]
 
-    assert teb["footprint_model"]["type"] == "polygon"
-    assert teb["footprint_model"]["vertices"] == [
-        [0.171, -0.128], [0.171, 0.128],
-        [-0.171, 0.128], [-0.171, -0.128],
-    ]
-    assert math.isclose(float(teb["max_vel_x"]), 0.45)
-    assert math.isclose(float(teb["max_vel_y"]), 0.35)
-    obstacle_plugin = next(
-        item for item in global_costmap["plugins"]
-        if item["name"] == "obstacle_layer")
-    assert obstacle_plugin["type"] == "costmap_2d::ObstacleLayer"
-    assert global_costmap["obstacle_layer"]["observation_sources"] == "laser_scan_sensor"
+    assert teb["footprint_model"]["type"] == "line"
+    assert math.isclose(float(teb["dt_ref"]), 0.30)
+    assert int(teb["feasibility_check_no_poses"]) == 4
+    assert math.isclose(float(teb["max_vel_x"]), 0.8)
+    assert math.isclose(float(teb["max_vel_y"]), 0.8)
+    assert math.isclose(float(teb["weight_kinematics_nh"]), 50.0)
+    assert math.isclose(float(teb["weight_kinematics_forward_drive"]), 100.0)
+    assert math.isclose(float(global_costmap["update_frequency"]), 1.0)
+    assert [item["name"] for item in global_costmap["plugins"]] == [
+        "static_layer", "inflation_layer"]
+    assert math.isclose(float(global_costmap["inflation_layer"]["inflation_radius"]), 0.50)
+    assert math.isclose(float(local_costmap["update_frequency"]), 5.0)
+    assert math.isclose(float(local_costmap["publish_frequency"]), 2.0)
+    assert math.isclose(float(local_costmap["inflation_layer"]["inflation_radius"]), 0.12)
+
+
+def test_task2_teb_safety_overrides_are_snapshotted_and_restored():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    for name in (
+            "min_obstacle_dist", "inflation_dist", "weight_inflation",
+            "weight_kinematics_nh", "weight_kinematics_forward_drive",
+            "min_turning_radius"):
+        assert '"{}",'.format(name) in source
+    assert "self._saved_teb_coverage_config = {" in source
+    assert "self._planner_client.update_configuration(saved_teb)" in source
+    assert "退出时自动恢复任务1参数" in source
 
 
 def test_only_known_lethal_cost_skips_a_coverage_anchor():
