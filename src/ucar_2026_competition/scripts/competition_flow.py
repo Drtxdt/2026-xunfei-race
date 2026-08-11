@@ -1878,12 +1878,12 @@ class CompetitionFlow:
                 "~max_coverage_anchors", 0)),
         }
         forwarded_defaults = {
-            "coverage_rotation_min_clearance": 0.36,
+            "coverage_rotation_min_clearance": 0.28,
             "coverage_escape_enabled": True,
             "coverage_escape_distance": 0.18,
             "coverage_escape_speed": 0.08,
-            "coverage_escape_entry_clearance": 0.54,
-            "coverage_escape_stop_clearance": 0.36,
+            "coverage_escape_entry_clearance": 0.46,
+            "coverage_escape_stop_clearance": 0.28,
             "coverage_escape_sector_half_angle_deg": 30.0,
             "coverage_escape_timeout_sec": 4.0,
             "coverage_escape_max_attempts": 2,
@@ -1962,7 +1962,7 @@ class CompetitionFlow:
             "coverage_goal_hard_timeout_sec": 40.0,
             "coverage_goal_progress_window_sec": 5.0,
             "coverage_goal_min_progress": 0.03,
-            "coverage_anchor_observation_radius": 0.22,
+            "coverage_anchor_observation_radius": 0.45,
             "coverage_near_anchor_stall_timeout_sec": 3.0,
         }
         for name, default in forwarded_defaults.items():

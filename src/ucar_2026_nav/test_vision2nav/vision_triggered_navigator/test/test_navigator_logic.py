@@ -201,6 +201,12 @@ def test_coverage_speed_profile_is_wired_through_launch():
     assert math.isclose(float(config["coverage_caution_vel_x"]), 0.22)
     assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.50)
     assert math.isclose(
+        float(config["coverage_anchor_observation_radius"]), 0.45)
+    assert math.isclose(
+        float(config["coverage_rotation_min_clearance"]), 0.28)
+    assert math.isclose(
+        float(config["coverage_translation_min_clearance"]), 0.0)
+    assert math.isclose(
         float(config["coverage_translation_safety_margin"]), 0.15)
     assert math.isclose(float(config["coverage_teb_min_obstacle_dist"]), 0.22)
     assert math.isclose(float(config["coverage_teb_inflation_dist"]), 0.30)
@@ -234,6 +240,21 @@ def test_coverage_speed_profile_is_wired_through_launch():
             "coverage_fast_enter_clearance"):
         assert name in launch_args
         assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_zero_translation_clearance_really_disables_raw_lidar_goal_cancel():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+
+    # Task 2 delegates translation collision checking to its scoped TEB and
+    # local costmap.  Do not silently turn a configured zero back into a
+    # footprint-derived laser threshold: side cones then cancel valid goals.
+    assert "if self.coverage_translation_min_clearance <= 0.0:" in source
+    assert "directional_footprint_clearance(" not in source
 
 
 def test_non_target_early_exit_is_wired_through_launch():

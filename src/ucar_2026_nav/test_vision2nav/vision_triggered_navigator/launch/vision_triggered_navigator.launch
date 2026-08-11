@@ -22,14 +22,14 @@
   <arg name="coverage_goal_hard_timeout_sec" default="40.0" />
   <arg name="coverage_goal_progress_window_sec" default="5.0" />
   <arg name="coverage_goal_min_progress" default="0.03" />
-  <arg name="coverage_anchor_observation_radius" default="0.22" />
+  <arg name="coverage_anchor_observation_radius" default="0.45" />
   <arg name="coverage_near_anchor_stall_timeout_sec" default="3.0" />
-  <arg name="coverage_rotation_min_clearance" default="0.36" />
+  <arg name="coverage_rotation_min_clearance" default="0.28" />
   <arg name="coverage_escape_enabled" default="true" />
   <arg name="coverage_escape_distance" default="0.18" />
   <arg name="coverage_escape_speed" default="0.08" />
-  <arg name="coverage_escape_entry_clearance" default="0.54" />
-  <arg name="coverage_escape_stop_clearance" default="0.36" />
+  <arg name="coverage_escape_entry_clearance" default="0.46" />
+  <arg name="coverage_escape_stop_clearance" default="0.28" />
   <arg name="coverage_escape_sector_half_angle_deg" default="30.0" />
   <arg name="coverage_escape_timeout_sec" default="4.0" />
   <arg name="coverage_escape_max_attempts" default="2" />

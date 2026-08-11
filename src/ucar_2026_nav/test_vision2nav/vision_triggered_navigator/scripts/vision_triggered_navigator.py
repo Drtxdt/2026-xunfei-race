@@ -38,7 +38,6 @@ from navigator_logic import (
     docking_command,
     docking_pose_errors,
     docking_within_tolerance,
-    directional_footprint_clearance,
     fit_wall_line,
     lidar_base_wall_distance,
     lidar_requires_stop,
@@ -163,7 +162,7 @@ class VisionTriggeredNavigator(object):
         self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
             "~coverage_rotation_max_yaw_deg", 90.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
-            "~coverage_rotation_min_clearance", 0.36)))
+            "~coverage_rotation_min_clearance", 0.28)))
         self.coverage_escape_enabled = bool(rospy.get_param(
             "~coverage_escape_enabled", True))
         self.coverage_escape_distance = max(0.0, float(rospy.get_param(
@@ -172,10 +171,10 @@ class VisionTriggeredNavigator(object):
             "~coverage_escape_speed", 0.08)))
         self.coverage_escape_entry_clearance = max(
             self.coverage_rotation_min_clearance,
-            float(rospy.get_param("~coverage_escape_entry_clearance", 0.54)))
+            float(rospy.get_param("~coverage_escape_entry_clearance", 0.46)))
         self.coverage_escape_stop_clearance = max(
             self.coverage_rotation_min_clearance,
-            float(rospy.get_param("~coverage_escape_stop_clearance", 0.36)))
+            float(rospy.get_param("~coverage_escape_stop_clearance", 0.28)))
         self.coverage_escape_sector_half_angle = math.radians(abs(float(
             rospy.get_param("~coverage_escape_sector_half_angle_deg", 30.0))))
         self.coverage_escape_timeout = max(0.5, float(rospy.get_param(
@@ -277,7 +276,7 @@ class VisionTriggeredNavigator(object):
         self.coverage_anchor_observation_radius = max(
             self.coverage_anchor_position_tolerance,
             float(rospy.get_param(
-                "~coverage_anchor_observation_radius", 0.22)))
+                "~coverage_anchor_observation_radius", 0.45)))
         self.coverage_near_anchor_stall_timeout = max(0.5, float(
             rospy.get_param("~coverage_near_anchor_stall_timeout_sec", 3.0)))
         self.coverage_anchor_yaw_tolerance = math.radians(abs(float(rospy.get_param(
@@ -699,23 +698,22 @@ class VisionTriggeredNavigator(object):
             return None, None, None
         command_x, command_y, command_yaw = self.last_cmd_vel
         if math.hypot(command_x, command_y) > 0.01:
+            # Translation is already collision-checked against the complete
+            # footprint by move_base's local costmap and TEB.  A configured
+            # value of zero deliberately disables the extra raw-lidar gate:
+            # its wide sector cannot distinguish a cone beside the commanded
+            # path from one actually in the path and used to cancel healthy
+            # goals almost immediately.
+            if self.coverage_translation_min_clearance <= 0.0:
+                return None, None, None
             direction = math.atan2(command_y, command_x)
             nearest = polar_sector_min(
                 self.scan_polar_samples,
                 direction,
                 self.coverage_translation_sector_half_angle,
             )
-            footprint_clearance = directional_footprint_clearance(
-                direction,
-                self.footprint_half_length,
-                self.footprint_half_width,
-                self.parking_lidar_forward_offset,
-                self.coverage_translation_safety_margin,
-            )
-            minimum = max(
-                self.coverage_translation_min_clearance,
-                footprint_clearance,
-            )
+            minimum = (self.coverage_translation_min_clearance +
+                       self.coverage_translation_safety_margin)
             return nearest, minimum, (
                 "translation {:.1f}deg".format(math.degrees(direction)))
         if abs(command_yaw) > 0.02:
