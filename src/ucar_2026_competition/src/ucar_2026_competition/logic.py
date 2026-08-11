@@ -181,15 +181,18 @@ def target_bbox_is_close_enough(
     )
 
 
-def task2_target_trigger_is_eligible(bbox_is_close, active_anchor):
-    """Only lock a close OCR target while stopped at a coverage anchor.
+def task2_target_trigger_is_eligible(
+        bbox_is_close, active_anchor, allow_transit=False):
+    """Lock a close target at an anchor or during a rules-compliant survey.
 
-    The navigator deliberately clears its active anchor during transit.  This
-    prevents an oblique sign glimpse between cones from interrupting move_base
-    and turning an arbitrary transit pose into the parking approach origin.
+    Factory bays are random along all four production-area edges. Requiring a
+    fixed anchor discards valid signs seen between anchors. Transit is allowed
+    only when explicitly enabled; the caller still requires repeated close OCR.
     """
     if not bool(bbox_is_close):
         return False
+    if bool(allow_transit):
+        return True
     try:
         return int(active_anchor) > 0
     except (TypeError, ValueError):
@@ -355,7 +358,7 @@ def task2_semantic_coverage_hint(memory, target_category):
 
 
 def task2_resumed_coverage_hint(memory, target_category, last_anchor,
-                                anchor_count=9):
+                                anchor_count=11):
     """Prefer remembered target, otherwise continue through unvisited anchors."""
     preferred, skipped = task2_semantic_coverage_hint(memory, target_category)
     if preferred:
@@ -377,7 +380,7 @@ def task2_resumed_coverage_hint(memory, target_category, last_anchor,
     return preferred, skipped
 
 
-def normalize_coverage_anchor_ids(value, anchor_count=9):
+def normalize_coverage_anchor_ids(value, anchor_count=11):
     """Return sorted, unique one-based anchor IDs from ROS list/string input."""
     if isinstance(value, str):
         values = value.split(",")

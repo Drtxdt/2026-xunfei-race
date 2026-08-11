@@ -68,7 +68,7 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `cost_threshold` | 代价阈值，>= 则认为不可行 | `100` |
 | `feasibility_check_rate` | 导航中可行性检查频率（Hz） | `1.0` |
 | `rotation_speed` | 自转角速度（rad/s，左正） | `0.5` |
-| `patrol_points` | 巡航点列表（含自转配置） | 9 个点 |
+| `patrol_points` | 沿赛规四边巡检的航点列表（含自转配置） | 11 个点 |
 | `end_goal` | 结束点 | 见 yaml |
 | `publish_initial_pose` | 是否发布初始位姿给 AMCL | `true` |
 | `initial_pose` | 初始位姿 `x/y/yaw` | `0, 0, 0` |

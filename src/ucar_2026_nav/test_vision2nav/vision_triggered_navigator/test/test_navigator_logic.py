@@ -31,6 +31,7 @@ from navigator_logic import (
     docking_command,
     docking_pose_errors,
     docking_within_tolerance,
+    directional_footprint_clearance,
     exact_observation_target,
     fit_wall_line,
     footprint_max_cost,
@@ -113,6 +114,20 @@ def test_coverage_escape_rejects_when_every_corridor_is_too_narrow():
     assert coverage_escape_direction(samples, 0.46) is None
 
 
+def test_directional_clearance_protects_complete_rectangular_footprint():
+    # 0.08 m 前置雷达：前进所需雷达距离较短，后退较长；横移保护半车宽。
+    forward = directional_footprint_clearance(
+        0.0, 0.171, 0.128, 0.08, 0.15)
+    lateral = directional_footprint_clearance(
+        math.pi / 2.0, 0.171, 0.128, 0.08, 0.15)
+    rear = directional_footprint_clearance(
+        math.pi, 0.171, 0.128, 0.08, 0.15)
+    assert math.isclose(forward, 0.241, abs_tol=1e-9)
+    assert math.isclose(lateral, 0.278, abs_tol=1e-9)
+    assert math.isclose(rear, 0.401, abs_tol=1e-9)
+    assert forward < lateral < rear
+
+
 def test_rotation_clearance_consensus_absorbs_only_small_lidar_jitter():
     samples = [(9.80, 0.279), (9.90, 0.280), (10.00, 0.279)]
     safe, median, count = rotation_clearance_consensus(
@@ -178,12 +193,15 @@ def test_coverage_speed_profile_is_wired_through_launch():
         package_dir, "config", "vision_triggered_navigator.yaml")
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
-    assert math.isclose(float(config["coverage_max_vel_x"]), 0.72)
-    assert math.isclose(float(config["coverage_max_vel_theta"]), 1.45)
-    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.70)
-    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 1.30)
-    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.53)
-    assert math.isclose(float(config["coverage_caution_vel_theta"]), 1.12)
+    assert math.isclose(float(config["coverage_max_vel_x"]), 0.35)
+    assert math.isclose(float(config["coverage_max_vel_y"]), 0.30)
+    assert math.isclose(float(config["coverage_max_vel_theta"]), 0.80)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.30)
+    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 0.70)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.22)
+    assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.50)
+    assert math.isclose(
+        float(config["coverage_translation_safety_margin"]), 0.15)
     assert math.isclose(
         float(config["coverage_fast_enter_clearance"]), 0.90)
 
@@ -201,6 +219,7 @@ def test_coverage_speed_profile_is_wired_through_launch():
     for name in (
             "coverage_cruise_vel_x",
             "coverage_caution_vel_x",
+            "coverage_translation_safety_margin",
             "coverage_caution_enter_clearance",
             "coverage_caution_exit_clearance",
             "coverage_fast_exit_clearance",
@@ -705,17 +724,19 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
     assert math.isclose(abs(yaw), math.pi)
 
 
-def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
+def test_rules_aligned_eleven_anchor_order_preserves_calibrated_points():
     calibrated = [
         (-1.6499, -1.7735, 1.0417),
         (-1.6613, -2.2796, -3.1404),
         (-1.6846, -2.7856, -3.1176),
         (-0.6965, -2.8239, -1.5594),
+        (0.2848, -2.8551, -1.5519),
         (1.2660, -2.8863, -1.5443),
         (2.3356, -2.7417, -2.1786),
         (2.3471, -1.6090, -0.8607),
         (1.2641, -1.6452, 0.8530),
         (0.3011, -1.6319, 0.8913),
+        (-0.7000, -1.6181, 1.5708),
     ]
     points = [
         {"x": x, "y": y, "yaw": yaw, "rotations": []}
@@ -735,12 +756,41 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
         [("right", 3.0), ("left", 3.5)],
         [("left", 4.5)],
         [("right", 3.0), ("left", 3.0)],
+        [("right", 2.0), ("left", 2.0)],
         [("right", 3.0), ("left", 3.0)],
         [("left", 4.5)],
         [("left", 4.5)],
         [("left", 4.0)],
         [("left", 4.0)],
+        [("left", 2.0), ("right", 2.0)],
     ]
+
+
+def test_move_base_models_real_body_and_global_dynamic_cones():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    planner_dir = os.path.abspath(os.path.join(
+        package_dir, "..", "..", "ucar_nav", "launch", "config",
+        "move_base"))
+    with open(os.path.join(planner_dir, "teb_local_planner_params.yaml"),
+              "r", encoding="utf-8") as stream:
+        teb = yaml.safe_load(stream)["TebLocalPlannerROS"]
+    with open(os.path.join(planner_dir, "global_costmap_params.yaml"),
+              "r", encoding="utf-8") as stream:
+        global_costmap = yaml.safe_load(stream)["global_costmap"]
+
+    assert teb["footprint_model"]["type"] == "polygon"
+    assert teb["footprint_model"]["vertices"] == [
+        [0.171, -0.128], [0.171, 0.128],
+        [-0.171, 0.128], [-0.171, -0.128],
+    ]
+    assert math.isclose(float(teb["max_vel_x"]), 0.45)
+    assert math.isclose(float(teb["max_vel_y"]), 0.35)
+    obstacle_plugin = next(
+        item for item in global_costmap["plugins"]
+        if item["name"] == "obstacle_layer")
+    assert obstacle_plugin["type"] == "costmap_2d::ObstacleLayer"
+    assert global_costmap["obstacle_layer"]["observation_sources"] == "laser_scan_sensor"
 
 
 def test_only_known_lethal_cost_skips_a_coverage_anchor():

@@ -64,6 +64,25 @@ def obstacle_clearance_requires_stop(nearest_range, min_clearance,
             abs(float(min_clearance)))
 
 
+def directional_footprint_clearance(
+        direction, half_length, half_width, lidar_forward_offset=0.0,
+        safety_margin=0.0):
+    """Conservative lidar-origin clearance for a rectangular robot.
+
+    The support function protects the complete body corner in an arbitrary
+    translation direction.  The lidar offset is subtracted along that same
+    direction, and ``safety_margin`` covers the cone base, localization error,
+    and stopping distance.
+    """
+    direction = float(direction)
+    extent = (
+        abs(float(half_length)) * abs(math.cos(direction)) +
+        abs(float(half_width)) * abs(math.sin(direction)) -
+        float(lidar_forward_offset) * math.cos(direction)
+    )
+    return max(0.0, extent) + max(0.0, float(safety_margin))
+
+
 def coverage_speed_profile(clearance, current_profile,
                            caution_enter_clearance,
                            caution_exit_clearance,

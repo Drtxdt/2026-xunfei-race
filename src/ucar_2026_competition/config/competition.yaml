@@ -133,24 +133,25 @@ coverage_goal_soft_timeout_sec: 25.0
 coverage_goal_hard_timeout_sec: 40.0
 coverage_goal_progress_window_sec: 5.0
 coverage_goal_min_progress: 0.03
-coverage_anchor_observation_radius: 0.45
+coverage_anchor_observation_radius: 0.22
 coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
-coverage_rotation_min_clearance: 0.28
+coverage_rotation_min_clearance: 0.36
 # 交由 move_base/costmap 绕障；设为 0 禁用会误取消整个位点的激光平移门槛。
 coverage_translation_min_clearance: 0.00
+coverage_translation_safety_margin: 0.15
 coverage_translation_sector_half_angle_deg: 35.0
-coverage_max_vel_x: 0.72
-coverage_max_vel_y: 0.72
-coverage_max_vel_theta: 1.45
-coverage_cruise_vel_x: 0.70
-coverage_cruise_vel_y: 0.70
-coverage_cruise_vel_theta: 1.30
-coverage_caution_vel_x: 0.53
-coverage_caution_vel_y: 0.53
-coverage_caution_vel_theta: 1.12
+coverage_max_vel_x: 0.35
+coverage_max_vel_y: 0.30
+coverage_max_vel_theta: 0.80
+coverage_cruise_vel_x: 0.30
+coverage_cruise_vel_y: 0.25
+coverage_cruise_vel_theta: 0.70
+coverage_caution_vel_x: 0.22
+coverage_caution_vel_y: 0.18
+coverage_caution_vel_theta: 0.50
 coverage_caution_enter_clearance: 0.45
 coverage_caution_exit_clearance: 0.55
 coverage_fast_exit_clearance: 0.75
@@ -171,6 +172,8 @@ task2_remembered_heading_scan_half_angle_deg: 18.0
 task2_non_target_early_exit: true
 task2_non_target_early_exit_min_score: 0.62
 task2_non_target_topic: /vision/non_target_observation
+# 停车区沿四边随机摆放，近距离连续目标在航点间也必须能触发停车闭环。
+task2_trigger_during_transit: true
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_host: 127.0.0.1

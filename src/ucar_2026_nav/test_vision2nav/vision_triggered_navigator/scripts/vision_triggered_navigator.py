@@ -38,6 +38,7 @@ from navigator_logic import (
     docking_command,
     docking_pose_errors,
     docking_within_tolerance,
+    directional_footprint_clearance,
     fit_wall_line,
     lidar_base_wall_distance,
     lidar_requires_stop,
@@ -162,7 +163,7 @@ class VisionTriggeredNavigator(object):
         self.coverage_rotation_max_yaw = math.radians(abs(float(rospy.get_param(
             "~coverage_rotation_max_yaw_deg", 90.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
-            "~coverage_rotation_min_clearance", 0.28)))
+            "~coverage_rotation_min_clearance", 0.36)))
         self.coverage_escape_enabled = bool(rospy.get_param(
             "~coverage_escape_enabled", True))
         self.coverage_escape_distance = max(0.0, float(rospy.get_param(
@@ -171,10 +172,10 @@ class VisionTriggeredNavigator(object):
             "~coverage_escape_speed", 0.08)))
         self.coverage_escape_entry_clearance = max(
             self.coverage_rotation_min_clearance,
-            float(rospy.get_param("~coverage_escape_entry_clearance", 0.46)))
+            float(rospy.get_param("~coverage_escape_entry_clearance", 0.54)))
         self.coverage_escape_stop_clearance = max(
             self.coverage_rotation_min_clearance,
-            float(rospy.get_param("~coverage_escape_stop_clearance", 0.28)))
+            float(rospy.get_param("~coverage_escape_stop_clearance", 0.36)))
         self.coverage_escape_sector_half_angle = math.radians(abs(float(
             rospy.get_param("~coverage_escape_sector_half_angle_deg", 30.0))))
         self.coverage_escape_timeout = max(0.5, float(rospy.get_param(
@@ -199,39 +200,42 @@ class VisionTriggeredNavigator(object):
         self.coverage_translation_min_clearance = max(
             0.0, float(rospy.get_param(
                 "~coverage_translation_min_clearance", 0.00)))
+        self.coverage_translation_safety_margin = max(
+            0.0, float(rospy.get_param(
+                "~coverage_translation_safety_margin", 0.15)))
         self.coverage_translation_sector_half_angle = math.radians(abs(float(
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_x", 0.72)))
+            "~coverage_max_vel_x", 0.35)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_y", 0.72)))
+            "~coverage_max_vel_y", 0.30)))
         self.coverage_max_vel_theta = max(0.10, float(rospy.get_param(
-            "~coverage_max_vel_theta", 1.45)))
+            "~coverage_max_vel_theta", 0.80)))
         self.coverage_cruise_vel_x = min(
             self.coverage_max_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_x", 0.70))))
+                "~coverage_cruise_vel_x", 0.30))))
         self.coverage_cruise_vel_y = min(
             self.coverage_max_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_y", 0.70))))
+                "~coverage_cruise_vel_y", 0.25))))
         self.coverage_cruise_vel_theta = min(
             self.coverage_max_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_cruise_vel_theta", 1.30))))
+                "~coverage_cruise_vel_theta", 0.70))))
         self.coverage_caution_vel_x = min(
             self.coverage_cruise_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_x", 0.53))))
+                "~coverage_caution_vel_x", 0.22))))
         self.coverage_caution_vel_y = min(
             self.coverage_cruise_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_y", 0.53))))
+                "~coverage_caution_vel_y", 0.18))))
         self.coverage_caution_vel_theta = min(
             self.coverage_cruise_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_caution_vel_theta", 1.12))))
+                "~coverage_caution_vel_theta", 0.50))))
         self.coverage_caution_enter_clearance = max(0.0, float(
             rospy.get_param(
                 "~coverage_caution_enter_clearance", 0.45)))
@@ -260,7 +264,7 @@ class VisionTriggeredNavigator(object):
         self.coverage_anchor_observation_radius = max(
             self.coverage_anchor_position_tolerance,
             float(rospy.get_param(
-                "~coverage_anchor_observation_radius", 0.45)))
+                "~coverage_anchor_observation_radius", 0.22)))
         self.coverage_near_anchor_stall_timeout = max(0.5, float(
             rospy.get_param("~coverage_near_anchor_stall_timeout_sec", 3.0)))
         self.coverage_anchor_yaw_tolerance = math.radians(abs(float(rospy.get_param(
@@ -688,7 +692,18 @@ class VisionTriggeredNavigator(object):
                 direction,
                 self.coverage_translation_sector_half_angle,
             )
-            return nearest, self.coverage_translation_min_clearance, (
+            footprint_clearance = directional_footprint_clearance(
+                direction,
+                self.footprint_half_length,
+                self.footprint_half_width,
+                self.parking_lidar_forward_offset,
+                self.coverage_translation_safety_margin,
+            )
+            minimum = max(
+                self.coverage_translation_min_clearance,
+                footprint_clearance,
+            )
+            return nearest, minimum, (
                 "translation {:.1f}deg".format(math.degrees(direction)))
         if abs(command_yaw) > 0.02:
             return (self.scan_all_min,

@@ -13,7 +13,8 @@ base_frame: "base_link"
 camera_frame: "camera_frame"
 
 # 视觉区实测四角，顺序固定为：左上、右上、左下、右下。
-# 最终停泊直接使用四条真实墙段；观察点严格使用下方9个标定坐标。
+# 最终停泊直接使用四条真实墙段；原有9个标定坐标保持不变，并在两段长边盲区
+# 各插入一个由相邻实测轨迹线性插值得到的观察点，以覆盖赛规允许随机出现的四边停车区。
 vision_rect_corners:
   - [-2.2311, -1.2505]
   - [ 2.8000, -1.1940]
@@ -50,13 +51,13 @@ coverage_goal_min_progress: 0.03
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 45.0
-coverage_rotation_min_clearance: 0.28
+coverage_rotation_min_clearance: 0.36
 # 原地旋转被锥桶夹住时，只沿雷达最宽的车体坐标轴低速平移，再重试同一锚点。
 coverage_escape_enabled: true
 coverage_escape_distance: 0.18
 coverage_escape_speed: 0.08
-coverage_escape_entry_clearance: 0.46
-coverage_escape_stop_clearance: 0.28
+coverage_escape_entry_clearance: 0.54
+coverage_escape_stop_clearance: 0.36
 coverage_escape_sector_half_angle_deg: 30.0
 coverage_escape_timeout_sec: 4.0
 coverage_escape_max_attempts: 2
@@ -67,16 +68,17 @@ coverage_rotation_resample_timeout_sec: 0.25
 coverage_rotation_consensus_history_size: 9
 # 交由 move_base/costmap 绕障；设为 0 禁用会误取消整个位点的激光平移门槛。
 coverage_translation_min_clearance: 0.00
+coverage_translation_safety_margin: 0.15
 coverage_translation_sector_half_angle_deg: 35.0
-coverage_max_vel_x: 0.72
-coverage_max_vel_y: 0.72
-coverage_max_vel_theta: 1.45
-coverage_cruise_vel_x: 0.70
-coverage_cruise_vel_y: 0.70
-coverage_cruise_vel_theta: 1.30
-coverage_caution_vel_x: 0.53
-coverage_caution_vel_y: 0.53
-coverage_caution_vel_theta: 1.12
+coverage_max_vel_x: 0.35
+coverage_max_vel_y: 0.30
+coverage_max_vel_theta: 0.80
+coverage_cruise_vel_x: 0.30
+coverage_cruise_vel_y: 0.25
+coverage_cruise_vel_theta: 0.70
+coverage_caution_vel_x: 0.22
+coverage_caution_vel_y: 0.18
+coverage_caution_vel_theta: 0.50
 coverage_caution_enter_clearance: 0.45
 coverage_caution_exit_clearance: 0.55
 coverage_fast_exit_clearance: 0.75
@@ -84,7 +86,7 @@ coverage_fast_enter_clearance: 0.90
 coverage_speed_update_min_interval_sec: 0.50
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
-coverage_anchor_observation_radius: 0.45
+coverage_anchor_observation_radius: 0.22
 coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
@@ -203,7 +205,7 @@ initial_pose:
   y: 0.0
   yaw: 0.0
 
-# 巡航点（9 个点）
+# 巡航点（11 个点，沿四边顺时针）
 patrol_points:
   - x: -1.6499
     y: -1.7735
@@ -230,6 +232,14 @@ patrol_points:
     rotations:
       - {direction: "right", duration: 3.0}
       - {direction: "left", duration: 3.0}
+
+  # 底边长空档中点：由相邻两个实测底边航点插值，不移动原标定点。
+  - x: 0.2848
+    y: -2.8551
+    yaw: -1.5519
+    rotations:
+      - {direction: "right", duration: 2.0}
+      - {direction: "left", duration: 2.0}
 
   - x: 1.2660
     y: -2.8863
@@ -261,3 +271,11 @@ patrol_points:
     yaw: 0.8913
     rotations:
       - {direction: "left", duration: 4.0}
+
+  # 上边左侧长空档中点：沿已标定上边轨迹外推到两点间的中部。
+  - x: -0.7000
+    y: -1.6181
+    yaw: 1.5708
+    rotations:
+      - {direction: "left", duration: 2.0}
+      - {direction: "right", duration: 2.0}

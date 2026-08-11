@@ -191,6 +191,8 @@ class CompetitionFlow:
             "~task2_trigger_min_bbox_height_ratio", 0.06))
         self.ocr_trigger_min_bbox_area_ratio = float(rospy.get_param(
             "~task2_trigger_min_bbox_area_ratio", 0.006))
+        self.task2_trigger_during_transit = bool_param(
+            "~task2_trigger_during_transit", True)
         self.task2_warehouse_memory = {}
         self.task2_non_target_announced = set()
         self.current_coverage_anchor = None
@@ -580,7 +582,10 @@ class CompetitionFlow:
         with self.lock:
             active_anchor = self.current_coverage_anchor
         target_trigger_eligible = task2_target_trigger_is_eligible(
-            trigger_eligible, active_anchor)
+            trigger_eligible,
+            active_anchor,
+            allow_transit=self.task2_trigger_during_transit,
+        )
         non_target_event = None
         if (memory_confirmed and payload.get("target_bbox") and
                 score >= self.ocr_memory_min_score):
@@ -1793,7 +1798,7 @@ class CompetitionFlow:
         resume_enabled = bool_param("~task2_resume_coverage_enabled", True)
         with self.lock:
             anchor_count = len(rospy.get_param(
-                "/vision_triggered_navigator/patrol_points", [])) or 9
+                "/vision_triggered_navigator/patrol_points", [])) or 11
             if resume_enabled:
                 preferred_anchor, skipped_anchors = task2_resumed_coverage_hint(
                     self.task2_warehouse_memory,
@@ -1873,26 +1878,27 @@ class CompetitionFlow:
                 "~max_coverage_anchors", 0)),
         }
         forwarded_defaults = {
-            "coverage_rotation_min_clearance": 0.28,
+            "coverage_rotation_min_clearance": 0.36,
             "coverage_escape_enabled": True,
             "coverage_escape_distance": 0.18,
             "coverage_escape_speed": 0.08,
-            "coverage_escape_entry_clearance": 0.46,
-            "coverage_escape_stop_clearance": 0.28,
+            "coverage_escape_entry_clearance": 0.54,
+            "coverage_escape_stop_clearance": 0.36,
             "coverage_escape_sector_half_angle_deg": 30.0,
             "coverage_escape_timeout_sec": 4.0,
             "coverage_escape_max_attempts": 2,
             "coverage_translation_min_clearance": 0.00,
+            "coverage_translation_safety_margin": 0.15,
             "coverage_translation_sector_half_angle_deg": 35.0,
-            "coverage_max_vel_x": 0.72,
-            "coverage_max_vel_y": 0.72,
-            "coverage_max_vel_theta": 1.45,
-            "coverage_cruise_vel_x": 0.70,
-            "coverage_cruise_vel_y": 0.70,
-            "coverage_cruise_vel_theta": 1.30,
-            "coverage_caution_vel_x": 0.53,
-            "coverage_caution_vel_y": 0.53,
-            "coverage_caution_vel_theta": 1.12,
+            "coverage_max_vel_x": 0.35,
+            "coverage_max_vel_y": 0.30,
+            "coverage_max_vel_theta": 0.80,
+            "coverage_cruise_vel_x": 0.30,
+            "coverage_cruise_vel_y": 0.25,
+            "coverage_cruise_vel_theta": 0.70,
+            "coverage_caution_vel_x": 0.22,
+            "coverage_caution_vel_y": 0.18,
+            "coverage_caution_vel_theta": 0.50,
             "coverage_caution_enter_clearance": 0.45,
             "coverage_caution_exit_clearance": 0.55,
             "coverage_fast_exit_clearance": 0.75,
@@ -1950,7 +1956,7 @@ class CompetitionFlow:
             "coverage_goal_hard_timeout_sec": 40.0,
             "coverage_goal_progress_window_sec": 5.0,
             "coverage_goal_min_progress": 0.03,
-            "coverage_anchor_observation_radius": 0.45,
+            "coverage_anchor_observation_radius": 0.22,
             "coverage_near_anchor_stall_timeout_sec": 3.0,
         }
         for name, default in forwarded_defaults.items():
@@ -2096,7 +2102,7 @@ class CompetitionFlow:
                 remembered_heading_enabled, remembered_odom_yaw)
         self.publish_status(
             "task2", "searching_{}".format(phase),
-            "searching {} factory sign with existing 9-point navigation".format(category))
+            "searching {} factory sign with rules-aligned perimeter survey".format(category))
         try:
             self._start_factory_children(
                 category, phase, center_only, search_context)

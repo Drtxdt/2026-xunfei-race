@@ -180,7 +180,8 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(final_advance_completed(0.13, 0.10, 0.008))
 
     def test_normalizes_calibrated_no_workshop_anchors(self):
-        self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))
+        self.assertEqual(
+            normalize_coverage_anchor_ids([4, "4", 0, 10, 12]), (4, 10))
         self.assertEqual(normalize_coverage_anchor_ids("6, 4,invalid"), (4, 6))
 
     def test_task2_resumes_coverage_by_default(self):
@@ -246,17 +247,19 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_translation_min_clearance: 0.00", config)
         self.assertIn(
             "coverage_translation_sector_half_angle_deg: 35.0", config)
-        self.assertIn("coverage_max_vel_x: 0.72", config)
-        self.assertIn("coverage_max_vel_y: 0.72", config)
-        self.assertIn("coverage_max_vel_theta: 1.45", config)
-        self.assertIn("coverage_cruise_vel_x: 0.70", config)
-        self.assertIn("coverage_cruise_vel_theta: 1.30", config)
-        self.assertIn("coverage_caution_vel_x: 0.53", config)
-        self.assertIn("coverage_caution_vel_theta: 1.12", config)
+        self.assertIn("coverage_translation_safety_margin: 0.15", config)
+        self.assertIn("coverage_max_vel_x: 0.35", config)
+        self.assertIn("coverage_max_vel_y: 0.30", config)
+        self.assertIn("coverage_max_vel_theta: 0.80", config)
+        self.assertIn("coverage_cruise_vel_x: 0.30", config)
+        self.assertIn("coverage_cruise_vel_theta: 0.70", config)
+        self.assertIn("coverage_caution_vel_x: 0.22", config)
+        self.assertIn("coverage_caution_vel_theta: 0.50", config)
         self.assertIn("coverage_fast_enter_clearance: 0.90", config)
         self.assertIn("coverage_scan_angular_speed: 0.50", config)
         self.assertIn("coverage_scan_dwell_sec: 0.45", config)
         self.assertIn("task2_trigger_min_bbox_width_ratio: 0.09", config)
+        self.assertIn("task2_trigger_during_transit: true", config)
         self.assertIn("parking_obstacle_min_clearance: 0.28", config)
         self.assertIn(
             "parking_obstacle_clearance_tolerance: 0.005", config)
@@ -311,11 +314,15 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(target_bbox_is_close_enough([], 640, 480))
         self.assertFalse(target_bbox_is_close_enough([[1, 2]], 640, 480))
 
-    def test_task2_target_trigger_requires_stationary_coverage_anchor(self):
+    def test_task2_target_trigger_allows_explicit_close_transit_detection(self):
         self.assertTrue(task2_target_trigger_is_eligible(True, 9))
         self.assertFalse(task2_target_trigger_is_eligible(True, None))
         self.assertFalse(task2_target_trigger_is_eligible(True, 0))
         self.assertFalse(task2_target_trigger_is_eligible(False, 9))
+        self.assertTrue(task2_target_trigger_is_eligible(
+            True, None, allow_transit=True))
+        self.assertFalse(task2_target_trigger_is_eligible(
+            False, None, allow_transit=True))
 
     def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
         memory = {
@@ -344,6 +351,10 @@ class CompetitionLogicTest(unittest.TestCase):
                 anchor_count=9,
             ),
             (6, (1, 2, 3, 4, 5)),
+        )
+        self.assertEqual(
+            task2_resumed_coverage_hint({}, "food", last_anchor=9),
+            (10, tuple(range(1, 10))),
         )
 
     def test_task2_remembered_target_wins_over_resume_anchor(self):
