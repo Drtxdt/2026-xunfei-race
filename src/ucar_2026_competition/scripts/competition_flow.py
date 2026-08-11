@@ -52,6 +52,7 @@ from ucar_2026_competition.logic import (
     stage_sequence,
     task2_delivery_targets,
     task2_resumed_coverage_hint,
+    task2_prewarm_reusable,
     task2_target_trigger_is_eligible,
     task4_handoff_required,
     task4_start_action,
@@ -201,6 +202,12 @@ class CompetitionFlow:
         self.trigger_acknowledged = False
         self.trigger_service_name = rospy.get_param(
             "~target_trigger_service", "/vision_triggered_navigator/trigger_target")
+        self.factory_navigation_start_service = rospy.get_param(
+            "~factory_navigation_start_service",
+            "/vision_triggered_navigator/start_navigation")
+        self.task2_prewarm_enabled = bool_param(
+            "~task2_prewarm_enabled", True)
+        self.task2_prewarm_category = None
         self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
         self.navigator_status = ""
         self.task2_announcement_completed = False
@@ -440,6 +447,7 @@ class CompetitionFlow:
             name="task1-spark-reasoning",
             daemon=True,
         ).start()
+        self._prewarm_task2()
         return True
 
     def _task1_reasoning_worker(self, items, instruction):
@@ -1770,6 +1778,275 @@ class CompetitionFlow:
             self.publish_status(
                 "task1", "completed", "voice, QR and reasoning completed")
 
+    def _factory_ocr_launch_args(self, category):
+        return {
+            "start_camera": False,
+            "start_competition_speech": False,
+            "start_viewer": self.debug,
+            "recognition_mode": "ppocr_rknn_system",
+            "target_category": category,
+            "enable_speech": False,
+            "required": True,
+        }
+
+    def _factory_search_context(self, category, phase):
+        resume_enabled = bool_param("~task2_resume_coverage_enabled", True)
+        with self.lock:
+            anchor_count = len(rospy.get_param(
+                "/vision_triggered_navigator/patrol_points", [])) or 9
+            if resume_enabled:
+                preferred_anchor, skipped_anchors = task2_resumed_coverage_hint(
+                    self.task2_warehouse_memory,
+                    category,
+                    self.last_coverage_anchor if phase == "simulation" else None,
+                    anchor_count,
+                )
+            else:
+                preferred_anchor, skipped_anchors = 0, ()
+            remembered = self.task2_warehouse_memory.get(category, {})
+            remembered_heading_enabled = bool(
+                phase == "simulation" and preferred_anchor and
+                int(remembered.get("anchor", 0) or 0) ==
+                int(preferred_anchor) and
+                remembered.get("odom_yaw") is not None
+            )
+            remembered_odom_yaw = float(
+                remembered.get("odom_yaw", 0.0) or 0.0)
+            no_workshop_anchors = normalize_coverage_anchor_ids(
+                rospy.get_param("~task2_no_workshop_anchors", []),
+                anchor_count,
+            )
+        if preferred_anchor in no_workshop_anchors:
+            preferred_anchor = 0
+        skipped_anchors = tuple(sorted(
+            set(skipped_anchors).union(no_workshop_anchors)))
+        return {
+            "resume_enabled": resume_enabled,
+            "preferred_anchor": preferred_anchor,
+            "skipped_anchors": skipped_anchors,
+            "remembered_heading_enabled": remembered_heading_enabled,
+            "remembered_odom_yaw": remembered_odom_yaw,
+            "no_workshop_anchors": no_workshop_anchors,
+        }
+
+    def _factory_navigator_launch_args(
+            self, phase, center_only, search_context, start_paused=True):
+        preferred_anchor = search_context["preferred_anchor"]
+        resume_enabled = search_context["resume_enabled"]
+        args = {
+            "trigger_mode": "vision",
+            "vision_topic": "/vision/detected",
+            "target_topic": "/vision/target",
+            "non_target_topic": self.vision_non_target_topic,
+            "coverage_non_target_early_exit": self.task2_non_target_early_exit,
+            "coverage_non_target_min_scan_steps": rospy.get_param(
+                "~coverage_non_target_min_scan_steps", 2),
+            "trigger_service": self.trigger_service_name,
+            "start_paused": bool(start_paused),
+            "start_navigation_service": self.factory_navigation_start_service,
+            "publish_initial_pose": (
+                False if self.mode == "task1_task2" else
+                bool_param("~navigator_publish_initial_pose", False)),
+            "navigate_to_end_after_trigger": False,
+            "coverage_search_mode": True,
+            "coverage_start_nearest": (
+                resume_enabled and phase == "simulation" and
+                not preferred_anchor),
+            "coverage_preferred_anchor": (
+                preferred_anchor
+                if resume_enabled and phase == "simulation" else 0),
+            "coverage_preferred_odom_yaw_enabled": search_context[
+                "remembered_heading_enabled"],
+            "coverage_preferred_odom_yaw": search_context[
+                "remembered_odom_yaw"],
+            "coverage_preferred_confirm_dwell_sec": rospy.get_param(
+                "~task2_remembered_heading_confirm_sec", 1.2),
+            "coverage_preferred_scan_half_angle_deg": rospy.get_param(
+                "~task2_remembered_heading_scan_half_angle_deg", 18.0),
+            "coverage_skip_anchors": ",".join(
+                str(value) for value in search_context["skipped_anchors"]),
+            "coverage_goal_retry_count": max(0, int(rospy.get_param(
+                "~coverage_goal_retry_count", 1))),
+            "center_only": center_only,
+            "validate_parking_box": not center_only,
+            "max_coverage_anchors": int(rospy.get_param(
+                "~max_coverage_anchors", 0)),
+        }
+        forwarded_defaults = {
+            "coverage_rotation_min_clearance": 0.28,
+            "coverage_translation_min_clearance": 0.00,
+            "coverage_translation_sector_half_angle_deg": 35.0,
+            "coverage_max_vel_x": 0.72,
+            "coverage_max_vel_y": 0.72,
+            "coverage_max_vel_theta": 1.45,
+            "coverage_cruise_vel_x": 0.70,
+            "coverage_cruise_vel_y": 0.70,
+            "coverage_cruise_vel_theta": 1.30,
+            "coverage_caution_vel_x": 0.53,
+            "coverage_caution_vel_y": 0.53,
+            "coverage_caution_vel_theta": 1.12,
+            "coverage_caution_enter_clearance": 0.45,
+            "coverage_caution_exit_clearance": 0.55,
+            "coverage_fast_exit_clearance": 0.75,
+            "coverage_fast_enter_clearance": 0.90,
+            "coverage_speed_update_min_interval_sec": 0.50,
+            "target_center_steering_sign": -1.0,
+            "camera_boresight_yaw_offset": 0.0,
+            "parking_goal_offset": 0.26,
+            "parking_staging_offset": 0.55,
+            "parking_staging_timeout_sec": 20.0,
+            "parking_staging_position_tolerance": 0.10,
+            "parking_staging_yaw_tolerance": 0.10,
+            "parking_docking_timeout_sec": 30.0,
+            "parking_obstacle_min_clearance": 0.28,
+            "parking_obstacle_clearance_tolerance": 0.005,
+            "parking_obstacle_sector_half_angle_deg": 35.0,
+            "parking_dock_max_x": 0.10,
+            "parking_dock_max_y": 0.06,
+            "parking_dock_max_yaw": 0.15,
+            "parking_dock_min_yaw": 0.15,
+            "parking_dock_normal_tolerance": 0.02,
+            "parking_dock_tangent_tolerance": 0.02,
+            "parking_dock_yaw_tolerance": 0.05,
+            "parking_min_wall_distance": 0.19,
+            "parking_lidar_stop_distance": 0.15,
+            "parking_recenter_tolerance": 0.04,
+            "parking_recenter_timeout_sec": 8.0,
+            "parking_recenter_initial_wait_sec": 1.0,
+            "parking_wall_fit_half_angle_deg": 35.0,
+            "parking_wall_fit_min_points": 12,
+            "parking_wall_fit_min_span": 0.25,
+            "parking_wall_fit_near_min_span": 0.18,
+            "parking_wall_fit_max_distance_jump": 0.05,
+            "parking_wall_fit_max_normal_jump_deg": 8.0,
+            "parking_wall_fit_max_residual": 0.015,
+            "parking_wall_fit_max_normal_error_deg": 20.0,
+            "parking_normal_offset": 0.0,
+            "parking_tangent_offset": 0.0,
+            "parking_box_width": 0.50,
+            "parking_box_depth": 0.50,
+            "parking_xy_tolerance": 0.04,
+            "parking_yaw_tolerance": 0.06,
+            "target_center_coarse_step_deg": 4.0,
+            "target_center_fine_step_deg": 2.0,
+            "target_center_start_speed": 0.28,
+            "target_center_step_max_speed": 0.45,
+            "target_center_timeout_sec": 12.0,
+            "coverage_scan_step_deg": 20.0,
+            "coverage_scan_angular_speed": 0.50,
+            "coverage_scan_dwell_sec": 0.45,
+            "coverage_candidate_hold_sec": 1.2,
+            "coverage_scan_max_dwell_sec": 2.0,
+            "coverage_scan_pose_timeout_sec": 0.5,
+            "coverage_goal_soft_timeout_sec": 25.0,
+            "coverage_goal_hard_timeout_sec": 40.0,
+            "coverage_goal_progress_window_sec": 5.0,
+            "coverage_goal_min_progress": 0.03,
+            "coverage_anchor_observation_radius": 0.45,
+            "coverage_near_anchor_stall_timeout_sec": 3.0,
+        }
+        for name, default in forwarded_defaults.items():
+            param_name = "target_center_max_speed" if (
+                name == "target_center_step_max_speed") else name
+            args[name] = rospy.get_param("~" + param_name, default)
+        args["vision_offset"] = rospy.get_param("~task2_vision_offset", 0.4)
+        return args
+
+    def _child_is_running(self, key):
+        proc = self.children.get(key)
+        return proc is not None and proc.poll() is None
+
+    def _task2_prewarm_is_reusable(self, category, phase):
+        return task2_prewarm_reusable(
+            self.task2_prewarm_enabled,
+            phase,
+            category,
+            self.task2_prewarm_category,
+            self._child_is_running("factory_ocr"),
+            self._child_is_running("factory_navigator"),
+        )
+
+    def _prewarm_task2(self):
+        if (not self.task2_prewarm_enabled or self.next_stage != "task2" or
+                not self.category):
+            return False
+        category = self.category
+        try:
+            context = self._factory_search_context(category, "physical")
+            # Keep OCR logically disarmed until task2 sets its target.
+            self.ocr_target = None
+            self.start_child(
+                "factory_ocr",
+                "factory_sign_ppocr_rknn_test",
+                "factory_sign_ppocr_rknn_test.launch",
+                self._factory_ocr_launch_args(category),
+            )
+            self.start_child(
+                "factory_navigator",
+                "vision_triggered_navigator",
+                "vision_triggered_navigator.launch",
+                self._factory_navigator_launch_args(
+                    "physical", False, context, start_paused=True),
+            )
+            self.task2_prewarm_category = category
+            self.publish_status(
+                "task1", "task2_prewarming",
+                "OCR loading; navigator alive but movement remains paused")
+            rospy.loginfo(
+                "Task2 prewarm started for category=%s; OCR target is disabled "
+                "and navigator is start_paused.", category)
+            return True
+        except Exception as exc:
+            self.stop_child("factory_ocr")
+            self.stop_child("factory_navigator")
+            self.task2_prewarm_category = None
+            rospy.logwarn(
+                "Task2 prewarm failed; task1 continues and task2 will start "
+                "normally: %s", exc)
+            return False
+
+    def _start_factory_children(self, category, phase, center_only, context):
+        reused = self._task2_prewarm_is_reusable(category, phase)
+        if reused:
+            rospy.loginfo(
+                "Task2 reusing prewarmed OCR and paused navigator for %s.",
+                category)
+        else:
+            self.stop_child("factory_ocr")
+            self.stop_child("factory_navigator")
+            self.start_child(
+                "factory_ocr",
+                "factory_sign_ppocr_rknn_test",
+                "factory_sign_ppocr_rknn_test.launch",
+                self._factory_ocr_launch_args(category),
+            )
+            self.start_child(
+                "factory_navigator",
+                "vision_triggered_navigator",
+                "vision_triggered_navigator.launch",
+                self._factory_navigator_launch_args(
+                    phase, center_only, context, start_paused=True),
+            )
+        self.task2_prewarm_category = None
+        return reused
+
+    def _release_factory_navigation(self):
+        try:
+            rospy.wait_for_service(
+                self.factory_navigation_start_service, timeout=5.0)
+            response = rospy.ServiceProxy(
+                self.factory_navigation_start_service, Trigger)()
+        except (rospy.ROSException, rospy.ServiceException) as exc:
+            raise StageError(
+                "factory navigation start service failed: {}".format(exc))
+        if not response.success:
+            raise StageError(
+                "factory navigation start was rejected: {}".format(
+                    response.message))
+        rospy.loginfo(
+            "Task2 navigation released after fresh OCR frame: %s",
+            response.message)
+
     def _navigate_factory_target(self, category, item, workshop, phase, announce):
         if not category or not item or not workshop:
             raise StageError("task2 {} target is incomplete".format(phase))
@@ -1784,42 +2061,19 @@ class CompetitionFlow:
         self.trigger_service_accepted = False
         self.trigger_acknowledged = False
         self.navigator_status = ""
-        resume_coverage_enabled = bool_param(
-            "~task2_resume_coverage_enabled", True)
         with self.lock:
             self.current_coverage_anchor = None
             self.task2_non_target_announced = set()
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
-            anchor_count = len(rospy.get_param(
-                "/vision_triggered_navigator/patrol_points", [])) or 9
-            if resume_coverage_enabled:
-                preferred_anchor, skipped_anchors = task2_resumed_coverage_hint(
-                    self.task2_warehouse_memory,
-                    category,
-                    self.last_coverage_anchor if phase == "simulation" else None,
-                    anchor_count,
-                )
-            else:
-                preferred_anchor, skipped_anchors = 0, ()
-            remembered_observation = self.task2_warehouse_memory.get(
-                category, {})
-            remembered_heading_enabled = bool(
-                phase == "simulation" and preferred_anchor and
-                int(remembered_observation.get("anchor", 0) or 0) ==
-                int(preferred_anchor) and
-                remembered_observation.get("odom_yaw") is not None
-            )
-            remembered_odom_yaw = float(
-                remembered_observation.get("odom_yaw", 0.0) or 0.0)
-            no_workshop_anchors = normalize_coverage_anchor_ids(
-                rospy.get_param("~task2_no_workshop_anchors", []),
-                anchor_count,
-            )
-            if preferred_anchor in no_workshop_anchors:
-                preferred_anchor = 0
-            skipped_anchors = tuple(sorted(
-                set(skipped_anchors).union(no_workshop_anchors)))
+        search_context = self._factory_search_context(category, phase)
+        resume_coverage_enabled = search_context["resume_enabled"]
+        preferred_anchor = search_context["preferred_anchor"]
+        skipped_anchors = search_context["skipped_anchors"]
+        remembered_heading_enabled = search_context[
+            "remembered_heading_enabled"]
+        remembered_odom_yaw = search_context["remembered_odom_yaw"]
+        no_workshop_anchors = search_context["no_workshop_anchors"]
         if no_workshop_anchors:
             rospy.loginfo(
                 "task2 calibrated no-workshop anchors skipped: %s",
@@ -1836,228 +2090,28 @@ class CompetitionFlow:
             "task2", "searching_{}".format(phase),
             "searching {} factory sign with existing 9-point navigation".format(category))
         try:
-            self.start_child(
-                "factory_ocr",
-                "factory_sign_ppocr_rknn_test",
-                "factory_sign_ppocr_rknn_test.launch",
-                {
-                    "start_camera": False,
-                    "start_competition_speech": False,
-                    "start_viewer": self.debug,
-                    "recognition_mode": "ppocr_rknn_system",
-                    "target_category": category,
-                    "enable_speech": False,
-                    "required": True,
-                },
-            )
+            self._start_factory_children(
+                category, phase, center_only, search_context)
+            # Ignore any callback racing with a mismatched-process teardown;
+            # readiness must come from the adopted/restarted OCR process.
+            self.ocr_filter.reset()
+            self.ocr_last_message_at = 0.0
             self.publish_status("task2", "waiting_ocr", "waiting for first OCR result before motion")
             ocr_ready_deadline = time.time() + float(
                 rospy.get_param("~ocr_ready_timeout_sec", 12.0))
             while time.time() < ocr_ready_deadline and not self.ocr_last_message_at:
                 self.check_abort()
-                proc = self.children.get("factory_ocr")
-                if proc and proc.poll() is not None:
-                    raise StageError(
-                        "factory_ocr exited before ready with code {}".format(proc.returncode))
+                for key in ("factory_ocr", "factory_navigator"):
+                    proc = self.children.get(key)
+                    if proc is None or proc.poll() is not None:
+                        code = None if proc is None else proc.returncode
+                        raise StageError(
+                            "{} exited before OCR ready with code {}".format(
+                                key, code))
                 rospy.sleep(0.1)
             if not self.ocr_last_message_at:
                 raise StageError("factory OCR produced no result before motion timeout")
-            self.start_child(
-                "factory_navigator",
-                "vision_triggered_navigator",
-                "vision_triggered_navigator.launch",
-                {
-                    "trigger_mode": "vision",
-                    "vision_topic": "/vision/detected",
-                    "target_topic": "/vision/target",
-                    "non_target_topic": self.vision_non_target_topic,
-                    "coverage_non_target_early_exit": (
-                        self.task2_non_target_early_exit),
-                    "coverage_non_target_min_scan_steps": rospy.get_param(
-                        "~coverage_non_target_min_scan_steps", 2),
-                    "trigger_service": self.trigger_service_name,
-                    "publish_initial_pose": (
-                        False if self.mode == "task1_task2" else
-                        bool_param("~navigator_publish_initial_pose", False)),
-                    "navigate_to_end_after_trigger": False,
-                    "coverage_search_mode": True,
-                    "coverage_start_nearest": (
-                        resume_coverage_enabled and
-                        phase == "simulation" and not preferred_anchor),
-                    "coverage_preferred_anchor": (
-                        preferred_anchor
-                        if resume_coverage_enabled and phase == "simulation"
-                        else 0),
-                    "coverage_preferred_odom_yaw_enabled": (
-                        remembered_heading_enabled),
-                    "coverage_preferred_odom_yaw": remembered_odom_yaw,
-                    "coverage_preferred_confirm_dwell_sec": rospy.get_param(
-                        "~task2_remembered_heading_confirm_sec", 1.2),
-                    "coverage_preferred_scan_half_angle_deg": rospy.get_param(
-                        "~task2_remembered_heading_scan_half_angle_deg", 18.0),
-                    "coverage_skip_anchors": ",".join(
-                        str(value) for value in skipped_anchors),
-                    "coverage_failed_revisit_limit": rospy.get_param(
-                        "~coverage_failed_revisit_limit", 1),
-                    "coverage_abort_fail_fast_count": (
-                        max(0, int(rospy.get_param(
-                            "~task2_second_search_abort_fail_fast_count", 0)))
-                        if phase == "simulation" else 0),
-                    "coverage_rotation_min_clearance": rospy.get_param(
-                        "~coverage_rotation_min_clearance", 0.28),
-                    "coverage_translation_min_clearance": rospy.get_param(
-                        "~coverage_translation_min_clearance", 0.00),
-                    "coverage_translation_sector_half_angle_deg": rospy.get_param(
-                        "~coverage_translation_sector_half_angle_deg", 35.0),
-                    "coverage_max_vel_x": rospy.get_param(
-                        "~coverage_max_vel_x", 0.72),
-                    "coverage_max_vel_y": rospy.get_param(
-                        "~coverage_max_vel_y", 0.72),
-                    "coverage_max_vel_theta": rospy.get_param(
-                        "~coverage_max_vel_theta", 1.45),
-                    "coverage_cruise_vel_x": rospy.get_param(
-                        "~coverage_cruise_vel_x", 0.70),
-                    "coverage_cruise_vel_y": rospy.get_param(
-                        "~coverage_cruise_vel_y", 0.70),
-                    "coverage_cruise_vel_theta": rospy.get_param(
-                        "~coverage_cruise_vel_theta", 1.30),
-                    "coverage_caution_vel_x": rospy.get_param(
-                        "~coverage_caution_vel_x", 0.53),
-                    "coverage_caution_vel_y": rospy.get_param(
-                        "~coverage_caution_vel_y", 0.53),
-                    "coverage_caution_vel_theta": rospy.get_param(
-                        "~coverage_caution_vel_theta", 1.12),
-                    "coverage_caution_enter_clearance": rospy.get_param(
-                        "~coverage_caution_enter_clearance", 0.45),
-                    "coverage_caution_exit_clearance": rospy.get_param(
-                        "~coverage_caution_exit_clearance", 0.55),
-                    "coverage_fast_exit_clearance": rospy.get_param(
-                        "~coverage_fast_exit_clearance", 0.75),
-                    "coverage_fast_enter_clearance": rospy.get_param(
-                        "~coverage_fast_enter_clearance", 0.90),
-                    "coverage_speed_update_min_interval_sec": rospy.get_param(
-                        "~coverage_speed_update_min_interval_sec", 0.50),
-                    "coverage_rotation_max_yaw_deg": rospy.get_param(
-                        "~coverage_rotation_max_yaw_deg", 45.0),
-                    "target_center_steering_sign": rospy.get_param(
-                        "~target_center_steering_sign", -1.0),
-                    "camera_boresight_yaw_offset": rospy.get_param(
-                        "~camera_boresight_yaw_offset", 0.0),
-                    "center_only": center_only,
-                    "validate_parking_box": not center_only,
-                    "max_coverage_anchors": int(rospy.get_param(
-                        "~max_coverage_anchors", 0)),
-                    "vision_offset": rospy.get_param("~task2_vision_offset", 0.4),
-                    "parking_goal_offset": rospy.get_param(
-                        "~parking_goal_offset", 0.26),
-                    "parking_staging_offset": rospy.get_param(
-                        "~parking_staging_offset", 0.55),
-                    "parking_staging_timeout_sec": rospy.get_param(
-                        "~parking_staging_timeout_sec", 20.0),
-                    "parking_staging_position_tolerance": rospy.get_param(
-                        "~parking_staging_position_tolerance", 0.10),
-                    "parking_staging_yaw_tolerance": rospy.get_param(
-                        "~parking_staging_yaw_tolerance", 0.10),
-                    "parking_staging_success_position_tolerance": rospy.get_param(
-                        "~parking_staging_success_position_tolerance", 0.15),
-                    "parking_staging_success_yaw_tolerance": rospy.get_param(
-                        "~parking_staging_success_yaw_tolerance", 0.12),
-                    "parking_docking_timeout_sec": rospy.get_param(
-                        "~parking_docking_timeout_sec", 30.0),
-                    "parking_obstacle_min_clearance": rospy.get_param(
-                        "~parking_obstacle_min_clearance", 0.28),
-                    "parking_obstacle_clearance_tolerance": rospy.get_param(
-                        "~parking_obstacle_clearance_tolerance", 0.005),
-                    "parking_obstacle_sector_half_angle_deg": rospy.get_param(
-                        "~parking_obstacle_sector_half_angle_deg", 35.0),
-                    "parking_dock_max_x": rospy.get_param(
-                        "~parking_dock_max_x", 0.10),
-                    "parking_dock_max_y": rospy.get_param(
-                        "~parking_dock_max_y", 0.06),
-                    "parking_dock_max_yaw": rospy.get_param(
-                        "~parking_dock_max_yaw", 0.15),
-                    "parking_dock_min_yaw": rospy.get_param(
-                        "~parking_dock_min_yaw", 0.15),
-                    "parking_dock_normal_tolerance": rospy.get_param(
-                        "~parking_dock_normal_tolerance", 0.02),
-                    "parking_dock_tangent_tolerance": rospy.get_param(
-                        "~parking_dock_tangent_tolerance", 0.02),
-                    "parking_dock_yaw_tolerance": rospy.get_param(
-                        "~parking_dock_yaw_tolerance", 0.05),
-                    "parking_min_wall_distance": rospy.get_param(
-                        "~parking_min_wall_distance", 0.19),
-                    "parking_lidar_stop_distance": rospy.get_param(
-                        "~parking_lidar_stop_distance", 0.15),
-                    "parking_recenter_tolerance": rospy.get_param(
-                        "~parking_recenter_tolerance", 0.04),
-                    "parking_recenter_timeout_sec": rospy.get_param(
-                        "~parking_recenter_timeout_sec", 8.0),
-                    "parking_recenter_initial_wait_sec": rospy.get_param(
-                        "~parking_recenter_initial_wait_sec", 1.0),
-                    "parking_wall_fit_half_angle_deg": rospy.get_param(
-                        "~parking_wall_fit_half_angle_deg", 35.0),
-                    "parking_wall_fit_min_points": rospy.get_param(
-                        "~parking_wall_fit_min_points", 12),
-                    "parking_wall_fit_min_span": rospy.get_param(
-                        "~parking_wall_fit_min_span", 0.25),
-                    "parking_wall_fit_near_min_span": rospy.get_param(
-                        "~parking_wall_fit_near_min_span", 0.18),
-                    "parking_wall_fit_max_distance_jump": rospy.get_param(
-                        "~parking_wall_fit_max_distance_jump", 0.05),
-                    "parking_wall_fit_max_normal_jump_deg": rospy.get_param(
-                        "~parking_wall_fit_max_normal_jump_deg", 8.0),
-                    "parking_wall_fit_max_residual": rospy.get_param(
-                        "~parking_wall_fit_max_residual", 0.015),
-                    "parking_wall_fit_max_normal_error_deg": rospy.get_param(
-                        "~parking_wall_fit_max_normal_error_deg", 20.0),
-                    "parking_normal_offset": rospy.get_param(
-                        "~parking_normal_offset", 0.0),
-                    "parking_tangent_offset": rospy.get_param(
-                        "~parking_tangent_offset", 0.0),
-                    "parking_box_width": rospy.get_param("~parking_box_width", 0.50),
-                    "parking_box_depth": rospy.get_param("~parking_box_depth", 0.50),
-                    "parking_xy_tolerance": rospy.get_param(
-                        "~parking_xy_tolerance", 0.04),
-                    "parking_yaw_tolerance": rospy.get_param(
-                        "~parking_yaw_tolerance", 0.06),
-                    "target_center_coarse_step_deg": rospy.get_param(
-                        "~target_center_coarse_step_deg", 4.0),
-                    "target_center_fine_step_deg": rospy.get_param(
-                        "~target_center_fine_step_deg", 2.0),
-                    "target_center_start_speed": rospy.get_param(
-                        "~target_center_start_speed", 0.28),
-                    "target_center_step_max_speed": rospy.get_param(
-                        "~target_center_max_speed", 0.45),
-                    "target_center_timeout_sec": rospy.get_param(
-                        "~target_center_timeout_sec", 12.0),
-                    "coverage_scan_step_deg": rospy.get_param(
-                        "~coverage_scan_step_deg", 20.0),
-                    "coverage_scan_angular_speed": rospy.get_param(
-                        "~coverage_scan_angular_speed", 0.50),
-                    "coverage_scan_dwell_sec": rospy.get_param(
-                        "~coverage_scan_dwell_sec", 0.45),
-                    "coverage_candidate_hold_sec": rospy.get_param(
-                        "~coverage_candidate_hold_sec", 1.2),
-                    "coverage_scan_max_dwell_sec": rospy.get_param(
-                        "~coverage_scan_max_dwell_sec", 2.0),
-                    "coverage_navigation_candidate_pause_count": rospy.get_param(
-                        "~coverage_navigation_candidate_pause_count", 2),
-                    "coverage_scan_pose_timeout_sec": rospy.get_param(
-                        "~coverage_scan_pose_timeout_sec", 0.5),
-                    "coverage_goal_soft_timeout_sec": rospy.get_param(
-                        "~coverage_goal_soft_timeout_sec", 25.0),
-                    "coverage_goal_hard_timeout_sec": rospy.get_param(
-                        "~coverage_goal_hard_timeout_sec", 40.0),
-                    "coverage_goal_progress_window_sec": rospy.get_param(
-                        "~coverage_goal_progress_window_sec", 5.0),
-                    "coverage_goal_min_progress": rospy.get_param(
-                        "~coverage_goal_min_progress", 0.03),
-                    "coverage_anchor_observation_radius": rospy.get_param(
-                        "~coverage_anchor_observation_radius", 0.45),
-                    "coverage_near_anchor_stall_timeout_sec": rospy.get_param(
-                        "~coverage_near_anchor_stall_timeout_sec", 3.0),
-                },
-            )
+            self._release_factory_navigation()
             timeout = float(rospy.get_param("~factory_navigation_timeout_sec", 420.0))
             deadline = time.time() + timeout
             while time.time() < deadline:

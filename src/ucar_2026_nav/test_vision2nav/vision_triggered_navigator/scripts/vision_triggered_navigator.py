@@ -53,7 +53,6 @@ from navigator_logic import (
     parking_rotation_obstacle_clearance,
     polar_sector_min,
     ray_segment_intersection,
-    requeue_failed_coverage_anchor,
     rotation_clearance_allows_near_wall,
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
@@ -272,8 +271,6 @@ class VisionTriggeredNavigator(object):
             self.coverage_skip_anchors = tuple(
                 value.strip() for value in str(raw_skipped_anchors).split(",")
                 if value.strip())
-        self.coverage_failed_revisit_limit = max(0, int(rospy.get_param(
-            "~coverage_failed_revisit_limit", 1)))
         self.center_only = rospy.get_param("~center_only", False)
         self.coverage_scan_settle = rospy.get_param("~coverage_scan_settle_sec", 0.35)
         self.coverage_scan_step_angle = math.radians(max(
@@ -1849,13 +1846,14 @@ class VisionTriggeredNavigator(object):
             break
         if not navigation_reached:
             self.cmd_vel_pub.publish(Twist())
-            rospy.logerr(
+            rospy.logwarn(
                 "[vision_triggered_navigator] 精确锚点%d导航未成功"
                 "(state=%s timeout=%s rotation_stall=%s)，"
-                "保留为失败点，禁止进入下一点.",
+                "已用尽%d次尝试，返回可跳过结果.",
                 patrol_idx + 1, str(result), self.current_goal_timed_out,
-                self.current_goal_rotation_stall)
-            return "failed"
+                self.current_goal_rotation_stall,
+                self.coverage_goal_retry_count + 1)
+            return "navigation_failed"
         if not self._wait_navigation_idle():
             self.cmd_vel_pub.publish(Twist())
             rospy.logerr(
@@ -3083,8 +3081,6 @@ class VisionTriggeredNavigator(object):
                 ",".join(str(value) for value in self.coverage_skip_anchors)
                 or "none")
         coverage_position = 0
-        failed_revisits = {}
-
         while not rospy.is_shutdown():
             # 一旦被触发，立即切换到视觉阶段
             if self.triggered and state == "PATROL":
@@ -3112,43 +3108,25 @@ class VisionTriggeredNavigator(object):
                     if outcome == "triggered":
                         state = "VISION"
                         continue
+                    if outcome == "navigation_failed":
+                        self._publish_status(
+                            "coverage_anchor_skipped:{}".format(
+                                point_idx + 1))
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] coverage "
+                            "anchor=%d navigation failed after %d attempt(s); "
+                            "skip it permanently and continue with the next "
+                            "anchor.",
+                            point_idx + 1,
+                            self.coverage_goal_retry_count + 1)
+                        coverage_position += 1
+                        continue
                     if outcome != "covered":
-                        updated_order, requeued, recovery_idx = (
-                            requeue_failed_coverage_anchor(
-                                coverage_order,
-                                coverage_position,
-                                point_idx,
-                                failed_revisits.get(point_idx, 0),
-                                (self.coverage_failed_revisit_limit
-                                 if self.max_coverage_anchors <= 0 else 0),
-                                len(self.patrol_points),
-                            ))
-                        if requeued:
-                            failed_revisits[point_idx] = (
-                                failed_revisits.get(point_idx, 0) + 1)
-                            coverage_order = updated_order
-                            coverage_count = len(coverage_order)
-                            self._publish_status(
-                                "coverage_anchor_deferred:{}".format(
-                                    point_idx + 1))
-                            rospy.logwarn(
-                                "[vision_triggered_navigator] coverage "
-                                "anchor=%d failed safely; deferred revisit "
-                                "%d/%d%s.",
-                                point_idx + 1,
-                                failed_revisits[point_idx],
-                                self.coverage_failed_revisit_limit,
-                                (" after relocation through anchor {}".format(
-                                    recovery_idx + 1)
-                                 if recovery_idx is not None else ""))
-                            coverage_position += 1
-                            continue
                         rospy.logerr(
                             "[vision_triggered_navigator] coverage anchor=%d "
-                            "failed after %d deferred revisit(s); stop "
+                            "hit a safety failure during observation; stop "
                             "without claiming warehouse arrival.",
-                            point_idx + 1,
-                            failed_revisits.get(point_idx, 0))
+                            point_idx + 1)
                         self._publish_status("coverage_anchor_failed")
                         break
                     coverage_position += 1

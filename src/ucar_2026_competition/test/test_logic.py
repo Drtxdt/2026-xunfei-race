@@ -33,6 +33,7 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
+    task2_prewarm_reusable,
     task2_resumed_coverage_hint,
     task2_target_trigger_is_eligible,
     task2_semantic_coverage_hint,
@@ -47,6 +48,132 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_task2_prewarm_reuse_requires_matching_live_physical_pair(self):
+        self.assertTrue(task2_prewarm_reusable(
+            True, "physical", "food", "food", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            False, "physical", "food", "food", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "simulation", "food", "food", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "physical", "food", "daily", True, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "physical", "food", "food", False, True))
+        self.assertFalse(task2_prewarm_reusable(
+            True, "physical", "food", "food", True, False))
+
+    def test_task2_prewarm_starts_after_spark_and_releases_after_fresh_ocr(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            tree = ast.parse(stream.read(), filename=flow_path)
+        controller = next(
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef) and node.name == "CompetitionFlow")
+        methods = {
+            node.name: node for node in controller.body
+            if isinstance(node, ast.FunctionDef)
+        }
+        reasoning_calls = [
+            node for node in ast.walk(methods["_start_task1_reasoning_if_ready"])
+            if isinstance(node, ast.Call)
+        ]
+        spark_start_line = next(
+            node.lineno for node in reasoning_calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "start")
+        prewarm_line = next(
+            node.lineno for node in reasoning_calls
+            if isinstance(node.func, ast.Attribute) and
+            node.func.attr == "_prewarm_task2")
+        self.assertLess(spark_start_line, prewarm_line)
+
+        navigation_calls = [
+            node for node in ast.walk(methods["_navigate_factory_target"])
+            if isinstance(node, ast.Call) and
+            isinstance(node.func, ast.Attribute)
+        ]
+        start_children_line = next(
+            node.lineno for node in navigation_calls
+            if node.func.attr == "_start_factory_children")
+        release_line = next(
+            node.lineno for node in navigation_calls
+            if node.func.attr == "_release_factory_navigation")
+        self.assertLess(start_children_line, release_line)
+
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        self.assertIn('"start_paused": bool(start_paused)', source)
+        self.assertIn('self.ocr_last_message_at = 0.0', source)
+        self.assertIn('while time.time() < ocr_ready_deadline', source)
+        self.assertIn('self.factory_navigation_start_service', source)
+
+    def test_task2_prewarm_and_retry_parameters_are_wired(self):
+        config_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "config", "competition.yaml"))
+        with open(config_path, "r", encoding="utf-8") as stream:
+            config = stream.read()
+        self.assertIn("task2_prewarm_enabled: true", config)
+        self.assertIn(
+            'factory_navigation_start_service: '
+            '"/vision_triggered_navigator/start_navigation"', config)
+        self.assertIn("coverage_goal_retry_count: 1", config)
+        self.assertNotIn("coverage_failed_revisit_limit", config)
+
+        launch_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "launch", "flow_node.launch"))
+        root = ET.parse(launch_path).getroot()
+        launch_args = {
+            node.attrib["name"]: node.attrib.get("default")
+            for node in root.findall("arg")
+        }
+        node_params = {
+            node.attrib["name"]: node.attrib.get("value")
+            for node in root.find("node").findall("param")
+        }
+        for name, default in (
+                ("task2_prewarm_enabled", "true"),
+                ("factory_navigation_start_service",
+                 "/vision_triggered_navigator/start_navigation"),
+                ("coverage_goal_retry_count", "1")):
+            self.assertEqual(launch_args[name], default)
+            self.assertEqual(node_params[name], "$(arg {})".format(name))
+
+    def test_turn_track_startup_forward_is_exactly_five_centimeters_shorter(self):
+        package_dir = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "..",
+            "ucar_2026_track_end_stop"))
+        for config_name, source_name in (
+                ("track_end_stop.yaml", "track_end_stop_node.cpp"),
+                ("right_track_end_stop.yaml", "right_track_end_stop_node.cpp")):
+            values = {}
+            config_path = os.path.join(package_dir, "config", config_name)
+            with open(config_path, "r", encoding="utf-8") as stream:
+                for line in stream:
+                    line = line.split("#", 1)[0].strip()
+                    if not line or ":" not in line:
+                        continue
+                    key, value = line.split(":", 1)
+                    values[key.strip()] = value.strip()
+            speed = float(values["startup_forward_speed"])
+            duration = float(values["startup_forward_duration"])
+            self.assertAlmostEqual(speed, 0.16)
+            self.assertAlmostEqual(duration, 1.8875)
+            self.assertAlmostEqual(speed * duration, 0.302)
+            self.assertAlmostEqual(
+                float(values["startup_turn_duration"]), 3.85)
+            self.assertAlmostEqual(
+                float(values["startup_enter_duration"]), 1.8)
+
+            source_path = os.path.join(package_dir, "src", source_name)
+            with open(source_path, "r", encoding="utf-8") as stream:
+                source = stream.read()
+            self.assertIn(
+                '"startup_forward_duration", startup_forward_duration_, '
+                '1.8875', source)
+            self.assertNotIn(
+                "startup_forward_duration_ -= 0.05 / startup_forward_speed_",
+                source)
+
     def test_variable_final_advance_completion(self):
         self.assertTrue(final_advance_completed(0.048, 0.047, 0.008))
         self.assertTrue(final_advance_completed(0.0, 0.0, 0.008))
@@ -86,11 +213,12 @@ class CompetitionLogicTest(unittest.TestCase):
             '"coverage_skip_anchors": ",".join(', flow)
         self.assertIn('"odom_yaw": float(yaw)', flow)
         self.assertIn(
-            '"coverage_preferred_odom_yaw_enabled": (', flow)
+            '"coverage_preferred_odom_yaw_enabled": search_context[', flow)
         self.assertIn(
-            '"coverage_preferred_odom_yaw": remembered_odom_yaw', flow)
+            '"coverage_preferred_odom_yaw": search_context[', flow)
         self.assertIn(
-            '"coverage_non_target_early_exit": (', flow)
+            '"coverage_non_target_early_exit": self.task2_non_target_early_exit',
+            flow)
         self.assertIn(
             '"coverage_non_target_min_scan_steps": rospy.get_param(', flow)
         self.assertIn(
@@ -137,7 +265,9 @@ class CompetitionLogicTest(unittest.TestCase):
         with open(flow_path, "r", encoding="utf-8") as stream:
             flow = stream.read()
         self.assertIn(
-            '"parking_obstacle_clearance_tolerance": rospy.get_param(', flow)
+            '"parking_obstacle_clearance_tolerance": 0.005', flow)
+        self.assertIn(
+            'args[name] = rospy.get_param("~" + param_name, default)', flow)
 
     def test_task4_retired_staging_pose_is_migrated(self):
         pose, migrated = normalize_task4_staging_pose(

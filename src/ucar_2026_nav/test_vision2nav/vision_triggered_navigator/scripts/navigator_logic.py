@@ -239,35 +239,6 @@ def coverage_anchor_order(count, preferred_anchor=0, skipped_anchors=(),
     return [index for index in order if index not in skipped]
 
 
-def requeue_failed_coverage_anchor(order, position, failed_anchor,
-                                   revisit_count, revisit_limit,
-                                   anchor_count):
-    """Defer one blocked anchor and force relocation before a tail retry.
-
-    Random cones can make an exact observation anchor temporarily unreachable.
-    If other work remains, the failed anchor is appended after it. If the
-    failure occurs at the tail, a different calibrated anchor is inserted first
-    so the retry is replanned from outside the blocked pocket instead of being
-    repeated immediately from the same pose.
-    """
-    queued = list(order or ())
-    if int(revisit_count) >= max(0, int(revisit_limit)):
-        return queued, False, None
-    failed_anchor = int(failed_anchor)
-    position = int(position)
-    anchor_count = max(0, int(anchor_count))
-    recovery_anchor = None
-    if position + 1 >= len(queued) and anchor_count > 1:
-        for offset in range(1, anchor_count):
-            candidate = (failed_anchor + offset) % anchor_count
-            if candidate != failed_anchor:
-                recovery_anchor = candidate
-                queued.append(candidate)
-                break
-    queued.append(failed_anchor)
-    return queued, True, recovery_anchor
-
-
 def should_retry_coverage_goal(result, rotation_stall, timed_out,
                                attempt, retry_count, aborted_status=4):
     """Retry an exact anchor after a recoverable move_base failure."""

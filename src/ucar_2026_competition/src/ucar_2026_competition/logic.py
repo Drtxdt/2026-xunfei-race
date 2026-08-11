@@ -196,6 +196,15 @@ def task2_target_trigger_is_eligible(bbox_is_close, active_anchor):
         return False
 
 
+def task2_prewarm_reusable(enabled, phase, expected_category,
+                           prewarmed_category, ocr_alive, navigator_alive):
+    """Reuse only a complete physical-search prewarm with matching OCR class."""
+    return bool(
+        enabled and phase == "physical" and expected_category and
+        expected_category == prewarmed_category and
+        ocr_alive and navigator_alive)
+
+
 class ConsecutiveTargetFilter:
     def __init__(self, required=3):
         self.required = max(1, int(required))

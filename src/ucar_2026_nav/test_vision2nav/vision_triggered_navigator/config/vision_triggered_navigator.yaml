@@ -37,7 +37,6 @@ coverage_preferred_odom_yaw: 0.0
 coverage_preferred_confirm_dwell_sec: 1.2
 coverage_preferred_scan_half_angle_deg: 18.0
 coverage_skip_anchors: ""
-coverage_failed_revisit_limit: 1
 coverage_abort_fail_fast_count: 0
 target_topic: "/vision/target"
 non_target_topic: "/vision/non_target_observation"

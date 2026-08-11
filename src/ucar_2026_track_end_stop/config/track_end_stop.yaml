@@ -7,7 +7,7 @@ debug_info_topic: /track_end_stop/debug_info
 
 # Startup sequence
 auto_start: true
-startup_forward_duration: 2.2
+startup_forward_duration: 1.8875
 startup_forward_speed: 0.16
 startup_turn_duration: 3.85
 startup_turn_angular_speed: 0.34

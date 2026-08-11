@@ -109,7 +109,7 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_forward_duration", startup_forward_duration_, 2.2);
+    private_nh_.param("startup_forward_duration", startup_forward_duration_, 1.8875);
     private_nh_.param("startup_forward_speed", startup_forward_speed_, 0.16);
     private_nh_.param("startup_turn_duration", startup_turn_duration_, 3.85);
     private_nh_.param("startup_turn_angular_speed", startup_turn_angular_speed_, -0.34);
@@ -160,10 +160,8 @@ private:
     private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
     private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
 
-    // Keep the existing launch/YAML values compatible while shortening only the
-    // two requested straight segments by 5 cm.
-    startup_forward_duration_ = std::max(
-        0.0, startup_forward_duration_ - 0.05 / std::max(startup_forward_speed_, 1e-6));
+    // Preserve the existing 5 cm reduction on the final forward segment. The
+    // startup reduction is represented directly by startup_forward_duration.
     end_forward_distance_m_ = std::max(0.0, end_forward_distance_m_ - 0.05);
 
     if (morph_kernel_size_ % 2 == 0)
@@ -794,7 +792,7 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_forward_duration_ = 2.2;
+  double startup_forward_duration_ = 1.8875;
   double startup_forward_speed_ = 0.16;
   double startup_turn_duration_ = 3.85;
   double startup_turn_angular_speed_ = -0.34;
