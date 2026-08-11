@@ -7,6 +7,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 import rospy
@@ -38,6 +39,14 @@ class LocalSimSupervisor:
             raise LocalSimConfigError("sim_gui is true but DISPLAY is not set")
 
         self.status_pub = rospy.Publisher("/competition/local_sim/status", String, queue_size=1, latch=True)
+        self.robot_preflight_ready = threading.Event()
+        self.robot_preflight_failure = ""
+        self.robot_status_sub = rospy.Subscriber(
+            "/competition/robot_supervisor/status",
+            String,
+            self._robot_supervisor_status_cb,
+            queue_size=10,
+        )
         self.sim_launch = None
         self.environment = None
         rospy.on_shutdown(self.shutdown)
@@ -45,6 +54,29 @@ class LocalSimSupervisor:
     def publish_status(self, state, detail=""):
         payload = {"state": state, "detail": detail, "timestamp": time.time()}
         self.status_pub.publish(String(data=json.dumps(payload, ensure_ascii=False, sort_keys=True)))
+
+    def _robot_supervisor_status_cb(self, message):
+        state, separator, detail = str(message.data).partition(":")
+        if state == "preflight_ok":
+            self.robot_preflight_ready.set()
+        elif state == "failed":
+            self.robot_preflight_failure = detail if separator else "unknown error"
+            self.robot_preflight_ready.set()
+
+    def _wait_for_robot_preflight(self):
+        self.publish_status("waiting_for_robot_preflight")
+        deadline = time.monotonic() + self.startup_timeout
+        while not rospy.is_shutdown() and time.monotonic() < deadline:
+            if self.robot_preflight_ready.wait(0.1):
+                if self.robot_preflight_failure:
+                    raise RuntimeError(
+                        "robot preflight failed: {}".format(self.robot_preflight_failure))
+                return
+        if rospy.is_shutdown():
+            return
+        raise RuntimeError(
+            "robot preflight did not complete within {:.1f}s".format(
+                self.startup_timeout))
 
     @staticmethod
     def _spawn(command, environment):
@@ -114,6 +146,9 @@ class LocalSimSupervisor:
         raise RuntimeError("simulator startup timed out waiting for {}".format(" and ".join(missing)))
 
     def run(self):
+        self._wait_for_robot_preflight()
+        if rospy.is_shutdown():
+            return 0
         self.publish_status("starting")
         ensure_port_available(self.bridge_host, self.bridge_port, "sim_bridge_port")
         master_uri = os.environ.get("ROS_MASTER_URI", "http://127.0.0.1:11311")

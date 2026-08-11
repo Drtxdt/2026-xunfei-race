@@ -4,6 +4,10 @@
   <arg name="start_external_voice" default="true" />
   <arg name="enable_simulation" default="true" />
   <arg name="start_local_sim" default="true" />
+  <!-- roslaunch only accepts $(eval ...) when it is the entire attribute value.
+       Compute this once here instead of embedding eval inside the rosparam YAML. -->
+  <arg name="use_external_sim_bridge"
+       default="$(eval enable_simulation and not start_local_sim)" />
   <arg name="competition_workspace" default="$(optenv UCAR_COMPETITION_WS)" />
   <arg name="sim_workspace" default="$(optenv UCAR_SIM_WS)" />
   <arg name="robot_ssh_target" default="$(optenv UCAR_ROBOT_HOST)" />
@@ -82,7 +86,7 @@
       debug: "$(arg debug)"
       start_external_voice: "$(arg start_external_voice)"
       enable_simulation: "$(arg enable_simulation)"
-      use_external_sim_bridge: "$(eval enable_simulation and not start_local_sim)"
+      use_external_sim_bridge: "$(arg use_external_sim_bridge)"
       sim_bridge_host: "$(arg sim_bridge_host)"
       sim_bridge_port: "$(arg sim_bridge_port)"
       sim_connect_timeout_sec: "$(arg sim_connect_timeout_sec)"

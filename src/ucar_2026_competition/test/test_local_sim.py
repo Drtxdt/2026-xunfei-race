@@ -142,6 +142,42 @@ class LocalSimHelperTest(unittest.TestCase):
 
 
 class LocalSimLaunchContractTest(unittest.TestCase):
+    def test_robot_preflight_gates_simulator_spawn(self):
+        robot_path = os.path.join(PACKAGE_ROOT, "scripts", "robot_supervisor.py")
+        with open(robot_path, "r", encoding="utf-8") as stream:
+            robot_tree = ast.parse(stream.read(), filename=robot_path)
+        robot_class = next(node for node in robot_tree.body
+                           if isinstance(node, ast.ClassDef) and node.name == "RobotSupervisor")
+        robot_run = next(node for node in robot_class.body
+                         if isinstance(node, ast.FunctionDef) and node.name == "run")
+        robot_calls = [node for node in ast.walk(robot_run) if isinstance(node, ast.Call)]
+        preflight_ok_line = next(
+            node.lineno for node in robot_calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "publish_status"
+            and node.args and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "preflight_ok")
+        remote_command_line = next(
+            node.lineno for node in robot_calls
+            if isinstance(node.func, ast.Name) and node.func.id == "build_remote_agent_command")
+        self.assertLess(preflight_ok_line, remote_command_line)
+
+        sim_path = os.path.join(PACKAGE_ROOT, "scripts", "local_sim_supervisor.py")
+        with open(sim_path, "r", encoding="utf-8") as stream:
+            sim_tree = ast.parse(stream.read(), filename=sim_path)
+        sim_class = next(node for node in sim_tree.body
+                         if isinstance(node, ast.ClassDef) and node.name == "LocalSimSupervisor")
+        sim_run = next(node for node in sim_class.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "run")
+        sim_calls = [node for node in ast.walk(sim_run) if isinstance(node, ast.Call)]
+        wait_line = next(
+            node.lineno for node in sim_calls
+            if isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_wait_for_robot_preflight")
+        spawn_line = next(
+            node.lineno for node in sim_calls
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "_spawn")
+        self.assertLess(wait_line, spawn_line)
+
     def test_reusable_launch_has_required_supervisor(self):
         root = ET.parse(os.path.join(PACKAGE_ROOT, "launch", "local_sim.launch")).getroot()
         args = {node.attrib["name"]: node.attrib.get("default") for node in root.findall("arg")}
@@ -162,6 +198,7 @@ class LocalSimLaunchContractTest(unittest.TestCase):
         expected = {
             "enable_simulation": "true",
             "start_local_sim": "true",
+            "use_external_sim_bridge": "$(eval enable_simulation and not start_local_sim)",
             "competition_workspace": "$(optenv UCAR_COMPETITION_WS)",
             "sim_workspace": "$(optenv UCAR_SIM_WS)",
             "robot_ssh_target": "$(optenv UCAR_ROBOT_HOST)",
@@ -179,6 +216,12 @@ class LocalSimLaunchContractTest(unittest.TestCase):
         self.assertIn("local_sim.launch", group.find("include").attrib["file"])
         nodes = root.findall("node")
         self.assertEqual([node.attrib["type"] for node in nodes], ["robot_supervisor.py"])
+        launch_args = nodes[0].find("rosparam[@param='physical_launch_arguments']")
+        self.assertIn(
+            'use_external_sim_bridge: "$(arg use_external_sim_bridge)"',
+            launch_args.text,
+        )
+        self.assertNotIn("$(eval", launch_args.text)
         self.assertFalse(any("common_core.launch" in node.attrib.get("file", "")
                              for node in root.findall("include")))
 

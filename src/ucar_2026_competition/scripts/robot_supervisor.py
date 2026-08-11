@@ -71,6 +71,10 @@ class RobotSupervisor:
         self.publish_status("preflight")
         revision = repository_revision(self.local_workspace)
         self._preflight(revision)
+        # Let the local simulator start only after all cheap host/robot checks
+        # have passed. This avoids starting Gazebo just to tear it down when a
+        # dirty tree, revision mismatch, or SSH problem is detected.
+        self.publish_status("preflight_ok", revision)
         remote_command = build_remote_agent_command(
             self.robot_workspace,
             self.robot_environment_file,

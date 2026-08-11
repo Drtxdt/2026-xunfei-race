@@ -31,7 +31,7 @@ catkin_make
 ```bash
 export UCAR_COMPETITION_WS=/home/txdt/2026-xunfei-race
 export UCAR_SIM_WS=/home/txdt/2026-race-nav/gazebo_ws
-export UCAR_ROBOT_HOST=ucar@<小车当前IP>
+export UCAR_ROBOT_HOST=ucar@192.168.1.6
 export UCAR_ROBOT_WS=/home/ucar/2026-xunfei-race
 export UCAR_ROBOT_ENV=/home/ucar/.config/ucar_2026/robot_env.sh
 
@@ -41,6 +41,10 @@ source "$UCAR_SIM_WS/devel/setup.bash"
 source "$UCAR_COMPETITION_WS/devel/setup.bash"
 ```
 
+上述地址已在当前比赛网络中验证。若路由器重新分配了小车地址，只修改
+`UCAR_ROBOT_HOST`，不要把 SSH 密码写入仓库或启动文件。配置完成后重新打开终端，或先执行
+`source ~/.bashrc`。
+
 Ubuntu 配置免密 SSH：
 
 ```bash
@@ -48,6 +52,9 @@ test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
 ssh-copy-id "$UCAR_ROBOT_HOST"
 ssh -o BatchMode=yes "$UCAR_ROBOT_HOST" true
 ```
+
+最后一条命令必须能够在不询问密码的情况下退出并返回成功；正式入口使用
+`BatchMode=yes`，不会在比赛启动过程中等待交互式密码输入。
 
 小车只在赛前部署时通过 SSH 执行：
 
@@ -88,6 +95,10 @@ roslaunch ucar_2026_competition full_competition.launch
 该入口自动选择通往小车的 Ubuntu 网卡地址、启动 Gazebo，并通过 SSH 启动小车的
 `physical_competition.launch`。Gazebo、SSH、小车实车 launch 任一失败或退出时，
 整套比赛都会停止并清理两端进程组。
+
+正式入口会先检查控制机仓库、小车仓库、版本和 SSH；只有预检全部通过才启动
+Gazebo。若提示工作区有未提交改动，应先提交并同步两端版本，不要把随后出现的
+`Waiting for /clock` 或 controller spawner 退出信息当作 Gazebo 根因。
 
 关闭仿真可使用：
 
