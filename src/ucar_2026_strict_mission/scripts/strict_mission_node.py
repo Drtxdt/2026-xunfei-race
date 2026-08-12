@@ -73,6 +73,11 @@ class StrictMissionNode:
         self.final_progress_m = 0.0
         self.final_lateral_drift_m = 0.0
         self.final_yaw_drift_deg = 0.0
+        self.final_visual_verified = False
+        self.final_stop_distance_m = None
+        self.final_stop_line_color = None
+        self.final_stop_confirm_hits = 0
+        self.final_stop_source = "unconfirmed"
         self.odom_pose = None
         self.odom_received_at = 0.0
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -84,6 +89,7 @@ class StrictMissionNode:
         self.track_process = None
         self.start_event = threading.Event()
         self.parked_event = threading.Event()
+        self.final_parked_event = threading.Event()
         self.traffic_event = threading.Event()
         self.shutdown_event = threading.Event()
 
@@ -229,6 +235,11 @@ class StrictMissionNode:
             "final_progress_m": self.final_progress_m,
             "final_lateral_drift_m": self.final_lateral_drift_m,
             "final_yaw_drift_deg": self.final_yaw_drift_deg,
+            "final_visual_verified": self.final_visual_verified,
+            "final_stop_distance_m": self.final_stop_distance_m,
+            "final_stop_line_color": self.final_stop_line_color,
+            "final_stop_confirm_hits": self.final_stop_confirm_hits,
+            "final_stop_source": self.final_stop_source,
             "decision": self.selected_decision,
             "stamp": rospy.Time.now().to_sec(),
         }
@@ -293,34 +304,23 @@ class StrictMissionNode:
             self.odom_pose = (position.x, position.y, yaw)
             self.odom_received_at = time.monotonic()
 
-    def detect_stop_line(self, frame, color_mode="yellow"):
+    def detect_stop_line(self, frame):
+        """Detect only the competition's yellow stop line."""
         height, width = frame.shape[:2]
         roi_start = float(rospy.get_param("~line_roi_start_ratio", 0.45))
         y0 = max(0, min(height - 1, int(height * roi_start)))
         roi = frame[y0:, :]
         hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-        if color_mode == "yellow":
-            lower = (
-                int(rospy.get_param("~yellow_h_min", 12)),
-                int(rospy.get_param("~yellow_s_min", 70)),
-                int(rospy.get_param("~yellow_v_min", 70)),
-            )
-            upper = (
-                int(rospy.get_param("~yellow_h_max", 42)),
-                int(rospy.get_param("~yellow_s_max", 255)),
-                int(rospy.get_param("~yellow_v_max", 255)),
-            )
-        else:
-            lower = (
-                0,
-                0,
-                int(rospy.get_param("~white_v_min", 165)),
-            )
-            upper = (
-                180,
-                int(rospy.get_param("~white_s_max", 85)),
-                255,
-            )
+        lower = (
+            int(rospy.get_param("~yellow_h_min", 12)),
+            int(rospy.get_param("~yellow_s_min", 70)),
+            int(rospy.get_param("~yellow_v_min", 70)),
+        )
+        upper = (
+            int(rospy.get_param("~yellow_h_max", 42)),
+            int(rospy.get_param("~yellow_s_max", 255)),
+            int(rospy.get_param("~yellow_v_max", 255)),
+        )
         mask = cv2.inRange(hsv, lower, upper)
         kernel_size = max(3, int(rospy.get_param("~morph_kernel_size", 5)))
         if kernel_size % 2 == 0:
@@ -387,16 +387,12 @@ class StrictMissionNode:
                     "~line_max_height_ratio", 0.12)) * height))),
             )
             if band is None:
-                if color_mode == "yellow":
-                    return self.detect_stop_line(frame, color_mode="white")
                 self.last_stop_line_color = None
                 return None, mask, None, None, None
             band_start, band_end = band
             band_mask = mask[band_start:band_end + 1, :]
             ys, xs = np.nonzero(band_mask)
             if len(xs) < 8:
-                if color_mode == "yellow":
-                    return self.detect_stop_line(frame, color_mode="white")
                 self.last_stop_line_color = None
                 return None, mask, None, None, None
             points = np.column_stack((xs, ys + band_start)).astype(np.float32)
@@ -408,8 +404,6 @@ class StrictMissionNode:
             while angle_deg <= -90.0:
                 angle_deg += 180.0
             if abs(angle_deg) > max_abs_angle:
-                if color_mode == "yellow":
-                    return self.detect_stop_line(frame, color_mode="white")
                 self.last_stop_line_color = None
                 return None, mask, None, None, None
             x_min = int(np.min(xs))
@@ -425,7 +419,7 @@ class StrictMissionNode:
                 x_max - x_min + 1,
                 band_end - band_start + 1,
             )
-            self.last_stop_line_color = color_mode
+            self.last_stop_line_color = "yellow"
             return (
                 bottom_ratio,
                 mask,
@@ -435,18 +429,27 @@ class StrictMissionNode:
             )
         _, bottom_ratio, box, center_error, angle_rad = max(
             candidates, key=lambda item: item[0])
-        self.last_stop_line_color = color_mode
+        self.last_stop_line_color = "yellow"
         return bottom_ratio, mask, box, center_error, angle_rad
 
     def image_callback(self, msg):
         now = time.monotonic()
         with self.lock:
             self.last_image_at = now
-            if self.state != "APPROACH_LINE":
+            state = self.state
+            if state not in ("APPROACH_LINE", "FINAL_VISUAL_APPROACH"):
                 return
+        final_visual_approach = state == "FINAL_VISUAL_APPROACH"
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except CvBridgeError as exc:
+            if final_visual_approach:
+                self.publish_stop()
+                self.publish_status(
+                    "final image conversion failed; holding for timeout fallback",
+                    visual_error=str(exc),
+                )
+                return
             self.set_fault("cv_bridge failed: {}".format(exc))
             return
         bottom_ratio, mask, box, center_error, angle_error = \
@@ -454,6 +457,7 @@ class StrictMissionNode:
         if bottom_ratio is None:
             self.band_filter.reset()
             self.final_distance_filter.reset()
+            self.final_stop_confirm_hits = 0
             if self.line_missing_since is None:
                 self.line_missing_since = now
                 with self.lock:
@@ -461,13 +465,20 @@ class StrictMissionNode:
                 self.line_search_origin_yaw = pose[2] if pose else None
                 self.line_search_direction = 1.0
                 self.line_search_reversals = 0
-            command = self.missing_line_search_command(now)
-            self.cmd_pub.publish(command)
-            self.publish_status(
-                "stop line not trusted; bounded yaw reacquisition",
-                commanded_yaw_rps=command.angular.z,
-                search_reversals=self.line_search_reversals,
-            )
+            if final_visual_approach:
+                self.publish_stop()
+                self.publish_status(
+                    "final yellow stop line missing; holding stop",
+                    stop_confirm_hits=0,
+                )
+            else:
+                command = self.missing_line_search_command(now)
+                self.cmd_pub.publish(command)
+                self.publish_status(
+                    "yellow stop line not trusted; bounded yaw reacquisition",
+                    commanded_yaw_rps=command.angular.z,
+                    search_reversals=self.line_search_reversals,
+                )
             return
         self.line_missing_since = None
         self.line_search_origin_yaw = None
@@ -483,9 +494,28 @@ class StrictMissionNode:
             self.publish_stop()
             self.band_filter.reset()
             self.final_distance_filter.reset()
+            self.final_stop_confirm_hits = 0
+            if final_visual_approach:
+                self.publish_status(
+                    "final yellow line outside calibrated range; "
+                    "holding for timeout fallback",
+                    line_bottom_ratio=bottom_ratio,
+                )
+                return
             self.publish_status(
-                "line outside calibrated range; holding stop",
+                "yellow line outside calibrated range; holding stop",
                 line_bottom_ratio=bottom_ratio,
+            )
+            return
+        if final_visual_approach and distance < self.target_min_m:
+            self.publish_stop()
+            self.band_filter.reset()
+            self.final_stop_confirm_hits = 0
+            self.publish_status(
+                "final yellow line is closer than the visual target; "
+                "holding for timeout fallback",
+                distance_m=distance,
+                minimum_target_m=self.target_min_m,
             )
             return
         precision_mode = distance <= self.precision_start_m
@@ -531,10 +561,59 @@ class StrictMissionNode:
             self.band_filter.reset()
             self.final_distance_filter.reset()
         else:
-            command.linear.x = (
-                0.0 if calibrated_fallback > 0.0
-                else self.policy.command_for_distance(distance))
+            command.linear.x = self.policy.command_for_distance(distance) \
+                if final_visual_approach else 0.0
+        with self.lock:
+            if self.state != state:
+                self.publish_stop()
+                return
         self.cmd_pub.publish(command)
+
+        if final_visual_approach:
+            self.final_distance_filter.reset()
+            final_confirmed = aligned and self.band_filter.push(distance)
+            self.final_stop_confirm_hits = self.band_filter.hits
+            if final_confirmed:
+                self.publish_stop()
+                with self.lock:
+                    if self.state != "FINAL_VISUAL_APPROACH":
+                        return
+                    self.final_visual_verified = True
+                    self.final_stop_distance_m = distance
+                    self.final_stop_line_color = "yellow"
+                    self.final_stop_source = "yellow_visual"
+                    self.state = "FINAL_VISUAL_CONFIRM"
+                    self.final_parked_event.set()
+                self.publish_status(
+                    "final yellow stop-line clearance confirmed",
+                    line_bottom_ratio=bottom_ratio,
+                    distance_m=distance,
+                    line_center_error_ratio=center_error,
+                    line_angle_deg=math.degrees(angle_error),
+                    line_color="yellow",
+                    stop_confirm_hits=self.final_stop_confirm_hits,
+                )
+            else:
+                self.publish_status(
+                    "final yellow stop-line precision approach",
+                    line_bottom_ratio=bottom_ratio,
+                    distance_m=distance,
+                    line_center_error_ratio=center_error,
+                    line_angle_deg=math.degrees(angle_error),
+                    line_color="yellow",
+                    yaw_tolerance_deg=math.degrees(yaw_tolerance),
+                    center_tolerance_ratio=center_tolerance,
+                    stop_confirm_hits=self.final_stop_confirm_hits,
+                    alignment_state=alignment_state,
+                    commanded_speed_mps=command.linear.x,
+                    commanded_lateral_mps=command.linear.y,
+                    commanded_yaw_rps=command.angular.z,
+                )
+            self.publish_stop_line_debug(
+                frame, box, distance, angle_error, center_error,
+                alignment_state)
+            return
+
         confirmed_distance = None
         if aligned and calibrated_fallback > 0.0:
             self.band_filter.reset()
@@ -549,6 +628,8 @@ class StrictMissionNode:
         if confirmed_distance is not None:
             self.publish_stop()
             with self.lock:
+                if self.state != "APPROACH_LINE":
+                    return
                 self.visual_stop_distance_m = confirmed_distance
                 self.visual_stop_distance_at = now
                 self.visual_stop_line_color = self.last_stop_line_color
@@ -582,6 +663,13 @@ class StrictMissionNode:
                 commanded_lateral_mps=command.linear.y,
                 commanded_yaw_rps=command.angular.z,
             )
+        self.publish_stop_line_debug(
+            frame, box, distance, angle_error, center_error,
+            alignment_state)
+
+    def publish_stop_line_debug(
+            self, frame, box, distance, angle_error, center_error,
+            alignment_state):
         if box is not None and self.debug_pub.get_num_connections() > 0:
             x, y, box_width, box_height = box
             cv2.rectangle(
@@ -671,22 +759,30 @@ class StrictMissionNode:
         with self.lock:
             state = self.state
             last_image_at = self.last_image_at
-        if state in ("VISUAL_CONFIRM", "STOP_CONFIRM", "WAIT_TRAFFIC", "FAULT"):
+        if state in (
+                "VISUAL_CONFIRM", "FINAL_VISUAL_CONFIRM", "STOP_CONFIRM",
+                "WAIT_TRAFFIC", "FAULT"):
             self.publish_stop()
-        if state != "APPROACH_LINE":
+        if state not in ("APPROACH_LINE", "FINAL_VISUAL_APPROACH"):
             return
         now = time.monotonic()
         stale_stop_sec = float(rospy.get_param("~image_stale_stop_sec", 0.25))
         stale_fault_sec = float(rospy.get_param("~image_stale_fault_sec", 1.0))
         if last_image_at <= 0.0 or now - last_image_at >= stale_stop_sec:
             self.publish_stop()
-        if last_image_at > 0.0 and now - last_image_at >= stale_fault_sec:
+        if (state == "APPROACH_LINE" and last_image_at > 0.0 and
+                now - last_image_at >= stale_fault_sec):
             self.set_fault("camera image timeout")
         missing_timeout = float(rospy.get_param(
-            "~line_missing_fault_sec", 2.0))
-        if (self.line_missing_since is not None
+            "~final_visual_line_missing_fault_sec", 5.0)) \
+            if state == "FINAL_VISUAL_APPROACH" else float(rospy.get_param(
+                "~line_missing_fault_sec", 2.0))
+        if (state == "APPROACH_LINE" and self.line_missing_since is not None
                 and now - self.line_missing_since >= missing_timeout):
-            self.set_fault("stop line lost during approach")
+            self.set_fault(
+                "yellow stop line lost during {}".format(
+                    "final visual approach"
+                    if state == "FINAL_VISUAL_APPROACH" else "approach"))
 
     def navigate_to_staging_pose(self):
         if not bool(rospy.get_param("~traffic_pose_configured", False)):
@@ -1054,7 +1150,15 @@ class StrictMissionNode:
                 self.visual_stop_line_color = None
                 self.planned_final_advance_m = 0.0
                 self.final_advance_source = "unplanned"
+                self.final_visual_verified = False
+                self.final_stop_distance_m = None
+                self.final_stop_line_color = None
+                self.final_stop_confirm_hits = 0
+                self.final_stop_source = "unconfirmed"
+                self.parked_event.clear()
+                self.final_parked_event.clear()
                 self.final_distance_filter.reset()
+                self.band_filter.reset()
                 self.line_missing_since = None
                 self.line_search_origin_yaw = (
                     self.odom_pose[2] if self.odom_pose else None)
@@ -1099,6 +1203,70 @@ class StrictMissionNode:
                 final_advance_source=self.final_advance_source,
             )
             self.advance_final_offset()
+            self.publish_stop()
+            with self.lock:
+                self.state = "FINAL_VISUAL_APPROACH"
+                self.last_image_at = time.monotonic()
+                self.last_distance_m = None
+                self.last_distance_at = 0.0
+                self.last_distance_color = None
+                self.final_visual_verified = False
+                self.final_stop_distance_m = None
+                self.final_stop_line_color = None
+                self.final_stop_confirm_hits = 0
+                self.final_stop_source = "unconfirmed"
+                self.final_parked_event.clear()
+                self.band_filter.reset()
+                self.final_distance_filter.reset()
+                self.line_missing_since = None
+                self.line_search_origin_yaw = None
+                self.line_search_direction = 1.0
+                self.line_search_reversals = 0
+            self.publish_status(
+                "hard advance complete; fresh yellow-line precision stop armed")
+            final_visual_timeout = float(rospy.get_param(
+                "~final_visual_approach_timeout_sec", 3.0))
+            try:
+                self.wait_event(
+                    self.final_parked_event,
+                    final_visual_timeout,
+                    "final yellow stop-line approach",
+                )
+            except RuntimeError:
+                with self.lock:
+                    if self.state == "FAULT":
+                        raise
+                    self.state = "FINAL_VISUAL_TIMEOUT"
+                    self.final_visual_verified = False
+                    self.final_stop_distance_m = self.last_distance_m
+                    self.final_stop_line_color = self.last_distance_color
+                    self.final_stop_source = "hard_advance_timeout"
+                self.publish_stop()
+                rospy.logwarn(
+                    "final yellow-line confirmation timed out after %.2fs; "
+                    "accepting the completed guarded hard advance",
+                    final_visual_timeout,
+                )
+                self.publish_status(
+                    "final visual timeout; completed hard advance accepted",
+                    fallback_timeout_sec=final_visual_timeout,
+                )
+            with self.lock:
+                visual_valid = (
+                    self.final_visual_verified
+                    and self.final_stop_source == "yellow_visual"
+                    and self.final_stop_line_color == "yellow"
+                    and self.final_stop_distance_m is not None
+                    and self.policy.in_target_band(
+                        self.final_stop_distance_m)
+                )
+                hard_advance_fallback = (
+                    not self.final_visual_verified
+                    and self.final_stop_source == "hard_advance_timeout"
+                )
+                if not (visual_valid or hard_advance_fallback):
+                    raise RuntimeError(
+                        "final stop completion source is invalid")
             with self.lock:
                 self.state = "STOP_CONFIRM"
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))

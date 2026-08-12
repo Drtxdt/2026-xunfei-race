@@ -1020,6 +1020,8 @@ class CompetitionFlow:
             source_stage, "task4_handoff",
             "preserving AMCL pose and preparing physical navigation")
         self.safe_stop(cancel_navigation=True)
+        # Never allow a future transition announcement to overlap any motion.
+        self._wait_transition_announcement(source_stage)
         if bool_param("~task4_factory_egress_enabled", True):
             moved = self._back_out_of_factory_bay(
                 source_stage,
@@ -1105,11 +1107,6 @@ class CompetitionFlow:
                 "internal_route_ready",
                 "reached calibrated internal waypoint before stop-line navigation",
             )
-        self._wait_transition_announcement(source_stage)
-        if source_stage == "task3":
-            self.publish_status(
-                "task3", "completed",
-                "simulation result announced; task4 handoff preparation complete")
         self.safe_stop(cancel_navigation=True)
         self.publish_status(
             source_stage, "task4_handoff_ready",
@@ -1265,6 +1262,66 @@ class CompetitionFlow:
             self._wait_announcement(task)
         finally:
             self.transition_announcement = None
+
+    def _announce_while_stationary(
+            self, event, item="", workshop="", decision="", text=""):
+        """Hold exclusive zero-velocity authority until speech is complete."""
+        self.safe_stop(cancel_navigation=True)
+        stable_required = max(0.1, float(rospy.get_param(
+            "~stationary_announcement_stable_sec", 0.5)))
+        odom_stale_sec = max(0.1, float(rospy.get_param(
+            "~stationary_announcement_odom_stale_sec", 0.5)))
+        ready_timeout = max(stable_required, float(rospy.get_param(
+            "~stationary_announcement_ready_timeout_sec", 3.0)))
+        deadline = time.monotonic() + ready_timeout
+        stable_since = None
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            self.cmd_pub.publish(Twist())
+            with self.lock:
+                twist = self.base_twist
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            stopped = (
+                twist is not None
+                and odom_age <= odom_stale_sec
+                and base_is_stopped(*twist)
+            )
+            if stopped:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= stable_required:
+                    break
+            else:
+                stable_since = None
+            rospy.sleep(0.05)
+        else:
+            raise StageError(
+                "vehicle did not become stationary before {} announcement".format(
+                    event))
+
+        task = self._start_announcement(
+            event,
+            item=item,
+            workshop=workshop,
+            decision=decision,
+            text=text,
+        )
+        motion_observed = False
+        while not task["done"].wait(0.05):
+            self.check_abort()
+            self.cmd_pub.publish(Twist())
+            with self.lock:
+                twist = self.base_twist
+                odom_age = time.monotonic() - self.qr_odom_received_at
+            if (twist is None or odom_age > odom_stale_sec or
+                    not base_is_stopped(*twist)):
+                motion_observed = True
+        self._wait_announcement(task)
+        self.safe_stop(cancel_navigation=True)
+        if motion_observed:
+            raise StageError(
+                "vehicle motion or stale odometry observed during {} announcement".format(
+                    event))
 
     def navigate_to_qr_area(self):
         """Run the untouched simple_navigator and observe its move_base result."""
@@ -2283,16 +2340,15 @@ class CompetitionFlow:
         )
         if not item:
             raise StageError("task3 sim_item is missing")
-        if self.next_stage == "task4":
-            self._start_transition_announcement(
-                "task3", item=item, workshop=workshop)
-            self.publish_status(
-                "task3", "announcement_running",
-                "{}; announcement overlaps task4 handoff preparation".format(
-                    result_text))
-        else:
-            self.announce("task3", item=item, workshop=workshop)
-            self.publish_status("task3", "completed", result_text)
+        self.publish_status(
+            "task3", "announcement_running",
+            "{}; vehicle locked until announcement completes".format(result_text))
+        self._announce_while_stationary(
+            "task3", item=item, workshop=workshop)
+        self.publish_status(
+            "task3", "completed",
+            "{}; announcement completed with vehicle stationary".format(
+                result_text))
 
     def approach_task4_stop_line(self):
         self.strict_mission_status = {}
@@ -2351,6 +2407,13 @@ class CompetitionFlow:
                     last_state = state
                 if state == "WAIT_TRAFFIC":
                     distance = status.get("visual_stop_distance_m")
+                    final_distance = status.get("final_stop_distance_m")
+                    final_color = str(
+                        status.get("final_stop_line_color") or "").strip().lower()
+                    final_verified = bool(
+                        status.get("final_visual_verified", False))
+                    final_stop_source = str(
+                        status.get("final_stop_source") or "").strip().lower()
                     planned = float(status.get("final_advance_m") or 0.0)
                     progress = float(status.get("final_progress_m") or 0.0)
                     source = str(
@@ -2373,11 +2436,43 @@ class CompetitionFlow:
                             "planned={:.3f}m progress={:.3f}m "
                             "tolerance={:.3f}m".format(
                                 planned, progress, tolerance))
+                    final_min = float(rospy.get_param(
+                        "~task4_final_stop_min_m", 0.03))
+                    final_max = float(rospy.get_param(
+                        "~task4_final_stop_max_m", 0.05))
+                    try:
+                        final_distance_value = float(final_distance)
+                    except (TypeError, ValueError):
+                        final_distance_value = None
+                    visual_stop_valid = (
+                        final_stop_source == "yellow_visual"
+                        and final_verified
+                        and final_color == "yellow"
+                        and final_distance_value is not None
+                        and final_min <= final_distance_value <= final_max
+                    )
+                    hard_advance_fallback = (
+                        final_stop_source == "hard_advance_timeout"
+                        and not final_verified
+                    )
+                    if not (visual_stop_valid or hard_advance_fallback):
+                        raise StageError(
+                            "task4 final stop not accepted: source={} "
+                            "verified={} color={} distance={} "
+                            "visual_required=[{:.3f},{:.3f}]m".format(
+                                final_stop_source or "missing",
+                                final_verified, final_color or "missing",
+                                "missing" if final_distance_value is None
+                                else "{:.3f}m".format(final_distance_value),
+                                final_min, final_max))
                     self.publish_status(
                         "task4", "stop_line_reached",
                         "vehicle held before stop line; visual_distance_m={} "
-                        "final_advance_source={} final_progress_m={:.3f}".format(
-                            distance, source, progress))
+                        "final_advance_source={} final_progress_m={:.3f} "
+                        "final_stop_source={} final_yellow_distance_m={}".format(
+                            distance, source, progress, final_stop_source,
+                            "missing" if final_distance_value is None
+                            else "{:.3f}".format(final_distance_value)))
                     return
                 if state == "FAULT":
                     raise StageError(
