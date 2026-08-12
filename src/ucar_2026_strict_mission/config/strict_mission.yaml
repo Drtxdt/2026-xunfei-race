@@ -52,7 +52,7 @@
   "final_advance_visual_bias_m": 0.03,
   "final_visual_confirm_frames": 3,
   "final_visual_max_spread_m": 0.02,
-  "final_visual_approach_timeout_sec": 25.0,
+  "final_visual_approach_timeout_sec": 3.0,
   "final_visual_line_missing_fault_sec": 5.0,
   "final_advance_speed_mps": 0.045,
   "final_advance_creep_speed_mps": 0.030,

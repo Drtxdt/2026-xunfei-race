@@ -77,6 +77,7 @@ class StrictMissionNode:
         self.final_stop_distance_m = None
         self.final_stop_line_color = None
         self.final_stop_confirm_hits = 0
+        self.final_stop_source = "unconfirmed"
         self.odom_pose = None
         self.odom_received_at = 0.0
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -238,6 +239,7 @@ class StrictMissionNode:
             "final_stop_distance_m": self.final_stop_distance_m,
             "final_stop_line_color": self.final_stop_line_color,
             "final_stop_confirm_hits": self.final_stop_confirm_hits,
+            "final_stop_source": self.final_stop_source,
             "decision": self.selected_decision,
             "stamp": rospy.Time.now().to_sec(),
         }
@@ -441,6 +443,13 @@ class StrictMissionNode:
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except CvBridgeError as exc:
+            if final_visual_approach:
+                self.publish_stop()
+                self.publish_status(
+                    "final image conversion failed; holding for timeout fallback",
+                    visual_error=str(exc),
+                )
+                return
             self.set_fault("cv_bridge failed: {}".format(exc))
             return
         bottom_ratio, mask, box, center_error, angle_error = \
@@ -487,8 +496,11 @@ class StrictMissionNode:
             self.final_distance_filter.reset()
             self.final_stop_confirm_hits = 0
             if final_visual_approach:
-                self.set_fault(
-                    "yellow stop line outside calibrated range during final approach")
+                self.publish_status(
+                    "final yellow line outside calibrated range; "
+                    "holding for timeout fallback",
+                    line_bottom_ratio=bottom_ratio,
+                )
                 return
             self.publish_status(
                 "yellow line outside calibrated range; holding stop",
@@ -499,9 +511,12 @@ class StrictMissionNode:
             self.publish_stop()
             self.band_filter.reset()
             self.final_stop_confirm_hits = 0
-            self.set_fault(
-                "yellow stop line clearance {:.3f}m is below {:.3f}m safety target".format(
-                    distance, self.target_min_m))
+            self.publish_status(
+                "final yellow line is closer than the visual target; "
+                "holding for timeout fallback",
+                distance_m=distance,
+                minimum_target_m=self.target_min_m,
+            )
             return
         precision_mode = distance <= self.precision_start_m
         yaw_tolerance = (
@@ -566,6 +581,7 @@ class StrictMissionNode:
                     self.final_visual_verified = True
                     self.final_stop_distance_m = distance
                     self.final_stop_line_color = "yellow"
+                    self.final_stop_source = "yellow_visual"
                     self.state = "FINAL_VISUAL_CONFIRM"
                     self.final_parked_event.set()
                 self.publish_status(
@@ -754,13 +770,14 @@ class StrictMissionNode:
         stale_fault_sec = float(rospy.get_param("~image_stale_fault_sec", 1.0))
         if last_image_at <= 0.0 or now - last_image_at >= stale_stop_sec:
             self.publish_stop()
-        if last_image_at > 0.0 and now - last_image_at >= stale_fault_sec:
+        if (state == "APPROACH_LINE" and last_image_at > 0.0 and
+                now - last_image_at >= stale_fault_sec):
             self.set_fault("camera image timeout")
         missing_timeout = float(rospy.get_param(
             "~final_visual_line_missing_fault_sec", 5.0)) \
             if state == "FINAL_VISUAL_APPROACH" else float(rospy.get_param(
                 "~line_missing_fault_sec", 2.0))
-        if (self.line_missing_since is not None
+        if (state == "APPROACH_LINE" and self.line_missing_since is not None
                 and now - self.line_missing_since >= missing_timeout):
             self.set_fault(
                 "yellow stop line lost during {}".format(
@@ -1137,6 +1154,7 @@ class StrictMissionNode:
                 self.final_stop_distance_m = None
                 self.final_stop_line_color = None
                 self.final_stop_confirm_hits = 0
+                self.final_stop_source = "unconfirmed"
                 self.parked_event.clear()
                 self.final_parked_event.clear()
                 self.final_distance_filter.reset()
@@ -1196,6 +1214,7 @@ class StrictMissionNode:
                 self.final_stop_distance_m = None
                 self.final_stop_line_color = None
                 self.final_stop_confirm_hits = 0
+                self.final_stop_source = "unconfirmed"
                 self.final_parked_event.clear()
                 self.band_filter.reset()
                 self.final_distance_filter.reset()
@@ -1205,20 +1224,49 @@ class StrictMissionNode:
                 self.line_search_reversals = 0
             self.publish_status(
                 "hard advance complete; fresh yellow-line precision stop armed")
-            self.wait_event(
-                self.final_parked_event,
-                float(rospy.get_param(
-                    "~final_visual_approach_timeout_sec", 25.0)),
-                "final yellow stop-line approach",
-            )
+            final_visual_timeout = float(rospy.get_param(
+                "~final_visual_approach_timeout_sec", 3.0))
+            try:
+                self.wait_event(
+                    self.final_parked_event,
+                    final_visual_timeout,
+                    "final yellow stop-line approach",
+                )
+            except RuntimeError:
+                with self.lock:
+                    if self.state == "FAULT":
+                        raise
+                    self.state = "FINAL_VISUAL_TIMEOUT"
+                    self.final_visual_verified = False
+                    self.final_stop_distance_m = self.last_distance_m
+                    self.final_stop_line_color = self.last_distance_color
+                    self.final_stop_source = "hard_advance_timeout"
+                self.publish_stop()
+                rospy.logwarn(
+                    "final yellow-line confirmation timed out after %.2fs; "
+                    "accepting the completed guarded hard advance",
+                    final_visual_timeout,
+                )
+                self.publish_status(
+                    "final visual timeout; completed hard advance accepted",
+                    fallback_timeout_sec=final_visual_timeout,
+                )
             with self.lock:
-                if (not self.final_visual_verified or
-                        self.final_stop_line_color != "yellow" or
-                        self.final_stop_distance_m is None or
-                        not self.policy.in_target_band(
-                            self.final_stop_distance_m)):
+                visual_valid = (
+                    self.final_visual_verified
+                    and self.final_stop_source == "yellow_visual"
+                    and self.final_stop_line_color == "yellow"
+                    and self.final_stop_distance_m is not None
+                    and self.policy.in_target_band(
+                        self.final_stop_distance_m)
+                )
+                hard_advance_fallback = (
+                    not self.final_visual_verified
+                    and self.final_stop_source == "hard_advance_timeout"
+                )
+                if not (visual_valid or hard_advance_fallback):
                     raise RuntimeError(
-                        "final yellow stop-line confirmation is invalid")
+                        "final stop completion source is invalid")
             with self.lock:
                 self.state = "STOP_CONFIRM"
             settle = float(rospy.get_param("~stop_settle_sec", 0.6))

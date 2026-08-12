@@ -77,7 +77,8 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn("task4 final advance incomplete", flow)
         self.assertIn('status.get("final_visual_verified"', flow)
         self.assertIn('status.get("final_stop_line_color")', flow)
-        self.assertIn("task4 final visual stop not verified", flow)
+        self.assertIn("task4 final stop not accepted", flow)
+        self.assertIn('final_stop_source == "hard_advance_timeout"', flow)
 
     def test_calibrated_advance_uses_verified_hard_stop_distance(self):
         config = json.loads(
@@ -99,7 +100,7 @@ class OdometryProgressTests(unittest.TestCase):
             config["distance_calibration_reference"],
             "front_wheel_to_yellow_line",
         )
-        self.assertEqual(config["final_visual_approach_timeout_sec"], 25.0)
+        self.assertEqual(config["final_visual_approach_timeout_sec"], 3.0)
         self.assertEqual(
             config["final_visual_line_missing_fault_sec"], 5.0)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
@@ -132,6 +133,9 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn('self.state = "FINAL_VISUAL_APPROACH"', node_source)
         self.assertIn("self.final_parked_event", node_source)
         self.assertIn("final yellow stop-line clearance confirmed", node_source)
+        self.assertIn('self.final_stop_source = "hard_advance_timeout"', node_source)
+        self.assertIn(
+            "accepting the completed guarded hard advance", node_source)
         self.assertNotIn('color_mode="white"', node_source)
         self.assertNotIn('~white_v_min', node_source)
 

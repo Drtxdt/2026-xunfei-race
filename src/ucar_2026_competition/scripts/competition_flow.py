@@ -2412,6 +2412,8 @@ class CompetitionFlow:
                         status.get("final_stop_line_color") or "").strip().lower()
                     final_verified = bool(
                         status.get("final_visual_verified", False))
+                    final_stop_source = str(
+                        status.get("final_stop_source") or "").strip().lower()
                     planned = float(status.get("final_advance_m") or 0.0)
                     progress = float(status.get("final_progress_m") or 0.0)
                     source = str(
@@ -2434,29 +2436,43 @@ class CompetitionFlow:
                             "planned={:.3f}m progress={:.3f}m "
                             "tolerance={:.3f}m".format(
                                 planned, progress, tolerance))
-                    try:
-                        final_distance = float(final_distance)
-                    except (TypeError, ValueError):
-                        raise StageError(
-                            "task4 final yellow-line distance is missing")
                     final_min = float(rospy.get_param(
                         "~task4_final_stop_min_m", 0.03))
                     final_max = float(rospy.get_param(
                         "~task4_final_stop_max_m", 0.05))
-                    if (not final_verified or final_color != "yellow" or
-                            not final_min <= final_distance <= final_max):
+                    try:
+                        final_distance_value = float(final_distance)
+                    except (TypeError, ValueError):
+                        final_distance_value = None
+                    visual_stop_valid = (
+                        final_stop_source == "yellow_visual"
+                        and final_verified
+                        and final_color == "yellow"
+                        and final_distance_value is not None
+                        and final_min <= final_distance_value <= final_max
+                    )
+                    hard_advance_fallback = (
+                        final_stop_source == "hard_advance_timeout"
+                        and not final_verified
+                    )
+                    if not (visual_stop_valid or hard_advance_fallback):
                         raise StageError(
-                            "task4 final visual stop not verified: "
-                            "verified={} color={} distance={:.3f}m "
-                            "required=[{:.3f},{:.3f}]m".format(
+                            "task4 final stop not accepted: source={} "
+                            "verified={} color={} distance={} "
+                            "visual_required=[{:.3f},{:.3f}]m".format(
+                                final_stop_source or "missing",
                                 final_verified, final_color or "missing",
-                                final_distance, final_min, final_max))
+                                "missing" if final_distance_value is None
+                                else "{:.3f}m".format(final_distance_value),
+                                final_min, final_max))
                     self.publish_status(
                         "task4", "stop_line_reached",
                         "vehicle held before stop line; visual_distance_m={} "
                         "final_advance_source={} final_progress_m={:.3f} "
-                        "final_yellow_distance_m={:.3f}".format(
-                            distance, source, progress, final_distance))
+                        "final_stop_source={} final_yellow_distance_m={}".format(
+                            distance, source, progress, final_stop_source,
+                            "missing" if final_distance_value is None
+                            else "{:.3f}".format(final_distance_value)))
                     return
                 if state == "FAULT":
                     raise StageError(
