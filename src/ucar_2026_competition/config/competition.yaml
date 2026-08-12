@@ -175,6 +175,10 @@ task2_non_target_topic: /vision/non_target_observation
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003
 sim_timeout_sec: 900.0
+# 子任务3播报前先确认静止，播报期间持续发布零速度；任何运动都会阻止进入任务4。
+stationary_announcement_stable_sec: 0.5
+stationary_announcement_odom_stale_sec: 0.5
+stationary_announcement_ready_timeout_sec: 3.0
 
 # 交通灯坐标必须经实车标定后显式设置。未设置时流程安全暂停。
 traffic_pose_configured: false
@@ -183,6 +187,8 @@ traffic_y: -3.10
 traffic_yaw: -1.5596
 traffic_timeout_sec: 180.0
 task4_final_progress_tolerance_m: 0.008
+task4_final_stop_min_m: 0.03
+task4_final_stop_max_m: 0.05
 
 track_timeout_sec: 420.0
 status_topic: /competition/status

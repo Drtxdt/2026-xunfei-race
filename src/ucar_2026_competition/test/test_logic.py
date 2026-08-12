@@ -393,7 +393,7 @@ class CompetitionLogicTest(unittest.TestCase):
         }
         self.assertIn("total_steps", assigned_names)
 
-    def test_transition_speech_overlaps_only_stationary_preparation(self):
+    def test_task3_speech_completes_before_any_task4_motion(self):
         flow_path = os.path.abspath(os.path.join(
             os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
         with open(flow_path, "r", encoding="utf-8") as stream:
@@ -419,7 +419,8 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("_start_transition_announcement", called("task1"))
         self.assertIn(
             "_wait_transition_announcement", called("task1_task2_handoff"))
-        self.assertIn("_start_transition_announcement", called("task3"))
+        self.assertIn("_announce_while_stationary", called("task3"))
+        self.assertNotIn("_start_transition_announcement", called("task3"))
         self.assertIn(
             "_wait_transition_announcement", called("production_task4_handoff"))
         self.assertIn(
@@ -439,9 +440,19 @@ class CompetitionLogicTest(unittest.TestCase):
         announcement_line = next(
             node.lineno for node in handoff_calls
             if node.func.attr == "_wait_transition_announcement")
+        self.assertLess(announcement_line, back_out_line)
         self.assertLess(back_out_line, internal_route_line)
-        self.assertLess(internal_route_line, announcement_line)
-        self.assertLess(back_out_line, announcement_line)
+
+        stationary_calls = [
+            node for node in ast.walk(methods["_announce_while_stationary"])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+        ]
+        self.assertTrue(any(
+            node.func.attr == "publish" for node in stationary_calls))
+        self.assertTrue(any(
+            node.func.attr == "_wait_announcement"
+            for node in stationary_calls))
         self.assertIn("_start_announcement", called("task4"))
         self.assertIn("_wait_announcement", called("task4"))
         self.assertIn("stop_child", called("task4"))

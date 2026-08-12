@@ -102,7 +102,7 @@ def select_final_advance(
 
 
 class StableLineDistanceFilter:
-    """Confirm a same-color stop-line distance over consecutive frames."""
+    """Confirm a yellow stop-line distance over consecutive frames."""
 
     def __init__(self, required=3, max_spread_m=0.02):
         self.required = max(1, int(required))
@@ -124,7 +124,7 @@ class StableLineDistanceFilter:
         except (TypeError, ValueError):
             self.reset()
             return None
-        if (not aligned or color_value not in ("yellow", "white") or
+        if (not aligned or color_value != "yellow" or
                 not math.isfinite(distance) or distance < 0.0):
             self.reset()
             return None
