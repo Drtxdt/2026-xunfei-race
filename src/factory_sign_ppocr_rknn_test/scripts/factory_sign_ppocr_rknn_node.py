@@ -284,6 +284,38 @@ def select_factory_sign_box(texts: Sequence[OCRText],
     return OCRText(text=target.text, score=target.score, box=merged)
 
 
+def collect_factory_sign_detections(texts: Sequence[OCRText], classifier):
+    """Return one independently classified observation for each category.
+
+    Frame-level classification deliberately rejects competing categories, but
+    task2 may legitimately see two neighbouring factory signs in one frame.
+    Keep that conservative legacy decision while exposing the independently
+    supported boxes to target-aware consumers.
+    """
+    detections = []
+    for category in ("food", "daily", "electronic"):
+        item = select_factory_sign_box(texts, category, classifier)
+        if item is None:
+            continue
+        observed, score, evidence, _debug = classifier.classify_evidence([item])
+        if observed != category:
+            # A merged companion line does not change the category-bearing
+            # text, but retain a defensive fallback to the original box.
+            item = select_category_box(texts, category, classifier)
+            if item is None:
+                continue
+            observed, score, evidence, _debug = classifier.classify_evidence([item])
+        if observed == category:
+            detections.append({
+                "category": category,
+                "category_score": float(score),
+                "evidence": evidence,
+                "raw_text": item.text,
+                "box": item.box,
+            })
+    return detections
+
+
 class VoteWindow:
     def __init__(self, size: int, min_count: int) -> None:
         self.size = max(1, int(size))
@@ -473,9 +505,6 @@ class PPOCRRknnRecognizer:
                 rec_ms += one_rec_ms
                 if text and score >= self.min_score:
                     texts.append(OCRText(text=text, score=score, box=candidate.box))
-                    category, _score, _evidence, _debug = self.classifier.classify_evidence(texts)
-                    if category and (not self.target_category or category == self.target_category):
-                        break
             if (
                 self.small_crop_retry
                 and candidates
@@ -506,8 +535,11 @@ class PPOCRRknnRecognizer:
             )
 
     def _has_target_evidence(self, texts: Sequence[OCRText]) -> bool:
+        if self.target_category:
+            return select_category_box(
+                texts, self.target_category, self.classifier) is not None
         category, _score, _evidence, _debug = self.classifier.classify_evidence(texts)
-        return bool(category and (not self.target_category or category == self.target_category))
+        return bool(category)
 
     def _fallback_candidates(self, image) -> List[OCRCandidate]:
         if self.global_fallback_crops <= 0:
@@ -878,7 +910,23 @@ class FactorySignPPOCRRknnNode:
         self.view_index += 1
         ocr_image, debug_preprocess = self._make_ocr_image(frame, view_scale)
         result = self.recognizer.recognize(ocr_image)
-        result.category, result.category_score, result.evidence, match_debug = self.classifier.classify_evidence(result.texts)
+        legacy_category, legacy_score, legacy_evidence, match_debug = (
+            self.classifier.classify_evidence(result.texts))
+        detections = collect_factory_sign_detections(
+            result.texts, self.classifier)
+        target_category = self.recognizer.target_category
+        selected_detection = next((
+            detection for detection in detections
+            if detection["category"] == target_category
+        ), None)
+        if selected_detection is not None:
+            result.category = selected_detection["category"]
+            result.category_score = selected_detection["category_score"]
+            result.evidence = selected_detection["evidence"]
+        else:
+            result.category = legacy_category
+            result.category_score = legacy_score
+            result.evidence = legacy_evidence
         result.view_scale = view_scale
         result.match_debug = "score={:.2f} evidence={} {}".format(result.category_score, result.evidence or "-", match_debug)
         confirmed = result.category
@@ -896,6 +944,29 @@ class FactorySignPPOCRRknnNode:
             target_center_x = sum(point[0] for point in target_box) / len(target_box)
             target_center_y = sum(point[1] for point in target_box) / len(target_box)
         frame_height, frame_width = frame.shape[:2]
+        published_detections = []
+        for detection in detections:
+            mapped_box = map_box_to_frame(
+                detection["box"], self.last_roi_box,
+                self.last_ocr_scale_factor)
+            center_x = (
+                sum(point[0] for point in mapped_box) / len(mapped_box)
+                if mapped_box else None)
+            center_y = (
+                sum(point[1] for point in mapped_box) / len(mapped_box)
+                if mapped_box else None)
+            published_detections.append({
+                "category": detection["category"],
+                "workshop": CATEGORY_NAMES.get(detection["category"], ""),
+                "confidence": detection["category_score"],
+                "category_score": detection["category_score"],
+                "evidence": detection["evidence"],
+                "raw_text": detection["raw_text"],
+                "bbox": mapped_box,
+                "target_bbox": mapped_box,
+                "target_center_x": center_x,
+                "target_center_y": center_y,
+            })
         self.result_pub.publish(self.String(data=json.dumps({
             "category": confirmed or "",
             "workshop": CATEGORY_NAMES.get(confirmed, ""),
@@ -909,6 +980,7 @@ class FactorySignPPOCRRknnNode:
             "target_bbox": target_box,
             "target_center_x": target_center_x,
             "target_center_y": target_center_y,
+            "detections": published_detections,
             "image_width": int(frame_width),
             "image_height": int(frame_height),
             "error": result.error,

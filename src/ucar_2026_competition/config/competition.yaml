@@ -71,10 +71,20 @@ parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
 parking_staging_position_tolerance: 0.16
 parking_staging_yaw_tolerance: 0.10
+parking_staging_normal_tolerance: 0.08
+parking_staging_tangent_tolerance: 0.04
+parking_staging_axis_yaw_tolerance: 0.08
+parking_staging_refine_timeout_sec: 8.0
 parking_docking_timeout_sec: 30.0
+# Legacy fixed-distance parameters remain loadable, but swept-footprint safety
+# is authoritative for parking motion.
 parking_obstacle_min_clearance: 0.24
 parking_obstacle_clearance_tolerance: 0.005
 parking_obstacle_sector_half_angle_deg: 35.0
+parking_obstacle_required_scans: 2
+parking_recovery_retry_count: 1
+parking_recovery_reverse_speed: 0.06
+parking_recovery_timeout_sec: 8.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
 parking_dock_max_yaw: 0.30
@@ -168,7 +178,7 @@ task2_second_search_abort_fail_fast_count: 0
 task2_remembered_heading_confirm_sec: 1.2
 task2_remembered_heading_scan_half_angle_deg: 18.0
 # 连续确认近距离非目标厂牌后结束当前观察点剩余转角；第二轮继续复用仓库记忆。
-task2_non_target_early_exit: true
+task2_non_target_early_exit: false
 task2_non_target_early_exit_min_score: 0.62
 task2_non_target_topic: /vision/non_target_observation
 

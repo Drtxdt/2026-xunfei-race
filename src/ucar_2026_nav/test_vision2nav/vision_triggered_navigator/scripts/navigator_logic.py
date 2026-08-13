@@ -64,6 +64,110 @@ def obstacle_clearance_requires_stop(nearest_range, min_clearance,
             abs(float(min_clearance)))
 
 
+def swept_footprint_obstacle(points, command, errors,
+                             footprint_half_length,
+                             footprint_half_width, margin=0.02):
+    """Return diagnostics for scan points inside the commanded swept body.
+
+    Points and commands are in ``base_link``.  Parking is phase ordered, so a
+    translation sweep is an axis-aligned rectangle extended through the full
+    remaining axis error.  A turn uses the rectangular footprint's
+    circumscribed radius and is therefore conservative for every intermediate
+    yaw.
+    """
+    command_x, command_y, command_yaw = [float(value) for value in command]
+    normal_error, tangent_error, _yaw_error = [float(value) for value in errors]
+    raw_half_length = abs(float(footprint_half_length))
+    raw_half_width = abs(float(footprint_half_width))
+    safety_margin = max(0.0, float(margin))
+    half_length = raw_half_length + safety_margin
+    half_width = raw_half_width + safety_margin
+    phase = None
+    bounds = None
+    radius = None
+    if abs(command_yaw) > 1e-9:
+        phase = "rotation"
+        radius = math.hypot(raw_half_length, raw_half_width) + safety_margin
+    elif abs(command_y) > 1e-9:
+        phase = "left" if command_y > 0.0 else "right"
+        displacement = tangent_error
+        bounds = (
+            -half_length, half_length,
+            min(0.0, displacement) - half_width,
+            max(0.0, displacement) + half_width,
+        )
+    elif abs(command_x) > 1e-9:
+        phase = "forward" if command_x > 0.0 else "rear"
+        displacement = normal_error
+        bounds = (
+            min(0.0, displacement) - half_length,
+            max(0.0, displacement) + half_length,
+            -half_width, half_width,
+        )
+    if phase is None:
+        return {"blocked": False, "phase": None, "point": None,
+                "clearance": float("inf"), "bounds": None}
+
+    nearest_point = None
+    nearest_clearance = float("inf")
+    for point_x, point_y in points or ():
+        point_x, point_y = float(point_x), float(point_y)
+        if not math.isfinite(point_x) or not math.isfinite(point_y):
+            continue
+        if radius is not None:
+            clearance = math.hypot(point_x, point_y) - radius
+            inside = clearance <= 0.0
+        else:
+            min_x, max_x, min_y, max_y = bounds
+            dx = max(min_x - point_x, 0.0, point_x - max_x)
+            dy = max(min_y - point_y, 0.0, point_y - max_y)
+            clearance = math.hypot(dx, dy)
+            inside = (min_x <= point_x <= max_x and
+                      min_y <= point_y <= max_y)
+        if clearance < nearest_clearance:
+            nearest_clearance = clearance
+            nearest_point = (point_x, point_y)
+        if inside:
+            return {
+                "blocked": True,
+                "phase": phase,
+                "point": (point_x, point_y),
+                "clearance": clearance,
+                "bounds": bounds,
+                "radius": radius,
+            }
+    return {
+        "blocked": False,
+        "phase": phase,
+        "point": nearest_point,
+        "clearance": nearest_clearance,
+        "bounds": bounds,
+        "radius": radius,
+    }
+
+
+def staging_wall_frame_accepted(normal_error, tangent_error, yaw_error,
+                                normal_tolerance=0.08,
+                                tangent_tolerance=0.04,
+                                yaw_tolerance=0.08):
+    """Require axis-specific staging accuracy before close-range docking."""
+    return (
+        abs(float(normal_error)) <= abs(float(normal_tolerance)) and
+        abs(float(tangent_error)) <= abs(float(tangent_tolerance)) and
+        abs(float(yaw_error)) <= abs(float(yaw_tolerance))
+    )
+
+
+def parking_obstacle_action(consecutive_blocks, recovery_attempts,
+                            required_blocks=2, retry_count=1):
+    """Choose hold, one bounded recovery, or a terminal safe stop."""
+    if int(consecutive_blocks) < max(1, int(required_blocks)):
+        return "hold"
+    if int(recovery_attempts) < max(0, int(retry_count)):
+        return "recover"
+    return "fail"
+
+
 def coverage_speed_profile(clearance, current_profile,
                            caution_enter_clearance,
                            caution_exit_clearance,
@@ -214,7 +318,8 @@ def coverage_anchor_order(count, preferred_anchor=0, skipped_anchors=(),
 
     Public anchor parameters are one-based.  An explicit remembered anchor
     wins; otherwise the caller may provide an order beginning at the nearest
-    current anchor.  Confirmed irrelevant anchors are omitted.
+    current anchor.  Only explicitly supplied (manually calibrated) anchors
+    are omitted.
     """
     count = max(0, int(count))
     if count == 0:
@@ -337,6 +442,19 @@ def docking_pose_errors(current_pose, target_pose):
     forward = cos_yaw * dx + sin_yaw * dy
     lateral = -sin_yaw * dx + cos_yaw * dy
     return forward, lateral, normalize_angle(target_yaw - yaw)
+
+
+def wall_frame_pose_errors(current_pose, target_pose):
+    """Return errors on the target wall-normal and wall-tangent axes."""
+    x, y, yaw = [float(value) for value in current_pose]
+    target_x, target_y, target_yaw = [float(value) for value in target_pose]
+    dx = target_x - x
+    dy = target_y - y
+    cos_target = math.cos(target_yaw)
+    sin_target = math.sin(target_yaw)
+    normal = cos_target * dx + sin_target * dy
+    tangent = -sin_target * dx + cos_target * dy
+    return normal, tangent, normalize_angle(target_yaw - yaw)
 
 
 def bounded_axis_command(error, tolerance, gain, maximum, minimum=0.0):

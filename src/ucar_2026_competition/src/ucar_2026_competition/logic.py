@@ -181,6 +181,48 @@ def target_bbox_is_close_enough(
     )
 
 
+def task2_ocr_observations(payload):
+    """Return the strongest independently detected box for each category."""
+    if not isinstance(payload, dict):
+        return ()
+    raw = payload.get("detections")
+    if not isinstance(raw, list) or not raw:
+        raw = [payload]
+    image_width = payload.get("image_width")
+    image_height = payload.get("image_height")
+    strongest = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        category = normalize_category(item.get("category"))
+        bbox = item.get("target_bbox") or item.get("bbox")
+        if not category or not bbox:
+            continue
+        try:
+            score = float(item.get(
+                "category_score", item.get("confidence", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        ratios = target_bbox_ratios(bbox, image_width, image_height)
+        area_ratio = ratios[2] if ratios is not None else 0.0
+        observation = {
+            "category": category,
+            "category_score": score,
+            "evidence": item.get("evidence", ""),
+            "raw_text": item.get("raw_text", ""),
+            "target_bbox": bbox,
+            "target_center_x": item.get("target_center_x"),
+            "target_center_y": item.get("target_center_y"),
+            "area_ratio": area_ratio,
+        }
+        previous = strongest.get(category)
+        if (previous is None or
+                (area_ratio, score) >
+                (previous["area_ratio"], previous["category_score"])):
+            strongest[category] = observation
+    return tuple(strongest[key] for key in sorted(strongest))
+
+
 def task2_target_trigger_is_eligible(bbox_is_close, active_anchor):
     """Only lock a close OCR target while stopped at a coverage anchor.
 
@@ -333,10 +375,13 @@ def task2_delivery_targets(pickup, simulation):
 
 
 def task2_semantic_coverage_hint(memory, target_category):
-    """Return the remembered target anchor and confirmed irrelevant anchors."""
+    """Return only a positively remembered target anchor.
+
+    Seeing another category does not prove that a randomized viewpoint is
+    irrelevant because neighbouring workshops may share one camera frame.
+    """
     target_category = normalize_category(target_category)
     preferred = 0
-    skipped = set()
     for category, observation in (memory or {}).items():
         normalized = normalize_category(category)
         anchor = observation.get("anchor", 0) if isinstance(observation, dict) else observation
@@ -348,15 +393,12 @@ def task2_semantic_coverage_hint(memory, target_category):
             continue
         if normalized == target_category:
             preferred = anchor
-        else:
-            skipped.add(anchor)
-    skipped.discard(preferred)
-    return preferred, tuple(sorted(skipped))
+    return preferred, ()
 
 
 def task2_resumed_coverage_hint(memory, target_category, last_anchor,
                                 anchor_count=9):
-    """Prefer remembered target, otherwise continue through unvisited anchors."""
+    """Prefer remembered target, otherwise rescan and wrap from last anchor."""
     preferred, skipped = task2_semantic_coverage_hint(memory, target_category)
     if preferred:
         return preferred, skipped
@@ -366,14 +408,7 @@ def task2_resumed_coverage_hint(memory, target_category, last_anchor,
         last_anchor = 0
     anchor_count = max(0, int(anchor_count))
     if anchor_count and 1 <= last_anchor <= anchor_count:
-        if last_anchor < anchor_count:
-            preferred = last_anchor + 1
-            skipped = tuple(sorted(
-                set(skipped).union(range(1, last_anchor + 1))))
-        else:
-            # A complete first pass can only avoid rescanning when the target
-            # was remembered. Fall back to a full pass if memory was empty.
-            preferred = 0
+        preferred = last_anchor
     return preferred, skipped
 
 

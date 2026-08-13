@@ -13,10 +13,27 @@ from factory_sign_ppocr_rknn_node import (
     OCRText,
     PPOCRRknnRecognizer,
     VoteWindow,
+    collect_factory_sign_detections,
     map_box_to_frame,
     parse_view_scales,
     select_factory_sign_box,
 )
+
+
+def test_competing_factory_signs_keep_independent_target_boxes():
+    classifier = FactorySignKeywordClassifier()
+    food_box = [[20.0, 20.0], [160.0, 20.0], [160.0, 60.0], [20.0, 60.0]]
+    daily_box = [[320.0, 20.0], [500.0, 20.0], [500.0, 60.0], [320.0, 60.0]]
+    texts = [
+        OCRText("食品加工车间", 0.74, food_box),
+        OCRText("日用品加工车间", 0.71, daily_box),
+    ]
+
+    category, _score, _evidence, _debug = classifier.classify_evidence(texts)
+    assert category is None
+    detections = collect_factory_sign_detections(texts, classifier)
+    assert [item["category"] for item in detections] == ["food", "daily"]
+    assert next(item for item in detections if item["category"] == "daily")["box"] == daily_box
 
 
 def test_keyword_classifier_maps_requested_categories():

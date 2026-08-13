@@ -41,6 +41,7 @@ from navigator_logic import (
     parking_footprint_margins,
     parking_footprint_inside,
     parking_goal_from_wall,
+    parking_obstacle_action,
     parking_recenter_required,
     parking_rotation_obstacle_clearance,
     polar_sector_min,
@@ -58,10 +59,13 @@ from navigator_logic import (
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_handoff_accepted,
+    staging_wall_frame_accepted,
+    swept_footprint_obstacle,
     wall_normal_distance,
     wall_fit_matches_expected,
     wall_fit_is_continuous,
     wall_frame_docking_command,
+    wall_frame_pose_errors,
 )
 
 
@@ -190,7 +194,7 @@ def test_non_target_early_exit_is_wired_through_launch():
         package_dir, "config", "vision_triggered_navigator.yaml")
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
-    assert config["coverage_non_target_early_exit"] is True
+    assert config["coverage_non_target_early_exit"] is False
     assert int(config["coverage_non_target_min_scan_steps"]) == 2
     assert config["non_target_topic"] == "/vision/non_target_observation"
 
@@ -282,6 +286,108 @@ def test_parking_clearance_tolerance_is_wired_through_launch():
     assert launch_args["parking_obstacle_clearance_tolerance"] == "0.005"
     assert node_params["parking_obstacle_clearance_tolerance"] == (
         "$(arg parking_obstacle_clearance_tolerance)")
+
+
+def test_swept_footprint_parameters_are_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "config", "vision_triggered_navigator.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["parking_obstacle_required_scans"] == 2
+    assert config["parking_recovery_retry_count"] == 1
+    assert config["parking_diagnostics_topic"] == (
+        "/vision_triggered_navigator/parking_diagnostics")
+    assert math.isclose(config["parking_staging_normal_tolerance"], 0.08)
+    assert math.isclose(config["parking_staging_tangent_tolerance"], 0.04)
+
+    root = ET.parse(os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
+    launch_args = {item.attrib["name"] for item in root.findall("arg")}
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "parking_staging_normal_tolerance",
+            "parking_staging_tangent_tolerance",
+            "parking_staging_axis_yaw_tolerance",
+            "parking_obstacle_required_scans",
+            "parking_recovery_retry_count",
+            "parking_diagnostics_topic"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_adjacent_wall_near_points_outside_sweep_are_allowed():
+    half_length, half_width, margin = 0.171, 0.128, 0.02
+    rotation = swept_footprint_obstacle(
+        [(0.08, -0.259)], (0.0, 0.0, 0.30), (0.0, 0.0, 0.10),
+        half_length, half_width, margin)
+    assert math.isclose(math.hypot(0.08, 0.259), 0.271, abs_tol=0.001)
+    assert not rotation["blocked"]
+
+    lateral = swept_footprint_obstacle(
+        [(0.0, -0.243)], (0.0, -0.06, 0.0), (0.0, -0.06, 0.0),
+        half_length, half_width, margin)
+    assert not lateral["blocked"]
+
+
+def test_cone_inside_rotation_lateral_or_reverse_sweep_is_blocked():
+    dimensions = (0.171, 0.128, 0.02)
+    cases = (
+        ([(0.22, 0.0)], (0.0, 0.0, 0.30), (0.0, 0.0, 0.10)),
+        ([(0.0, -0.19)], (0.0, -0.06, 0.0), (0.0, -0.12, 0.0)),
+        ([(-0.30, 0.0)], (-0.06, 0.0, 0.0), (-0.35, 0.0, 0.0)),
+    )
+    for points, command, errors in cases:
+        assert swept_footprint_obstacle(
+            points, command, errors, *dimensions)["blocked"]
+
+
+def test_staging_rejects_small_euclidean_error_with_large_tangent_error():
+    assert math.hypot(0.02, 0.06) < 0.16
+    assert not staging_wall_frame_accepted(0.02, 0.06, 0.01)
+    assert staging_wall_frame_accepted(0.02, 0.03, 0.07)
+
+
+def test_staging_errors_are_measured_in_fixed_wall_frame():
+    errors = wall_frame_pose_errors(
+        (0.0, 0.0, math.radians(20.0)),
+        (0.02, 0.06, 0.0),
+    )
+    assert math.isclose(errors[0], 0.02)
+    assert math.isclose(errors[1], 0.06)
+
+
+def test_parking_obstacle_recovery_runs_once_then_fails_safe():
+    assert parking_obstacle_action(1, 0, 2, 1) == "hold"
+    assert parking_obstacle_action(2, 0, 2, 1) == "recover"
+    assert parking_obstacle_action(2, 1, 2, 1) == "fail"
+
+
+def test_normal_docking_path_uses_sweep_not_legacy_fixed_clearance():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and
+        node.name == "VisionTriggeredNavigator")
+    docking = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and
+        node.name == "_run_parking_docking")
+    calls = {
+        node.func.attr for node in ast.walk(docking)
+        if isinstance(node, ast.Call) and
+        isinstance(node.func, ast.Attribute)
+    }
+    assert "_parking_sweep_diagnostics" in calls
+    assert "_parking_command_clearance" not in calls
 
 
 def test_parking_rotation_filters_logged_wall_return_beyond_front_sector():
@@ -681,11 +787,11 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
 
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     calibrated = [
-        (-1.6499, -1.8735, 1.0417),
+        (-1.7000, -1.8735, 1.0417),
         (-1.6613, -2.2796, -3.1404),
         (-1.6846, -2.7856, -3.1176),
-        (-0.6965, -2.8239, -1.5594),
-        (1.2660, -2.8863, -1.5443),
+        (-0.6965, -2.9239, -1.5594),
+        (1.3000, -2.8863, -1.5443),
         (2.3356, -2.7417, -2.1786),
         (2.3471, -1.6090, -0.8607),
         (1.2641, -1.6452, 0.8530),
@@ -708,8 +814,8 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
         [("left", 4.5)],
         [("right", 3.0), ("left", 3.5)],
         [("left", 4.5)],
-        [("right", 3.0), ("left", 3.0)],
-        [("right", 1.0), ("left", 5.0)],
+        [("right", 2.5), ("left", 3.0)],
+        [("right", 1.5), ("left", 3.0)],
         [("left", 4.5)],
         [("left", 4.5)],
         [("left", 4.0)],
