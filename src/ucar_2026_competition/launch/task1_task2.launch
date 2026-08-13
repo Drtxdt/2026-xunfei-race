@@ -2,25 +2,30 @@
   <arg name="debug" default="false" />
   <arg name="start_external_voice" default="true" />
   <arg name="parking_normal_offset" default="0.0" />
-  <arg name="parking_tangent_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.03" />
   <arg name="parking_goal_offset" default="0.26" />
   <arg name="parking_staging_offset" default="0.55" />
-  <arg name="parking_staging_timeout_sec" default="20.0" />
-  <arg name="parking_staging_position_tolerance" default="0.10" />
-  <arg name="parking_staging_yaw_tolerance" default="0.10" />
-  <arg name="parking_staging_success_position_tolerance" default="0.15" />
-  <arg name="parking_staging_success_yaw_tolerance" default="0.12" />
   <arg name="parking_docking_timeout_sec" default="25.0" />
+  <arg name="parking_obstacle_required_scans" default="2" />
+  <arg name="parking_recovery_retry_count" default="1" />
+  <arg name="parking_recovery_reverse_speed" default="0.06" />
+  <arg name="parking_recovery_timeout_sec" default="8.0" />
   <arg name="parking_dock_min_yaw" default="0.15" />
   <arg name="parking_recenter_tolerance" default="0.04" />
   <arg name="parking_recenter_timeout_sec" default="8.0" />
   <arg name="parking_recenter_initial_wait_sec" default="1.0" />
-  <arg name="coverage_goal_soft_timeout_sec" default="25.0" />
-  <arg name="coverage_goal_hard_timeout_sec" default="40.0" />
+  <arg name="coverage_goal_soft_timeout_sec" default="7.0" />
+  <arg name="coverage_goal_hard_timeout_sec" default="10.0" />
   <arg name="coverage_goal_progress_window_sec" default="5.0" />
   <arg name="coverage_goal_min_progress" default="0.03" />
-  <arg name="coverage_anchor_observation_radius" default="0.45" />
-  <arg name="coverage_near_anchor_stall_timeout_sec" default="3.0" />
+  <arg name="coverage_anchor_observation_radius" default="0.35" />
+  <arg name="coverage_near_anchor_stall_timeout_sec" default="0.8" />
+  <arg name="coverage_rotation_min_clearance" default="0.28" />
+  <arg name="coverage_obstacle_required_scans" default="2" />
+  <arg name="coverage_teb_weight_kinematics_nh" default="1.0" />
+  <arg name="coverage_teb_weight_kinematics_forward_drive" default="10.0" />
+  <arg name="coverage_teb_min_turning_radius" default="0.0" />
+  <arg name="coverage_teb_global_plan_overwrite_orientation" default="false" />
   <arg name="parking_wall_fit_half_angle_deg" default="35.0" />
   <arg name="parking_wall_fit_min_points" default="12" />
   <arg name="parking_wall_fit_min_span" default="0.25" />
@@ -50,12 +55,11 @@
     <arg name="parking_tangent_offset" value="$(arg parking_tangent_offset)" />
     <arg name="parking_goal_offset" value="$(arg parking_goal_offset)" />
     <arg name="parking_staging_offset" value="$(arg parking_staging_offset)" />
-    <arg name="parking_staging_timeout_sec" value="$(arg parking_staging_timeout_sec)" />
-    <arg name="parking_staging_position_tolerance" value="$(arg parking_staging_position_tolerance)" />
-    <arg name="parking_staging_yaw_tolerance" value="$(arg parking_staging_yaw_tolerance)" />
-    <arg name="parking_staging_success_position_tolerance" value="$(arg parking_staging_success_position_tolerance)" />
-    <arg name="parking_staging_success_yaw_tolerance" value="$(arg parking_staging_success_yaw_tolerance)" />
     <arg name="parking_docking_timeout_sec" value="$(arg parking_docking_timeout_sec)" />
+    <arg name="parking_obstacle_required_scans" value="$(arg parking_obstacle_required_scans)" />
+    <arg name="parking_recovery_retry_count" value="$(arg parking_recovery_retry_count)" />
+    <arg name="parking_recovery_reverse_speed" value="$(arg parking_recovery_reverse_speed)" />
+    <arg name="parking_recovery_timeout_sec" value="$(arg parking_recovery_timeout_sec)" />
     <arg name="parking_dock_min_yaw" value="$(arg parking_dock_min_yaw)" />
     <arg name="parking_recenter_tolerance" value="$(arg parking_recenter_tolerance)" />
     <arg name="parking_recenter_timeout_sec" value="$(arg parking_recenter_timeout_sec)" />
@@ -66,6 +70,12 @@
     <arg name="coverage_goal_min_progress" value="$(arg coverage_goal_min_progress)" />
     <arg name="coverage_anchor_observation_radius" value="$(arg coverage_anchor_observation_radius)" />
     <arg name="coverage_near_anchor_stall_timeout_sec" value="$(arg coverage_near_anchor_stall_timeout_sec)" />
+    <arg name="coverage_rotation_min_clearance" value="$(arg coverage_rotation_min_clearance)" />
+    <arg name="coverage_obstacle_required_scans" value="$(arg coverage_obstacle_required_scans)" />
+    <arg name="coverage_teb_weight_kinematics_nh" value="$(arg coverage_teb_weight_kinematics_nh)" />
+    <arg name="coverage_teb_weight_kinematics_forward_drive" value="$(arg coverage_teb_weight_kinematics_forward_drive)" />
+    <arg name="coverage_teb_min_turning_radius" value="$(arg coverage_teb_min_turning_radius)" />
+    <arg name="coverage_teb_global_plan_overwrite_orientation" value="$(arg coverage_teb_global_plan_overwrite_orientation)" />
     <arg name="parking_wall_fit_half_angle_deg" value="$(arg parking_wall_fit_half_angle_deg)" />
     <arg name="parking_wall_fit_min_points" value="$(arg parking_wall_fit_min_points)" />
     <arg name="parking_wall_fit_min_span" value="$(arg parking_wall_fit_min_span)" />

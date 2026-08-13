@@ -20,6 +20,7 @@ from navigator_logic import (
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
     coverage_near_anchor_action,
+    coverage_obstacle_confirmation,
     coverage_non_target_early_exit_ready,
     coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
@@ -36,18 +37,22 @@ from navigator_logic import (
     latch_trigger,
     lidar_base_wall_distance,
     lidar_requires_stop,
+    nearest_wall_hit,
     normalize_angle,
     obstacle_clearance_requires_stop,
     parking_footprint_margins,
     parking_footprint_inside,
     parking_goal_from_wall,
+    parking_obstacle_action,
     parking_recenter_required,
     parking_rotation_obstacle_clearance,
     polar_sector_min,
     ray_segment_intersection,
+    recovery_rear_distance,
     rotation_clearance_allows_near_wall,
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
+    rotation_swept_obstacle,
     scan_dwell_deadline,
     scan_step_timeout_extension,
     sensor_is_fresh,
@@ -58,10 +63,13 @@ from navigator_logic import (
     should_skip_coverage_anchor,
     split_scan_angle,
     staging_handoff_accepted,
+    staging_wall_frame_accepted,
+    swept_footprint_obstacle,
     wall_normal_distance,
     wall_fit_matches_expected,
     wall_fit_is_continuous,
     wall_frame_docking_command,
+    wall_frame_pose_errors,
 )
 
 
@@ -190,7 +198,7 @@ def test_non_target_early_exit_is_wired_through_launch():
         package_dir, "config", "vision_triggered_navigator.yaml")
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
-    assert config["coverage_non_target_early_exit"] is True
+    assert config["coverage_non_target_early_exit"] is False
     assert int(config["coverage_non_target_min_scan_steps"]) == 2
     assert config["non_target_topic"] == "/vision/non_target_observation"
 
@@ -221,7 +229,7 @@ def test_non_target_early_exit_is_wired_through_launch():
     assert "剩余扫描已去重" in source
 
 
-def test_visual_parking_restores_cruise_speed_profile():
+def test_visual_parking_restores_all_precoverage_teb_parameters():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",
         "vision_triggered_navigator.py"))
@@ -246,16 +254,9 @@ def test_visual_parking_restores_cruise_speed_profile():
         for item in ast.walk(statement)
         if isinstance(item, ast.Call) and
         isinstance(item.func, ast.Attribute) and
-        item.func.attr == "_set_coverage_speed_profile"
+        item.func.attr == "_restore_move_base_recovery"
     ]
-    assert any(
-        call.args and isinstance(call.args[0], ast.Constant) and
-        call.args[0].value == "cruise" and
-        any(keyword.arg == "force" and
-            isinstance(keyword.value, ast.Constant) and
-            keyword.value.value is True
-            for keyword in call.keywords)
-        for call in calls)
+    assert calls
 
 
 def test_parking_clearance_tolerance_is_wired_through_launch():
@@ -282,6 +283,225 @@ def test_parking_clearance_tolerance_is_wired_through_launch():
     assert launch_args["parking_obstacle_clearance_tolerance"] == "0.005"
     assert node_params["parking_obstacle_clearance_tolerance"] == (
         "$(arg parking_obstacle_clearance_tolerance)")
+
+
+def test_swept_footprint_parameters_are_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "config", "vision_triggered_navigator.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["parking_obstacle_required_scans"] == 2
+    assert config["parking_recovery_retry_count"] == 1
+    assert config["parking_diagnostics_topic"] == (
+        "/vision_triggered_navigator/parking_diagnostics")
+    assert math.isclose(config["camera_boresight_yaw_offset"], 0.292)
+    assert math.isclose(config["parking_endpoint_min_clearance"], 0.16)
+    assert math.isclose(config["parking_staging_offset"], 0.55)
+    assert config["coverage_obstacle_required_scans"] == 2
+    assert config["coverage_near_anchor_stall_timeout_sec"] == 0.8
+
+    root = ET.parse(os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
+    launch_args = {item.attrib["name"] for item in root.findall("arg")}
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    for name in (
+            "parking_staging_offset",
+            "parking_endpoint_min_clearance",
+            "parking_obstacle_required_scans",
+            "parking_recovery_retry_count",
+            "parking_diagnostics_topic",
+            "coverage_obstacle_required_scans",
+            "coverage_teb_weight_kinematics_nh",
+            "coverage_teb_weight_kinematics_forward_drive",
+            "coverage_teb_min_turning_radius",
+            "coverage_teb_global_plan_overwrite_orientation"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_adjacent_wall_near_points_outside_sweep_are_allowed():
+    half_length, half_width, margin = 0.171, 0.128, 0.02
+    rotation = swept_footprint_obstacle(
+        [(0.08, -0.259)], (0.0, 0.0, 0.30), (0.0, 0.0, 0.10),
+        half_length, half_width, margin)
+    assert math.isclose(math.hypot(0.08, 0.259), 0.271, abs_tol=0.001)
+    assert not rotation["blocked"]
+
+    lateral = swept_footprint_obstacle(
+        [(0.0, -0.243)], (0.0, -0.06, 0.0), (0.0, -0.06, 0.0),
+        half_length, half_width, margin)
+    assert not lateral["blocked"]
+
+
+def test_logged_boresight_calibration_resolves_right_wall_box_center():
+    walls = build_quadrilateral_walls(MEASURED_CORNERS)
+    observations = (
+        ((2.3344, -2.7581), -0.7420),
+        ((2.0986, -2.7616), -0.5815),
+    )
+    corrected = []
+    for origin, base_yaw in observations:
+        zero = nearest_wall_hit(walls, origin, base_yaw)
+        assert zero["endpoint_clearance"] < 0.06
+        hit = nearest_wall_hit(walls, origin, base_yaw + 0.292)
+        assert hit["wall"] == "right"
+        assert math.isclose(hit["point"][1], -2.97, abs_tol=0.01)
+        assert 0.24 < hit["endpoint_clearance"] < 0.26
+        corrected.append(hit["point"])
+    assert math.hypot(
+        corrected[0][0] - corrected[1][0],
+        corrected[0][1] - corrected[1][1]) < 0.02
+
+
+def test_corner_endpoint_guard_stops_without_reobservation_motion():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    source_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(source_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "parking_geometry_invalid" in source
+    assert "parking_endpoint_min_clearance" in source
+    assert "corner_observation_pose" not in source
+    assert "parking_corner_" not in source
+    assert "_navigate_to_corner_observation" not in source
+
+
+def test_cone_inside_rotation_lateral_or_reverse_sweep_is_blocked():
+    dimensions = (0.171, 0.128, 0.02)
+    cases = (
+        ([(0.22, 0.0)], (0.0, 0.0, 0.30), (0.0, 0.0, 0.10)),
+        ([(0.0, -0.19)], (0.0, -0.06, 0.0), (0.0, -0.12, 0.0)),
+        ([(-0.30, 0.0)], (-0.06, 0.0, 0.0), (-0.35, 0.0, 0.0)),
+    )
+    for points, command, errors in cases:
+        assert swept_footprint_obstacle(
+            points, command, errors, *dimensions)["blocked"]
+
+
+def test_staging_rejects_small_euclidean_error_with_large_tangent_error():
+    assert math.hypot(0.02, 0.06) < 0.16
+    assert not staging_wall_frame_accepted(0.02, 0.06, 0.01)
+    assert staging_wall_frame_accepted(0.02, 0.03, 0.07)
+
+
+def test_staging_errors_are_measured_in_fixed_wall_frame():
+    errors = wall_frame_pose_errors(
+        (0.0, 0.0, math.radians(20.0)),
+        (0.02, 0.06, 0.0),
+    )
+    assert math.isclose(errors[0], 0.02)
+    assert math.isclose(errors[1], 0.06)
+
+
+def test_parking_obstacle_recovery_runs_once_then_fails_safe():
+    assert parking_obstacle_action(1, 0, 2, 1) == "hold"
+    assert parking_obstacle_action(2, 0, 2, 1) == "recover"
+    assert parking_obstacle_action(2, 1, 2, 1) == "fail"
+
+
+def test_recovery_sweep_accounts_for_unaligned_wall_projection():
+    perpendicular_error = -0.29
+    rear = recovery_rear_distance(
+        perpendicular_error, math.radians(42.0))
+    assert rear < perpendicular_error
+    assert math.isclose(
+        rear, perpendicular_error / math.cos(math.radians(42.0)))
+    assert recovery_rear_distance(
+        perpendicular_error, math.radians(80.0)) is None
+
+
+def test_normal_docking_path_uses_sweep_not_legacy_fixed_clearance():
+    script_path = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), "..", "scripts",
+        "vision_triggered_navigator.py"))
+    with open(script_path, "r", encoding="utf-8") as stream:
+        tree = ast.parse(stream.read(), filename=script_path)
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and
+        node.name == "VisionTriggeredNavigator")
+    docking = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and
+        node.name == "_run_parking_docking")
+    calls = {
+        node.func.attr for node in ast.walk(docking)
+        if isinstance(node, ast.Call) and
+        isinstance(node.func, ast.Attribute)
+    }
+    assert "_parking_sweep_diagnostics" in calls
+    assert "_parking_command_clearance" not in calls
+
+
+def test_normal_parking_has_no_staging_navigation_and_rejects_reverse():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "def _navigate_to_parking_staging" not in source
+    assert "compute_staging_goal" not in source
+    assert "parking_wall_coarse_aligning" in source
+    assert "parking_reverse_rejected" in source
+
+    run_start = source.index("    def run(self):")
+    run_source = source[run_start:]
+    assert run_source.index("_align_to_parking_wall(") < run_source.index(
+        "_run_parking_docking(")
+
+    docking_start = source.index("    def _run_parking_docking")
+    docking_source = source[docking_start:run_start]
+    assert "if command[0] < -1e-9:" in docking_source
+    assert docking_source.index("parking_reverse_rejected") < (
+        docking_source.index("twist.linear.x, twist.linear.y"))
+
+    recovery_start = source.index("    def _recover_parking_to_staging")
+    recovery_source = source[recovery_start:docking_start]
+    assert "command = (-self.parking_recovery_reverse_speed" in recovery_source
+    assert "twist.linear.x = command[0]" in recovery_source
+
+
+def test_boresight_and_endpoint_guard_are_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "config", "vision_triggered_navigator.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(config["camera_boresight_yaw_offset"], 0.292)
+    assert math.isclose(config["parking_endpoint_min_clearance"], 0.16)
+    assert math.isclose(config["parking_tangent_offset"], 0.03)
+
+    root = ET.parse(os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    assert launch_args["camera_boresight_yaw_offset"] == "0.292"
+    assert launch_args["parking_endpoint_min_clearance"] == "0.16"
+    assert launch_args["parking_tangent_offset"] == "0.03"
+    assert node_params["parking_endpoint_min_clearance"] == (
+        "$(arg parking_endpoint_min_clearance)")
+    assert node_params["parking_tangent_offset"] == (
+        "$(arg parking_tangent_offset)")
+    for legacy in (
+            "parking_corner_min_tangent_clearance",
+            "parking_corner_observation_offset",
+            "parking_corner_parallax_offset",
+            "parking_corner_observation_timeout_sec"):
+        assert legacy not in launch_args
 
 
 def test_parking_rotation_filters_logged_wall_return_beyond_front_sector():
@@ -406,7 +626,7 @@ def test_polar_sector_min_wraps_and_ignores_other_directions():
         samples, 0.5 * math.pi, math.radians(10.0)) is None
 
 
-def test_navigation_node_imports_rotation_clearance_helper():
+def test_navigation_node_uses_swept_rotation_envelope_not_wall_fit_exception():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",
         "vision_triggered_navigator.py"))
@@ -420,8 +640,24 @@ def test_navigation_node_imports_rotation_clearance_helper():
         and node.module == "navigator_logic"
         for alias in node.names
     }
-    assert "rotation_clearance_allows_near_wall" in imported_names
-    assert "rotation_clearance_is_safe" in imported_names
+    assert "swept_footprint_obstacle" in imported_names
+    assert "coverage_obstacle_confirmation" in imported_names
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and
+        node.name == "VisionTriggeredNavigator")
+    method = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and
+        node.name == "_rotation_clearance_safe")
+    called = {
+        node.func.attr for node in ast.walk(method)
+        if isinstance(node, ast.Call) and
+        isinstance(node.func, ast.Attribute)
+    }
+    assert "_coverage_rotation_sweep" in called
+    assert "rotation_clearance_allows_near_wall" not in called
 
 
 def test_coverage_navigation_reports_transit_and_observation_anchor_ids():
@@ -679,13 +915,31 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
     assert math.isclose(abs(yaw), math.pi)
 
 
+def test_positive_tangent_offset_moves_to_vehicle_right_on_every_wall():
+    for normal in ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)):
+        centered = parking_goal_from_wall(
+            (0.0, 0.0), normal, 0.26, tangent_offset=0.0)
+        shifted = parking_goal_from_wall(
+            (0.0, 0.0), normal, 0.26, tangent_offset=0.03)
+        delta = (shifted[0] - centered[0], shifted[1] - centered[1])
+        yaw = centered[2]
+        vehicle_right = (math.sin(yaw), -math.cos(yaw))
+        vehicle_forward = (math.cos(yaw), math.sin(yaw))
+        assert math.isclose(
+            delta[0] * vehicle_right[0] + delta[1] * vehicle_right[1],
+            0.03, abs_tol=1e-9)
+        assert math.isclose(
+            delta[0] * vehicle_forward[0] + delta[1] * vehicle_forward[1],
+            0.0, abs_tol=1e-9)
+
+
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     calibrated = [
-        (-1.6499, -1.7735, 1.0417),
+        (-1.7000, -1.8735, 1.0417),
         (-1.6613, -2.2796, -3.1404),
         (-1.6846, -2.7856, -3.1176),
-        (-0.6965, -2.8239, -1.5594),
-        (1.2660, -2.8863, -1.5443),
+        (-0.6965, -2.9239, -1.5594),
+        (1.3000, -2.8863, -1.5443),
         (2.3356, -2.7417, -2.1786),
         (2.3471, -1.6090, -0.8607),
         (1.2641, -1.6452, 0.8530),
@@ -708,8 +962,8 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
         [("left", 4.5)],
         [("right", 3.0), ("left", 3.5)],
         [("left", 4.5)],
-        [("right", 3.0), ("left", 3.0)],
-        [("right", 3.0), ("left", 3.0)],
+        [("right", 2.5), ("left", 3.0)],
+        [("right", 1.5), ("left", 3.0)],
         [("left", 4.5)],
         [("left", 4.5)],
         [("left", 4.0)],
@@ -745,9 +999,78 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
 def test_near_blocked_anchor_becomes_stationary_observation():
     assert coverage_near_anchor_action(0.46, None, 0.0) == "outside"
     assert coverage_near_anchor_action(0.44, None, 0.0) == "start"
-    assert coverage_near_anchor_action(0.42, 0.44, 3.1) == "observe"
-    assert coverage_near_anchor_action(0.40, 0.44, 2.9) == "reset"
-    assert coverage_near_anchor_action(0.40, 0.40, 3.0) == "observe"
+    assert coverage_near_anchor_action(0.271, 0.271, 0.79) == "continue"
+    assert coverage_near_anchor_action(0.271, 0.271, 0.8) == "observe"
+    assert coverage_near_anchor_action(0.40, 0.44, 0.7) == "reset"
+
+
+def test_coverage_rotation_envelope_allows_corner_returns_outside_radius():
+    footprint_radius, margin = 0.215, 0.02
+    radius = footprint_radius + margin
+    assert radius == pytest.approx(0.235)
+    corner_returns = [(0.244, 0.0), (0.0, -0.244), (0.244, -0.244)]
+    sweep = rotation_swept_obstacle(
+        corner_returns, footprint_radius, margin)
+    assert not sweep["blocked"]
+    assert sweep["clearance"] > 0.0
+    assert rotation_swept_obstacle(
+        [(0.235, 0.0)], footprint_radius, margin)["blocked"]
+
+
+def test_coverage_rotation_obstacle_requires_two_fresh_blocking_scans():
+    count, confirmed = coverage_obstacle_confirmation(True, 0, True, 2)
+    assert (count, confirmed) == (1, False)
+    count, confirmed = coverage_obstacle_confirmation(True, count, False, 2)
+    assert (count, confirmed) == (1, False)
+    count, confirmed = coverage_obstacle_confirmation(True, count, True, 2)
+    assert (count, confirmed) == (2, True)
+    assert coverage_obstacle_confirmation(False, count, True, 2) == (0, False)
+
+
+def test_coverage_near_observation_replaces_permanent_stall_skip():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "scripts", "vision_triggered_navigator.py"),
+            "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "coverage_anchor_near_observation" in source
+    assert "near_true_rotation_block" in source
+    assert '"stationary observation at this heading."' in source
+    assert "coverage_anchor_near_stall_skip" not in source
+    assert 'return "near_stall_skip"' not in source
+    assert "coverage_navigation_blocked" in source
+    assert "displacement < self.coverage_goal_min_progress" in source
+
+
+def test_coverage_teb_mecanum_constraints_are_saved_applied_and_restored():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "scripts", "vision_triggered_navigator.py"),
+            "r", encoding="utf-8") as stream:
+        source = stream.read()
+    for field in (
+            "weight_kinematics_nh",
+            "weight_kinematics_forward_drive",
+            "min_turning_radius",
+            "global_plan_overwrite_orientation"):
+        assert source.count('"{}"'.format(field)) >= 4
+    assert "coverage_teb_restore_failed" in source
+    vision_start = source.index('            elif state == "VISION":')
+    vision_source = source[vision_start:]
+    assert vision_source.index("_restore_move_base_recovery()") < (
+        vision_source.index("_center_visual_target("))
+
+    with open(os.path.join(
+            package_dir, "config", "vision_triggered_navigator.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["coverage_teb_weight_kinematics_nh"] == 1.0
+    assert config["coverage_teb_weight_kinematics_forward_drive"] == 10.0
+    assert config["coverage_teb_min_turning_radius"] == 0.0
+    assert config["coverage_teb_global_plan_overwrite_orientation"] is False
+    assert config["coverage_near_anchor_stall_timeout_sec"] == 0.8
 
 
 def test_successful_staging_goal_uses_bounded_handoff_envelope():

@@ -19,7 +19,7 @@
    - 比赛总控通过 `/vision_triggered_navigator/trigger_target` 服务完成带确认的一次性触发；`/vision/detected` 仍供独立测试使用。
    - 根据机器人/摄像头位姿向车头方向发射射线，与四个实测角点构成的真实四边形墙段求最近交点，不进行 50cm 网格吸附。
    - 目标点 = 交点沿真实墙内法向量回退 `vision_offset`（默认 0.4 m），**车头垂直指向墙外**（与内法向相反）。
-   - 比赛任务2先由 move_base 同时满足距墙预停点的位置和航向约束，再取消目标；随后等待近距OCR精居中。1秒内没有新目标框时保留首次厂牌切向中心并继续停泊；已经开始复居中转动后丢框仍安全失败。
+   - 比赛任务2在OCR居中后以标定光轴确定墙面和厂牌切向中心，原地旋转至墙法向，再按激光墙线拟合依次修正航向、横移和正向墙距。正常链不调用move_base预停且禁止倒车；仅扫掠包络连续两帧确认障碍后允许一次恢复后退。
    - 最后约 `0.33m` 使用激光墙线控制实际墙距和车头垂直度、使用 odom 控制沿墙切向位置，不再依赖地图墙距或 TEB。
    - 发布 `arrived` 前，按实测墙面坐标验证完整 footprint 位于 `0.50×0.50m` 停车框内且最小物理余量不少于 `2cm`。
 
@@ -53,16 +53,14 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `vision_offset` | 墙交点回退距离（m） | `0.4` |
 | `target_center_coarse_step_deg` / `target_center_fine_step_deg` | 任务2目标居中粗调/细调步长 | `4.0 / 2.0` |
 | `target_center_start_speed` / `target_center_step_max_speed` | 居中起始/最大角速度 | `0.28 / 0.45` |
-| `parking_staging_offset` | move_base 预停点距墙距离 | 比赛任务2 `0.55` |
-| `parking_staging_position_tolerance` / `parking_staging_yaw_tolerance` | move_base行驶中的控制权交接门限 | `0.10m / 0.10rad` |
-| `parking_staging_success_position_tolerance` / `parking_staging_success_yaw_tolerance` | move_base成功后进入低速停车的有界交接门限 | `0.15m / 0.12rad` |
+| `parking_staging_offset` | 障碍恢复后退的目标墙距 | 比赛任务2 `0.55` |
 | `parking_recenter_initial_wait_sec` | 预停后等待新OCR框；超时则保留首次锁定结果 | `1.0` |
 | `parking_goal_offset` | 低速闭环最终点距墙距离 | 独立模式 `0.4`，比赛任务2 `0.26` |
 | `parking_docking_timeout_sec` | odom 短距闭环超时 | `30.0` |
 | `parking_dock_max_x/y/yaw` | 最终停泊三轴速度上限 | `0.10 / 0.06 / 0.15` |
 | `parking_wall_fit_*` | 实际墙线点数、跨度、残差及方向门限 | 见 yaml |
-| `parking_normal_offset` / `parking_tangent_offset` | 最终目标沿墙法向/切向的实车标定修正 | `0.0 / 0.0` |
-| `coverage_goal_soft_timeout_sec` / `coverage_goal_hard_timeout_sec` | 精确锚点进度感知软/硬时限 | `25 / 40` |
+| `parking_normal_offset` / `parking_tangent_offset` | 最终目标沿墙法向/车体右侧的实车标定修正 | `0.0 / 0.03` |
+| `coverage_goal_soft_timeout_sec` / `coverage_goal_hard_timeout_sec` | 精确锚点进度感知软/硬时限 | `7 / 10` |
 | `validate_parking_box` | 是否要求完整footprint通过50cm框验证 | `false` |
 | `costmap_topic` | costmap 话题 | `/move_base/global_costmap/costmap` |
 | `cost_threshold` | 代价阈值，>= 则认为不可行 | `100` |
