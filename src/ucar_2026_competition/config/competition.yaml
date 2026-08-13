@@ -71,6 +71,7 @@ parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
 parking_corner_min_tangent_clearance: 0.16
 parking_corner_observation_offset: 0.45
+parking_corner_parallax_offset: 0.25
 parking_corner_observation_timeout_sec: 15.0
 parking_staging_position_tolerance: 0.16
 parking_staging_yaw_tolerance: 0.10

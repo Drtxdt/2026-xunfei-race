@@ -305,6 +305,7 @@ def test_swept_footprint_parameters_are_wired_through_launch():
     assert math.isclose(
         config["parking_corner_min_tangent_clearance"], 0.16)
     assert math.isclose(config["parking_corner_observation_offset"], 0.45)
+    assert math.isclose(config["parking_corner_parallax_offset"], 0.25)
     assert math.isclose(
         config["parking_corner_observation_timeout_sec"], 15.0)
 
@@ -321,6 +322,7 @@ def test_swept_footprint_parameters_are_wired_through_launch():
             "parking_staging_axis_yaw_tolerance",
             "parking_corner_min_tangent_clearance",
             "parking_corner_observation_offset",
+            "parking_corner_parallax_offset",
             "parking_corner_observation_timeout_sec",
             "parking_obstacle_required_scans",
             "parking_recovery_retry_count",
@@ -343,7 +345,7 @@ def test_adjacent_wall_near_points_outside_sweep_are_allowed():
     assert not lateral["blocked"]
 
 
-def test_logged_corner_hit_requires_safe_bisector_reobservation():
+def test_logged_corner_hit_requires_safe_asymmetric_reobservation():
     walls = build_quadrilateral_walls(MEASURED_CORNERS)
     observation = corner_observation_pose(
         walls,
@@ -351,25 +353,30 @@ def test_logged_corner_hit_requires_safe_bisector_reobservation():
         (2.7750, -3.1322),
         minimum_tangent_clearance=0.16,
         inward_offset=0.45,
+        parallax_offset=0.25,
+        observer_position=(2.3309, -2.7979),
     )
     assert observation is not None
     assert observation["wall"] == "right"
     assert observation["adjacent_wall"] == "bottom"
     assert observation["tangent_clearance"] < 0.09
 
-    # The 20:26 run started its corner manoeuvre here.  The new pose is a
-    # roughly 10cm parallax correction; the retired 0.70m pose was a 36cm
-    # reverse move that the planner rendered as a loop.
-    logged_pose = (2.3812, -2.6781, -0.8058)
+    # The 20:50 run proves that the symmetric 0.45m pose was only 3.5cm from
+    # the trigger origin and produced a second ray at the exact same corner.
+    # The new pose adds a deliberate 0.25m baseline along the selected wall.
+    logged_pose = (2.3309, -2.7979, -0.6650)
     new_pose = observation["pose"]
-    old_pose = corner_observation_pose(
-        walls, "right", (2.7750, -3.1322), 0.16, 0.70)["pose"]
+    symmetric_pose = corner_observation_pose(
+        walls, "right", (2.7750, -3.1322), 0.16, 0.45, 0.0)["pose"]
     assert math.hypot(
         new_pose[0] - logged_pose[0],
-        new_pose[1] - logged_pose[1]) < 0.15
+        new_pose[1] - logged_pose[1]) > 0.20
     assert math.hypot(
-        old_pose[0] - logged_pose[0],
-        old_pose[1] - logged_pose[1]) > 0.30
+        symmetric_pose[0] - logged_pose[0],
+        symmetric_pose[1] - logged_pose[1]) < 0.06
+    assert math.isclose(observation["parallax_offset"], 0.25)
+    assert observation["planned_baseline"] > 0.20
+    assert observation["parallax_wall"] == "right"
 
     # The log's old right-wall staging centre was only about 9.4cm from the
     # bottom wall, less than the 12.8cm half-width before costmap padding.
@@ -382,16 +389,22 @@ def test_logged_corner_hit_requires_safe_bisector_reobservation():
         (old_staging[1] - bottom[1][1]) * bottom[3][1])
     assert bottom_distance < 0.128
 
-    # The observation pose is constructed from both inward normals and is
-    # therefore about 0.45m clear of each incident wall: comfortably outside
-    # the measured 0.215m rotation radius plus the 20mm safety margin, without
-    # the large reverse/loop seen with the old 0.70m observation pose.
+    # It remains about 0.45m from the selected wall while moving farther from
+    # the adjacent wall, so the 0.25m baseline does not consume wall safety.
     ox, oy, _yaw = observation["pose"]
     corner = observation["corner"]
     assert ((ox - corner[0]) * right[3][0] +
             (oy - corner[1]) * right[3][1]) > 0.44
     assert ((ox - corner[0]) * bottom[3][0] +
-            (oy - corner[1]) * bottom[3][1]) > 0.44
+            (oy - corner[1]) * bottom[3][1]) > 0.68
+
+    # If the robot already occupies that first asymmetric candidate, choose
+    # the other incident wall instead of silently collapsing the baseline.
+    alternative = corner_observation_pose(
+        walls, "right", (2.7750, -3.1322), 0.16, 0.45, 0.25,
+        observer_position=(ox, oy))
+    assert alternative["parallax_wall"] == "bottom"
+    assert alternative["planned_baseline"] > 0.34
 
     def resolved_wall_for(target):
         length = math.hypot(target[0] - ox, target[1] - oy)
@@ -424,7 +437,7 @@ def test_logged_corner_hit_requires_safe_bisector_reobservation():
         resolved, hit = resolved_wall_for(target)
         assert resolved[0] == expected[0]
         assert corner_observation_pose(
-            walls, resolved[0], hit, 0.16, 0.45) is None
+            walls, resolved[0], hit, 0.16, 0.45, 0.25) is None
 
 
 def test_wall_hit_with_vehicle_tangent_clearance_needs_no_reobservation():

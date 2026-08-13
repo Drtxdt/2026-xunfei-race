@@ -133,8 +133,10 @@ parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
 # 射线落在角点车体切向净空内时，在两墙内法向各0.45m处做局部视差复核。
 # 该距离仍大于实测车体旋转半径0.215m与20mm安全余量之和。
+# 在两条相邻墙的离角方向中选择距首次观测位置更远的0.25m候选，防止零基线退化。
 parking_corner_min_tangent_clearance: 0.16
 parking_corner_observation_offset: 0.45
+parking_corner_parallax_offset: 0.25
 parking_corner_observation_timeout_sec: 15.0
 parking_staging_position_tolerance: 0.10
 parking_staging_yaw_tolerance: 0.10

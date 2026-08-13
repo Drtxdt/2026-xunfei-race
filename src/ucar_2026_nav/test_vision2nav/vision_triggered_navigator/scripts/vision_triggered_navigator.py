@@ -475,6 +475,11 @@ class VisionTriggeredNavigator(object):
                 self.footprint_half_width) + self.parking_required_margin,
             abs(float(rospy.get_param(
                 "~parking_corner_observation_offset", 0.45))))
+        self.parking_corner_parallax_offset = max(
+            self.parking_corner_min_tangent_clearance +
+            self.parking_required_margin,
+            abs(float(rospy.get_param(
+                "~parking_corner_parallax_offset", 0.25))))
         self.parking_corner_observation_timeout = max(
             1.0, float(rospy.get_param(
                 "~parking_corner_observation_timeout_sec", 15.0)))
@@ -2404,10 +2409,14 @@ class VisionTriggeredNavigator(object):
         rospy.logwarn(
             "[vision_triggered_navigator] corner wall is ambiguous "
             "(%s/%s clearance=%.3fm < %.3fm); re-observe from "
-            "x=%.3f y=%.3f yaw=%.3f.",
+            "x=%.3f y=%.3f yaw=%.3f with %.3fm asymmetric parallax "
+            "along %s (planned baseline=%s).",
             observation["wall"], observation["adjacent_wall"],
             observation["tangent_clearance"],
-            observation["minimum_tangent_clearance"], x, y, yaw)
+            observation["minimum_tangent_clearance"], x, y, yaw,
+            observation["parallax_offset"], observation["parallax_wall"],
+            ("unknown" if observation["planned_baseline"] is None else
+             "{:.3f}m".format(observation["planned_baseline"])))
         self._publish_status("parking_corner_reobserving")
         if not self._wait_navigation_idle(timeout=2.0):
             rospy.logerr(
@@ -2440,10 +2449,26 @@ class VisionTriggeredNavigator(object):
                 if stable_since is None:
                     stable_since = rospy.get_time()
                 elif rospy.get_time() - stable_since >= 0.2:
+                    source = observation.get("source_position")
+                    actual_baseline = (None if source is None else math.hypot(
+                        pose[0] - source[0], pose[1] - source[1]))
+                    minimum_baseline = 0.75 * float(
+                        observation.get("parallax_offset", 0.0))
+                    if (actual_baseline is not None and
+                            actual_baseline + 1e-9 < minimum_baseline):
+                        rospy.logerr(
+                            "[vision_triggered_navigator] "
+                            "parking_corner_unresolved: actual parallax "
+                            "baseline %.3fm is below required %.3fm.",
+                            actual_baseline, minimum_baseline)
+                        return False
                     rospy.loginfo(
                         "[vision_triggered_navigator] corner observation "
                         "reached locally errors=(normal=%+.3f tangent=%+.3f "
-                        "yaw=%+.3f).", errors[0], errors[1], errors[2])
+                        "yaw=%+.3f) actual_baseline=%s.",
+                        errors[0], errors[1], errors[2],
+                        ("unknown" if actual_baseline is None else
+                         "{:.3f}m".format(actual_baseline)))
                     self._publish_status("parking_corner_observation_reached")
                     return True
                 rate.sleep()
@@ -3413,6 +3438,8 @@ class VisionTriggeredNavigator(object):
                 effective_wall_point,
                 self.parking_corner_min_tangent_clearance,
                 self.parking_corner_observation_offset,
+                self.parking_corner_parallax_offset,
+                (px, py),
             )
         return gx, gy, gyaw
 

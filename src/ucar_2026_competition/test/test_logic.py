@@ -121,6 +121,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_goal_retry_count: 1", config)
         self.assertIn("parking_corner_min_tangent_clearance: 0.16", config)
         self.assertIn("parking_corner_observation_offset: 0.45", config)
+        self.assertIn("parking_corner_parallax_offset: 0.25", config)
         self.assertIn("parking_corner_observation_timeout_sec: 15.0", config)
         self.assertNotIn("coverage_failed_revisit_limit", config)
 
@@ -142,6 +143,7 @@ class CompetitionLogicTest(unittest.TestCase):
                 ("coverage_goal_retry_count", "1"),
                 ("parking_corner_min_tangent_clearance", "0.16"),
                 ("parking_corner_observation_offset", "0.45"),
+                ("parking_corner_parallax_offset", "0.25"),
                 ("parking_corner_observation_timeout_sec", "15.0")):
             self.assertEqual(launch_args[name], default)
             self.assertEqual(node_params[name], "$(arg {})".format(name))

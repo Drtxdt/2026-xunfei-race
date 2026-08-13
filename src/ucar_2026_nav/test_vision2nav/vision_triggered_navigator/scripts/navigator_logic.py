@@ -395,14 +395,22 @@ def build_quadrilateral_walls(corners):
 
 def corner_observation_pose(walls, wall_name, wall_point,
                             minimum_tangent_clearance,
-                            inward_offset):
-    """Return a safe bisector observation pose for a corner-ambiguous hit.
+                            inward_offset,
+                            parallax_offset=0.0,
+                            observer_position=None):
+    """Return a safe asymmetric observation pose for a corner-ambiguous hit.
 
     A centred camera ray may cross the neighbouring wall first when a tall
     sign is mounted on the first panel beside a corner.  Such a hit is unsafe
     to use as a parking centre when its tangent distance to the corner is
-    smaller than the robot half-width plus margin.  Move inward from both
-    incident walls and look back at the corner before deciding the wall.
+    smaller than the robot half-width plus margin.  A point on the corner
+    bisector is geometrically degenerate: when the robot is already on that
+    bisector it produces almost no baseline and a second centred ray can hit
+    the exact same corner.  Keep the requested clearance from both walls,
+    then move along either incident wall *away* from the corner to create a
+    deterministic parallax baseline before looking back at the corner.  When
+    the first ray origin is known, choose the farther of the two safe
+    candidates so an already-offset vehicle cannot collapse the baseline.
 
     ``walls`` uses the tuples returned by :func:`build_quadrilateral_walls`.
     ``None`` means the hit has sufficient endpoint clearance (or the wall has
@@ -410,6 +418,7 @@ def corner_observation_pose(walls, wall_name, wall_point,
     """
     minimum = max(0.0, float(minimum_tangent_clearance))
     offset = max(0.0, float(inward_offset))
+    parallax = max(0.0, float(parallax_offset))
     point = (float(wall_point[0]), float(wall_point[1]))
     selected = None
     for wall in walls:
@@ -443,10 +452,46 @@ def corner_observation_pose(walls, wall_name, wall_point,
         return None
 
     adjacent_normal = adjacent[3]
-    observation_x = (corner[0] + offset * normal[0] +
-                     offset * adjacent_normal[0])
-    observation_y = (corner[1] + offset * normal[1] +
-                     offset * adjacent_normal[1])
+    base_x = corner[0] + offset * normal[0] + offset * adjacent_normal[0]
+    base_y = corner[1] + offset * normal[1] + offset * adjacent_normal[1]
+
+    directions = []
+    for candidate in (selected, adjacent):
+        candidate_endpoints = (candidate[1], candidate[2])
+        away_endpoint = max(
+            candidate_endpoints,
+            key=lambda endpoint: math.hypot(
+                endpoint[0] - corner[0], endpoint[1] - corner[1]))
+        away_x = away_endpoint[0] - corner[0]
+        away_y = away_endpoint[1] - corner[1]
+        away_length = math.hypot(away_x, away_y)
+        if away_length <= 1e-9:
+            continue
+        away_x /= away_length
+        away_y /= away_length
+        directions.append((candidate[0], away_x, away_y))
+    if not directions:
+        return None
+
+    source = None
+    if observer_position is not None:
+        source = (float(observer_position[0]), float(observer_position[1]))
+
+    candidates = []
+    for candidate_wall, away_x, away_y in directions:
+        candidate_x = base_x + parallax * away_x
+        candidate_y = base_y + parallax * away_y
+        baseline = (None if source is None else math.hypot(
+            candidate_x - source[0], candidate_y - source[1]))
+        candidates.append({
+            "wall": candidate_wall,
+            "direction": (away_x, away_y),
+            "point": (candidate_x, candidate_y),
+            "baseline": baseline,
+        })
+    chosen = (max(candidates, key=lambda candidate: candidate["baseline"])
+              if source is not None else candidates[0])
+    observation_x, observation_y = chosen["point"]
     observation_yaw = math.atan2(
         corner[1] - observation_y, corner[0] - observation_x)
     return {
@@ -455,6 +500,11 @@ def corner_observation_pose(walls, wall_name, wall_point,
         "corner": (float(corner[0]), float(corner[1])),
         "tangent_clearance": tangent_clearance,
         "minimum_tangent_clearance": minimum,
+        "parallax_offset": parallax,
+        "parallax_wall": chosen["wall"],
+        "parallax_direction": chosen["direction"],
+        "source_position": source,
+        "planned_baseline": chosen["baseline"],
         "pose": (observation_x, observation_y, observation_yaw),
     }
 
