@@ -24,8 +24,13 @@
   <arg name="coverage_goal_progress_window_sec" default="5.0" />
   <arg name="coverage_goal_min_progress" default="0.03" />
   <arg name="coverage_anchor_observation_radius" default="0.35" />
-  <arg name="coverage_near_anchor_stall_timeout_sec" default="3.0" />
+  <arg name="coverage_near_anchor_stall_timeout_sec" default="0.8" />
   <arg name="coverage_rotation_min_clearance" default="0.28" />
+  <arg name="coverage_obstacle_required_scans" default="2" />
+  <arg name="coverage_teb_weight_kinematics_nh" default="1.0" />
+  <arg name="coverage_teb_weight_kinematics_forward_drive" default="10.0" />
+  <arg name="coverage_teb_min_turning_radius" default="0.0" />
+  <arg name="coverage_teb_global_plan_overwrite_orientation" default="false" />
   <arg name="target_center_coarse_step_deg" default="4.0" />
   <arg name="target_center_fine_step_deg" default="2.0" />
   <arg name="target_center_start_speed" default="0.28" />
@@ -101,6 +106,11 @@
     <arg name="coverage_anchor_observation_radius" value="$(arg coverage_anchor_observation_radius)" />
     <arg name="coverage_near_anchor_stall_timeout_sec" value="$(arg coverage_near_anchor_stall_timeout_sec)" />
     <arg name="coverage_rotation_min_clearance" value="$(arg coverage_rotation_min_clearance)" />
+    <arg name="coverage_obstacle_required_scans" value="$(arg coverage_obstacle_required_scans)" />
+    <arg name="coverage_teb_weight_kinematics_nh" value="$(arg coverage_teb_weight_kinematics_nh)" />
+    <arg name="coverage_teb_weight_kinematics_forward_drive" value="$(arg coverage_teb_weight_kinematics_forward_drive)" />
+    <arg name="coverage_teb_min_turning_radius" value="$(arg coverage_teb_min_turning_radius)" />
+    <arg name="coverage_teb_global_plan_overwrite_orientation" value="$(arg coverage_teb_global_plan_overwrite_orientation)" />
     <arg name="target_center_coarse_step_deg" value="$(arg target_center_coarse_step_deg)" />
     <arg name="target_center_fine_step_deg" value="$(arg target_center_fine_step_deg)" />
     <arg name="target_center_start_speed" value="$(arg target_center_start_speed)" />

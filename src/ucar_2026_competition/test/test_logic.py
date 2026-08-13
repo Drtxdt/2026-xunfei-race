@@ -156,7 +156,9 @@ class CompetitionLogicTest(unittest.TestCase):
                 "parking_geometry_invalid",
                 "parking_wall_align_failed",
                 "parking_reverse_rejected",
-                "parking_obstacle_blocked"):
+                "parking_obstacle_blocked",
+                "coverage_navigation_blocked",
+                "coverage_teb_restore_failed"):
             self.assertIn('"{}"'.format(state), source)
         self.assertNotIn('"parking_corner_unresolved"', source)
 

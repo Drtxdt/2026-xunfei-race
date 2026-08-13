@@ -20,6 +20,7 @@ from navigator_logic import (
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
     coverage_near_anchor_action,
+    coverage_obstacle_confirmation,
     coverage_non_target_early_exit_ready,
     coverage_non_target_observation_matches,
     coverage_position_needs_yaw_alignment,
@@ -51,6 +52,7 @@ from navigator_logic import (
     rotation_clearance_allows_near_wall,
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
+    rotation_swept_obstacle,
     scan_dwell_deadline,
     scan_step_timeout_extension,
     sensor_is_fresh,
@@ -227,7 +229,7 @@ def test_non_target_early_exit_is_wired_through_launch():
     assert "剩余扫描已去重" in source
 
 
-def test_visual_parking_restores_cruise_speed_profile():
+def test_visual_parking_restores_all_precoverage_teb_parameters():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",
         "vision_triggered_navigator.py"))
@@ -252,16 +254,9 @@ def test_visual_parking_restores_cruise_speed_profile():
         for item in ast.walk(statement)
         if isinstance(item, ast.Call) and
         isinstance(item.func, ast.Attribute) and
-        item.func.attr == "_set_coverage_speed_profile"
+        item.func.attr == "_restore_move_base_recovery"
     ]
-    assert any(
-        call.args and isinstance(call.args[0], ast.Constant) and
-        call.args[0].value == "cruise" and
-        any(keyword.arg == "force" and
-            isinstance(keyword.value, ast.Constant) and
-            keyword.value.value is True
-            for keyword in call.keywords)
-        for call in calls)
+    assert calls
 
 
 def test_parking_clearance_tolerance_is_wired_through_launch():
@@ -304,6 +299,8 @@ def test_swept_footprint_parameters_are_wired_through_launch():
     assert math.isclose(config["camera_boresight_yaw_offset"], 0.292)
     assert math.isclose(config["parking_endpoint_min_clearance"], 0.16)
     assert math.isclose(config["parking_staging_offset"], 0.55)
+    assert config["coverage_obstacle_required_scans"] == 2
+    assert config["coverage_near_anchor_stall_timeout_sec"] == 0.8
 
     root = ET.parse(os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
@@ -317,7 +314,12 @@ def test_swept_footprint_parameters_are_wired_through_launch():
             "parking_endpoint_min_clearance",
             "parking_obstacle_required_scans",
             "parking_recovery_retry_count",
-            "parking_diagnostics_topic"):
+            "parking_diagnostics_topic",
+            "coverage_obstacle_required_scans",
+            "coverage_teb_weight_kinematics_nh",
+            "coverage_teb_weight_kinematics_forward_drive",
+            "coverage_teb_min_turning_radius",
+            "coverage_teb_global_plan_overwrite_orientation"):
         assert name in launch_args
         assert node_params[name] == "$(arg {})".format(name)
 
@@ -624,7 +626,7 @@ def test_polar_sector_min_wraps_and_ignores_other_directions():
         samples, 0.5 * math.pi, math.radians(10.0)) is None
 
 
-def test_navigation_node_imports_rotation_clearance_helper():
+def test_navigation_node_uses_swept_rotation_envelope_not_wall_fit_exception():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",
         "vision_triggered_navigator.py"))
@@ -638,8 +640,24 @@ def test_navigation_node_imports_rotation_clearance_helper():
         and node.module == "navigator_logic"
         for alias in node.names
     }
-    assert "rotation_clearance_allows_near_wall" in imported_names
-    assert "rotation_clearance_is_safe" in imported_names
+    assert "swept_footprint_obstacle" in imported_names
+    assert "coverage_obstacle_confirmation" in imported_names
+
+    navigator = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and
+        node.name == "VisionTriggeredNavigator")
+    method = next(
+        node for node in navigator.body
+        if isinstance(node, ast.FunctionDef) and
+        node.name == "_rotation_clearance_safe")
+    called = {
+        node.func.attr for node in ast.walk(method)
+        if isinstance(node, ast.Call) and
+        isinstance(node.func, ast.Attribute)
+    }
+    assert "_coverage_rotation_sweep" in called
+    assert "rotation_clearance_allows_near_wall" not in called
 
 
 def test_coverage_navigation_reports_transit_and_observation_anchor_ids():
@@ -981,9 +999,78 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
 def test_near_blocked_anchor_becomes_stationary_observation():
     assert coverage_near_anchor_action(0.46, None, 0.0) == "outside"
     assert coverage_near_anchor_action(0.44, None, 0.0) == "start"
-    assert coverage_near_anchor_action(0.42, 0.44, 3.1) == "observe"
-    assert coverage_near_anchor_action(0.40, 0.44, 2.9) == "reset"
-    assert coverage_near_anchor_action(0.40, 0.40, 3.0) == "observe"
+    assert coverage_near_anchor_action(0.271, 0.271, 0.79) == "continue"
+    assert coverage_near_anchor_action(0.271, 0.271, 0.8) == "observe"
+    assert coverage_near_anchor_action(0.40, 0.44, 0.7) == "reset"
+
+
+def test_coverage_rotation_envelope_allows_corner_returns_outside_radius():
+    footprint_radius, margin = 0.215, 0.02
+    radius = footprint_radius + margin
+    assert radius == pytest.approx(0.235)
+    corner_returns = [(0.244, 0.0), (0.0, -0.244), (0.244, -0.244)]
+    sweep = rotation_swept_obstacle(
+        corner_returns, footprint_radius, margin)
+    assert not sweep["blocked"]
+    assert sweep["clearance"] > 0.0
+    assert rotation_swept_obstacle(
+        [(0.235, 0.0)], footprint_radius, margin)["blocked"]
+
+
+def test_coverage_rotation_obstacle_requires_two_fresh_blocking_scans():
+    count, confirmed = coverage_obstacle_confirmation(True, 0, True, 2)
+    assert (count, confirmed) == (1, False)
+    count, confirmed = coverage_obstacle_confirmation(True, count, False, 2)
+    assert (count, confirmed) == (1, False)
+    count, confirmed = coverage_obstacle_confirmation(True, count, True, 2)
+    assert (count, confirmed) == (2, True)
+    assert coverage_obstacle_confirmation(False, count, True, 2) == (0, False)
+
+
+def test_coverage_near_observation_replaces_permanent_stall_skip():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "scripts", "vision_triggered_navigator.py"),
+            "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "coverage_anchor_near_observation" in source
+    assert "near_true_rotation_block" in source
+    assert '"stationary observation at this heading."' in source
+    assert "coverage_anchor_near_stall_skip" not in source
+    assert 'return "near_stall_skip"' not in source
+    assert "coverage_navigation_blocked" in source
+    assert "displacement < self.coverage_goal_min_progress" in source
+
+
+def test_coverage_teb_mecanum_constraints_are_saved_applied_and_restored():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "scripts", "vision_triggered_navigator.py"),
+            "r", encoding="utf-8") as stream:
+        source = stream.read()
+    for field in (
+            "weight_kinematics_nh",
+            "weight_kinematics_forward_drive",
+            "min_turning_radius",
+            "global_plan_overwrite_orientation"):
+        assert source.count('"{}"'.format(field)) >= 4
+    assert "coverage_teb_restore_failed" in source
+    vision_start = source.index('            elif state == "VISION":')
+    vision_source = source[vision_start:]
+    assert vision_source.index("_restore_move_base_recovery()") < (
+        vision_source.index("_center_visual_target("))
+
+    with open(os.path.join(
+            package_dir, "config", "vision_triggered_navigator.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert config["coverage_teb_weight_kinematics_nh"] == 1.0
+    assert config["coverage_teb_weight_kinematics_forward_drive"] == 10.0
+    assert config["coverage_teb_min_turning_radius"] == 0.0
+    assert config["coverage_teb_global_plan_overwrite_orientation"] is False
+    assert config["coverage_near_anchor_stall_timeout_sec"] == 0.8
 
 
 def test_successful_staging_goal_uses_bounded_handoff_envelope():

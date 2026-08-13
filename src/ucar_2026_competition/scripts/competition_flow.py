@@ -1964,6 +1964,7 @@ class CompetitionFlow:
         }
         forwarded_defaults = {
             "coverage_rotation_min_clearance": 0.28,
+            "coverage_obstacle_required_scans": 2,
             "coverage_translation_min_clearance": 0.00,
             "coverage_translation_sector_half_angle_deg": 35.0,
             "coverage_max_vel_x": 0.72,
@@ -1975,6 +1976,10 @@ class CompetitionFlow:
             "coverage_caution_vel_x": 0.53,
             "coverage_caution_vel_y": 0.53,
             "coverage_caution_vel_theta": 1.12,
+            "coverage_teb_weight_kinematics_nh": 1.0,
+            "coverage_teb_weight_kinematics_forward_drive": 10.0,
+            "coverage_teb_min_turning_radius": 0.0,
+            "coverage_teb_global_plan_overwrite_orientation": False,
             "coverage_caution_enter_clearance": 0.45,
             "coverage_caution_exit_clearance": 0.55,
             "coverage_fast_exit_clearance": 0.75,
@@ -2035,7 +2040,7 @@ class CompetitionFlow:
             "coverage_goal_progress_window_sec": 5.0,
             "coverage_goal_min_progress": 0.03,
             "coverage_anchor_observation_radius": 0.35,
-            "coverage_near_anchor_stall_timeout_sec": 3.0,
+            "coverage_near_anchor_stall_timeout_sec": 0.8,
         }
         for name, default in forwarded_defaults.items():
             param_name = "target_center_max_speed" if (
@@ -2222,7 +2227,9 @@ class CompetitionFlow:
                         "parking_recenter_failed", "parking_wall_fit_failed",
                         "parking_docking_failed", "parking_obstacle_blocked",
                         "parking_validation_failed",
-                        "coverage_recovery_disable_failed"):
+                        "coverage_recovery_disable_failed",
+                        "coverage_teb_restore_failed",
+                        "coverage_navigation_blocked"):
                     raise StageError("factory navigation {}".format(
                         self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):

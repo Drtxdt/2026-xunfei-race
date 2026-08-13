@@ -146,6 +146,29 @@ def swept_footprint_obstacle(points, command, errors,
     }
 
 
+def coverage_obstacle_confirmation(blocked, previous_count,
+                                   fresh_sample=True, required_scans=2):
+    """Count consecutive fresh blocking scans and report confirmation."""
+    if not bool(blocked):
+        return 0, False
+    count = max(0, int(previous_count))
+    if bool(fresh_sample):
+        count += 1
+    return count, count >= max(2, int(required_scans))
+
+
+def rotation_swept_obstacle(points, footprint_radius=0.215, margin=0.02):
+    """Return a circular in-place-rotation envelope in ``base_link``."""
+    return swept_footprint_obstacle(
+        points,
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        abs(float(footprint_radius)),
+        0.0,
+        margin,
+    )
+
+
 def staging_wall_frame_accepted(normal_error, tangent_error, yaw_error,
                                 normal_tolerance=0.08,
                                 tangent_tolerance=0.04,
@@ -787,7 +810,7 @@ def coverage_position_needs_yaw_alignment(distance, yaw_error,
 
 def coverage_near_anchor_action(distance, baseline_distance, elapsed,
                                 observation_radius=0.45,
-                                stall_timeout=3.0,
+                                stall_timeout=0.8,
                                 minimum_progress=0.03):
     """Decide whether a blocked near-anchor goal should become an observation.
 
