@@ -245,9 +245,9 @@ def task2_target_update_is_publishable(category_matches,
 
     ``trigger_eligible`` deliberately applies the close-box/coverage-anchor
     gate only to the first parking trigger.  Once the navigator owns the
-    target it may move to a staging, recovery, or corner-parallax pose where
-    the same sign is smaller and there is no active coverage anchor.  Those
-    matching frames are tracking updates, not new trigger requests.
+    target it may rotate to the wall normal or perform one obstacle recovery,
+    where the same sign can be smaller and there is no active coverage
+    anchor.  Those matching frames are tracking updates, not new requests.
     """
     return bool(
         category_matches and (trigger_eligible or trigger_latched))

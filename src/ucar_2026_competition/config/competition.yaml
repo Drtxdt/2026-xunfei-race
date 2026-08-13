@@ -59,7 +59,7 @@ target_center_start_speed: 0.28
 target_center_max_speed: 0.45
 target_center_timeout_sec: 20.0
 # 厂牌居中后，车头射线相对相机光轴的实车标定偏差。
-camera_boresight_yaw_offset: 0.0
+camera_boresight_yaw_offset: 0.292
 factory_navigation_timeout_sec: 420.0
 task2_prewarm_enabled: true
 factory_navigation_start_service: "/vision_triggered_navigator/start_navigation"
@@ -68,17 +68,7 @@ parking_box_width: 0.50
 parking_box_depth: 0.50
 parking_goal_offset: 0.26
 parking_staging_offset: 0.55
-parking_staging_timeout_sec: 20.0
-parking_corner_min_tangent_clearance: 0.16
-parking_corner_observation_offset: 0.45
-parking_corner_parallax_offset: 0.25
-parking_corner_observation_timeout_sec: 15.0
-parking_staging_position_tolerance: 0.16
-parking_staging_yaw_tolerance: 0.10
-parking_staging_normal_tolerance: 0.08
-parking_staging_tangent_tolerance: 0.04
-parking_staging_axis_yaw_tolerance: 0.08
-parking_staging_refine_timeout_sec: 8.0
+parking_endpoint_min_clearance: 0.16
 parking_docking_timeout_sec: 30.0
 # Legacy fixed-distance parameters remain loadable, but swept-footprint safety
 # is authoritative for parking motion.

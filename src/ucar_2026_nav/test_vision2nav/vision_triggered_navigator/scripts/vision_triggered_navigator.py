@@ -25,7 +25,6 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
-    corner_observation_pose,
     coverage_anchor_order,
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
@@ -42,15 +41,15 @@ from navigator_logic import (
     exact_observation_target,
     footprint_max_cost,
     latch_trigger,
+    nearest_wall_hit,
     normalize_angle,
     obstacle_clearance_requires_stop,
     parking_obstacle_action,
     parking_footprint_margins,
     parking_goal_from_wall,
-    parking_recenter_required,
     parking_rotation_obstacle_clearance,
     polar_sector_min,
-    ray_segment_intersection,
+    recovery_rear_distance,
     rotation_clearance_allows_near_wall,
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
@@ -59,14 +58,11 @@ from navigator_logic import (
     sensor_is_fresh,
     should_skip_coverage_anchor,
     split_scan_angle,
-    staging_wall_frame_accepted,
-    staging_motion_is_rotation_stall,
     swept_footprint_obstacle,
     target_sample_is_fresh,
     wall_fit_matches_expected,
     wall_fit_is_continuous,
     wall_frame_docking_command,
-    wall_frame_pose_errors,
 )
 
 
@@ -346,7 +342,7 @@ class VisionTriggeredNavigator(object):
         self.odom_stale = max(0.1, float(rospy.get_param(
             "~odom_stale_sec", 0.5)))
         self.camera_boresight_yaw_offset = rospy.get_param(
-            "~camera_boresight_yaw_offset", 0.0)
+            "~camera_boresight_yaw_offset", 0.292)
         self.arrival_hold_sec = rospy.get_param("~arrival_hold_sec", 0.6)
 
         # 任务2专用的50cm停车框。独立导航默认不启用验证并继续使用vision_offset。
@@ -357,26 +353,6 @@ class VisionTriggeredNavigator(object):
             "~parking_goal_offset", self.vision_offset)))
         self.parking_staging_offset = abs(float(rospy.get_param(
             "~parking_staging_offset", 0.55)))
-        self.parking_staging_timeout = max(1.0, float(rospy.get_param(
-            "~parking_staging_timeout_sec", 20.0)))
-        self.parking_staging_acceptance = max(0.01, float(rospy.get_param(
-            "~parking_staging_position_tolerance", 0.16)))
-        self.parking_staging_yaw_tolerance = abs(float(rospy.get_param(
-            "~parking_staging_yaw_tolerance", 0.10)))
-        self.parking_staging_normal_tolerance = abs(float(rospy.get_param(
-            "~parking_staging_normal_tolerance", 0.08)))
-        self.parking_staging_tangent_tolerance = abs(float(rospy.get_param(
-            "~parking_staging_tangent_tolerance", 0.04)))
-        self.parking_staging_axis_yaw_tolerance = abs(float(rospy.get_param(
-            "~parking_staging_axis_yaw_tolerance", 0.08)))
-        self.parking_staging_refine_timeout = max(1.0, float(rospy.get_param(
-            "~parking_staging_refine_timeout_sec", 8.0)))
-        self.parking_staging_watchdog_window = max(0.5, float(rospy.get_param(
-            "~parking_staging_watchdog_window_sec", 2.0)))
-        self.parking_staging_min_progress = max(0.0, float(rospy.get_param(
-            "~parking_staging_min_progress", 0.03)))
-        self.parking_staging_max_rotation = math.radians(abs(float(rospy.get_param(
-            "~parking_staging_max_rotation_deg", 45.0))))
         self.parking_docking_timeout = max(1.0, float(rospy.get_param(
             "~parking_docking_timeout_sec", 30.0)))
         self.parking_dock_max_x = abs(float(rospy.get_param(
@@ -465,24 +441,10 @@ class VisionTriggeredNavigator(object):
             "~footprint_half_length", 0.171)))
         self.footprint_half_width = abs(float(rospy.get_param(
             "~footprint_half_width", 0.128)))
-        self.parking_corner_min_tangent_clearance = max(
+        self.parking_endpoint_min_clearance = max(
             self.footprint_half_width + self.parking_required_margin,
             abs(float(rospy.get_param(
-                "~parking_corner_min_tangent_clearance", 0.16))))
-        self.parking_corner_observation_offset = max(
-            math.hypot(
-                self.footprint_half_length,
-                self.footprint_half_width) + self.parking_required_margin,
-            abs(float(rospy.get_param(
-                "~parking_corner_observation_offset", 0.45))))
-        self.parking_corner_parallax_offset = max(
-            self.parking_corner_min_tangent_clearance +
-            self.parking_required_margin,
-            abs(float(rospy.get_param(
-                "~parking_corner_parallax_offset", 0.25))))
-        self.parking_corner_observation_timeout = max(
-            1.0, float(rospy.get_param(
-                "~parking_corner_observation_timeout_sec", 15.0)))
+                "~parking_endpoint_min_clearance", 0.16))))
         self.local_planner_reconfigure_ns = rospy.get_param(
             "~local_planner_reconfigure_ns", "/move_base/TebLocalPlannerROS")
         self.move_base_reconfigure_ns = rospy.get_param(
@@ -582,7 +544,6 @@ class VisionTriggeredNavigator(object):
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
-        self.parking_corner_observation = None
         self.parking_final_wall_fit = None
         self.parking_final_tangent_error = None
         self.parking_last_wall_fit = None
@@ -2379,108 +2340,55 @@ class VisionTriggeredNavigator(object):
             return None
         return (wall[0], wall[1]), (normal_x / length, normal_y / length)
 
-    def _make_move_base_goal(self, x, y, yaw):
-        goal = MoveBaseGoal()
-        goal.target_pose.header.frame_id = self.map_frame
-        goal.target_pose.header.stamp = rospy.Time.now()
-        goal.target_pose.pose.position.x = float(x)
-        goal.target_pose.pose.position.y = float(y)
-        goal.target_pose.pose.orientation = euler_to_quaternion(float(yaw))
-        return goal
-
-    def _staging_axis_reached(self, pose, goal):
-        errors = wall_frame_pose_errors(pose, goal)
-        return staging_wall_frame_accepted(
-            errors[0], errors[1], errors[2],
-            self.parking_staging_normal_tolerance,
-            self.parking_staging_tangent_tolerance,
-            self.parking_staging_axis_yaw_tolerance)
-
-    def _navigate_to_corner_observation(self, observation):
-        """Reach the nearby corner-parallax pose with swept-body control.
-
-        This pose is intentionally local.  Sending it through ``move_base``
-        allowed the global/local planner to make a conspicuous reverse arc
-        around the corner even when the required displacement was small.
-        Reuse the parking controller's rotate/lateral/normal phase ordering
-        and scan envelope so the manoeuvre stays bounded and observable.
-        """
-        x, y, yaw = [float(value) for value in observation["pose"]]
-        rospy.logwarn(
-            "[vision_triggered_navigator] corner wall is ambiguous "
-            "(%s/%s clearance=%.3fm < %.3fm); re-observe from "
-            "x=%.3f y=%.3f yaw=%.3f with %.3fm asymmetric parallax "
-            "along %s (planned baseline=%s).",
-            observation["wall"], observation["adjacent_wall"],
-            observation["tangent_clearance"],
-            observation["minimum_tangent_clearance"], x, y, yaw,
-            observation["parallax_offset"], observation["parallax_wall"],
-            ("unknown" if observation["planned_baseline"] is None else
-             "{:.3f}m".format(observation["planned_baseline"])))
-        self._publish_status("parking_corner_reobserving")
+    def _align_to_parking_wall(self, map_goal, recovery_attempts=0):
+        """Rotate in place to the selected wall normal before lidar fitting."""
         if not self._wait_navigation_idle(timeout=2.0):
-            rospy.logerr(
-                "[vision_triggered_navigator] parking_corner_unresolved: "
-                "move_base did not release control before local re-observation.")
+            self.parking_failure_status = "parking_wall_align_failed"
             return False
-
-        deadline = rospy.get_time() + self.parking_corner_observation_timeout
-        stable_since = None
+        deadline = rospy.get_time() + self.parking_docking_timeout
         blocked_scan_count = 0
         last_safety_scan_at = 0.0
-        normal_tolerance = 0.025
-        tangent_tolerance = 0.025
-        yaw_tolerance = 0.05
+        stable_since = None
+        odom_frame = self.odom_frame_from_msg or self.odom_frame
+        target = self._transform_map_pose(odom_frame, map_goal)
+        if target is None:
+            self.parking_failure_status = "parking_wall_align_failed"
+            return False
+        target_yaw = float(target[2])
+        self._publish_status("parking_wall_coarse_aligning")
         rate = rospy.Rate(20)
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
-            pose = self._get_robot_pose(self.base_frame)
-            if pose is None or not sensor_is_fresh(
-                    self.scan_received_at, rospy.get_time(), self.scan_stale):
+            now = rospy.get_time()
+            if (not self._odom_is_fresh() or self.odom_pose is None or
+                    not sensor_is_fresh(
+                    self.scan_received_at, now, self.scan_stale)):
                 self.cmd_vel_pub.publish(Twist())
-                rospy.logerr(
-                    "[vision_triggered_navigator] parking_corner_unresolved: "
-                    "pose or laser scan became stale during local re-observation.")
+                self.parking_failure_status = "parking_wall_align_failed"
                 return False
-            errors = wall_frame_pose_errors(pose, (x, y, yaw))
-            if staging_wall_frame_accepted(
-                    errors[0], errors[1], errors[2],
-                    normal_tolerance, tangent_tolerance, yaw_tolerance):
+            pose = self.odom_pose
+            yaw_error = normalize_angle(target_yaw - pose[2])
+            errors = (0.0, 0.0, yaw_error)
+            if abs(yaw_error) <= self.parking_dock_yaw_tolerance:
                 self.cmd_vel_pub.publish(Twist())
                 if stable_since is None:
-                    stable_since = rospy.get_time()
-                elif rospy.get_time() - stable_since >= 0.2:
-                    source = observation.get("source_position")
-                    actual_baseline = (None if source is None else math.hypot(
-                        pose[0] - source[0], pose[1] - source[1]))
-                    minimum_baseline = 0.75 * float(
-                        observation.get("parallax_offset", 0.0))
-                    if (actual_baseline is not None and
-                            actual_baseline + 1e-9 < minimum_baseline):
-                        rospy.logerr(
-                            "[vision_triggered_navigator] "
-                            "parking_corner_unresolved: actual parallax "
-                            "baseline %.3fm is below required %.3fm.",
-                            actual_baseline, minimum_baseline)
-                        return False
+                    stable_since = now
+                elif now - stable_since >= self.parking_dock_stable_sec:
                     rospy.loginfo(
-                        "[vision_triggered_navigator] corner observation "
-                        "reached locally errors=(normal=%+.3f tangent=%+.3f "
-                        "yaw=%+.3f) actual_baseline=%s.",
-                        errors[0], errors[1], errors[2],
-                        ("unknown" if actual_baseline is None else
-                         "{:.3f}m".format(actual_baseline)))
-                    self._publish_status("parking_corner_observation_reached")
+                        "[vision_triggered_navigator] map wall-normal alignment "
+                        "accepted yaw_error=%+.3f.", yaw_error)
                     return True
                 rate.sleep()
                 continue
             stable_since = None
             command = wall_frame_docking_command(
-                errors[0], errors[1], errors[2],
-                normal_tolerance, tangent_tolerance, yaw_tolerance,
-                min(self.parking_dock_max_x, 0.06),
-                min(self.parking_dock_max_y, 0.05),
-                min(self.parking_dock_max_yaw, 0.20),
-                min(self.parking_dock_min_yaw, 0.15),
+                0.0, 0.0, yaw_error,
+                self.parking_dock_normal_tolerance,
+                self.parking_dock_tangent_tolerance,
+                self.parking_dock_yaw_tolerance,
+                self.parking_dock_max_x,
+                self.parking_dock_max_y,
+                self.parking_dock_max_yaw,
+                self.parking_dock_min_yaw,
             )
             sweep = self._parking_sweep_diagnostics(command, errors)
             if sweep["blocked"]:
@@ -2488,66 +2396,38 @@ class VisionTriggeredNavigator(object):
                 if self.scan_received_at > last_safety_scan_at:
                     blocked_scan_count += 1
                     last_safety_scan_at = self.scan_received_at
+                action = parking_obstacle_action(
+                    blocked_scan_count, recovery_attempts,
+                    self.parking_obstacle_required_scans,
+                    self.parking_recovery_retry_count)
                 self._publish_parking_diagnostics(
-                    "parking_corner_sweep_blocked", sweep, errors,
-                    blocked_scan_count, 0)
-                if blocked_scan_count >= self.parking_obstacle_required_scans:
-                    rospy.logerr(
-                        "[vision_triggered_navigator] "
-                        "parking_corner_unresolved: local %s sweep blocked "
-                        "by point=%s bounds=%s radius=%s.",
-                        sweep["phase"], sweep["point"], sweep.get("bounds"),
-                        sweep.get("radius"))
-                    return False
-                rate.sleep()
-                continue
+                    "parking_wall_align_blocked", sweep, errors,
+                    blocked_scan_count, recovery_attempts)
+                if action == "hold":
+                    rate.sleep()
+                    continue
+                self.parking_failure_status = (
+                    "parking_recovery_required"
+                    if action == "recover" else "parking_obstacle_blocked")
+                self._publish_status(self.parking_failure_status)
+                return False
             if self.scan_received_at > last_safety_scan_at:
                 blocked_scan_count = 0
                 last_safety_scan_at = self.scan_received_at
             twist = Twist()
-            twist.linear.x, twist.linear.y, twist.angular.z = command
+            twist.angular.z = command[2]
             self.cmd_vel_pub.publish(twist)
+            rospy.loginfo_throttle(
+                0.5,
+                "[vision_triggered_navigator] coarse wall alignment "
+                "yaw_error=%+.3f cmd_yaw=%+.3f.", yaw_error, command[2])
             rate.sleep()
         self.cmd_vel_pub.publish(Twist())
+        self.parking_failure_status = "parking_wall_align_failed"
         rospy.logerr(
-            "[vision_triggered_navigator] parking_corner_unresolved: "
-            "local observation exceeded %.1fs.",
-            self.parking_corner_observation_timeout)
+            "[vision_triggered_navigator] wall-normal alignment exceeded %.1fs.",
+            self.parking_docking_timeout)
         return False
-
-    def _resolve_corner_ambiguity(self):
-        """Re-observe a near-corner target once, then require a safe wall hit."""
-        observation = self.parking_corner_observation
-        if observation is None:
-            return None
-        if not self._navigate_to_corner_observation(observation):
-            return None
-        if not self._wait_for_initial_recenter_target():
-            rospy.logerr(
-                "[vision_triggered_navigator] parking_corner_unresolved: "
-                "no fresh target bbox at the safe observation pose.")
-            return None
-        if not self._center_visual_target(
-                tolerance=self.parking_recenter_tolerance,
-                timeout=self.parking_recenter_timeout,
-                state="parking_corner_recentering",
-                failure_state="parking_corner_unresolved"):
-            return None
-        goal = self.compute_vision_goal()
-        if goal is None:
-            return None
-        if self.parking_corner_observation is not None:
-            rospy.logerr(
-                "[vision_triggered_navigator] parking_corner_unresolved: "
-                "second centred ray still places the parking centre %.3fm "
-                "from corner %s (minimum %.3fm).",
-                self.parking_corner_observation["tangent_clearance"],
-                self.parking_corner_observation["corner"],
-                self.parking_corner_observation[
-                    "minimum_tangent_clearance"])
-            return None
-        self._publish_status("parking_corner_resolved")
-        return goal
 
     def _parking_sweep_diagnostics(self, command, errors):
         return swept_footprint_obstacle(
@@ -2581,168 +2461,6 @@ class VisionTriggeredNavigator(object):
         }
         self.parking_diagnostics_pub.publish(String(
             data=json.dumps(payload, ensure_ascii=False, allow_nan=False)))
-
-    def _refine_parking_staging(self, goal):
-        """Finish the staging handoff with axis-specific low-speed control."""
-        deadline = rospy.get_time() + self.parking_staging_refine_timeout
-        stable_since = None
-        blocked_scan_count = 0
-        last_safety_scan_at = 0.0
-        rate = rospy.Rate(20)
-        self._publish_status("parking_staging_refining")
-        while not rospy.is_shutdown() and rospy.get_time() < deadline:
-            pose = self._get_robot_pose(self.base_frame)
-            if pose is None or not sensor_is_fresh(
-                    self.scan_received_at, rospy.get_time(), self.scan_stale):
-                self.cmd_vel_pub.publish(Twist())
-                return False
-            errors = wall_frame_pose_errors(pose, goal)
-            if self._staging_axis_reached(pose, goal):
-                self.cmd_vel_pub.publish(Twist())
-                if stable_since is None:
-                    stable_since = rospy.get_time()
-                elif rospy.get_time() - stable_since >= 0.3:
-                    rospy.loginfo(
-                        "[vision_triggered_navigator] staging axis refinement "
-                        "accepted errors=(normal=%+.3f tangent=%+.3f yaw=%+.3f)",
-                        errors[0], errors[1], errors[2])
-                    return True
-                rate.sleep()
-                continue
-            stable_since = None
-            command = wall_frame_docking_command(
-                errors[0], errors[1], errors[2],
-                self.parking_staging_normal_tolerance,
-                self.parking_staging_tangent_tolerance,
-                self.parking_staging_axis_yaw_tolerance,
-                min(self.parking_dock_max_x, 0.08),
-                self.parking_dock_max_y,
-                self.parking_dock_max_yaw,
-                self.parking_dock_min_yaw,
-            )
-            sweep = self._parking_sweep_diagnostics(command, errors)
-            if sweep["blocked"]:
-                self.cmd_vel_pub.publish(Twist())
-                if self.scan_received_at > last_safety_scan_at:
-                    blocked_scan_count += 1
-                    last_safety_scan_at = self.scan_received_at
-                self._publish_parking_diagnostics(
-                    "parking_staging_sweep_blocked", sweep, errors,
-                    blocked_scan_count, 0)
-                rospy.logwarn_throttle(
-                    0.5,
-                    "[vision_triggered_navigator] staging refinement blocked "
-                    "phase=%s scans=%d/%d point=%s bounds=%s radius=%s",
-                    sweep["phase"], blocked_scan_count,
-                    self.parking_obstacle_required_scans, sweep["point"],
-                    sweep.get("bounds"), sweep.get("radius"))
-                if blocked_scan_count >= self.parking_obstacle_required_scans:
-                    self.parking_failure_status = "parking_recovery_required"
-                    self._publish_status(self.parking_failure_status)
-                    return False
-                rate.sleep()
-                continue
-            if self.scan_received_at > last_safety_scan_at:
-                blocked_scan_count = 0
-                last_safety_scan_at = self.scan_received_at
-            twist = Twist()
-            twist.linear.x, twist.linear.y, twist.angular.z = command
-            self.cmd_vel_pub.publish(twist)
-            rate.sleep()
-        self.cmd_vel_pub.publish(Twist())
-        rospy.logerr(
-            "[vision_triggered_navigator] staging refinement exceeded %.1fs",
-            self.parking_staging_refine_timeout)
-        return False
-
-    def _navigate_to_parking_staging(self, goal):
-        """Use move_base only to reach a safe staging pose, with spin watchdog."""
-        x, y, yaw = [float(value) for value in goal]
-        pose = self._get_robot_pose(self.base_frame)
-        if pose is None:
-            rospy.logerr("[vision_triggered_navigator] 无法获取预停点起始位姿.")
-            return False
-        if self._staging_axis_reached(pose, (x, y, yaw)):
-            rospy.loginfo(
-                "[vision_triggered_navigator] 已满足预停点位置%.2fm/航向%.3frad，跳过move_base.",
-                self.parking_staging_acceptance,
-                self.parking_staging_yaw_tolerance)
-            return self._wait_navigation_idle()
-
-        rospy.loginfo(
-            "[vision_triggered_navigator] 发送预停点: x=%.4f y=%.4f yaw=%.4f timeout=%.1fs",
-            x, y, yaw, self.parking_staging_timeout)
-        self.move_base_client.send_goal(self._make_move_base_goal(x, y, yaw))
-        started = rospy.get_time()
-        window_started = started
-        window_pose = pose
-        last_yaw = pose[2]
-        yaw_accumulated = 0.0
-        reached = False
-        failure_reason = ""
-        rate = rospy.Rate(20)
-        while not rospy.is_shutdown():
-            pose = self._get_robot_pose(self.base_frame)
-            if pose is not None:
-                distance = math.hypot(x - pose[0], y - pose[1])
-                yaw_accumulated += abs(normalize_angle(pose[2] - last_yaw))
-                last_yaw = pose[2]
-                yaw_error = abs(normalize_angle(yaw - pose[2]))
-                if self._staging_axis_reached(pose, (x, y, yaw)):
-                    reached = True
-                    break
-                if rospy.get_time() - window_started >= self.parking_staging_watchdog_window:
-                    moved = math.hypot(pose[0] - window_pose[0],
-                                       pose[1] - window_pose[1])
-                    if staging_motion_is_rotation_stall(
-                            moved, yaw_accumulated,
-                            self.parking_staging_min_progress,
-                            self.parking_staging_max_rotation):
-                        failure_reason = (
-                            "预停点出现原地旋转: %.1fs位移%.3fm累计转角%.1fdeg" %
-                            (self.parking_staging_watchdog_window, moved,
-                             math.degrees(yaw_accumulated)))
-                        break
-                    window_started = rospy.get_time()
-                    window_pose = pose
-                    yaw_accumulated = 0.0
-
-            state = self.move_base_client.get_state()
-            if state == actionlib.GoalStatus.SUCCEEDED:
-                reached = True
-                rospy.loginfo(
-                    "[vision_triggered_navigator] move_base已确认预停点成功"
-                    "(distance=%.3f yaw_error=%.3f)，进入停车对接.",
-                    distance,
-                    yaw_error,
-                )
-                break
-            if state not in [actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
-                failure_reason = (
-                    "move_base预停点提前结束(state=%s distance=%.3f yaw_error=%.3f)" %
-                    (str(state), distance if pose is not None else float("nan"),
-                     yaw_error if pose is not None else float("nan")))
-                break
-            if rospy.get_time() - started >= self.parking_staging_timeout:
-                failure_reason = "预停点导航超过%.1fs" % self.parking_staging_timeout
-                break
-            rate.sleep()
-
-        final_state = self.move_base_client.get_state()
-        if final_state in [
-                actionlib.GoalStatus.PENDING,
-                actionlib.GoalStatus.ACTIVE]:
-            self.move_base_client.cancel_goal()
-        idle = self._wait_navigation_idle(timeout=2.0)
-        self.cmd_vel_pub.publish(Twist())
-        if reached and idle:
-            rospy.loginfo("[vision_triggered_navigator] 预停点交接完成，move_base已释放控制权.")
-            return self._refine_parking_staging((x, y, yaw))
-        if not idle:
-            failure_reason = "move_base未释放/cmd_vel控制权"
-        rospy.logerr("[vision_triggered_navigator] parking_staging_failed: %s",
-                     failure_reason or "未知原因")
-        return False
 
     def _wall_fit_for_pose(self, inward_normal_odom, pose):
         """Fit the physical wall and reject lines inconsistent with the map side."""
@@ -2789,7 +2507,7 @@ class VisionTriggeredNavigator(object):
                 return near_fit
         return None
 
-    def _recover_parking_to_staging(self, staging_goal):
+    def _recover_parking_to_staging(self):
         """Back away to the 0.55 m staging distance through the same sweep gate."""
         if not self._wait_navigation_idle(timeout=2.0):
             return False
@@ -2810,24 +2528,50 @@ class VisionTriggeredNavigator(object):
                 return False
             fit = self._wall_fit_for_pose(inward_normal, self.odom_pose)
             if fit is None:
-                self.cmd_vel_pub.publish(Twist())
-                return False
-            remaining = fit["distance"] - self.parking_staging_offset
-            if remaining >= -self.parking_staging_normal_tolerance:
+                # Coarse wall alignment itself may be the blocked phase.  For
+                # this one recovery only, a long low-residual wall remains a
+                # valid distance reference even before its normal is within
+                # the regular 20 degree docking gate.  Cone clusters still
+                # fail the unchanged point/span/residual requirements.
+                fit = fit_wall_line(
+                    self.scan_wall_points,
+                    self.parking_wall_fit_min_points,
+                    self.parking_wall_fit_min_span,
+                    self.parking_wall_fit_max_residual,
+                )
+                if fit is None:
+                    self.cmd_vel_pub.publish(Twist())
+                    return False
+                rospy.logwarn_throttle(
+                    1.0,
+                    "[vision_triggered_navigator] recovery uses strict "
+                    "unaligned wall fit angle=%+.3f span=%.3f residual=%.4f.",
+                    fit["normal_angle"], fit["span"], fit["residual"])
+            wall_remaining = fit["distance"] - self.parking_staging_offset
+            if wall_remaining >= -self.parking_dock_normal_tolerance:
                 self.cmd_vel_pub.publish(Twist())
                 break
+            rear_remaining = recovery_rear_distance(
+                wall_remaining, fit["normal_angle"])
+            if rear_remaining is None:
+                self.cmd_vel_pub.publish(Twist())
+                rospy.logerr(
+                    "[vision_triggered_navigator] recovery wall angle %.1fdeg "
+                    "does not provide a reliable rearward distance increase.",
+                    math.degrees(fit["normal_angle"]))
+                return False
             command = (-self.parking_recovery_reverse_speed, 0.0, 0.0)
             sweep = self._parking_sweep_diagnostics(
-                command, (remaining, 0.0, 0.0))
+                command, (rear_remaining, 0.0, 0.0))
             if sweep["blocked"]:
                 self.cmd_vel_pub.publish(Twist())
                 self._publish_parking_diagnostics(
                     "parking_recovery_backing", sweep,
-                    (remaining, 0.0, 0.0), 1, 1)
+                    (rear_remaining, 0.0, 0.0), 1, 1)
                 rospy.logerr(
                     "[vision_triggered_navigator] recovery rear channel "
                     "blocked point=%s bounds=%s remaining=%+.3f; safe stop.",
-                    sweep["point"], sweep.get("bounds"), remaining)
+                    sweep["point"], sweep.get("bounds"), rear_remaining)
                 return False
             twist = Twist()
             twist.linear.x = command[0]
@@ -2835,9 +2579,10 @@ class VisionTriggeredNavigator(object):
             rospy.loginfo_throttle(
                 0.5,
                 "[vision_triggered_navigator] recovery backing wall=%.3f "
-                "target=%.3f remaining=%+.3f sweep=%s",
+                "target=%.3f wall_remaining=%+.3f rear_remaining=%+.3f "
+                "sweep=%s",
                 fit["distance"], self.parking_staging_offset,
-                remaining, sweep.get("bounds"))
+                wall_remaining, rear_remaining, sweep.get("bounds"))
             rate.sleep()
         else:
             self.cmd_vel_pub.publish(Twist())
@@ -2850,7 +2595,7 @@ class VisionTriggeredNavigator(object):
         if not self._clear_costmaps_and_wait():
             return False
         self._publish_status("parking_recovery_reapproach")
-        return self._navigate_to_parking_staging(staging_goal)
+        return True
 
     def _run_parking_docking(self, map_goal, recovery_attempts=0):
         """Finish against the measured wall, locking only tangent position in odom."""
@@ -2973,6 +2718,16 @@ class VisionTriggeredNavigator(object):
                 self.parking_dock_max_yaw,
                 self.parking_dock_min_yaw,
             )
+            if command[0] < -1e-9:
+                self.cmd_vel_pub.publish(Twist())
+                self.parking_failure_status = "parking_reverse_rejected"
+                self._publish_status(self.parking_failure_status)
+                rospy.logerr(
+                    "[vision_triggered_navigator] normal parking requested "
+                    "negative linear.x=%+.3f at wall distance %.3f; command "
+                    "rejected. Reverse is permitted only in obstacle recovery.",
+                    command[0], fit["distance"])
+                return False
             sweep = self._parking_sweep_diagnostics(command, errors)
             if sweep["blocked"]:
                 self.cmd_vel_pub.publish(Twist())
@@ -3372,44 +3127,45 @@ class VisionTriggeredNavigator(object):
     # ------------------------------------------------------------------
     def compute_vision_goal(self):
         """
-        根据 base_link 车头正方向射线与实测四边形围墙求交，
+        根据标定后的相机水平光轴与实测四边形围墙求交，
         沿墙法向和切向连续计算停车目标，返回 (x, y, yaw)。
         """
         pose = self._get_robot_pose(self.base_frame)
         if pose is None:
             rospy.logerr("[vision_triggered_navigator] 无法获取机器人位置，无法计算视觉目标.")
             return None
-        px, py, yaw = pose
-        yaw = normalize_angle(yaw + self.camera_boresight_yaw_offset)
-        dx = math.cos(yaw)
-        dy = math.sin(yaw)
-
-        rospy.loginfo("[vision_triggered_navigator] 射线起点 (%.4f, %.4f), 方向 yaw=%.4f",
-                      px, py, yaw)
-
-        # 射线与 4 堵墙求最近正交点
-        best_t = float('inf')
-        best_normal = None
-        best_point = None
-        best_wall_name = None
-
-        for wall_name, a, b, normal in self.walls:
-            t = ray_segment_intersection((px, py), (dx, dy), a, b)
-            if t is not None and t < best_t:
-                best_t = t
-                best_normal = normal
-                best_point = (px + t * dx, py + t * dy)
-                best_wall_name = wall_name
-
-        if best_point is None:
+        px, py, base_yaw = pose
+        optical_yaw = normalize_angle(
+            base_yaw + self.camera_boresight_yaw_offset)
+        hit = nearest_wall_hit(self.walls, (px, py), optical_yaw)
+        if hit is None:
             rospy.logerr("[vision_triggered_navigator] 射线与围墙无交点，无法计算视觉目标.")
             return None
-
-        ix, iy = best_point
-        nx, ny = best_normal
+        best_wall_name = hit["wall"]
+        ix, iy = hit["point"]
+        nx, ny = hit["normal"]
+        endpoint_clearance = hit["endpoint_clearance"]
+        rospy.loginfo(
+            "[vision_triggered_navigator] calibrated optical ray origin="
+            "(%.4f,%.4f) base_yaw=%.4f boresight=%+.4f "
+            "optical_yaw=%.4f wall=%s hit=(%.4f,%.4f) "
+            "endpoint_clearance=%.3f",
+            px, py, base_yaw, self.camera_boresight_yaw_offset,
+            optical_yaw, best_wall_name, ix, iy, endpoint_clearance)
+        if (self.validate_parking_box and endpoint_clearance + 1e-9 <
+                self.parking_endpoint_min_clearance):
+            self.cmd_vel_pub.publish(Twist())
+            self.parking_failure_status = "parking_geometry_invalid"
+            self._publish_status(self.parking_failure_status)
+            rospy.logerr(
+                "[vision_triggered_navigator] parking_geometry_invalid: "
+                "calibrated hit is %.3fm from wall endpoint, below %.3fm; "
+                "stop without generating an observation motion.",
+                endpoint_clearance, self.parking_endpoint_min_clearance)
+            return None
         gx, gy, gyaw = parking_goal_from_wall(
-            best_point,
-            best_normal,
+            (ix, iy),
+            (nx, ny),
             self.parking_goal_offset,
             self.parking_normal_offset,
             self.parking_tangent_offset,
@@ -3425,35 +3181,7 @@ class VisionTriggeredNavigator(object):
         self.parking_wall_point = (ix, iy)
         self.parking_inward_normal = (nx, ny)
         self.parking_wall_name = best_wall_name
-        self.parking_corner_observation = None
-        if self.validate_parking_box:
-            tangent = (-ny, nx)
-            effective_wall_point = (
-                ix + tangent[0] * self.parking_tangent_offset,
-                iy + tangent[1] * self.parking_tangent_offset,
-            )
-            self.parking_corner_observation = corner_observation_pose(
-                self.walls,
-                best_wall_name,
-                effective_wall_point,
-                self.parking_corner_min_tangent_clearance,
-                self.parking_corner_observation_offset,
-                self.parking_corner_parallax_offset,
-                (px, py),
-            )
         return gx, gy, gyaw
-
-    def compute_staging_goal(self):
-        """Build the safe move_base handoff pose from the locked wall geometry."""
-        if self.parking_wall_point is None or self.parking_inward_normal is None:
-            return None
-        return parking_goal_from_wall(
-            self.parking_wall_point,
-            self.parking_inward_normal,
-            self.parking_staging_offset,
-            self.parking_normal_offset,
-            self.parking_tangent_offset,
-        )
 
     # ------------------------------------------------------------------
     # 主循环
@@ -3629,7 +3357,7 @@ class VisionTriggeredNavigator(object):
                     break
                 self._hold_stopped(self.coverage_scan_settle)
                 self._publish_status("target_locked")
-                initial_center_error = None
+                self.parking_failure_status = "parking_docking_failed"
                 if not self._center_visual_target(
                         failure_state="centering_retry_pending"):
                     if self.coverage_search_mode:
@@ -3644,163 +3372,67 @@ class VisionTriggeredNavigator(object):
                             "resume scanning from the current coverage anchor.")
                         state = "PATROL"
                         continue
-                    rospy.logerr("[vision_triggered_navigator] 目标锁定后居中失败，车辆保持停车.")
+                    rospy.logerr(
+                        "[vision_triggered_navigator] target centering failed; "
+                        "vehicle remains stopped.")
                     break
-                initial_center_error = self.last_centered_error
                 if self.center_only:
                     self._hold_stopped(self.arrival_hold_sec)
                     self._publish_status("centered")
                     rospy.logwarn(
-                        "[vision_triggered_navigator] center_only=true：仅完成居中，不执行50cm框停泊.")
+                        "[vision_triggered_navigator] center_only=true: "
+                        "parking is intentionally disabled.")
                     break
+
                 goal = self.compute_vision_goal()
-                if goal is not None:
-                    gx, gy, gyaw = goal
-                else:
-                    rospy.logerr("[vision_triggered_navigator] 视觉目标计算失败.")
-                    self._publish_status("failed")
-                    break
-                if self.parking_corner_observation is not None:
-                    goal = self._resolve_corner_ambiguity()
-                    if goal is None:
-                        self.parking_failure_status = (
-                            "parking_corner_unresolved")
+                if goal is None:
+                    if self.parking_failure_status != "parking_geometry_invalid":
+                        self.parking_failure_status = "parking_geometry_invalid"
                         self._publish_status(self.parking_failure_status)
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    gx, gy, gyaw = goal
-                staging_goal = self.compute_staging_goal()
-                if staging_goal is None:
-                    self._publish_status("parking_staging_failed")
                     self._hold_stopped(self.arrival_hold_sec)
                     break
+                gx, gy, gyaw = goal
                 recovery_attempts = 0
-                self._publish_status("parking_staging")
-                if not self._navigate_to_parking_staging(staging_goal):
-                    staging_recovered = False
-                    if (self.parking_failure_status ==
-                            "parking_recovery_required" and
-                            recovery_attempts <
-                            self.parking_recovery_retry_count):
-                        recovery_attempts += 1
-                        staging_recovered = self._recover_parking_to_staging(
-                            staging_goal)
-                    if staging_recovered:
-                        rospy.loginfo(
-                            "[vision_triggered_navigator] staging sweep "
-                            "recovered once; continuing target confirmation.")
-                    else:
-                        if (self.parking_failure_status ==
-                                "parking_recovery_required"):
-                            self.parking_failure_status = (
-                                "parking_obstacle_blocked")
-                            self._publish_status(self.parking_failure_status)
-                        else:
-                            self._publish_status("parking_staging_failed")
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                if (recovery_attempts == 0 and
-                        not parking_recenter_required(
-                            initial_center_error,
-                            self.parking_recenter_tolerance)):
-                    self._publish_status("parking_recenter_preserved")
-                    rospy.loginfo(
-                        "[vision_triggered_navigator] initial target alignment "
-                        "error=%.3f is within parking tolerance %.3f; preserve "
-                        "the reliable heading and continue wall docking.",
-                        initial_center_error,
-                        self.parking_recenter_tolerance)
-                elif self._wait_for_initial_recenter_target():
-                    self._publish_status("parking_recenter")
-                    # Once corrective motion begins, losing the target remains
-                    # a hard failure because the original ray is no longer
-                    # guaranteed to match the changed heading.
-                    if not self._center_visual_target(
-                            tolerance=self.parking_recenter_tolerance,
-                            timeout=self.parking_recenter_timeout,
-                            state="parking_recenter",
-                            failure_state=(
-                                "parking_obstacle_blocked"
-                                if recovery_attempts > 0
-                                else "parking_recenter_failed")):
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    # A completed close-range recenter may refine the tangent.
-                    goal = self.compute_vision_goal()
-                    if goal is None:
-                        self._publish_status(
-                            "parking_obstacle_blocked"
-                            if recovery_attempts > 0
-                            else "parking_recenter_failed")
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    gx, gy, gyaw = goal
-                    staging_goal = self.compute_staging_goal()
-                    if staging_goal is None:
-                        self._publish_status(
-                            "parking_obstacle_blocked"
-                            if recovery_attempts > 0
-                            else "parking_recenter_failed")
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                else:
-                    if recovery_attempts > 0:
-                        self.parking_failure_status = (
-                            "parking_obstacle_blocked")
-                        self._publish_status(self.parking_failure_status)
-                        rospy.logerr(
-                            "[vision_triggered_navigator] staging recovery "
-                            "did not reacquire a fresh target; safe stop.")
-                        self._hold_stopped(self.arrival_hold_sec)
-                        break
-                    self._publish_status("parking_recenter_skipped")
-                    rospy.logwarn(
-                        "[vision_triggered_navigator] 预停后%.1fs内无新OCR目标框；保留首次锁定的墙段/切向目标，继续实墙停泊.",
-                        self.parking_recenter_initial_wait)
                 docking_ok = False
                 while not rospy.is_shutdown():
-                    self._publish_status("parking_wall_aligning")
-                    if self._run_parking_docking(
-                            (gx, gy, gyaw), recovery_attempts):
+                    if (self._align_to_parking_wall(
+                            (gx, gy, gyaw), recovery_attempts) and
+                            self._run_parking_docking(
+                                (gx, gy, gyaw), recovery_attempts)):
                         docking_ok = True
                         break
-                    if self.parking_failure_status != "parking_recovery_required":
+                    if (self.parking_failure_status !=
+                            "parking_recovery_required"):
+                        break
+                    if recovery_attempts >= self.parking_recovery_retry_count:
+                        self.parking_failure_status = "parking_obstacle_blocked"
+                        self._publish_status(self.parking_failure_status)
                         break
                     recovery_attempts += 1
-                    if not self._recover_parking_to_staging(staging_goal):
+                    if not self._recover_parking_to_staging():
                         self.parking_failure_status = "parking_obstacle_blocked"
                         self._publish_status(self.parking_failure_status)
                         rospy.logerr(
-                            "[vision_triggered_navigator] parking recovery "
-                            "could not reach a safe staging pose.")
+                            "[vision_triggered_navigator] one permitted "
+                            "obstacle recovery could not safely reach %.2fm.",
+                            self.parking_staging_offset)
                         break
                     self._publish_status("parking_recovery_reacquiring")
-                    if not self._wait_for_initial_recenter_target():
+                    if (not self._wait_for_initial_recenter_target() or
+                            not self._center_visual_target(
+                                tolerance=self.parking_recenter_tolerance,
+                                timeout=self.parking_recenter_timeout,
+                                state="parking_recovery_recenter",
+                                failure_state="parking_obstacle_blocked")):
                         self.parking_failure_status = "parking_obstacle_blocked"
                         self._publish_status(self.parking_failure_status)
-                        rospy.logerr(
-                            "[vision_triggered_navigator] parking recovery "
-                            "did not reacquire a fresh target; safe stop.")
-                        break
-                    if not self._center_visual_target(
-                            tolerance=self.parking_recenter_tolerance,
-                            timeout=self.parking_recenter_timeout,
-                            state="parking_recovery_recenter",
-                            failure_state="parking_obstacle_blocked"):
-                        self.parking_failure_status = "parking_obstacle_blocked"
                         break
                     refreshed_goal = self.compute_vision_goal()
-                    refreshed_staging = self.compute_staging_goal()
-                    if refreshed_goal is None or refreshed_staging is None:
+                    if refreshed_goal is None:
                         self.parking_failure_status = "parking_obstacle_blocked"
                         self._publish_status(self.parking_failure_status)
                         break
                     gx, gy, gyaw = refreshed_goal
-                    staging_goal = refreshed_staging
-                    if not self._navigate_to_parking_staging(staging_goal):
-                        self.parking_failure_status = "parking_obstacle_blocked"
-                        self._publish_status(self.parking_failure_status)
-                        break
                 if not docking_ok:
                     self._publish_status(self.parking_failure_status)
                     self._hold_stopped(self.arrival_hold_sec)

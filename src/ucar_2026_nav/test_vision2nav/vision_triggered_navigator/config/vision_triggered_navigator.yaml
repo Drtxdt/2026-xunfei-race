@@ -121,7 +121,7 @@ target_center_reverse_threshold: 0.03
 target_center_min_clearance: 0.23
 odom_topic: /odom
 odom_stale_sec: 0.5
-camera_boresight_yaw_offset: 0.0
+camera_boresight_yaw_offset: 0.292
 arrival_hold_sec: 0.6
 
 # 任务2完整模式覆盖这些参数；独立导航默认维持原0.4m目标且不做50cm框验证。
@@ -130,25 +130,8 @@ parking_box_width: 0.50
 parking_box_depth: 0.50
 parking_goal_offset: 0.26
 parking_staging_offset: 0.55
-parking_staging_timeout_sec: 20.0
-# 射线落在角点车体切向净空内时，在两墙内法向各0.45m处做局部视差复核。
-# 该距离仍大于实测车体旋转半径0.215m与20mm安全余量之和。
-# 在两条相邻墙的离角方向中选择距首次观测位置更远的0.25m候选，防止零基线退化。
-parking_corner_min_tangent_clearance: 0.16
-parking_corner_observation_offset: 0.45
-parking_corner_parallax_offset: 0.25
-parking_corner_observation_timeout_sec: 15.0
-parking_staging_position_tolerance: 0.10
-parking_staging_yaw_tolerance: 0.10
-parking_staging_normal_tolerance: 0.08
-parking_staging_tangent_tolerance: 0.04
-parking_staging_axis_yaw_tolerance: 0.08
-parking_staging_refine_timeout_sec: 8.0
-parking_staging_success_position_tolerance: 0.15
-parking_staging_success_yaw_tolerance: 0.12
-parking_staging_watchdog_window_sec: 2.0
-parking_staging_min_progress: 0.03
-parking_staging_max_rotation_deg: 45.0
+# 校准光轴命中点过于靠近墙端时只安全停止，不再移动复观测。
+parking_endpoint_min_clearance: 0.16
 parking_docking_timeout_sec: 30.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06

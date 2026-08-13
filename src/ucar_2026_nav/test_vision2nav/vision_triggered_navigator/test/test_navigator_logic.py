@@ -15,7 +15,6 @@ if SCRIPTS not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
-    corner_observation_pose,
     center_angular_command,
     center_step_angle,
     coverage_motion_is_rotation_stall,
@@ -37,6 +36,7 @@ from navigator_logic import (
     latch_trigger,
     lidar_base_wall_distance,
     lidar_requires_stop,
+    nearest_wall_hit,
     normalize_angle,
     obstacle_clearance_requires_stop,
     parking_footprint_margins,
@@ -47,6 +47,7 @@ from navigator_logic import (
     parking_rotation_obstacle_clearance,
     polar_sector_min,
     ray_segment_intersection,
+    recovery_rear_distance,
     rotation_clearance_allows_near_wall,
     rotation_clearance_consensus,
     rotation_clearance_is_safe,
@@ -300,14 +301,9 @@ def test_swept_footprint_parameters_are_wired_through_launch():
     assert config["parking_recovery_retry_count"] == 1
     assert config["parking_diagnostics_topic"] == (
         "/vision_triggered_navigator/parking_diagnostics")
-    assert math.isclose(config["parking_staging_normal_tolerance"], 0.08)
-    assert math.isclose(config["parking_staging_tangent_tolerance"], 0.04)
-    assert math.isclose(
-        config["parking_corner_min_tangent_clearance"], 0.16)
-    assert math.isclose(config["parking_corner_observation_offset"], 0.45)
-    assert math.isclose(config["parking_corner_parallax_offset"], 0.25)
-    assert math.isclose(
-        config["parking_corner_observation_timeout_sec"], 15.0)
+    assert math.isclose(config["camera_boresight_yaw_offset"], 0.292)
+    assert math.isclose(config["parking_endpoint_min_clearance"], 0.16)
+    assert math.isclose(config["parking_staging_offset"], 0.55)
 
     root = ET.parse(os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
@@ -317,13 +313,8 @@ def test_swept_footprint_parameters_are_wired_through_launch():
         for item in root.find("node").findall("param")
     }
     for name in (
-            "parking_staging_normal_tolerance",
-            "parking_staging_tangent_tolerance",
-            "parking_staging_axis_yaw_tolerance",
-            "parking_corner_min_tangent_clearance",
-            "parking_corner_observation_offset",
-            "parking_corner_parallax_offset",
-            "parking_corner_observation_timeout_sec",
+            "parking_staging_offset",
+            "parking_endpoint_min_clearance",
             "parking_obstacle_required_scans",
             "parking_recovery_retry_count",
             "parking_diagnostics_topic"):
@@ -345,129 +336,38 @@ def test_adjacent_wall_near_points_outside_sweep_are_allowed():
     assert not lateral["blocked"]
 
 
-def test_logged_corner_hit_requires_safe_asymmetric_reobservation():
+def test_logged_boresight_calibration_resolves_right_wall_box_center():
     walls = build_quadrilateral_walls(MEASURED_CORNERS)
-    observation = corner_observation_pose(
-        walls,
-        "right",
-        (2.7750, -3.1322),
-        minimum_tangent_clearance=0.16,
-        inward_offset=0.45,
-        parallax_offset=0.25,
-        observer_position=(2.3309, -2.7979),
+    observations = (
+        ((2.3344, -2.7581), -0.7420),
+        ((2.0986, -2.7616), -0.5815),
     )
-    assert observation is not None
-    assert observation["wall"] == "right"
-    assert observation["adjacent_wall"] == "bottom"
-    assert observation["tangent_clearance"] < 0.09
-
-    # The 20:50 run proves that the symmetric 0.45m pose was only 3.5cm from
-    # the trigger origin and produced a second ray at the exact same corner.
-    # The new pose adds a deliberate 0.25m baseline along the selected wall.
-    logged_pose = (2.3309, -2.7979, -0.6650)
-    new_pose = observation["pose"]
-    symmetric_pose = corner_observation_pose(
-        walls, "right", (2.7750, -3.1322), 0.16, 0.45, 0.0)["pose"]
+    corrected = []
+    for origin, base_yaw in observations:
+        zero = nearest_wall_hit(walls, origin, base_yaw)
+        assert zero["endpoint_clearance"] < 0.06
+        hit = nearest_wall_hit(walls, origin, base_yaw + 0.292)
+        assert hit["wall"] == "right"
+        assert math.isclose(hit["point"][1], -2.97, abs_tol=0.01)
+        assert 0.24 < hit["endpoint_clearance"] < 0.26
+        corrected.append(hit["point"])
     assert math.hypot(
-        new_pose[0] - logged_pose[0],
-        new_pose[1] - logged_pose[1]) > 0.20
-    assert math.hypot(
-        symmetric_pose[0] - logged_pose[0],
-        symmetric_pose[1] - logged_pose[1]) < 0.06
-    assert math.isclose(observation["parallax_offset"], 0.25)
-    assert observation["planned_baseline"] > 0.20
-    assert observation["parallax_wall"] == "right"
-
-    # The log's old right-wall staging centre was only about 9.4cm from the
-    # bottom wall, less than the 12.8cm half-width before costmap padding.
-    right = next(wall for wall in walls if wall[0] == "right")
-    bottom = next(wall for wall in walls if wall[0] == "bottom")
-    old_staging = parking_goal_from_wall(
-        (2.7750, -3.1322), right[3], 0.55)
-    bottom_distance = abs(
-        (old_staging[0] - bottom[1][0]) * bottom[3][0] +
-        (old_staging[1] - bottom[1][1]) * bottom[3][1])
-    assert bottom_distance < 0.128
-
-    # It remains about 0.45m from the selected wall while moving farther from
-    # the adjacent wall, so the 0.25m baseline does not consume wall safety.
-    ox, oy, _yaw = observation["pose"]
-    corner = observation["corner"]
-    assert ((ox - corner[0]) * right[3][0] +
-            (oy - corner[1]) * right[3][1]) > 0.44
-    assert ((ox - corner[0]) * bottom[3][0] +
-            (oy - corner[1]) * bottom[3][1]) > 0.68
-
-    # If the robot already occupies that first asymmetric candidate, choose
-    # the other incident wall instead of silently collapsing the baseline.
-    alternative = corner_observation_pose(
-        walls, "right", (2.7750, -3.1322), 0.16, 0.45, 0.25,
-        observer_position=(ox, oy))
-    assert alternative["parallax_wall"] == "bottom"
-    assert alternative["planned_baseline"] > 0.34
-
-    def resolved_wall_for(target):
-        length = math.hypot(target[0] - ox, target[1] - oy)
-        direction = ((target[0] - ox) / length, (target[1] - oy) / length)
-        hits = []
-        for wall in walls:
-            distance = ray_segment_intersection(
-                (ox, oy), direction, wall[1], wall[2])
-            if distance is not None:
-                hits.append((distance, wall))
-        _distance, resolved = min(hits, key=lambda item: item[0])
-        hit = (ox + _distance * direction[0],
-               oy + _distance * direction[1])
-        return resolved, hit
-
-    # From the bisector pose, a sign one half-panel from the corner resolves
-    # to its actual wall in either legal layout instead of whichever boundary
-    # happened to be crossed first from the old diagonal pose.
-    for expected in (right, bottom):
-        endpoint = expected[1]
-        if math.hypot(endpoint[0] - corner[0],
-                      endpoint[1] - corner[1]) <= 1e-6:
-            endpoint = expected[2]
-        length = math.hypot(endpoint[0] - corner[0],
-                            endpoint[1] - corner[1])
-        target = (
-            corner[0] + 0.25 * (endpoint[0] - corner[0]) / length,
-            corner[1] + 0.25 * (endpoint[1] - corner[1]) / length,
-        )
-        resolved, hit = resolved_wall_for(target)
-        assert resolved[0] == expected[0]
-        assert corner_observation_pose(
-            walls, resolved[0], hit, 0.16, 0.45, 0.25) is None
+        corrected[0][0] - corrected[1][0],
+        corrected[0][1] - corrected[1][1]) < 0.02
 
 
-def test_wall_hit_with_vehicle_tangent_clearance_needs_no_reobservation():
-    walls = build_quadrilateral_walls(MEASURED_CORNERS)
-    assert corner_observation_pose(
-        walls, "right", (2.78, -2.95), 0.16, 0.45) is None
-
-
-def test_corner_reobservation_uses_local_swept_control_not_move_base():
+def test_corner_endpoint_guard_stops_without_reobservation_motion():
     package_dir = os.path.abspath(os.path.join(
         os.path.dirname(__file__), ".."))
     source_path = os.path.join(
         package_dir, "scripts", "vision_triggered_navigator.py")
     with open(source_path, "r", encoding="utf-8") as stream:
         source = stream.read()
-    start = source.index("    def _navigate_to_corner_observation")
-    end = source.index("    def _resolve_corner_ambiguity", start)
-    method = source[start:end]
-    assert ".send_goal(" not in method
-    assert "_parking_sweep_diagnostics" in method
-    assert "parking_corner_sweep_blocked" in method
-
-    assignment_start = source.index(
-        "        self.parking_corner_observation_offset = max(")
-    assignment_end = source.index(
-        "        self.parking_corner_observation_timeout", assignment_start)
-    assignment = source[assignment_start:assignment_end]
-    assert "self.parking_staging_offset" not in assignment
-    assert "math.hypot(" in assignment
-    assert "self.parking_required_margin" in assignment
+    assert "parking_geometry_invalid" in source
+    assert "parking_endpoint_min_clearance" in source
+    assert "corner_observation_pose" not in source
+    assert "parking_corner_" not in source
+    assert "_navigate_to_corner_observation" not in source
 
 
 def test_cone_inside_rotation_lateral_or_reverse_sweep_is_blocked():
@@ -503,6 +403,17 @@ def test_parking_obstacle_recovery_runs_once_then_fails_safe():
     assert parking_obstacle_action(2, 1, 2, 1) == "fail"
 
 
+def test_recovery_sweep_accounts_for_unaligned_wall_projection():
+    perpendicular_error = -0.29
+    rear = recovery_rear_distance(
+        perpendicular_error, math.radians(42.0))
+    assert rear < perpendicular_error
+    assert math.isclose(
+        rear, perpendicular_error / math.cos(math.radians(42.0)))
+    assert recovery_rear_distance(
+        perpendicular_error, math.radians(80.0)) is None
+
+
 def test_normal_docking_path_uses_sweep_not_legacy_fixed_clearance():
     script_path = os.path.abspath(os.path.join(
         os.path.dirname(__file__), "..", "scripts",
@@ -524,6 +435,67 @@ def test_normal_docking_path_uses_sweep_not_legacy_fixed_clearance():
     }
     assert "_parking_sweep_diagnostics" in calls
     assert "_parking_command_clearance" not in calls
+
+
+def test_normal_parking_has_no_staging_navigation_and_rejects_reverse():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    assert "def _navigate_to_parking_staging" not in source
+    assert "compute_staging_goal" not in source
+    assert "parking_wall_coarse_aligning" in source
+    assert "parking_reverse_rejected" in source
+
+    run_start = source.index("    def run(self):")
+    run_source = source[run_start:]
+    assert run_source.index("_align_to_parking_wall(") < run_source.index(
+        "_run_parking_docking(")
+
+    docking_start = source.index("    def _run_parking_docking")
+    docking_source = source[docking_start:run_start]
+    assert "if command[0] < -1e-9:" in docking_source
+    assert docking_source.index("parking_reverse_rejected") < (
+        docking_source.index("twist.linear.x, twist.linear.y"))
+
+    recovery_start = source.index("    def _recover_parking_to_staging")
+    recovery_source = source[recovery_start:docking_start]
+    assert "command = (-self.parking_recovery_reverse_speed" in recovery_source
+    assert "twist.linear.x = command[0]" in recovery_source
+
+
+def test_boresight_and_endpoint_guard_are_wired_through_launch():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "config", "vision_triggered_navigator.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    assert math.isclose(config["camera_boresight_yaw_offset"], 0.292)
+    assert math.isclose(config["parking_endpoint_min_clearance"], 0.16)
+
+    root = ET.parse(os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
+    launch_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    node_params = {
+        item.attrib["name"]: item.attrib.get("value")
+        for item in root.find("node").findall("param")
+    }
+    assert launch_args["camera_boresight_yaw_offset"] == "0.292"
+    assert launch_args["parking_endpoint_min_clearance"] == "0.16"
+    assert node_params["parking_endpoint_min_clearance"] == (
+        "$(arg parking_endpoint_min_clearance)")
+    for legacy in (
+            "parking_corner_min_tangent_clearance",
+            "parking_corner_observation_offset",
+            "parking_corner_parallax_offset",
+            "parking_corner_observation_timeout_sec"):
+        assert legacy not in launch_args
 
 
 def test_parking_rotation_filters_logged_wall_return_beyond_front_sector():

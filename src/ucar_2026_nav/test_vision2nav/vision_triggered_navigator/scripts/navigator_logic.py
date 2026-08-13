@@ -168,6 +168,15 @@ def parking_obstacle_action(consecutive_blocks, recovery_attempts,
     return "fail"
 
 
+def recovery_rear_distance(wall_distance_error, wall_normal_angle,
+                           minimum_projection=0.30):
+    """Convert perpendicular wall error to required base-frame rear travel."""
+    projection = math.cos(float(wall_normal_angle))
+    if projection <= abs(float(minimum_projection)):
+        return None
+    return float(wall_distance_error) / projection
+
+
 def coverage_speed_profile(clearance, current_profile,
                            caution_enter_clearance,
                            caution_exit_clearance,
@@ -393,122 +402,6 @@ def build_quadrilateral_walls(corners):
     return walls
 
 
-def corner_observation_pose(walls, wall_name, wall_point,
-                            minimum_tangent_clearance,
-                            inward_offset,
-                            parallax_offset=0.0,
-                            observer_position=None):
-    """Return a safe asymmetric observation pose for a corner-ambiguous hit.
-
-    A centred camera ray may cross the neighbouring wall first when a tall
-    sign is mounted on the first panel beside a corner.  Such a hit is unsafe
-    to use as a parking centre when its tangent distance to the corner is
-    smaller than the robot half-width plus margin.  A point on the corner
-    bisector is geometrically degenerate: when the robot is already on that
-    bisector it produces almost no baseline and a second centred ray can hit
-    the exact same corner.  Keep the requested clearance from both walls,
-    then move along either incident wall *away* from the corner to create a
-    deterministic parallax baseline before looking back at the corner.  When
-    the first ray origin is known, choose the farther of the two safe
-    candidates so an already-offset vehicle cannot collapse the baseline.
-
-    ``walls`` uses the tuples returned by :func:`build_quadrilateral_walls`.
-    ``None`` means the hit has sufficient endpoint clearance (or the wall has
-    no adjacent segment, which cannot happen for the arena quadrilateral).
-    """
-    minimum = max(0.0, float(minimum_tangent_clearance))
-    offset = max(0.0, float(inward_offset))
-    parallax = max(0.0, float(parallax_offset))
-    point = (float(wall_point[0]), float(wall_point[1]))
-    selected = None
-    for wall in walls:
-        if wall[0] == wall_name:
-            selected = wall
-            break
-    if selected is None:
-        return None
-
-    _name, start, end, normal = selected
-    endpoints = (start, end)
-    distances = [math.hypot(point[0] - endpoint[0],
-                            point[1] - endpoint[1])
-                 for endpoint in endpoints]
-    endpoint_index = 0 if distances[0] <= distances[1] else 1
-    tangent_clearance = distances[endpoint_index]
-    if tangent_clearance + 1e-9 >= minimum:
-        return None
-
-    corner = endpoints[endpoint_index]
-    adjacent = None
-    for candidate in walls:
-        if candidate[0] == wall_name:
-            continue
-        if any(math.hypot(corner[0] - endpoint[0],
-                          corner[1] - endpoint[1]) <= 1e-6
-               for endpoint in (candidate[1], candidate[2])):
-            adjacent = candidate
-            break
-    if adjacent is None:
-        return None
-
-    adjacent_normal = adjacent[3]
-    base_x = corner[0] + offset * normal[0] + offset * adjacent_normal[0]
-    base_y = corner[1] + offset * normal[1] + offset * adjacent_normal[1]
-
-    directions = []
-    for candidate in (selected, adjacent):
-        candidate_endpoints = (candidate[1], candidate[2])
-        away_endpoint = max(
-            candidate_endpoints,
-            key=lambda endpoint: math.hypot(
-                endpoint[0] - corner[0], endpoint[1] - corner[1]))
-        away_x = away_endpoint[0] - corner[0]
-        away_y = away_endpoint[1] - corner[1]
-        away_length = math.hypot(away_x, away_y)
-        if away_length <= 1e-9:
-            continue
-        away_x /= away_length
-        away_y /= away_length
-        directions.append((candidate[0], away_x, away_y))
-    if not directions:
-        return None
-
-    source = None
-    if observer_position is not None:
-        source = (float(observer_position[0]), float(observer_position[1]))
-
-    candidates = []
-    for candidate_wall, away_x, away_y in directions:
-        candidate_x = base_x + parallax * away_x
-        candidate_y = base_y + parallax * away_y
-        baseline = (None if source is None else math.hypot(
-            candidate_x - source[0], candidate_y - source[1]))
-        candidates.append({
-            "wall": candidate_wall,
-            "direction": (away_x, away_y),
-            "point": (candidate_x, candidate_y),
-            "baseline": baseline,
-        })
-    chosen = (max(candidates, key=lambda candidate: candidate["baseline"])
-              if source is not None else candidates[0])
-    observation_x, observation_y = chosen["point"]
-    observation_yaw = math.atan2(
-        corner[1] - observation_y, corner[0] - observation_x)
-    return {
-        "wall": wall_name,
-        "adjacent_wall": adjacent[0],
-        "corner": (float(corner[0]), float(corner[1])),
-        "tangent_clearance": tangent_clearance,
-        "minimum_tangent_clearance": minimum,
-        "parallax_offset": parallax,
-        "parallax_wall": chosen["wall"],
-        "parallax_direction": chosen["direction"],
-        "source_position": source,
-        "planned_baseline": chosen["baseline"],
-        "pose": (observation_x, observation_y, observation_yaw),
-    }
-
-
 def ray_segment_intersection(origin, direction, start, end):
     """Return positive ray parameter ``t`` for a 2-D segment intersection."""
     ox, oy = [float(value) for value in origin]
@@ -527,6 +420,35 @@ def ray_segment_intersection(origin, direction, start, end):
     if ray_t <= 1e-9 or segment_u < -1e-6 or segment_u > 1.0 + 1e-6:
         return None
     return ray_t
+
+
+def nearest_wall_hit(walls, origin, ray_yaw):
+    """Return the nearest measured wall hit and endpoint clearance."""
+    ox, oy = [float(value) for value in origin]
+    direction = (math.cos(float(ray_yaw)), math.sin(float(ray_yaw)))
+    best = None
+    for wall_name, start, end, normal in walls:
+        distance = ray_segment_intersection(
+            (ox, oy), direction, start, end)
+        if distance is None:
+            continue
+        if best is not None and distance >= best["distance"]:
+            continue
+        point = (
+            ox + distance * direction[0],
+            oy + distance * direction[1],
+        )
+        best = {
+            "wall": wall_name,
+            "point": point,
+            "normal": normal,
+            "distance": distance,
+            "endpoint_clearance": min(
+                math.hypot(point[0] - endpoint[0],
+                           point[1] - endpoint[1])
+                for endpoint in (start, end)),
+        }
+    return best
 
 
 def parking_goal_from_wall(wall_point, inward_normal, offset,

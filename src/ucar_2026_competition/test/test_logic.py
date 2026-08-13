@@ -119,10 +119,8 @@ class CompetitionLogicTest(unittest.TestCase):
             'factory_navigation_start_service: '
             '"/vision_triggered_navigator/start_navigation"', config)
         self.assertIn("coverage_goal_retry_count: 1", config)
-        self.assertIn("parking_corner_min_tangent_clearance: 0.16", config)
-        self.assertIn("parking_corner_observation_offset: 0.45", config)
-        self.assertIn("parking_corner_parallax_offset: 0.25", config)
-        self.assertIn("parking_corner_observation_timeout_sec: 15.0", config)
+        self.assertIn("camera_boresight_yaw_offset: 0.292", config)
+        self.assertIn("parking_endpoint_min_clearance: 0.16", config)
         self.assertNotIn("coverage_failed_revisit_limit", config)
 
         launch_path = os.path.abspath(os.path.join(
@@ -141,12 +139,24 @@ class CompetitionLogicTest(unittest.TestCase):
                 ("factory_navigation_start_service",
                  "/vision_triggered_navigator/start_navigation"),
                 ("coverage_goal_retry_count", "1"),
-                ("parking_corner_min_tangent_clearance", "0.16"),
-                ("parking_corner_observation_offset", "0.45"),
-                ("parking_corner_parallax_offset", "0.25"),
-                ("parking_corner_observation_timeout_sec", "15.0")):
+                ("camera_boresight_yaw_offset", "0.292"),
+                ("parking_endpoint_min_clearance", "0.16")):
             self.assertEqual(launch_args[name], default)
             self.assertEqual(node_params[name], "$(arg {})".format(name))
+
+    def test_task2_handles_new_parking_safety_terminal_states(self):
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts",
+            "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            source = stream.read()
+        for state in (
+                "parking_geometry_invalid",
+                "parking_wall_align_failed",
+                "parking_reverse_rejected",
+                "parking_obstacle_blocked"):
+            self.assertIn('"{}"'.format(state), source)
+        self.assertNotIn('"parking_corner_unresolved"', source)
 
     def test_turn_track_startup_forward_is_exactly_five_centimeters_shorter(self):
         package_dir = os.path.abspath(os.path.join(
