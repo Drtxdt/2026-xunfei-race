@@ -54,6 +54,7 @@ from ucar_2026_competition.logic import (
     task2_ocr_observations,
     task2_resumed_coverage_hint,
     task2_prewarm_reusable,
+    task2_target_update_is_publishable,
     task2_target_trigger_is_eligible,
     task4_handoff_required,
     task4_start_action,
@@ -664,7 +665,11 @@ class CompetitionFlow:
                 non_target_event["score"],
                 non_target_event["area_ratio"],
             )
-        if category == self.ocr_target and target_trigger_eligible:
+        target_update_publishable = task2_target_update_is_publishable(
+                category == self.ocr_target,
+                target_trigger_eligible,
+                self.vision_trigger_latched)
+        if target_update_publishable:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
             self.ocr_target,
@@ -674,7 +679,8 @@ class CompetitionFlow:
         rospy.loginfo_throttle(
             0.5,
             "task2 OCR filter: target=%s observed=%s hits=%d/%d "
-            "bbox=%s close=%s anchor=%s trigger_eligible=%s bbox_ratio=%s",
+            "bbox=%s close=%s anchor=%s trigger_eligible=%s "
+            "tracking_forwarded=%s bbox_ratio=%s",
             self.ocr_target,
             category or "none",
             self.ocr_filter.hit_count,
@@ -683,6 +689,7 @@ class CompetitionFlow:
             trigger_eligible,
             active_anchor or "transit",
             target_trigger_eligible,
+            target_update_publishable,
             ("%.3f/%.3f/%.4f" % bbox_ratios
              if bbox_ratios is not None else "invalid"),
         )
@@ -1979,7 +1986,7 @@ class CompetitionFlow:
             "parking_staging_offset": 0.55,
             "parking_staging_timeout_sec": 20.0,
             "parking_corner_min_tangent_clearance": 0.16,
-            "parking_corner_observation_offset": 0.70,
+            "parking_corner_observation_offset": 0.45,
             "parking_corner_observation_timeout_sec": 15.0,
             "parking_staging_position_tolerance": 0.10,
             "parking_staging_yaw_tolerance": 0.10,

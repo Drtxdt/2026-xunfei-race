@@ -470,9 +470,11 @@ class VisionTriggeredNavigator(object):
             abs(float(rospy.get_param(
                 "~parking_corner_min_tangent_clearance", 0.16))))
         self.parking_corner_observation_offset = max(
-            self.parking_staging_offset,
+            math.hypot(
+                self.footprint_half_length,
+                self.footprint_half_width) + self.parking_required_margin,
             abs(float(rospy.get_param(
-                "~parking_corner_observation_offset", 0.70))))
+                "~parking_corner_observation_offset", 0.45))))
         self.parking_corner_observation_timeout = max(
             1.0, float(rospy.get_param(
                 "~parking_corner_observation_timeout_sec", 15.0)))
@@ -2181,7 +2183,7 @@ class VisionTriggeredNavigator(object):
         return False
 
     def _wait_for_initial_recenter_target(self):
-        """Wait briefly for a *new* close-range OCR box before recentering."""
+        """Wait briefly for a new target box before visual recentering."""
         previous_stamp = self.target_payload_at
         deadline = rospy.get_time() + self.parking_recenter_initial_wait
         rate = rospy.Rate(20)
@@ -2390,7 +2392,14 @@ class VisionTriggeredNavigator(object):
             self.parking_staging_axis_yaw_tolerance)
 
     def _navigate_to_corner_observation(self, observation):
-        """Use move_base to reach a collision-free corner re-observation pose."""
+        """Reach the nearby corner-parallax pose with swept-body control.
+
+        This pose is intentionally local.  Sending it through ``move_base``
+        allowed the global/local planner to make a conspicuous reverse arc
+        around the corner even when the required displacement was small.
+        Reuse the parking controller's rotate/lateral/normal phase ordering
+        and scan envelope so the manoeuvre stays bounded and observable.
+        """
         x, y, yaw = [float(value) for value in observation["pose"]]
         rospy.logwarn(
             "[vision_triggered_navigator] corner wall is ambiguous "
@@ -2400,44 +2409,85 @@ class VisionTriggeredNavigator(object):
             observation["tangent_clearance"],
             observation["minimum_tangent_clearance"], x, y, yaw)
         self._publish_status("parking_corner_reobserving")
-        self.move_base_client.send_goal(self._make_move_base_goal(x, y, yaw))
+        if not self._wait_navigation_idle(timeout=2.0):
+            rospy.logerr(
+                "[vision_triggered_navigator] parking_corner_unresolved: "
+                "move_base did not release control before local re-observation.")
+            return False
+
         deadline = rospy.get_time() + self.parking_corner_observation_timeout
-        reached = False
-        failure_reason = ""
+        stable_since = None
+        blocked_scan_count = 0
+        last_safety_scan_at = 0.0
+        normal_tolerance = 0.025
+        tangent_tolerance = 0.025
+        yaw_tolerance = 0.05
         rate = rospy.Rate(20)
         while not rospy.is_shutdown() and rospy.get_time() < deadline:
             pose = self._get_robot_pose(self.base_frame)
-            if pose is not None:
-                distance = math.hypot(x - pose[0], y - pose[1])
-                yaw_error = abs(normalize_angle(yaw - pose[2]))
-                if distance <= 0.10 and yaw_error <= 0.15:
-                    reached = True
-                    break
-            state = self.move_base_client.get_state()
-            if state == actionlib.GoalStatus.SUCCEEDED:
-                reached = True
-                break
-            if state not in [actionlib.GoalStatus.PENDING,
-                             actionlib.GoalStatus.ACTIVE]:
-                failure_reason = "move_base state={}".format(state)
-                break
+            if pose is None or not sensor_is_fresh(
+                    self.scan_received_at, rospy.get_time(), self.scan_stale):
+                self.cmd_vel_pub.publish(Twist())
+                rospy.logerr(
+                    "[vision_triggered_navigator] parking_corner_unresolved: "
+                    "pose or laser scan became stale during local re-observation.")
+                return False
+            errors = wall_frame_pose_errors(pose, (x, y, yaw))
+            if staging_wall_frame_accepted(
+                    errors[0], errors[1], errors[2],
+                    normal_tolerance, tangent_tolerance, yaw_tolerance):
+                self.cmd_vel_pub.publish(Twist())
+                if stable_since is None:
+                    stable_since = rospy.get_time()
+                elif rospy.get_time() - stable_since >= 0.2:
+                    rospy.loginfo(
+                        "[vision_triggered_navigator] corner observation "
+                        "reached locally errors=(normal=%+.3f tangent=%+.3f "
+                        "yaw=%+.3f).", errors[0], errors[1], errors[2])
+                    self._publish_status("parking_corner_observation_reached")
+                    return True
+                rate.sleep()
+                continue
+            stable_since = None
+            command = wall_frame_docking_command(
+                errors[0], errors[1], errors[2],
+                normal_tolerance, tangent_tolerance, yaw_tolerance,
+                min(self.parking_dock_max_x, 0.06),
+                min(self.parking_dock_max_y, 0.05),
+                min(self.parking_dock_max_yaw, 0.20),
+                min(self.parking_dock_min_yaw, 0.15),
+            )
+            sweep = self._parking_sweep_diagnostics(command, errors)
+            if sweep["blocked"]:
+                self.cmd_vel_pub.publish(Twist())
+                if self.scan_received_at > last_safety_scan_at:
+                    blocked_scan_count += 1
+                    last_safety_scan_at = self.scan_received_at
+                self._publish_parking_diagnostics(
+                    "parking_corner_sweep_blocked", sweep, errors,
+                    blocked_scan_count, 0)
+                if blocked_scan_count >= self.parking_obstacle_required_scans:
+                    rospy.logerr(
+                        "[vision_triggered_navigator] "
+                        "parking_corner_unresolved: local %s sweep blocked "
+                        "by point=%s bounds=%s radius=%s.",
+                        sweep["phase"], sweep["point"], sweep.get("bounds"),
+                        sweep.get("radius"))
+                    return False
+                rate.sleep()
+                continue
+            if self.scan_received_at > last_safety_scan_at:
+                blocked_scan_count = 0
+                last_safety_scan_at = self.scan_received_at
+            twist = Twist()
+            twist.linear.x, twist.linear.y, twist.angular.z = command
+            self.cmd_vel_pub.publish(twist)
             rate.sleep()
-        else:
-            failure_reason = "timeout {:.1f}s".format(
-                self.parking_corner_observation_timeout)
-
-        if self.move_base_client.get_state() in [
-                actionlib.GoalStatus.PENDING, actionlib.GoalStatus.ACTIVE]:
-            self.move_base_client.cancel_goal()
-        idle = self._wait_navigation_idle(timeout=2.0)
         self.cmd_vel_pub.publish(Twist())
-        if reached and idle:
-            self._publish_status("parking_corner_observation_reached")
-            return True
         rospy.logerr(
             "[vision_triggered_navigator] parking_corner_unresolved: "
-            "cannot reach safe observation pose (%s).",
-            failure_reason or "move_base did not release control")
+            "local observation exceeded %.1fs.",
+            self.parking_corner_observation_timeout)
         return False
 
     def _resolve_corner_ambiguity(self):

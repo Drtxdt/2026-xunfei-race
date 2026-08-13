@@ -36,6 +36,7 @@ from ucar_2026_competition.logic import (
     task2_ocr_observations,
     task2_prewarm_reusable,
     task2_resumed_coverage_hint,
+    task2_target_update_is_publishable,
     task2_target_trigger_is_eligible,
     task2_semantic_coverage_hint,
     task4_handoff_required,
@@ -119,7 +120,7 @@ class CompetitionLogicTest(unittest.TestCase):
             '"/vision_triggered_navigator/start_navigation"', config)
         self.assertIn("coverage_goal_retry_count: 1", config)
         self.assertIn("parking_corner_min_tangent_clearance: 0.16", config)
-        self.assertIn("parking_corner_observation_offset: 0.70", config)
+        self.assertIn("parking_corner_observation_offset: 0.45", config)
         self.assertIn("parking_corner_observation_timeout_sec: 15.0", config)
         self.assertNotIn("coverage_failed_revisit_limit", config)
 
@@ -140,7 +141,7 @@ class CompetitionLogicTest(unittest.TestCase):
                  "/vision_triggered_navigator/start_navigation"),
                 ("coverage_goal_retry_count", "1"),
                 ("parking_corner_min_tangent_clearance", "0.16"),
-                ("parking_corner_observation_offset", "0.70"),
+                ("parking_corner_observation_offset", "0.45"),
                 ("parking_corner_observation_timeout_sec", "15.0")):
             self.assertEqual(launch_args[name], default)
             self.assertEqual(node_params[name], "$(arg {})".format(name))
@@ -323,6 +324,19 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(task2_target_trigger_is_eligible(True, None))
         self.assertFalse(task2_target_trigger_is_eligible(True, 0))
         self.assertFalse(task2_target_trigger_is_eligible(False, 9))
+
+    def test_latched_target_keeps_small_reobservation_boxes_flowing(self):
+        # Reproduces 20:26:58: food was recognised repeatedly at the corner
+        # observation pose, but 0.159/0.037/0.0059 was below the initial
+        # close-box gate.  A latched navigator still needs those frames.
+        self.assertTrue(task2_target_update_is_publishable(
+            True, False, True))
+        self.assertTrue(task2_target_update_is_publishable(
+            True, True, False))
+        self.assertFalse(task2_target_update_is_publishable(
+            True, False, False))
+        self.assertFalse(task2_target_update_is_publishable(
+            False, True, True))
 
     def test_task2_semantic_memory_prioritizes_only_positive_target_evidence(self):
         memory = {

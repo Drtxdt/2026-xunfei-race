@@ -238,6 +238,21 @@ def task2_target_trigger_is_eligible(bbox_is_close, active_anchor):
         return False
 
 
+def task2_target_update_is_publishable(category_matches,
+                                       trigger_eligible,
+                                       trigger_latched):
+    """Keep target tracking alive after the one-shot trigger is latched.
+
+    ``trigger_eligible`` deliberately applies the close-box/coverage-anchor
+    gate only to the first parking trigger.  Once the navigator owns the
+    target it may move to a staging, recovery, or corner-parallax pose where
+    the same sign is smaller and there is no active coverage anchor.  Those
+    matching frames are tracking updates, not new trigger requests.
+    """
+    return bool(
+        category_matches and (trigger_eligible or trigger_latched))
+
+
 def task2_prewarm_reusable(enabled, phase, expected_category,
                            prewarmed_category, ocr_alive, navigator_alive):
     """Reuse only a complete physical-search prewarm with matching OCR class."""

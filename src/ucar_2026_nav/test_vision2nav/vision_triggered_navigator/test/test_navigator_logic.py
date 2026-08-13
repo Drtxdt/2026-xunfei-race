@@ -304,7 +304,7 @@ def test_swept_footprint_parameters_are_wired_through_launch():
     assert math.isclose(config["parking_staging_tangent_tolerance"], 0.04)
     assert math.isclose(
         config["parking_corner_min_tangent_clearance"], 0.16)
-    assert math.isclose(config["parking_corner_observation_offset"], 0.70)
+    assert math.isclose(config["parking_corner_observation_offset"], 0.45)
     assert math.isclose(
         config["parking_corner_observation_timeout_sec"], 15.0)
 
@@ -350,12 +350,26 @@ def test_logged_corner_hit_requires_safe_bisector_reobservation():
         "right",
         (2.7750, -3.1322),
         minimum_tangent_clearance=0.16,
-        inward_offset=0.70,
+        inward_offset=0.45,
     )
     assert observation is not None
     assert observation["wall"] == "right"
     assert observation["adjacent_wall"] == "bottom"
     assert observation["tangent_clearance"] < 0.09
+
+    # The 20:26 run started its corner manoeuvre here.  The new pose is a
+    # roughly 10cm parallax correction; the retired 0.70m pose was a 36cm
+    # reverse move that the planner rendered as a loop.
+    logged_pose = (2.3812, -2.6781, -0.8058)
+    new_pose = observation["pose"]
+    old_pose = corner_observation_pose(
+        walls, "right", (2.7750, -3.1322), 0.16, 0.70)["pose"]
+    assert math.hypot(
+        new_pose[0] - logged_pose[0],
+        new_pose[1] - logged_pose[1]) < 0.15
+    assert math.hypot(
+        old_pose[0] - logged_pose[0],
+        old_pose[1] - logged_pose[1]) > 0.30
 
     # The log's old right-wall staging centre was only about 9.4cm from the
     # bottom wall, less than the 12.8cm half-width before costmap padding.
@@ -369,13 +383,15 @@ def test_logged_corner_hit_requires_safe_bisector_reobservation():
     assert bottom_distance < 0.128
 
     # The observation pose is constructed from both inward normals and is
-    # therefore about 0.70m clear of each incident wall.
+    # therefore about 0.45m clear of each incident wall: comfortably outside
+    # the measured 0.215m rotation radius plus the 20mm safety margin, without
+    # the large reverse/loop seen with the old 0.70m observation pose.
     ox, oy, _yaw = observation["pose"]
     corner = observation["corner"]
     assert ((ox - corner[0]) * right[3][0] +
-            (oy - corner[1]) * right[3][1]) > 0.69
+            (oy - corner[1]) * right[3][1]) > 0.44
     assert ((ox - corner[0]) * bottom[3][0] +
-            (oy - corner[1]) * bottom[3][1]) > 0.69
+            (oy - corner[1]) * bottom[3][1]) > 0.44
 
     def resolved_wall_for(target):
         length = math.hypot(target[0] - ox, target[1] - oy)
@@ -408,13 +424,37 @@ def test_logged_corner_hit_requires_safe_bisector_reobservation():
         resolved, hit = resolved_wall_for(target)
         assert resolved[0] == expected[0]
         assert corner_observation_pose(
-            walls, resolved[0], hit, 0.16, 0.70) is None
+            walls, resolved[0], hit, 0.16, 0.45) is None
 
 
 def test_wall_hit_with_vehicle_tangent_clearance_needs_no_reobservation():
     walls = build_quadrilateral_walls(MEASURED_CORNERS)
     assert corner_observation_pose(
-        walls, "right", (2.78, -2.95), 0.16, 0.70) is None
+        walls, "right", (2.78, -2.95), 0.16, 0.45) is None
+
+
+def test_corner_reobservation_uses_local_swept_control_not_move_base():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    source_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(source_path, "r", encoding="utf-8") as stream:
+        source = stream.read()
+    start = source.index("    def _navigate_to_corner_observation")
+    end = source.index("    def _resolve_corner_ambiguity", start)
+    method = source[start:end]
+    assert ".send_goal(" not in method
+    assert "_parking_sweep_diagnostics" in method
+    assert "parking_corner_sweep_blocked" in method
+
+    assignment_start = source.index(
+        "        self.parking_corner_observation_offset = max(")
+    assignment_end = source.index(
+        "        self.parking_corner_observation_timeout", assignment_start)
+    assignment = source[assignment_start:assignment_end]
+    assert "self.parking_staging_offset" not in assignment
+    assert "math.hypot(" in assignment
+    assert "self.parking_required_margin" in assignment
 
 
 def test_cone_inside_rotation_lateral_or_reverse_sweep_is_blocked():
