@@ -144,12 +144,12 @@ class VisionTriggeredNavigator(object):
         self.coverage_non_target_min_scan_steps = max(0, int(rospy.get_param(
             "~coverage_non_target_min_scan_steps", 2)))
         legacy_coverage_timeout = float(rospy.get_param(
-            "~coverage_goal_timeout_sec", 25.0))
+            "~coverage_goal_timeout_sec", 7.0))
         self.coverage_goal_soft_timeout = max(0.1, float(rospy.get_param(
             "~coverage_goal_soft_timeout_sec", legacy_coverage_timeout)))
         self.coverage_goal_hard_timeout = max(
             self.coverage_goal_soft_timeout,
-            float(rospy.get_param("~coverage_goal_hard_timeout_sec", 40.0)))
+            float(rospy.get_param("~coverage_goal_hard_timeout_sec", 10.0)))
         self.coverage_goal_progress_window = max(0.5, float(rospy.get_param(
             "~coverage_goal_progress_window_sec", 5.0)))
         self.coverage_goal_min_progress = max(0.0, float(rospy.get_param(
@@ -241,7 +241,7 @@ class VisionTriggeredNavigator(object):
         self.coverage_anchor_observation_radius = max(
             self.coverage_anchor_position_tolerance,
             float(rospy.get_param(
-                "~coverage_anchor_observation_radius", 0.45)))
+                "~coverage_anchor_observation_radius", 0.35)))
         self.coverage_near_anchor_stall_timeout = max(0.5, float(
             rospy.get_param("~coverage_near_anchor_stall_timeout_sec", 3.0)))
         self.coverage_anchor_yaw_tolerance = math.radians(abs(float(rospy.get_param(
@@ -397,7 +397,7 @@ class VisionTriggeredNavigator(object):
         self.parking_lidar_forward_offset = float(rospy.get_param(
             "~parking_lidar_forward_offset", 0.08))
         self.parking_obstacle_min_clearance = max(0.0, float(
-            rospy.get_param("~parking_obstacle_min_clearance", 0.28)))
+            rospy.get_param("~parking_obstacle_min_clearance", 0.24)))
         self.parking_obstacle_clearance_tolerance = max(0.0, float(
             rospy.get_param(
                 "~parking_obstacle_clearance_tolerance", 0.005)))
@@ -538,6 +538,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
+        self.current_goal_near_stall = False
         self.current_goal_clearance_stop = False
         self.parking_wall_point = None
         self.parking_inward_normal = None
@@ -1207,6 +1208,7 @@ class VisionTriggeredNavigator(object):
         self.current_goal_rotation_stall = False
         self.current_goal_needs_yaw_alignment = False
         self.current_goal_near_observation = False
+        self.current_goal_near_stall = False
         self.current_goal_clearance_stop = False
         if (self.coverage_search_mode and
                 not self._set_coverage_speed_profile(
@@ -1342,13 +1344,13 @@ class VisionTriggeredNavigator(object):
                                 near_observation_started = now
                                 near_observation_distance = latest_distance
                             elif near_action == "observe":
-                                self.current_goal_near_observation = True
+                                self.current_goal_near_stall = True
                                 self._publish_status(
-                                    "coverage_anchor_near_observation")
+                                    "coverage_anchor_near_stall_skip")
                                 rospy.logwarn(
-                                    "[vision_triggered_navigator] Exact anchor is blocked or stalled, "
-                                    "but the robot is within observation range "
-                                    "(distance=%.3fm radius=%.3fm); stop and scan here.",
+                                    "[vision_triggered_navigator] Exact anchor is blocked or stalled "
+                                    "(distance=%.3fm radius=%.3fm); skip this anchor "
+                                    "directly instead of scanning in place.",
                                     latest_distance,
                                     self.coverage_anchor_observation_radius)
                                 self.cancel_goal()
@@ -1425,6 +1427,7 @@ class VisionTriggeredNavigator(object):
         if (self.current_goal_timed_out or self.current_goal_rotation_stall or
                 self.current_goal_needs_yaw_alignment or
                 self.current_goal_near_observation or
+                self.current_goal_near_stall or
                 self.current_goal_clearance_stop):
             self.move_base_client.wait_for_result(rospy.Duration(1.0))
         final_state = self.move_base_client.get_state()
@@ -1756,6 +1759,13 @@ class VisionTriggeredNavigator(object):
             result = self.send_goal(x, y, yaw)
             if self.triggered:
                 return "triggered"
+            if self.current_goal_near_stall:
+                self.cmd_vel_pub.publish(Twist())
+                rospy.logwarn(
+                    "[vision_triggered_navigator] 精确锚点%d近锚点停滞，"
+                    "按配置直接跳过该点，不再原地扫描也不重试.",
+                    patrol_idx + 1)
+                return "near_stall_skip"
             pose = self._get_robot_pose(self.base_frame)
             distance = None
             yaw_error = None
@@ -3107,6 +3117,17 @@ class VisionTriggeredNavigator(object):
                     outcome = self._visit_coverage_point(point, point_idx)
                     if outcome == "triggered":
                         state = "VISION"
+                        continue
+                    if outcome == "near_stall_skip":
+                        self._publish_status(
+                            "coverage_anchor_skipped:{}".format(
+                                point_idx + 1))
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] coverage "
+                            "anchor=%d stalled near the anchor; skip it "
+                            "permanently and continue with the next anchor.",
+                            point_idx + 1)
+                        coverage_position += 1
                         continue
                     if outcome == "navigation_failed":
                         self._publish_status(

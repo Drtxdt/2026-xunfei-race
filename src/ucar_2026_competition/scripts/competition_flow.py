@@ -1955,7 +1955,7 @@ class CompetitionFlow:
             "parking_staging_position_tolerance": 0.10,
             "parking_staging_yaw_tolerance": 0.10,
             "parking_docking_timeout_sec": 30.0,
-            "parking_obstacle_min_clearance": 0.28,
+            "parking_obstacle_min_clearance": 0.24,
             "parking_obstacle_clearance_tolerance": 0.005,
             "parking_obstacle_sector_half_angle_deg": 35.0,
             "parking_dock_max_x": 0.10,
@@ -1995,11 +1995,11 @@ class CompetitionFlow:
             "coverage_candidate_hold_sec": 1.2,
             "coverage_scan_max_dwell_sec": 2.0,
             "coverage_scan_pose_timeout_sec": 0.5,
-            "coverage_goal_soft_timeout_sec": 25.0,
-            "coverage_goal_hard_timeout_sec": 40.0,
+            "coverage_goal_soft_timeout_sec": 7.0,
+            "coverage_goal_hard_timeout_sec": 10.0,
             "coverage_goal_progress_window_sec": 5.0,
             "coverage_goal_min_progress": 0.03,
-            "coverage_anchor_observation_radius": 0.45,
+            "coverage_anchor_observation_radius": 0.35,
             "coverage_near_anchor_stall_timeout_sec": 3.0,
         }
         for name, default in forwarded_defaults.items():

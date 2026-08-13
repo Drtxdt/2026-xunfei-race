@@ -257,7 +257,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_scan_angular_speed: 0.50", config)
         self.assertIn("coverage_scan_dwell_sec: 0.45", config)
         self.assertIn("task2_trigger_min_bbox_width_ratio: 0.09", config)
-        self.assertIn("parking_obstacle_min_clearance: 0.28", config)
+        self.assertIn("parking_obstacle_min_clearance: 0.24", config)
         self.assertIn(
             "parking_obstacle_clearance_tolerance: 0.005", config)
         flow_path = os.path.abspath(os.path.join(

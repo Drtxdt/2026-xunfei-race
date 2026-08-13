@@ -18,11 +18,11 @@
   <arg name="coverage_preferred_scan_half_angle_deg" default="18.0" />
   <arg name="coverage_skip_anchors" default="" />
   <arg name="coverage_goal_retry_count" default="1" />
-  <arg name="coverage_goal_soft_timeout_sec" default="25.0" />
-  <arg name="coverage_goal_hard_timeout_sec" default="40.0" />
+  <arg name="coverage_goal_soft_timeout_sec" default="7.0" />
+  <arg name="coverage_goal_hard_timeout_sec" default="10.0" />
   <arg name="coverage_goal_progress_window_sec" default="5.0" />
   <arg name="coverage_goal_min_progress" default="0.03" />
-  <arg name="coverage_anchor_observation_radius" default="0.45" />
+  <arg name="coverage_anchor_observation_radius" default="0.35" />
   <arg name="coverage_near_anchor_stall_timeout_sec" default="3.0" />
   <arg name="coverage_rotation_min_clearance" default="0.28" />
   <arg name="coverage_translation_min_clearance" default="0.00" />
@@ -77,7 +77,7 @@
   <arg name="parking_staging_position_tolerance" default="0.16" />
   <arg name="parking_staging_yaw_tolerance" default="0.10" />
   <arg name="parking_docking_timeout_sec" default="30.0" />
-  <arg name="parking_obstacle_min_clearance" default="0.28" />
+  <arg name="parking_obstacle_min_clearance" default="0.24" />
   <arg name="parking_obstacle_clearance_tolerance" default="0.005" />
   <arg name="parking_obstacle_sector_half_angle_deg" default="35.0" />
   <arg name="parking_dock_max_x" default="0.10" />
