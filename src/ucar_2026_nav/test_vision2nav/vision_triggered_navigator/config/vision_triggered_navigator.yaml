@@ -131,6 +131,10 @@ parking_box_depth: 0.50
 parking_goal_offset: 0.26
 parking_staging_offset: 0.55
 parking_staging_timeout_sec: 20.0
+# 射线落在角点车体切向净空内时，先退到两墙内法向各0.70m处复核。
+parking_corner_min_tangent_clearance: 0.16
+parking_corner_observation_offset: 0.70
+parking_corner_observation_timeout_sec: 15.0
 parking_staging_position_tolerance: 0.10
 parking_staging_yaw_tolerance: 0.10
 parking_staging_normal_tolerance: 0.08

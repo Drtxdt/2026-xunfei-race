@@ -241,6 +241,13 @@ def select_factory_sign_box(texts: Sequence[OCRText],
     target = select_category_box(texts, category, classifier)
     if target is None:
         return None
+    target_normalized = classifier._normalize(target.text)
+    # A complete one-line sign already has the correct localisation.  Never
+    # attach a neighbouring sign's generic second line (for example the
+    # ``生产车间`` below an adjacent ``电子产品`` board).
+    if any(token in target_normalized for token in (
+            "加工车间", "生产车间", "加工车", "生产车", "车间")):
+        return target
     target_bounds = _box_bounds(target.box)
     if target_bounds is None:
         return target
@@ -268,20 +275,33 @@ def select_factory_sign_box(texts: Sequence[OCRText],
         cy = 0.5 * (y0 + y1)
         dx = abs(cx - target_cx)
         dy = abs(cy - target_cy)
-        if (dx > 1.5 * max(target_w, width) + 10.0 or
+        horizontal_overlap = max(
+            0.0, min(tx1, x1) - max(tx0, x0))
+        minimum_width = max(1.0, min(target_w, width))
+        horizontally_aligned = (
+            horizontal_overlap / minimum_width >= 0.30 or
+            dx <= 0.35 * max(target_w, width) + 10.0)
+        if (not horizontally_aligned or
                 dy > 2.5 * max(target_h, height) + 10.0):
             continue
-        companions.append((math.hypot(dx, dy), bounds))
+        companions.append((math.hypot(dx, dy), bounds, item))
 
     if not companions:
         return target
-    _distance, companion = min(companions, key=lambda value: value[0])
+    _distance, companion, companion_item = min(
+        companions, key=lambda value: value[0])
     cx0, cy0, cx1, cy1 = companion
     merged = _bounds_box((
         min(tx0, cx0), min(ty0, cy0),
         max(tx1, cx1), max(ty1, cy1),
     ))
-    return OCRText(text=target.text, score=target.score, box=merged)
+    merged_text = "{} {}".format(
+        target.text.strip(), companion_item.text.strip()).strip()
+    return OCRText(
+        text=merged_text,
+        score=min(float(target.score), float(companion_item.score)),
+        box=merged,
+    )
 
 
 def collect_factory_sign_detections(texts: Sequence[OCRText], classifier):
@@ -862,7 +882,7 @@ class FactorySignPPOCRRknnNode:
             rec_image_height=int(self.rospy.get_param("~rec_image_height", 48)),
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
             rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
-            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 3)),
+            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 4)),
             use_global_rec_candidates=ros_bool(self.rospy.get_param("~use_global_rec_candidates", True), True),
             box_padding_x=float(self.rospy.get_param("~box_padding_x", 0.15)),
             box_padding_y=float(self.rospy.get_param("~box_padding_y", 0.35)),

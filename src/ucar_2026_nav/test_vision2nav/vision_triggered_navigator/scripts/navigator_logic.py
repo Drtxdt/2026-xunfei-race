@@ -393,6 +393,72 @@ def build_quadrilateral_walls(corners):
     return walls
 
 
+def corner_observation_pose(walls, wall_name, wall_point,
+                            minimum_tangent_clearance,
+                            inward_offset):
+    """Return a safe bisector observation pose for a corner-ambiguous hit.
+
+    A centred camera ray may cross the neighbouring wall first when a tall
+    sign is mounted on the first panel beside a corner.  Such a hit is unsafe
+    to use as a parking centre when its tangent distance to the corner is
+    smaller than the robot half-width plus margin.  Move inward from both
+    incident walls and look back at the corner before deciding the wall.
+
+    ``walls`` uses the tuples returned by :func:`build_quadrilateral_walls`.
+    ``None`` means the hit has sufficient endpoint clearance (or the wall has
+    no adjacent segment, which cannot happen for the arena quadrilateral).
+    """
+    minimum = max(0.0, float(minimum_tangent_clearance))
+    offset = max(0.0, float(inward_offset))
+    point = (float(wall_point[0]), float(wall_point[1]))
+    selected = None
+    for wall in walls:
+        if wall[0] == wall_name:
+            selected = wall
+            break
+    if selected is None:
+        return None
+
+    _name, start, end, normal = selected
+    endpoints = (start, end)
+    distances = [math.hypot(point[0] - endpoint[0],
+                            point[1] - endpoint[1])
+                 for endpoint in endpoints]
+    endpoint_index = 0 if distances[0] <= distances[1] else 1
+    tangent_clearance = distances[endpoint_index]
+    if tangent_clearance + 1e-9 >= minimum:
+        return None
+
+    corner = endpoints[endpoint_index]
+    adjacent = None
+    for candidate in walls:
+        if candidate[0] == wall_name:
+            continue
+        if any(math.hypot(corner[0] - endpoint[0],
+                          corner[1] - endpoint[1]) <= 1e-6
+               for endpoint in (candidate[1], candidate[2])):
+            adjacent = candidate
+            break
+    if adjacent is None:
+        return None
+
+    adjacent_normal = adjacent[3]
+    observation_x = (corner[0] + offset * normal[0] +
+                     offset * adjacent_normal[0])
+    observation_y = (corner[1] + offset * normal[1] +
+                     offset * adjacent_normal[1])
+    observation_yaw = math.atan2(
+        corner[1] - observation_y, corner[0] - observation_x)
+    return {
+        "wall": wall_name,
+        "adjacent_wall": adjacent[0],
+        "corner": (float(corner[0]), float(corner[1])),
+        "tangent_clearance": tangent_clearance,
+        "minimum_tangent_clearance": minimum,
+        "pose": (observation_x, observation_y, observation_yaw),
+    }
+
+
 def ray_segment_intersection(origin, direction, start, end):
     """Return positive ray parameter ``t`` for a 2-D segment intersection."""
     ox, oy = [float(value) for value in origin]

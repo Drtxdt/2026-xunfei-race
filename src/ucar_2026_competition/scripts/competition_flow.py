@@ -1978,6 +1978,9 @@ class CompetitionFlow:
             "parking_goal_offset": 0.26,
             "parking_staging_offset": 0.55,
             "parking_staging_timeout_sec": 20.0,
+            "parking_corner_min_tangent_clearance": 0.16,
+            "parking_corner_observation_offset": 0.70,
+            "parking_corner_observation_timeout_sec": 15.0,
             "parking_staging_position_tolerance": 0.10,
             "parking_staging_yaw_tolerance": 0.10,
             "parking_staging_normal_tolerance": 0.08,
@@ -2216,6 +2219,7 @@ class CompetitionFlow:
                     raise StageError("factory navigation failed")
                 if self.navigator_status in (
                         "centering_failed", "parking_staging_failed",
+                        "parking_corner_unresolved",
                         "parking_recenter_failed", "parking_wall_fit_failed",
                         "parking_docking_failed", "parking_obstacle_blocked",
                         "parking_validation_failed",

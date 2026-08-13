@@ -15,6 +15,7 @@ if SCRIPTS not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
+    corner_observation_pose,
     center_angular_command,
     center_step_angle,
     coverage_motion_is_rotation_stall,
@@ -301,6 +302,11 @@ def test_swept_footprint_parameters_are_wired_through_launch():
         "/vision_triggered_navigator/parking_diagnostics")
     assert math.isclose(config["parking_staging_normal_tolerance"], 0.08)
     assert math.isclose(config["parking_staging_tangent_tolerance"], 0.04)
+    assert math.isclose(
+        config["parking_corner_min_tangent_clearance"], 0.16)
+    assert math.isclose(config["parking_corner_observation_offset"], 0.70)
+    assert math.isclose(
+        config["parking_corner_observation_timeout_sec"], 15.0)
 
     root = ET.parse(os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
@@ -313,6 +319,9 @@ def test_swept_footprint_parameters_are_wired_through_launch():
             "parking_staging_normal_tolerance",
             "parking_staging_tangent_tolerance",
             "parking_staging_axis_yaw_tolerance",
+            "parking_corner_min_tangent_clearance",
+            "parking_corner_observation_offset",
+            "parking_corner_observation_timeout_sec",
             "parking_obstacle_required_scans",
             "parking_recovery_retry_count",
             "parking_diagnostics_topic"):
@@ -332,6 +341,80 @@ def test_adjacent_wall_near_points_outside_sweep_are_allowed():
         [(0.0, -0.243)], (0.0, -0.06, 0.0), (0.0, -0.06, 0.0),
         half_length, half_width, margin)
     assert not lateral["blocked"]
+
+
+def test_logged_corner_hit_requires_safe_bisector_reobservation():
+    walls = build_quadrilateral_walls(MEASURED_CORNERS)
+    observation = corner_observation_pose(
+        walls,
+        "right",
+        (2.7750, -3.1322),
+        minimum_tangent_clearance=0.16,
+        inward_offset=0.70,
+    )
+    assert observation is not None
+    assert observation["wall"] == "right"
+    assert observation["adjacent_wall"] == "bottom"
+    assert observation["tangent_clearance"] < 0.09
+
+    # The log's old right-wall staging centre was only about 9.4cm from the
+    # bottom wall, less than the 12.8cm half-width before costmap padding.
+    right = next(wall for wall in walls if wall[0] == "right")
+    bottom = next(wall for wall in walls if wall[0] == "bottom")
+    old_staging = parking_goal_from_wall(
+        (2.7750, -3.1322), right[3], 0.55)
+    bottom_distance = abs(
+        (old_staging[0] - bottom[1][0]) * bottom[3][0] +
+        (old_staging[1] - bottom[1][1]) * bottom[3][1])
+    assert bottom_distance < 0.128
+
+    # The observation pose is constructed from both inward normals and is
+    # therefore about 0.70m clear of each incident wall.
+    ox, oy, _yaw = observation["pose"]
+    corner = observation["corner"]
+    assert ((ox - corner[0]) * right[3][0] +
+            (oy - corner[1]) * right[3][1]) > 0.69
+    assert ((ox - corner[0]) * bottom[3][0] +
+            (oy - corner[1]) * bottom[3][1]) > 0.69
+
+    def resolved_wall_for(target):
+        length = math.hypot(target[0] - ox, target[1] - oy)
+        direction = ((target[0] - ox) / length, (target[1] - oy) / length)
+        hits = []
+        for wall in walls:
+            distance = ray_segment_intersection(
+                (ox, oy), direction, wall[1], wall[2])
+            if distance is not None:
+                hits.append((distance, wall))
+        _distance, resolved = min(hits, key=lambda item: item[0])
+        hit = (ox + _distance * direction[0],
+               oy + _distance * direction[1])
+        return resolved, hit
+
+    # From the bisector pose, a sign one half-panel from the corner resolves
+    # to its actual wall in either legal layout instead of whichever boundary
+    # happened to be crossed first from the old diagonal pose.
+    for expected in (right, bottom):
+        endpoint = expected[1]
+        if math.hypot(endpoint[0] - corner[0],
+                      endpoint[1] - corner[1]) <= 1e-6:
+            endpoint = expected[2]
+        length = math.hypot(endpoint[0] - corner[0],
+                            endpoint[1] - corner[1])
+        target = (
+            corner[0] + 0.25 * (endpoint[0] - corner[0]) / length,
+            corner[1] + 0.25 * (endpoint[1] - corner[1]) / length,
+        )
+        resolved, hit = resolved_wall_for(target)
+        assert resolved[0] == expected[0]
+        assert corner_observation_pose(
+            walls, resolved[0], hit, 0.16, 0.70) is None
+
+
+def test_wall_hit_with_vehicle_tangent_clearance_needs_no_reobservation():
+    walls = build_quadrilateral_walls(MEASURED_CORNERS)
+    assert corner_observation_pose(
+        walls, "right", (2.78, -2.95), 0.16, 0.70) is None
 
 
 def test_cone_inside_rotation_lateral_or_reverse_sweep_is_blocked():

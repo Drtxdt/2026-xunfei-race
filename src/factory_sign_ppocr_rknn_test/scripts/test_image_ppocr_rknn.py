@@ -67,7 +67,7 @@ def main() -> int:
         rec_image_height=48,
         rec_image_width=320,
         rec_resize_mode=args.rec_resize_mode,
-        max_rec_crops=3,
+        max_rec_crops=4,
         use_global_rec_candidates=not args.no_global_rec_candidates,
         box_padding_x=0.15,
         box_padding_y=0.35,

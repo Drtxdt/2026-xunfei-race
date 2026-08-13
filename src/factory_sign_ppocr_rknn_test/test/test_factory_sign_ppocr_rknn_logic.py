@@ -102,6 +102,48 @@ def test_split_food_sign_uses_combined_factory_bbox():
     ]
 
 
+def test_two_line_electronic_sign_keeps_own_bbox_beside_complete_food_sign():
+    classifier = FactorySignKeywordClassifier()
+    food = OCRText(
+        "食品加工车间", 0.74,
+        [[20.0, 20.0], [180.0, 20.0], [180.0, 60.0], [20.0, 60.0]],
+    )
+    electronic = OCRText(
+        "电子产品", 0.82,
+        [[330.0, 18.0], [450.0, 18.0], [450.0, 50.0], [330.0, 50.0]],
+    )
+    workshop = OCRText(
+        "生产车间", 0.79,
+        [[310.0, 56.0], [475.0, 56.0], [475.0, 92.0], [310.0, 92.0]],
+    )
+
+    detections = collect_factory_sign_detections(
+        [food, electronic, workshop], classifier)
+    by_category = {item["category"]: item for item in detections}
+
+    assert by_category["food"]["box"] == food.box
+    assert by_category["electronic"]["box"] == [
+        [310.0, 18.0], [475.0, 18.0], [475.0, 92.0], [310.0, 92.0],
+    ]
+    assert by_category["electronic"]["raw_text"] == "电子产品 生产车间"
+
+
+def test_live_ocr_budget_keeps_four_candidates_for_adjacent_two_line_sign():
+    package_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    with open(os.path.join(
+            package_dir, "config", "factory_sign_ppocr_rknn.yaml"),
+            "r", encoding="utf-8") as stream:
+        config = stream.read()
+    assert "max_rec_crops: 4" in config
+
+    import xml.etree.ElementTree as ET
+    root = ET.parse(os.path.join(
+        package_dir, "launch", "factory_sign_ppocr_rknn_test.launch")).getroot()
+    crop_arg = root.find("arg[@name='max_rec_crops']")
+    assert crop_arg is not None
+    assert crop_arg.attrib["default"] == "4"
+
+
 def test_split_sign_does_not_merge_distant_workshop_text():
     classifier = FactorySignKeywordClassifier()
     category = OCRText(

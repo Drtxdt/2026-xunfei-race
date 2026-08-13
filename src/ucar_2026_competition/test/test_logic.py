@@ -118,6 +118,9 @@ class CompetitionLogicTest(unittest.TestCase):
             'factory_navigation_start_service: '
             '"/vision_triggered_navigator/start_navigation"', config)
         self.assertIn("coverage_goal_retry_count: 1", config)
+        self.assertIn("parking_corner_min_tangent_clearance: 0.16", config)
+        self.assertIn("parking_corner_observation_offset: 0.70", config)
+        self.assertIn("parking_corner_observation_timeout_sec: 15.0", config)
         self.assertNotIn("coverage_failed_revisit_limit", config)
 
         launch_path = os.path.abspath(os.path.join(
@@ -135,7 +138,10 @@ class CompetitionLogicTest(unittest.TestCase):
                 ("task2_prewarm_enabled", "true"),
                 ("factory_navigation_start_service",
                  "/vision_triggered_navigator/start_navigation"),
-                ("coverage_goal_retry_count", "1")):
+                ("coverage_goal_retry_count", "1"),
+                ("parking_corner_min_tangent_clearance", "0.16"),
+                ("parking_corner_observation_offset", "0.70"),
+                ("parking_corner_observation_timeout_sec", "15.0")):
             self.assertEqual(launch_args[name], default)
             self.assertEqual(node_params[name], "$(arg {})".format(name))
 
