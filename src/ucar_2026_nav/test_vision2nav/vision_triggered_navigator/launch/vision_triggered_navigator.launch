@@ -104,7 +104,7 @@
   <arg name="parking_wall_fit_max_residual" default="0.015" />
   <arg name="parking_wall_fit_max_normal_error_deg" default="20.0" />
   <arg name="parking_normal_offset" default="0.0" />
-  <arg name="parking_tangent_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.03" />
   <arg name="parking_xy_tolerance" default="0.04" />
   <arg name="parking_yaw_tolerance" default="0.06" />
 

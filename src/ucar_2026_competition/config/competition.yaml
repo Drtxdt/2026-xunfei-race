@@ -102,7 +102,7 @@ parking_wall_fit_max_normal_error_deg: 20.0
 parking_xy_tolerance: 0.04
 parking_yaw_tolerance: 0.06
 parking_normal_offset: 0.0
-parking_tangent_offset: 0.0
+parking_tangent_offset: 0.03
 target_trigger_service: /vision_triggered_navigator/trigger_target
 trigger_ack_timeout_sec: 2.0
 task1_task2_handoff_timeout_sec: 5.0

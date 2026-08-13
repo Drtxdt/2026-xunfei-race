@@ -428,7 +428,7 @@ class VisionTriggeredNavigator(object):
         self.parking_normal_offset = float(rospy.get_param(
             "~parking_normal_offset", 0.0))
         self.parking_tangent_offset = float(rospy.get_param(
-            "~parking_tangent_offset", 0.0))
+            "~parking_tangent_offset", 0.03))
         self.parking_xy_tolerance = abs(float(rospy.get_param(
             "~parking_xy_tolerance", 0.04)))
         self.parking_yaw_tolerance = abs(float(rospy.get_param(

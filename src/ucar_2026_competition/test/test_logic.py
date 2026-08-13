@@ -121,6 +121,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("coverage_goal_retry_count: 1", config)
         self.assertIn("camera_boresight_yaw_offset: 0.292", config)
         self.assertIn("parking_endpoint_min_clearance: 0.16", config)
+        self.assertIn("parking_tangent_offset: 0.03", config)
         self.assertNotIn("coverage_failed_revisit_limit", config)
 
         launch_path = os.path.abspath(os.path.join(
@@ -140,6 +141,7 @@ class CompetitionLogicTest(unittest.TestCase):
                  "/vision_triggered_navigator/start_navigation"),
                 ("coverage_goal_retry_count", "1"),
                 ("camera_boresight_yaw_offset", "0.292"),
+                ("parking_tangent_offset", "0.03"),
                 ("parking_endpoint_min_clearance", "0.16")):
             self.assertEqual(launch_args[name], default)
             self.assertEqual(node_params[name], "$(arg {})".format(name))

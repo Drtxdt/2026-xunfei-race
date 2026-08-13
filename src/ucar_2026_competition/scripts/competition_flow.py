@@ -2014,7 +2014,7 @@ class CompetitionFlow:
             "parking_wall_fit_max_residual": 0.015,
             "parking_wall_fit_max_normal_error_deg": 20.0,
             "parking_normal_offset": 0.0,
-            "parking_tangent_offset": 0.0,
+            "parking_tangent_offset": 0.03,
             "parking_box_width": 0.50,
             "parking_box_depth": 0.50,
             "parking_xy_tolerance": 0.04,

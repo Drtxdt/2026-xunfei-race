@@ -167,7 +167,7 @@ parking_wall_fit_max_normal_jump_deg: 8.0
 parking_wall_fit_max_residual: 0.015
 parking_wall_fit_max_normal_error_deg: 20.0
 parking_normal_offset: 0.0
-parking_tangent_offset: 0.0
+parking_tangent_offset: 0.03
 parking_xy_tolerance: 0.04
 parking_yaw_tolerance: 0.06
 parking_validation_margin: 0.01

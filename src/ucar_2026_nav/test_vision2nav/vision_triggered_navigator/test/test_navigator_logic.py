@@ -475,6 +475,7 @@ def test_boresight_and_endpoint_guard_are_wired_through_launch():
         config = yaml.safe_load(stream)
     assert math.isclose(config["camera_boresight_yaw_offset"], 0.292)
     assert math.isclose(config["parking_endpoint_min_clearance"], 0.16)
+    assert math.isclose(config["parking_tangent_offset"], 0.03)
 
     root = ET.parse(os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")).getroot()
@@ -488,8 +489,11 @@ def test_boresight_and_endpoint_guard_are_wired_through_launch():
     }
     assert launch_args["camera_boresight_yaw_offset"] == "0.292"
     assert launch_args["parking_endpoint_min_clearance"] == "0.16"
+    assert launch_args["parking_tangent_offset"] == "0.03"
     assert node_params["parking_endpoint_min_clearance"] == (
         "$(arg parking_endpoint_min_clearance)")
+    assert node_params["parking_tangent_offset"] == (
+        "$(arg parking_tangent_offset)")
     for legacy in (
             "parking_corner_min_tangent_clearance",
             "parking_corner_observation_offset",
@@ -891,6 +895,24 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
     assert math.isclose(gx, 0.27)
     assert math.isclose(gy, 0.03)
     assert math.isclose(abs(yaw), math.pi)
+
+
+def test_positive_tangent_offset_moves_to_vehicle_right_on_every_wall():
+    for normal in ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)):
+        centered = parking_goal_from_wall(
+            (0.0, 0.0), normal, 0.26, tangent_offset=0.0)
+        shifted = parking_goal_from_wall(
+            (0.0, 0.0), normal, 0.26, tangent_offset=0.03)
+        delta = (shifted[0] - centered[0], shifted[1] - centered[1])
+        yaw = centered[2]
+        vehicle_right = (math.sin(yaw), -math.cos(yaw))
+        vehicle_forward = (math.cos(yaw), math.sin(yaw))
+        assert math.isclose(
+            delta[0] * vehicle_right[0] + delta[1] * vehicle_right[1],
+            0.03, abs_tol=1e-9)
+        assert math.isclose(
+            delta[0] * vehicle_forward[0] + delta[1] * vehicle_forward[1],
+            0.0, abs_tol=1e-9)
 
 
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():

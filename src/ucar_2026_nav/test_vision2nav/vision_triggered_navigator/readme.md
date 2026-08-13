@@ -59,7 +59,7 @@ roslaunch vision_triggered_navigator vision_triggered_navigator.launch trigger_m
 | `parking_docking_timeout_sec` | odom 短距闭环超时 | `30.0` |
 | `parking_dock_max_x/y/yaw` | 最终停泊三轴速度上限 | `0.10 / 0.06 / 0.15` |
 | `parking_wall_fit_*` | 实际墙线点数、跨度、残差及方向门限 | 见 yaml |
-| `parking_normal_offset` / `parking_tangent_offset` | 最终目标沿墙法向/切向的实车标定修正 | `0.0 / 0.0` |
+| `parking_normal_offset` / `parking_tangent_offset` | 最终目标沿墙法向/车体右侧的实车标定修正 | `0.0 / 0.03` |
 | `coverage_goal_soft_timeout_sec` / `coverage_goal_hard_timeout_sec` | 精确锚点进度感知软/硬时限 | `7 / 10` |
 | `validate_parking_box` | 是否要求完整footprint通过50cm框验证 | `false` |
 | `costmap_topic` | costmap 话题 | `/move_base/global_costmap/costmap` |
