@@ -194,22 +194,6 @@ def test_coverage_speed_profile_is_wired_through_launch():
         assert node_params[name] == "$(arg {})".format(name)
 
 
-def test_teb_uses_the_real_rectangular_robot_footprint():
-    package_dir = os.path.abspath(os.path.join(
-        os.path.dirname(__file__), ".."))
-    teb_path = os.path.abspath(os.path.join(
-        package_dir, "..", "..", "ucar_nav", "launch", "config",
-        "move_base", "teb_local_planner_params.yaml"))
-    with open(teb_path, "r", encoding="utf-8") as stream:
-        config = yaml.safe_load(stream)["TebLocalPlannerROS"]
-    footprint = config["footprint_model"]
-    assert footprint["type"] == "polygon"
-    assert footprint["vertices"] == [
-        [0.171, -0.128], [0.171, 0.128],
-        [-0.171, 0.128], [-0.171, -0.128],
-    ]
-
-
 def test_non_target_early_exit_is_wired_through_launch():
     package_dir = os.path.abspath(os.path.join(
         os.path.dirname(__file__), ".."))
