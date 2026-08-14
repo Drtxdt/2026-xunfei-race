@@ -154,19 +154,14 @@ def test_coverage_speed_profile_is_wired_through_launch():
         package_dir, "config", "vision_triggered_navigator.yaml")
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
-    assert math.isclose(float(config["coverage_max_vel_x"]), 0.45)
-    assert math.isclose(float(config["coverage_max_vel_theta"]), 0.90)
-    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.40)
-    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 0.80)
-    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.25)
-    assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.55)
+    assert math.isclose(float(config["coverage_max_vel_x"]), 0.72)
+    assert math.isclose(float(config["coverage_max_vel_theta"]), 1.45)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.70)
+    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 1.30)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.53)
+    assert math.isclose(float(config["coverage_caution_vel_theta"]), 1.12)
     assert math.isclose(
         float(config["coverage_fast_enter_clearance"]), 0.90)
-    assert math.isclose(
-        float(config["coverage_teb_weight_kinematics_nh"]), 5.0)
-    assert math.isclose(
-        float(config["coverage_teb_weight_forward_drive"]), 20.0)
-    assert config["coverage_teb_global_plan_overwrite_orientation"] is False
 
     launch_path = os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")
@@ -185,13 +180,35 @@ def test_coverage_speed_profile_is_wired_through_launch():
             "coverage_caution_enter_clearance",
             "coverage_caution_exit_clearance",
             "coverage_fast_exit_clearance",
-            "coverage_fast_enter_clearance",
+            "coverage_fast_enter_clearance"):
+        assert name in launch_args
+        assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_coverage_does_not_override_parking_kinematics():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    config_path = os.path.join(
+        package_dir, "config", "vision_triggered_navigator.yaml")
+    with open(config_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    launch_path = os.path.join(
+        package_dir, "launch", "vision_triggered_navigator.launch")
+    with open(launch_path, "r", encoding="utf-8") as stream:
+        launch_source = stream.read()
+    script_path = os.path.join(
+        package_dir, "scripts", "vision_triggered_navigator.py")
+    with open(script_path, "r", encoding="utf-8") as stream:
+        script_source = stream.read()
+
+    for name in (
             "coverage_teb_weight_kinematics_nh",
             "coverage_teb_weight_forward_drive",
             "coverage_teb_min_turning_radius",
             "coverage_teb_global_plan_overwrite_orientation"):
-        assert name in launch_args
-        assert node_params[name] == "$(arg {})".format(name)
+        assert name not in config
+        assert name not in launch_source
+        assert name not in script_source
 
 
 def test_non_target_early_exit_is_wired_through_launch():

@@ -206,43 +206,35 @@ class VisionTriggeredNavigator(object):
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_x", 0.45)))
+            "~coverage_max_vel_x", 0.72)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_y", 0.40)))
+            "~coverage_max_vel_y", 0.72)))
         self.coverage_max_vel_theta = max(0.10, float(rospy.get_param(
-            "~coverage_max_vel_theta", 0.90)))
+            "~coverage_max_vel_theta", 1.45)))
         self.coverage_cruise_vel_x = min(
             self.coverage_max_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_x", 0.40))))
+                "~coverage_cruise_vel_x", 0.70))))
         self.coverage_cruise_vel_y = min(
             self.coverage_max_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_y", 0.35))))
+                "~coverage_cruise_vel_y", 0.70))))
         self.coverage_cruise_vel_theta = min(
             self.coverage_max_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_cruise_vel_theta", 0.80))))
+                "~coverage_cruise_vel_theta", 1.30))))
         self.coverage_caution_vel_x = min(
             self.coverage_cruise_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_x", 0.25))))
+                "~coverage_caution_vel_x", 0.53))))
         self.coverage_caution_vel_y = min(
             self.coverage_cruise_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_y", 0.20))))
+                "~coverage_caution_vel_y", 0.53))))
         self.coverage_caution_vel_theta = min(
             self.coverage_cruise_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_caution_vel_theta", 0.55))))
-        self.coverage_teb_weight_kinematics_nh = max(0.0, float(
-            rospy.get_param("~coverage_teb_weight_kinematics_nh", 5.0)))
-        self.coverage_teb_weight_forward_drive = max(0.0, float(
-            rospy.get_param("~coverage_teb_weight_forward_drive", 20.0)))
-        self.coverage_teb_min_turning_radius = max(0.0, float(
-            rospy.get_param("~coverage_teb_min_turning_radius", 0.0)))
-        self.coverage_teb_overwrite_orientation = bool(rospy.get_param(
-            "~coverage_teb_global_plan_overwrite_orientation", False))
+                "~coverage_caution_vel_theta", 1.12))))
         self.coverage_caution_enter_clearance = max(0.0, float(
             rospy.get_param(
                 "~coverage_caution_enter_clearance", 0.45)))
@@ -2899,10 +2891,6 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x",
                 "max_vel_y",
                 "max_vel_theta",
-                "weight_kinematics_nh",
-                "weight_kinematics_forward_drive",
-                "min_turning_radius",
-                "global_plan_overwrite_orientation",
             )
             planner_missing = [
                 name for name in planner_required
@@ -2924,13 +2912,6 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x": self.coverage_cruise_vel_x,
                 "max_vel_y": self.coverage_cruise_vel_y,
                 "max_vel_theta": self.coverage_cruise_vel_theta,
-                "weight_kinematics_nh":
-                    self.coverage_teb_weight_kinematics_nh,
-                "weight_kinematics_forward_drive":
-                    self.coverage_teb_weight_forward_drive,
-                "min_turning_radius": self.coverage_teb_min_turning_radius,
-                "global_plan_overwrite_orientation":
-                    self.coverage_teb_overwrite_orientation,
             })
             if (bool(updated.get("recovery_behavior_enabled", True)) or
                     bool(updated.get("clearing_rotation_allowed", True)) or
@@ -2941,27 +2922,15 @@ class VisionTriggeredNavigator(object):
                     self.coverage_cruise_vel_y + 1e-6 or
                     float(planner_updated.get(
                         "max_vel_theta", float("inf"))) >
-                    self.coverage_cruise_vel_theta + 1e-6 or
-                    abs(float(planner_updated.get(
-                        "weight_kinematics_nh", float("inf"))) -
-                        self.coverage_teb_weight_kinematics_nh) > 1e-6 or
-                    abs(float(planner_updated.get(
-                        "weight_kinematics_forward_drive", float("inf"))) -
-                        self.coverage_teb_weight_forward_drive) > 1e-6 or
-                    abs(float(planner_updated.get(
-                        "min_turning_radius", float("inf"))) -
-                        self.coverage_teb_min_turning_radius) > 1e-6 or
-                    bool(planner_updated.get(
-                        "global_plan_overwrite_orientation", True)) !=
-                    self.coverage_teb_overwrite_orientation):
+                    self.coverage_cruise_vel_theta + 1e-6):
                 raise RuntimeError(
                     "move_base rejected coverage safety configuration")
             self._coverage_speed_profile = "cruise"
             self._coverage_speed_updated_at = rospy.get_time()
             self._publish_status("coverage_recovery_disabled")
             rospy.logwarn(
-                "[vision_triggered_navigator] 任务2已关闭旋转恢复并启用"
-                "全向TEB约束；退出时自动恢复.")
+                "[vision_triggered_navigator] 任务2期间已临时关闭move_base"
+                "恢复行为和清障旋转；退出时自动恢复.")
             return True
         except Exception as exc:
             rospy.logerr(

@@ -36,19 +36,15 @@
   <arg name="coverage_max_consecutive_skips" default="1" />
   <arg name="coverage_translation_min_clearance" default="0.00" />
   <arg name="coverage_translation_sector_half_angle_deg" default="35.0" />
-  <arg name="coverage_max_vel_x" default="0.45" />
-  <arg name="coverage_max_vel_y" default="0.40" />
-  <arg name="coverage_max_vel_theta" default="0.90" />
-  <arg name="coverage_cruise_vel_x" default="0.40" />
-  <arg name="coverage_cruise_vel_y" default="0.35" />
-  <arg name="coverage_cruise_vel_theta" default="0.80" />
-  <arg name="coverage_caution_vel_x" default="0.25" />
-  <arg name="coverage_caution_vel_y" default="0.20" />
-  <arg name="coverage_caution_vel_theta" default="0.55" />
-  <arg name="coverage_teb_weight_kinematics_nh" default="5.0" />
-  <arg name="coverage_teb_weight_forward_drive" default="20.0" />
-  <arg name="coverage_teb_min_turning_radius" default="0.0" />
-  <arg name="coverage_teb_global_plan_overwrite_orientation" default="false" />
+  <arg name="coverage_max_vel_x" default="0.72" />
+  <arg name="coverage_max_vel_y" default="0.72" />
+  <arg name="coverage_max_vel_theta" default="1.45" />
+  <arg name="coverage_cruise_vel_x" default="0.70" />
+  <arg name="coverage_cruise_vel_y" default="0.70" />
+  <arg name="coverage_cruise_vel_theta" default="1.30" />
+  <arg name="coverage_caution_vel_x" default="0.53" />
+  <arg name="coverage_caution_vel_y" default="0.53" />
+  <arg name="coverage_caution_vel_theta" default="1.12" />
   <arg name="coverage_caution_enter_clearance" default="0.45" />
   <arg name="coverage_caution_exit_clearance" default="0.55" />
   <arg name="coverage_fast_exit_clearance" default="0.75" />
@@ -170,10 +166,6 @@
     <param name="coverage_caution_vel_x" value="$(arg coverage_caution_vel_x)" />
     <param name="coverage_caution_vel_y" value="$(arg coverage_caution_vel_y)" />
     <param name="coverage_caution_vel_theta" value="$(arg coverage_caution_vel_theta)" />
-    <param name="coverage_teb_weight_kinematics_nh" value="$(arg coverage_teb_weight_kinematics_nh)" />
-    <param name="coverage_teb_weight_forward_drive" value="$(arg coverage_teb_weight_forward_drive)" />
-    <param name="coverage_teb_min_turning_radius" value="$(arg coverage_teb_min_turning_radius)" />
-    <param name="coverage_teb_global_plan_overwrite_orientation" value="$(arg coverage_teb_global_plan_overwrite_orientation)" />
     <param name="coverage_caution_enter_clearance" value="$(arg coverage_caution_enter_clearance)" />
     <param name="coverage_caution_exit_clearance" value="$(arg coverage_caution_exit_clearance)" />
     <param name="coverage_fast_exit_clearance" value="$(arg coverage_fast_exit_clearance)" />
