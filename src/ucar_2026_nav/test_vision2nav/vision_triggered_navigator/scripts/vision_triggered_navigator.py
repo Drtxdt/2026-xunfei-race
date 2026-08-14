@@ -26,6 +26,7 @@ if SCRIPT_DIR not in sys.path:
 from navigator_logic import (
     build_quadrilateral_walls,
     coverage_anchor_order,
+    coverage_escape_direction,
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
     coverage_non_target_early_exit_ready,
@@ -46,6 +47,7 @@ from navigator_logic import (
     footprint_max_cost,
     latch_trigger,
     normalize_angle,
+    nearest_remaining_coverage_order,
     obstacle_clearance_requires_stop,
     parking_footprint_margins,
     parking_goal_from_wall,
@@ -162,6 +164,26 @@ class VisionTriggeredNavigator(object):
             "~coverage_rotation_max_yaw_deg", 90.0))))
         self.coverage_rotation_min_clearance = max(0.0, float(rospy.get_param(
             "~coverage_rotation_min_clearance", 0.28)))
+        self.coverage_escape_enabled = bool(rospy.get_param(
+            "~coverage_escape_enabled", True))
+        self.coverage_escape_distance = max(0.0, float(rospy.get_param(
+            "~coverage_escape_distance", 0.16)))
+        self.coverage_escape_speed = max(0.02, float(rospy.get_param(
+            "~coverage_escape_speed", 0.07)))
+        self.coverage_escape_entry_clearance = max(
+            self.coverage_rotation_min_clearance,
+            float(rospy.get_param("~coverage_escape_entry_clearance", 0.46)))
+        self.coverage_escape_stop_clearance = max(
+            self.coverage_rotation_min_clearance,
+            float(rospy.get_param("~coverage_escape_stop_clearance", 0.30)))
+        self.coverage_escape_sector_half_angle = math.radians(abs(float(
+            rospy.get_param("~coverage_escape_sector_half_angle_deg", 30.0))))
+        self.coverage_escape_timeout = max(0.5, float(rospy.get_param(
+            "~coverage_escape_timeout_sec", 4.0)))
+        self.coverage_escape_max_attempts = max(0, int(rospy.get_param(
+            "~coverage_escape_max_attempts", 2)))
+        self.coverage_max_consecutive_skips = max(0, int(rospy.get_param(
+            "~coverage_max_consecutive_skips", 1)))
         self.coverage_rotation_clearance_tolerance = max(0.0, float(
             rospy.get_param(
                 "~coverage_rotation_clearance_tolerance", 0.005)))
@@ -184,35 +206,43 @@ class VisionTriggeredNavigator(object):
             rospy.get_param(
                 "~coverage_translation_sector_half_angle_deg", 35.0))))
         self.coverage_max_vel_x = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_x", 0.72)))
+            "~coverage_max_vel_x", 0.45)))
         self.coverage_max_vel_y = max(0.05, float(rospy.get_param(
-            "~coverage_max_vel_y", 0.72)))
+            "~coverage_max_vel_y", 0.40)))
         self.coverage_max_vel_theta = max(0.10, float(rospy.get_param(
-            "~coverage_max_vel_theta", 1.45)))
+            "~coverage_max_vel_theta", 0.90)))
         self.coverage_cruise_vel_x = min(
             self.coverage_max_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_x", 0.70))))
+                "~coverage_cruise_vel_x", 0.40))))
         self.coverage_cruise_vel_y = min(
             self.coverage_max_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_cruise_vel_y", 0.70))))
+                "~coverage_cruise_vel_y", 0.35))))
         self.coverage_cruise_vel_theta = min(
             self.coverage_max_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_cruise_vel_theta", 1.30))))
+                "~coverage_cruise_vel_theta", 0.80))))
         self.coverage_caution_vel_x = min(
             self.coverage_cruise_vel_x,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_x", 0.53))))
+                "~coverage_caution_vel_x", 0.25))))
         self.coverage_caution_vel_y = min(
             self.coverage_cruise_vel_y,
             max(0.05, float(rospy.get_param(
-                "~coverage_caution_vel_y", 0.53))))
+                "~coverage_caution_vel_y", 0.20))))
         self.coverage_caution_vel_theta = min(
             self.coverage_cruise_vel_theta,
             max(0.10, float(rospy.get_param(
-                "~coverage_caution_vel_theta", 1.12))))
+                "~coverage_caution_vel_theta", 0.55))))
+        self.coverage_teb_weight_kinematics_nh = max(0.0, float(
+            rospy.get_param("~coverage_teb_weight_kinematics_nh", 5.0)))
+        self.coverage_teb_weight_forward_drive = max(0.0, float(
+            rospy.get_param("~coverage_teb_weight_forward_drive", 20.0)))
+        self.coverage_teb_min_turning_radius = max(0.0, float(
+            rospy.get_param("~coverage_teb_min_turning_radius", 0.0)))
+        self.coverage_teb_overwrite_orientation = bool(rospy.get_param(
+            "~coverage_teb_global_plan_overwrite_orientation", False))
         self.coverage_caution_enter_clearance = max(0.0, float(
             rospy.get_param(
                 "~coverage_caution_enter_clearance", 0.45)))
@@ -1728,6 +1758,99 @@ class VisionTriggeredNavigator(object):
                 return False
         return True
 
+    def _attempt_coverage_escape(self, patrol_idx, attempt):
+        """Move a short, lidar-guarded body-frame step, then stop fully."""
+        self.cmd_vel_pub.publish(Twist())
+        if (not self.coverage_escape_enabled or
+                self.coverage_escape_distance <= 0.0):
+            return False
+        if not self._wait_navigation_idle():
+            rospy.logerr(
+                "[vision_triggered_navigator] 脱困前move_base未释放控制权.")
+            return False
+        now = rospy.get_time()
+        if (not self._odom_is_fresh() or
+                not sensor_is_fresh(
+                    self.scan_received_at, now, self.scan_stale)):
+            rospy.logwarn(
+                "[vision_triggered_navigator] 锚点%d脱困需要新鲜/odom和/scan.",
+                patrol_idx + 1)
+            return False
+        selected = coverage_escape_direction(
+            self.scan_polar_samples,
+            self.coverage_escape_entry_clearance,
+            self.coverage_escape_sector_half_angle,
+        )
+        if selected is None:
+            self._publish_status(
+                "coverage_escape_failed:{}:no_corridor".format(
+                    patrol_idx + 1))
+            rospy.logwarn(
+                "[vision_triggered_navigator] 锚点%d无满足%.3fm入口净空的"
+                "安全脱困方向.", patrol_idx + 1,
+                self.coverage_escape_entry_clearance)
+            return False
+
+        unit_x, unit_y, label, initial_clearance, direction_angle = selected
+        start_pose = self.odom_pose
+        deadline = now + self.coverage_escape_timeout
+        self._publish_status(
+            "coverage_escape_start:{}:{}".format(patrol_idx + 1, label))
+        rospy.logwarn(
+            "[vision_triggered_navigator] 锚点%d第%d次受控脱困: %s "
+            "clearance=%.3fm target=%.3fm speed=%.3fm/s.",
+            patrol_idx + 1, attempt, label, initial_clearance,
+            self.coverage_escape_distance, self.coverage_escape_speed)
+        rate = rospy.Rate(20)
+        succeeded = False
+        try:
+            while not rospy.is_shutdown() and rospy.get_time() < deadline:
+                now = rospy.get_time()
+                if (not self._odom_is_fresh() or
+                        not sensor_is_fresh(
+                            self.scan_received_at, now, self.scan_stale)):
+                    rospy.logerr(
+                        "[vision_triggered_navigator] 脱困中传感器过期，立即停车.")
+                    break
+                dx = self.odom_pose[0] - start_pose[0]
+                dy = self.odom_pose[1] - start_pose[1]
+                cos_yaw = math.cos(start_pose[2])
+                sin_yaw = math.sin(start_pose[2])
+                body_x = cos_yaw * dx + sin_yaw * dy
+                body_y = -sin_yaw * dx + cos_yaw * dy
+                travelled = body_x * unit_x + body_y * unit_y
+                if travelled >= self.coverage_escape_distance:
+                    succeeded = True
+                    break
+                clearance = polar_sector_min(
+                    self.scan_polar_samples,
+                    direction_angle,
+                    self.coverage_escape_sector_half_angle)
+                if obstacle_clearance_requires_stop(
+                        clearance, self.coverage_escape_stop_clearance,
+                        self.coverage_rotation_clearance_tolerance):
+                    rospy.logwarn(
+                        "[vision_triggered_navigator] 脱困%s通道收窄至%s，"
+                        "低于%.3fm，立即停车.", label,
+                        "missing" if clearance is None else
+                        "{:.3f}m".format(clearance),
+                        self.coverage_escape_stop_clearance)
+                    break
+                command = Twist()
+                command.linear.x = unit_x * self.coverage_escape_speed
+                command.linear.y = unit_y * self.coverage_escape_speed
+                self.cmd_vel_pub.publish(command)
+                rate.sleep()
+        finally:
+            self.cmd_vel_pub.publish(Twist())
+            self._hold_stopped(self.coverage_scan_settle)
+
+        status = "coverage_escape_completed" if succeeded else \
+            "coverage_escape_failed"
+        self._publish_status(
+            "{}:{}:{}".format(status, patrol_idx + 1, label))
+        return succeeded
+
     def _visit_coverage_point(self, point, patrol_idx):
         """Visit one calibrated anchor once, then perform its original scan."""
         with self.coverage_observation_lock:
@@ -1752,7 +1875,11 @@ class VisionTriggeredNavigator(object):
             patrol_idx + 1, x, y, yaw)
         result = None
         navigation_reached = False
-        for attempt in range(self.coverage_goal_retry_count + 1):
+        escape_attempts = 0
+        attempt_budget = max(
+            self.coverage_goal_retry_count,
+            self.coverage_escape_max_attempts) + 1
+        for attempt in range(attempt_budget):
             result = self.send_goal(x, y, yaw)
             if self.triggered:
                 return "triggered"
@@ -1830,6 +1957,20 @@ class VisionTriggeredNavigator(object):
             if result == actionlib.GoalStatus.SUCCEEDED:
                 navigation_reached = True
                 break
+            recoverable = (
+                self.current_goal_rotation_stall or
+                self.current_goal_timed_out or
+                result == actionlib.GoalStatus.ABORTED)
+            if (recoverable and
+                    escape_attempts < self.coverage_escape_max_attempts):
+                escape_attempts += 1
+                if self._attempt_coverage_escape(
+                        patrol_idx, escape_attempts):
+                    self._publish_status(
+                        "coverage_escape_retry:{}".format(patrol_idx + 1))
+                    if not self._clear_costmaps_and_wait():
+                        return "failed"
+                    continue
             if attempt < self.coverage_goal_retry_count:
                 self.cmd_vel_pub.publish(Twist())
                 if not self._wait_navigation_idle():
@@ -1849,10 +1990,10 @@ class VisionTriggeredNavigator(object):
             rospy.logwarn(
                 "[vision_triggered_navigator] 精确锚点%d导航未成功"
                 "(state=%s timeout=%s rotation_stall=%s)，"
-                "已用尽%d次尝试，返回可跳过结果.",
+                "已用尽%d次受控尝试，返回可跳过结果.",
                 patrol_idx + 1, str(result), self.current_goal_timed_out,
                 self.current_goal_rotation_stall,
-                self.coverage_goal_retry_count + 1)
+                attempt_budget)
             return "navigation_failed"
         if not self._wait_navigation_idle():
             self.cmd_vel_pub.publish(Twist())
@@ -2758,6 +2899,10 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x",
                 "max_vel_y",
                 "max_vel_theta",
+                "weight_kinematics_nh",
+                "weight_kinematics_forward_drive",
+                "min_turning_radius",
+                "global_plan_overwrite_orientation",
             )
             planner_missing = [
                 name for name in planner_required
@@ -2779,6 +2924,13 @@ class VisionTriggeredNavigator(object):
                 "max_vel_x": self.coverage_cruise_vel_x,
                 "max_vel_y": self.coverage_cruise_vel_y,
                 "max_vel_theta": self.coverage_cruise_vel_theta,
+                "weight_kinematics_nh":
+                    self.coverage_teb_weight_kinematics_nh,
+                "weight_kinematics_forward_drive":
+                    self.coverage_teb_weight_forward_drive,
+                "min_turning_radius": self.coverage_teb_min_turning_radius,
+                "global_plan_overwrite_orientation":
+                    self.coverage_teb_overwrite_orientation,
             })
             if (bool(updated.get("recovery_behavior_enabled", True)) or
                     bool(updated.get("clearing_rotation_allowed", True)) or
@@ -2789,14 +2941,27 @@ class VisionTriggeredNavigator(object):
                     self.coverage_cruise_vel_y + 1e-6 or
                     float(planner_updated.get(
                         "max_vel_theta", float("inf"))) >
-                    self.coverage_cruise_vel_theta + 1e-6):
+                    self.coverage_cruise_vel_theta + 1e-6 or
+                    abs(float(planner_updated.get(
+                        "weight_kinematics_nh", float("inf"))) -
+                        self.coverage_teb_weight_kinematics_nh) > 1e-6 or
+                    abs(float(planner_updated.get(
+                        "weight_kinematics_forward_drive", float("inf"))) -
+                        self.coverage_teb_weight_forward_drive) > 1e-6 or
+                    abs(float(planner_updated.get(
+                        "min_turning_radius", float("inf"))) -
+                        self.coverage_teb_min_turning_radius) > 1e-6 or
+                    bool(planner_updated.get(
+                        "global_plan_overwrite_orientation", True)) !=
+                    self.coverage_teb_overwrite_orientation):
                 raise RuntimeError(
                     "move_base rejected coverage safety configuration")
             self._coverage_speed_profile = "cruise"
             self._coverage_speed_updated_at = rospy.get_time()
             self._publish_status("coverage_recovery_disabled")
             rospy.logwarn(
-                "[vision_triggered_navigator] 任务2期间已临时关闭move_base恢复行为和清障旋转；退出时自动恢复.")
+                "[vision_triggered_navigator] 任务2已关闭旋转恢复并启用"
+                "全向TEB约束；退出时自动恢复.")
             return True
         except Exception as exc:
             rospy.logerr(
@@ -2812,22 +2977,30 @@ class VisionTriggeredNavigator(object):
         self._saved_teb_coverage_config = None
         self._coverage_speed_profile = None
         self._coverage_speed_updated_at = 0.0
-        try:
-            if saved and self._move_base_reconfigure_client is not None:
+        failures = []
+        if saved and self._move_base_reconfigure_client is not None:
+            try:
                 self._move_base_reconfigure_client.update_configuration(saved)
                 rospy.loginfo(
                     "[vision_triggered_navigator] 已恢复move_base恢复配置 recovery=%s clearing_rotation=%s.",
                     saved["recovery_behavior_enabled"],
                     saved["clearing_rotation_allowed"])
-            if saved_teb and self._planner_client is not None:
+            except Exception as exc:
+                failures.append("move_base={}".format(exc))
+        if saved_teb and self._planner_client is not None:
+            try:
                 self._planner_client.update_configuration(saved_teb)
                 rospy.loginfo(
-                    "[vision_triggered_navigator] 已恢复TEB oscillation_recovery=%s.",
+                    "[vision_triggered_navigator] 已恢复任务2前TEB配置 "
+                    "oscillation_recovery=%s.",
                     bool(saved_teb["oscillation_recovery"]))
-        except Exception as exc:
+            except Exception as exc:
+                failures.append("teb={}".format(exc))
+        if failures:
+            self._publish_status("coverage_teb_restore_failed")
             rospy.logerr(
-                "[vision_triggered_navigator] 恢复move_base恢复配置失败: %s",
-                str(exc))
+                "[vision_triggered_navigator] 任务2动态配置恢复失败: %s",
+                "; ".join(failures))
 
     def _tighten_final_tolerances(self):
         """Temporarily tighten TEB only for the 50cm task2 parking goal."""
@@ -3081,6 +3254,7 @@ class VisionTriggeredNavigator(object):
                 ",".join(str(value) for value in self.coverage_skip_anchors)
                 or "none")
         coverage_position = 0
+        consecutive_coverage_skips = 0
         while not rospy.is_shutdown():
             # 一旦被触发，立即切换到视觉阶段
             if self.triggered and state == "PATROL":
@@ -3109,16 +3283,44 @@ class VisionTriggeredNavigator(object):
                         state = "VISION"
                         continue
                     if outcome == "navigation_failed":
+                        consecutive_coverage_skips += 1
                         self._publish_status(
                             "coverage_anchor_skipped:{}".format(
                                 point_idx + 1))
                         rospy.logwarn(
                             "[vision_triggered_navigator] coverage "
                             "anchor=%d navigation failed after %d attempt(s); "
-                            "skip it permanently and continue with the next "
-                            "anchor.",
+                            "skip this anchor and replan the remaining route "
+                            "from the stopped pose.",
                             point_idx + 1,
-                            self.coverage_goal_retry_count + 1)
+                            max(self.coverage_goal_retry_count,
+                                self.coverage_escape_max_attempts) + 1)
+                        if (consecutive_coverage_skips >
+                                self.coverage_max_consecutive_skips):
+                            self.cmd_vel_pub.publish(Twist())
+                            self._publish_status(
+                                "coverage_skip_guard_hold:{}".format(
+                                    point_idx + 1))
+                            rospy.logerr(
+                                "[vision_triggered_navigator] 连续%d个锚点"
+                                "无法形成有效进展；停止继续追逐远端锚点.",
+                                consecutive_coverage_skips)
+                            break
+                        pose = self._get_robot_pose(self.base_frame)
+                        if pose is not None:
+                            remaining = nearest_remaining_coverage_order(
+                                self.patrol_points,
+                                coverage_order[coverage_position + 1:],
+                                pose[0], pose[1])
+                            coverage_order = (
+                                coverage_order[:coverage_position + 1] +
+                                remaining)
+                            rospy.logwarn(
+                                "[vision_triggered_navigator] 跳过锚点%d后"
+                                "按当前位置重排剩余锚点: %s.",
+                                point_idx + 1,
+                                ",".join(str(index + 1)
+                                         for index in remaining) or "none")
                         coverage_position += 1
                         continue
                     if outcome != "covered":
@@ -3129,6 +3331,7 @@ class VisionTriggeredNavigator(object):
                             point_idx + 1)
                         self._publish_status("coverage_anchor_failed")
                         break
+                    consecutive_coverage_skips = 0
                     coverage_position += 1
                     continue
 

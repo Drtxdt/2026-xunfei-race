@@ -193,6 +193,51 @@ def polar_sector_min(samples, center_angle, half_angle):
     return nearest
 
 
+def coverage_escape_direction(samples, minimum_clearance,
+                              sector_half_angle=math.radians(30.0)):
+    """Choose a deterministic cardinal translation for bounded recovery.
+
+    Reverse is preferred on equal clearance so a trapped base first unwinds
+    its last approach instead of driving deeper into a corner.  The caller
+    must keep checking the selected sector while moving.
+    """
+    candidates = (
+        (-1.0, 0.0, "rear", math.pi),
+        (0.0, 1.0, "left", 0.5 * math.pi),
+        (0.0, -1.0, "right", -0.5 * math.pi),
+        (1.0, 0.0, "front", 0.0),
+    )
+    usable = []
+    for order, candidate in enumerate(candidates):
+        clearance = polar_sector_min(
+            samples, candidate[3], sector_half_angle)
+        if (clearance is not None and math.isfinite(clearance) and
+                clearance >= float(minimum_clearance)):
+            usable.append((float(clearance), -order, candidate))
+    if not usable:
+        return None
+    clearance, _tie_breaker, candidate = max(usable)
+    return candidate[0], candidate[1], candidate[2], clearance, candidate[3]
+
+
+def nearest_remaining_coverage_order(points, remaining_indices,
+                                     robot_x, robot_y):
+    """Order unvisited anchors from the post-recovery robot position."""
+    valid = []
+    for index in remaining_indices or ():
+        index = int(index)
+        if 0 <= index < len(points):
+            valid.append(index)
+    return sorted(
+        valid,
+        key=lambda index: (
+            (float(points[index]["x"]) - float(robot_x)) ** 2 +
+            (float(points[index]["y"]) - float(robot_y)) ** 2,
+            index,
+        ),
+    )
+
+
 def cyclic_coverage_order(points, robot_x, robot_y):
     """Start at the nearest anchor while preserving the calibrated cycle."""
     if not points:

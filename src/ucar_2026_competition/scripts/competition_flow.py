@@ -1931,17 +1931,30 @@ class CompetitionFlow:
         }
         forwarded_defaults = {
             "coverage_rotation_min_clearance": 0.28,
+            "coverage_escape_enabled": True,
+            "coverage_escape_distance": 0.16,
+            "coverage_escape_speed": 0.07,
+            "coverage_escape_entry_clearance": 0.46,
+            "coverage_escape_stop_clearance": 0.30,
+            "coverage_escape_sector_half_angle_deg": 30.0,
+            "coverage_escape_timeout_sec": 4.0,
+            "coverage_escape_max_attempts": 2,
+            "coverage_max_consecutive_skips": 1,
             "coverage_translation_min_clearance": 0.00,
             "coverage_translation_sector_half_angle_deg": 35.0,
-            "coverage_max_vel_x": 0.72,
-            "coverage_max_vel_y": 0.72,
-            "coverage_max_vel_theta": 1.45,
-            "coverage_cruise_vel_x": 0.70,
-            "coverage_cruise_vel_y": 0.70,
-            "coverage_cruise_vel_theta": 1.30,
-            "coverage_caution_vel_x": 0.53,
-            "coverage_caution_vel_y": 0.53,
-            "coverage_caution_vel_theta": 1.12,
+            "coverage_max_vel_x": 0.45,
+            "coverage_max_vel_y": 0.40,
+            "coverage_max_vel_theta": 0.90,
+            "coverage_cruise_vel_x": 0.40,
+            "coverage_cruise_vel_y": 0.35,
+            "coverage_cruise_vel_theta": 0.80,
+            "coverage_caution_vel_x": 0.25,
+            "coverage_caution_vel_y": 0.20,
+            "coverage_caution_vel_theta": 0.55,
+            "coverage_teb_weight_kinematics_nh": 5.0,
+            "coverage_teb_weight_forward_drive": 20.0,
+            "coverage_teb_min_turning_radius": 0.0,
+            "coverage_teb_global_plan_overwrite_orientation": False,
             "coverage_caution_enter_clearance": 0.45,
             "coverage_caution_exit_clearance": 0.55,
             "coverage_fast_exit_clearance": 0.75,
@@ -2421,7 +2434,10 @@ class CompetitionFlow:
                     valid_sources = (
                         "visual_distance",
                         "visual_hold",
-                        "no_vision_fallback",
+                        "visual_live_stop",
+                        "candidate_guarded",
+                        "candidate_guarded_hold",
+                        "unverified_hold",
                     )
                     tolerance = float(rospy.get_param(
                         "~task4_final_progress_tolerance_m", 0.008))
@@ -2437,9 +2453,9 @@ class CompetitionFlow:
                             "tolerance={:.3f}m".format(
                                 planned, progress, tolerance))
                     final_min = float(rospy.get_param(
-                        "~task4_final_stop_min_m", 0.03))
+                        "~task4_final_stop_min_m", 0.06))
                     final_max = float(rospy.get_param(
-                        "~task4_final_stop_max_m", 0.05))
+                        "~task4_final_stop_max_m", 0.08))
                     try:
                         final_distance_value = float(final_distance)
                     except (TypeError, ValueError):
@@ -2451,11 +2467,12 @@ class CompetitionFlow:
                         and final_distance_value is not None
                         and final_min <= final_distance_value <= final_max
                     )
-                    hard_advance_fallback = (
-                        final_stop_source == "hard_advance_timeout"
+                    stopped_degraded_result = (
+                        final_stop_source in (
+                            "odom_guarded", "unverified_hold")
                         and not final_verified
                     )
-                    if not (visual_stop_valid or hard_advance_fallback):
+                    if not (visual_stop_valid or stopped_degraded_result):
                         raise StageError(
                             "task4 final stop not accepted: source={} "
                             "verified={} color={} distance={} "
@@ -2469,10 +2486,12 @@ class CompetitionFlow:
                         "task4", "stop_line_reached",
                         "vehicle held before stop line; visual_distance_m={} "
                         "final_advance_source={} final_progress_m={:.3f} "
-                        "final_stop_source={} final_yellow_distance_m={}".format(
+                        "final_stop_source={} final_yellow_distance_m={} "
+                        "visual_verified={}".format(
                             distance, source, progress, final_stop_source,
                             "missing" if final_distance_value is None
-                            else "{:.3f}".format(final_distance_value)))
+                            else "{:.3f}".format(final_distance_value),
+                            final_verified))
                     return
                 if state == "FAULT":
                     raise StageError(

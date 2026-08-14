@@ -65,6 +65,9 @@ def select_final_advance(
     bias = float(measurement_bias_m)
     if target < 0.0:
         raise ValueError("target clearance must be non-negative")
+    if not all(math.isfinite(value) for value in (
+            target, maximum, fallback, max_age, minimum, bias)):
+        raise ValueError("final advance limits must be finite")
     if maximum < 0.0:
         raise ValueError("maximum advance must be non-negative")
     if not 0.0 <= fallback <= maximum:
@@ -99,6 +102,83 @@ def select_final_advance(
         return 0.0, "visual_hold"
     advance = min(maximum, raw_advance + bias)
     return advance, "visual_distance"
+
+
+def conservative_candidate_distance(samples, now, max_age_sec):
+    """Return the nearest recent aligned yellow estimate.
+
+    Choosing the nearest estimate deliberately under-travels when candidate
+    frames disagree, which is safer than treating one far-biased frame as a
+    reason to drive farther toward the stop line.
+    """
+    max_age = float(max_age_sec)
+    if not math.isfinite(max_age) or max_age <= 0.0:
+        raise ValueError("candidate age limit must be positive")
+    usable = []
+    now = float(now)
+    for sample in samples or ():
+        try:
+            stamp, distance, color, aligned = sample
+            age = now - float(stamp)
+            distance = float(distance)
+        except (TypeError, ValueError):
+            continue
+        if (0.0 <= age <= max_age and bool(aligned) and
+                str(color or "").strip().lower() == "yellow" and
+                math.isfinite(distance) and distance >= 0.0):
+            usable.append(distance)
+    return min(usable) if usable else None
+
+
+def select_guarded_final_advance(
+        confirmed_distance_m, confirmed_age_sec, candidate_distance_m,
+        target_clearance_m, degraded_clearance_m, maximum_advance_m,
+        max_measurement_age_sec, minimum_command_m=0.0):
+    """Plan a vision-bounded advance without a blind fixed-distance move."""
+    target = float(target_clearance_m)
+    degraded_target = float(degraded_clearance_m)
+    maximum = float(maximum_advance_m)
+    minimum = float(minimum_command_m)
+    max_age = float(max_measurement_age_sec)
+    if not all(math.isfinite(value) for value in (
+            target, degraded_target, maximum, minimum, max_age)):
+        raise ValueError("guarded advance limits must be finite")
+    if not 0.0 <= target <= degraded_target:
+        raise ValueError(
+            "target clearances must satisfy 0 <= target <= degraded target")
+    if maximum < 0.0:
+        raise ValueError("maximum advance must be non-negative")
+    if not 0.0 <= minimum <= maximum:
+        raise ValueError("minimum command must be within the advance limit")
+    if max_age <= 0.0:
+        raise ValueError("measurement age limit must be positive")
+    if confirmed_distance_m is not None and confirmed_age_sec is not None:
+        distance, source = select_final_advance(
+            confirmed_distance_m,
+            confirmed_age_sec,
+            target,
+            maximum,
+            0.0,
+            max_age,
+            minimum,
+            0.0,
+        )
+        if source != "no_vision_fallback":
+            return distance, source, float(confirmed_distance_m)
+
+    if candidate_distance_m is None:
+        return 0.0, "unverified_hold", None
+    try:
+        candidate = float(candidate_distance_m)
+    except (TypeError, ValueError):
+        return 0.0, "unverified_hold", None
+    if not math.isfinite(candidate) or candidate < 0.0:
+        return 0.0, "unverified_hold", None
+    raw_advance = max(0.0, candidate - degraded_target)
+    if raw_advance < minimum:
+        return 0.0, "candidate_guarded_hold", candidate
+    return (min(maximum, raw_advance),
+            "candidate_guarded", candidate)
 
 
 class StableLineDistanceFilter:

@@ -19,6 +19,7 @@ from navigator_logic import (
     center_step_angle,
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
+    coverage_escape_direction,
     coverage_near_anchor_action,
     coverage_non_target_early_exit_ready,
     coverage_non_target_observation_matches,
@@ -37,6 +38,7 @@ from navigator_logic import (
     lidar_base_wall_distance,
     lidar_requires_stop,
     normalize_angle,
+    nearest_remaining_coverage_order,
     obstacle_clearance_requires_stop,
     parking_footprint_margins,
     parking_footprint_inside,
@@ -152,14 +154,19 @@ def test_coverage_speed_profile_is_wired_through_launch():
         package_dir, "config", "vision_triggered_navigator.yaml")
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
-    assert math.isclose(float(config["coverage_max_vel_x"]), 0.72)
-    assert math.isclose(float(config["coverage_max_vel_theta"]), 1.45)
-    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.70)
-    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 1.30)
-    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.53)
-    assert math.isclose(float(config["coverage_caution_vel_theta"]), 1.12)
+    assert math.isclose(float(config["coverage_max_vel_x"]), 0.45)
+    assert math.isclose(float(config["coverage_max_vel_theta"]), 0.90)
+    assert math.isclose(float(config["coverage_cruise_vel_x"]), 0.40)
+    assert math.isclose(float(config["coverage_cruise_vel_theta"]), 0.80)
+    assert math.isclose(float(config["coverage_caution_vel_x"]), 0.25)
+    assert math.isclose(float(config["coverage_caution_vel_theta"]), 0.55)
     assert math.isclose(
         float(config["coverage_fast_enter_clearance"]), 0.90)
+    assert math.isclose(
+        float(config["coverage_teb_weight_kinematics_nh"]), 5.0)
+    assert math.isclose(
+        float(config["coverage_teb_weight_forward_drive"]), 20.0)
+    assert config["coverage_teb_global_plan_overwrite_orientation"] is False
 
     launch_path = os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")
@@ -178,9 +185,29 @@ def test_coverage_speed_profile_is_wired_through_launch():
             "coverage_caution_enter_clearance",
             "coverage_caution_exit_clearance",
             "coverage_fast_exit_clearance",
-            "coverage_fast_enter_clearance"):
+            "coverage_fast_enter_clearance",
+            "coverage_teb_weight_kinematics_nh",
+            "coverage_teb_weight_forward_drive",
+            "coverage_teb_min_turning_radius",
+            "coverage_teb_global_plan_overwrite_orientation"):
         assert name in launch_args
         assert node_params[name] == "$(arg {})".format(name)
+
+
+def test_teb_uses_the_real_rectangular_robot_footprint():
+    package_dir = os.path.abspath(os.path.join(
+        os.path.dirname(__file__), ".."))
+    teb_path = os.path.abspath(os.path.join(
+        package_dir, "..", "..", "ucar_nav", "launch", "config",
+        "move_base", "teb_local_planner_params.yaml"))
+    with open(teb_path, "r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)["TebLocalPlannerROS"]
+    footprint = config["footprint_model"]
+    assert footprint["type"] == "polygon"
+    assert footprint["vertices"] == [
+        [0.171, -0.128], [0.171, 0.128],
+        [-0.171, 0.128], [-0.171, -0.128],
+    ]
 
 
 def test_non_target_early_exit_is_wired_through_launch():
@@ -573,7 +600,7 @@ def test_coverage_goal_retries_aborted_timeout_and_rotation_stall_once():
     assert not should_retry_coverage_goal(3, False, False, 0, 1)
 
 
-def test_exhausted_coverage_navigation_is_skipped_without_requeue():
+def test_exhausted_coverage_navigation_escapes_then_bounds_skips():
     package_dir = os.path.abspath(os.path.join(
         os.path.dirname(__file__), ".."))
     script_path = os.path.join(
@@ -581,16 +608,19 @@ def test_exhausted_coverage_navigation_is_skipped_without_requeue():
     with open(script_path, "r", encoding="utf-8") as stream:
         source = stream.read()
     assert 'return "navigation_failed"' in source
+    assert "_attempt_coverage_escape" in source
+    assert '"coverage_escape_start:{}:{}"' in source
     assert '"coverage_anchor_skipped:{}"' in source
-    assert "requeue_failed_coverage_anchor" not in source
-    assert "coverage_anchor_deferred" not in source
+    assert '"coverage_skip_guard_hold:{}"' in source
+    assert "nearest_remaining_coverage_order" in source
 
     config_path = os.path.join(
         package_dir, "config", "vision_triggered_navigator.yaml")
     with open(config_path, "r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     assert int(config["coverage_goal_retry_count"]) == 1
-    assert "coverage_failed_revisit_limit" not in config
+    assert int(config["coverage_escape_max_attempts"]) == 2
+    assert int(config["coverage_max_consecutive_skips"]) == 1
 
     launch_path = os.path.join(
         package_dir, "launch", "vision_triggered_navigator.launch")
@@ -606,7 +636,35 @@ def test_exhausted_coverage_navigation_is_skipped_without_requeue():
     assert launch_args["coverage_goal_retry_count"] == "1"
     assert node_params["coverage_goal_retry_count"] == (
         "$(arg coverage_goal_retry_count)")
-    assert "coverage_failed_revisit_limit" not in launch_args
+    assert launch_args["coverage_escape_max_attempts"] == "2"
+    assert launch_args["coverage_max_consecutive_skips"] == "1"
+
+
+def test_escape_chooses_clearest_cardinal_sector_deterministically():
+    samples = [
+        (0.0, 0.60),
+        (math.pi / 2.0, 0.72),
+        (math.pi, 0.90),
+        (-math.pi / 2.0, 0.72),
+    ]
+    direction = coverage_escape_direction(
+        samples, 0.46, math.radians(10.0))
+    assert direction[2] == "rear"
+    assert math.isclose(direction[3], 0.90)
+    assert math.isclose(direction[4], math.pi)
+    assert coverage_escape_direction(
+        [(0.0, 0.30)], 0.46, math.radians(10.0)) is None
+
+
+def test_remaining_anchors_replan_from_actual_pose_after_skip():
+    points = [
+        {"x": 0.0, "y": 0.0},
+        {"x": 2.0, "y": 0.0},
+        {"x": 1.0, "y": 0.0},
+        {"x": 4.0, "y": 0.0},
+    ]
+    assert nearest_remaining_coverage_order(
+        points, [1, 2, 3], 0.8, 0.0) == [2, 1, 3]
 
 
 def test_second_search_starts_nearest_and_preserves_cyclic_route():

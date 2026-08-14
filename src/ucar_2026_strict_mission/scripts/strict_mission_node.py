@@ -9,6 +9,7 @@ import math
 import subprocess
 import threading
 import time
+from collections import deque
 
 import actionlib
 import cv2
@@ -34,7 +35,8 @@ from ucar_2026_strict_mission.logic import (
     lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
-    select_final_advance,
+    conservative_candidate_distance,
+    select_guarded_final_advance,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -78,6 +80,9 @@ class StrictMissionNode:
         self.final_stop_line_color = None
         self.final_stop_confirm_hits = 0
         self.final_stop_source = "unconfirmed"
+        self.line_distance_candidates = deque(maxlen=30)
+        self.final_live_distance_m = None
+        self.final_live_distance_at = 0.0
         self.odom_pose = None
         self.odom_received_at = 0.0
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
@@ -99,13 +104,13 @@ class StrictMissionNode:
              [0.85, 0.11], [0.90, 0.07], [0.94, 0.03]],
         )
         self.calibration = DistanceCalibration(calibration_points)
-        self.target_min_m = float(rospy.get_param("~target_min_m", 0.05))
-        self.target_max_m = float(rospy.get_param("~target_max_m", 0.07))
+        self.target_min_m = float(rospy.get_param("~target_min_m", 0.06))
+        self.target_max_m = float(rospy.get_param("~target_max_m", 0.08))
         self.policy = ApproachPolicy(
             self.target_min_m,
             self.target_max_m,
             float(rospy.get_param("~absolute_max_m", 0.10)),
-            float(rospy.get_param("~calibration_error_m", 0.03)),
+            float(rospy.get_param("~calibration_error_m", 0.02)),
             speed_far=float(rospy.get_param("~speed_far", 0.10)),
             speed_medium=float(rospy.get_param("~speed_medium", 0.06)),
             speed_near=float(rospy.get_param("~speed_near", 0.05)),
@@ -126,24 +131,26 @@ class StrictMissionNode:
             raise ValueError(
                 "final_advance_m must be within [0.0, 0.20]")
         self.final_target_clearance_m = float(rospy.get_param(
-            "~final_advance_target_clearance_m", 0.05))
+            "~final_advance_target_clearance_m", 0.07))
+        self.degraded_target_clearance_m = float(rospy.get_param(
+            "~degraded_target_clearance_m", 0.09))
         self.final_no_vision_fallback_m = float(rospy.get_param(
-            "~final_advance_no_vision_m", 0.155))
+            "~final_advance_no_vision_m", 0.0))
         self.final_visual_max_age_sec = float(rospy.get_param(
             "~final_advance_visual_max_age_sec", 0.75))
         self.final_minimum_command_m = float(rospy.get_param(
             "~final_advance_min_command_m", 0.015))
         self.final_visual_bias_m = float(rospy.get_param(
-            "~final_advance_visual_bias_m", 0.03))
-        select_final_advance(
+            "~final_advance_visual_bias_m", 0.0))
+        select_guarded_final_advance(
+            None,
             None,
             None,
             self.final_target_clearance_m,
+            self.degraded_target_clearance_m,
             self.final_advance_m,
-            self.final_no_vision_fallback_m,
             self.final_visual_max_age_sec,
             self.final_minimum_command_m,
-            self.final_visual_bias_m,
         )
         self.precision_start_m = float(rospy.get_param(
             "~precision_start_m", 0.14))
@@ -437,12 +444,17 @@ class StrictMissionNode:
         with self.lock:
             self.last_image_at = now
             state = self.state
-            if state not in ("APPROACH_LINE", "FINAL_VISUAL_APPROACH"):
+            if state not in (
+                    "APPROACH_LINE", "FINAL_ADVANCE",
+                    "FINAL_VISUAL_APPROACH"):
                 return
         final_visual_approach = state == "FINAL_VISUAL_APPROACH"
+        final_advance_monitor = state == "FINAL_ADVANCE"
         try:
             frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except CvBridgeError as exc:
+            if final_advance_monitor:
+                return
             if final_visual_approach:
                 self.publish_stop()
                 self.publish_status(
@@ -465,6 +477,8 @@ class StrictMissionNode:
                 self.line_search_origin_yaw = pose[2] if pose else None
                 self.line_search_direction = 1.0
                 self.line_search_reversals = 0
+            if final_advance_monitor:
+                return
             if final_visual_approach:
                 self.publish_stop()
                 self.publish_status(
@@ -491,6 +505,8 @@ class StrictMissionNode:
             self.last_distance_color = (
                 self.last_stop_line_color if distance is not None else None)
         if distance is None:
+            if final_advance_monitor:
+                return
             self.publish_stop()
             self.band_filter.reset()
             self.final_distance_filter.reset()
@@ -508,14 +524,18 @@ class StrictMissionNode:
             )
             return
         if final_visual_approach and distance < self.target_min_m:
-            self.publish_stop()
+            command = Twist()
+            command.linear.x = -max(0.005, float(rospy.get_param(
+                "~final_reverse_speed_mps", 0.012)))
+            self.cmd_pub.publish(command)
             self.band_filter.reset()
             self.final_stop_confirm_hits = 0
             self.publish_status(
                 "final yellow line is closer than the visual target; "
-                "holding for timeout fallback",
+                "backing away at creep speed",
                 distance_m=distance,
                 minimum_target_m=self.target_min_m,
+                commanded_speed_mps=command.linear.x,
             )
             return
         precision_mode = distance <= self.precision_start_m
@@ -549,9 +569,18 @@ class StrictMissionNode:
                 lateral_min=float(rospy.get_param(
                     "~line_lateral_min_speed", 0.015)),
             )
+        if aligned:
+            with self.lock:
+                self.line_distance_candidates.append((
+                    now, distance, self.last_stop_line_color, True))
+                if self.state == "FINAL_ADVANCE":
+                    self.final_live_distance_m = distance
+                    self.final_live_distance_at = now
+        if final_advance_monitor:
+            return
         command = Twist()
         calibrated_fallback = float(rospy.get_param(
-            "~calibrated_final_advance_fallback_sec", 3.0))
+            "~calibrated_final_advance_fallback_sec", 5.0))
         if alignment_state == "yaw":
             command.angular.z = yaw_speed
             self.band_filter.reset()
@@ -776,7 +805,7 @@ class StrictMissionNode:
         missing_timeout = float(rospy.get_param(
             "~final_visual_line_missing_fault_sec", 5.0)) \
             if state == "FINAL_VISUAL_APPROACH" else float(rospy.get_param(
-                "~line_missing_fault_sec", 2.0))
+                "~line_missing_fault_sec", 25.0))
         if (state == "APPROACH_LINE" and self.line_missing_since is not None
                 and now - self.line_missing_since >= missing_timeout):
             self.set_fault(
@@ -963,24 +992,21 @@ class StrictMissionNode:
             measured_distance = self.visual_stop_distance_m
             measured_at = self.visual_stop_distance_at
             measured_color = self.visual_stop_line_color
-            candidate_distance = self.last_distance_m
-            candidate_at = self.last_distance_at
-            candidate_color = self.last_distance_color
+            candidate_samples = tuple(self.line_distance_candidates)
         measurement_age = (
             None if measured_distance is None or measured_at <= 0.0
             else max(0.0, now - measured_at))
-        candidate_age = (
-            None if candidate_distance is None or candidate_at <= 0.0
-            else max(0.0, now - candidate_at))
-        distance, source = select_final_advance(
+        candidate_distance = conservative_candidate_distance(
+            candidate_samples, now, self.final_visual_max_age_sec)
+        distance, source, evidence_distance = select_guarded_final_advance(
             measured_distance,
             measurement_age,
+            candidate_distance,
             self.final_target_clearance_m,
+            self.degraded_target_clearance_m,
             self.final_advance_m,
-            self.final_no_vision_fallback_m,
             self.final_visual_max_age_sec,
             self.final_minimum_command_m,
-            self.final_visual_bias_m,
         )
         with self.lock:
             self.planned_final_advance_m = distance
@@ -988,8 +1014,7 @@ class StrictMissionNode:
         rospy.logwarn(
             "TASK4_FINAL_ADVANCE planned=%.3fm source=%s "
             "confirmed=%s confirmed_color=%s age=%s "
-            "candidate=%s candidate_color=%s candidate_age=%s "
-            "target=%.3fm visual_bias=%.3fm",
+            "candidate=%s evidence=%s target=%.3fm degraded_target=%.3fm",
             distance,
             source,
             "none" if measured_distance is None
@@ -999,11 +1024,10 @@ class StrictMissionNode:
             else "{:.3f}s".format(measurement_age),
             "none" if candidate_distance is None
             else "{:.3f}m".format(candidate_distance),
-            candidate_color or "none",
-            "none" if candidate_age is None
-            else "{:.3f}s".format(candidate_age),
+            "none" if evidence_distance is None
+            else "{:.3f}m".format(evidence_distance),
             self.final_target_clearance_m,
-            self.final_visual_bias_m,
+            self.degraded_target_clearance_m,
         )
         return distance
 
@@ -1059,6 +1083,8 @@ class StrictMissionNode:
             with self.lock:
                 pose = self.odom_pose
                 age = now - self.odom_received_at
+                live_distance = self.final_live_distance_m
+                live_age = now - self.final_live_distance_at
             if pose is None or age > stale_limit:
                 self.publish_stop()
                 raise RuntimeError("odometry became stale during final advance")
@@ -1079,6 +1105,26 @@ class StrictMissionNode:
                 self.publish_stop()
                 raise RuntimeError("vehicle moved backward during final advance")
             remaining = distance - progress
+            live_is_fresh = (
+                live_distance is not None
+                and 0.0 <= live_age <= self.final_visual_max_age_sec)
+            if live_is_fresh and live_distance <= self.target_max_m:
+                self.publish_stop()
+                with self.lock:
+                    self.planned_final_advance_m = max(0.0, progress)
+                    self.final_advance_source = "visual_live_stop"
+                self.publish_status(
+                    "live yellow distance stopped guarded final advance",
+                    distance_m=live_distance,
+                    final_advance_m=max(0.0, progress),
+                    final_progress_m=progress,
+                    final_remaining_m=0.0,
+                )
+                return
+            if live_is_fresh:
+                vision_remaining = max(
+                    0.0, live_distance - self.final_target_clearance_m)
+                remaining = min(remaining, vision_remaining)
             if remaining <= 0.002:
                 self.publish_stop()
                 self.publish_status(
@@ -1155,6 +1201,9 @@ class StrictMissionNode:
                 self.final_stop_line_color = None
                 self.final_stop_confirm_hits = 0
                 self.final_stop_source = "unconfirmed"
+                self.line_distance_candidates.clear()
+                self.final_live_distance_m = None
+                self.final_live_distance_at = 0.0
                 self.parked_event.clear()
                 self.final_parked_event.clear()
                 self.final_distance_filter.reset()
@@ -1166,7 +1215,7 @@ class StrictMissionNode:
                 self.line_search_reversals = 0
             self.publish_status("visual stop-line approach armed")
             fallback_timeout = max(0.0, float(rospy.get_param(
-                "~calibrated_final_advance_fallback_sec", 3.0)))
+                "~calibrated_final_advance_fallback_sec", 5.0)))
             try:
                 self.wait_event(
                     self.parked_event,
@@ -1197,6 +1246,8 @@ class StrictMissionNode:
             planned_advance = self.plan_final_advance()
             with self.lock:
                 self.state = "FINAL_ADVANCE"
+                self.final_live_distance_m = None
+                self.final_live_distance_at = 0.0
             self.publish_status(
                 "starting guarded final stop-line advance",
                 final_advance_m=planned_advance,
@@ -1223,9 +1274,9 @@ class StrictMissionNode:
                 self.line_search_direction = 1.0
                 self.line_search_reversals = 0
             self.publish_status(
-                "hard advance complete; fresh yellow-line precision stop armed")
+                "guarded advance complete; fresh yellow-line precision stop armed")
             final_visual_timeout = float(rospy.get_param(
-                "~final_visual_approach_timeout_sec", 3.0))
+                "~final_visual_approach_timeout_sec", 6.0))
             try:
                 self.wait_event(
                     self.final_parked_event,
@@ -1240,15 +1291,19 @@ class StrictMissionNode:
                     self.final_visual_verified = False
                     self.final_stop_distance_m = self.last_distance_m
                     self.final_stop_line_color = self.last_distance_color
-                    self.final_stop_source = "hard_advance_timeout"
+                    self.final_stop_source = (
+                        "unverified_hold"
+                        if self.final_advance_source == "unverified_hold"
+                        else "odom_guarded")
                 self.publish_stop()
                 rospy.logwarn(
                     "final yellow-line confirmation timed out after %.2fs; "
-                    "accepting the completed guarded hard advance",
+                    "continuing after a stopped degraded result (%s)",
                     final_visual_timeout,
+                    self.final_stop_source,
                 )
                 self.publish_status(
-                    "final visual timeout; completed hard advance accepted",
+                    "final visual timeout; vehicle stopped and degraded result recorded",
                     fallback_timeout_sec=final_visual_timeout,
                 )
             with self.lock:
@@ -1260,11 +1315,12 @@ class StrictMissionNode:
                     and self.policy.in_target_band(
                         self.final_stop_distance_m)
                 )
-                hard_advance_fallback = (
+                stopped_degraded_result = (
                     not self.final_visual_verified
-                    and self.final_stop_source == "hard_advance_timeout"
+                    and self.final_stop_source in (
+                        "odom_guarded", "unverified_hold")
                 )
-                if not (visual_valid or hard_advance_fallback):
+                if not (visual_valid or stopped_degraded_result):
                     raise RuntimeError(
                         "final stop completion source is invalid")
             with self.lock:

@@ -14,12 +14,14 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     ConsecutiveBandFilter,
     DistanceCalibration,
     StableLineDistanceFilter,
+    conservative_candidate_distance,
     forward_progress,
     heading_alignment_command,
     lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
     select_final_advance,
+    select_guarded_final_advance,
     track_launch_for_decision,
     traffic_decision_from_payload,
     valid_stop_line_geometry,
@@ -66,8 +68,8 @@ class OdometryProgressTests(unittest.TestCase):
             competition_root / "config" / "competition.yaml"
         ).read_text(encoding="utf-8")
         self.assertIn("task4_final_progress_tolerance_m: 0.008", config)
-        self.assertIn("task4_final_stop_min_m: 0.03", config)
-        self.assertIn("task4_final_stop_max_m: 0.05", config)
+        self.assertIn("task4_final_stop_min_m: 0.06", config)
+        self.assertIn("task4_final_stop_max_m: 0.08", config)
 
         flow = (
             competition_root / "scripts" / "competition_flow.py"
@@ -78,29 +80,33 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn('status.get("final_visual_verified"', flow)
         self.assertIn('status.get("final_stop_line_color")', flow)
         self.assertIn("task4 final stop not accepted", flow)
-        self.assertIn('final_stop_source == "hard_advance_timeout"', flow)
+        self.assertIn('"odom_guarded", "unverified_hold"', flow)
 
     def test_calibrated_advance_uses_verified_hard_stop_distance(self):
         config = json.loads(
             (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
                 encoding="utf-8"))
         self.assertEqual(
-            config["calibrated_final_advance_fallback_sec"], 3.0)
+            config["calibrated_final_advance_fallback_sec"], 5.0)
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
-            config["final_advance_target_clearance_m"], 0.05)
-        self.assertEqual(config["final_advance_no_vision_m"], 0.155)
+            config["final_advance_target_clearance_m"], 0.07)
+        self.assertEqual(config["degraded_target_clearance_m"], 0.09)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.0)
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
-        self.assertEqual(config["final_advance_visual_bias_m"], 0.03)
+        self.assertEqual(config["final_advance_visual_bias_m"], 0.0)
         self.assertEqual(config["final_visual_confirm_frames"], 3)
         self.assertEqual(config["final_visual_max_spread_m"], 0.02)
         self.assertEqual(
             config["distance_calibration_reference"],
             "front_wheel_to_yellow_line",
         )
-        self.assertEqual(config["final_visual_approach_timeout_sec"], 3.0)
+        self.assertEqual(config["final_visual_approach_timeout_sec"], 6.0)
+        self.assertEqual(config["target_min_m"], 0.06)
+        self.assertEqual(config["target_max_m"], 0.08)
+        self.assertEqual(config["final_reverse_speed_mps"], 0.012)
         self.assertEqual(
             config["final_visual_line_missing_fault_sec"], 5.0)
         self.assertGreaterEqual(config["final_advance_speed_mps"], 0.045)
@@ -122,24 +128,25 @@ class OdometryProgressTests(unittest.TestCase):
             "using calibrated guarded final advance",
             node_source,
         )
-        self.assertIn('"~final_advance_no_vision_m", 0.155)', node_source)
+        self.assertIn('"~final_advance_no_vision_m", 0.0)', node_source)
         self.assertIn(
-            '"~calibrated_final_advance_fallback_sec", 3.0)',
+            '"~calibrated_final_advance_fallback_sec", 5.0)',
             node_source,
         )
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
         self.assertIn("confirmed_color=%s", node_source)
-        self.assertIn("candidate_color=%s", node_source)
+        self.assertIn("degraded_target=%.3fm", node_source)
         self.assertIn('self.state = "FINAL_VISUAL_APPROACH"', node_source)
         self.assertIn("self.final_parked_event", node_source)
         self.assertIn("final yellow stop-line clearance confirmed", node_source)
-        self.assertIn('self.final_stop_source = "hard_advance_timeout"', node_source)
+        self.assertIn('"odom_guarded", "unverified_hold"', node_source)
         self.assertIn(
-            "accepting the completed guarded hard advance", node_source)
+            "vehicle stopped and degraded result recorded", node_source)
+        self.assertIn("backing away at creep speed", node_source)
         self.assertNotIn('color_mode="white"', node_source)
         self.assertNotIn('~white_v_min', node_source)
 
-    def test_unconfirmed_visual_candidate_is_diagnostic_only(self):
+    def test_unconfirmed_visual_candidate_is_a_conservative_guard(self):
         node_source = (
             PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
         ).read_text(encoding="utf-8")
@@ -152,25 +159,62 @@ class OdometryProgressTests(unittest.TestCase):
             node_source,
         )
         self.assertIn(
-            "candidate_distance = self.last_distance_m",
+            "candidate_distance = conservative_candidate_distance",
             node_source,
         )
-        self.assertNotIn(
-            "candidate_distance_m=candidate_distance",
-            node_source,
+        candidate = conservative_candidate_distance(
+            [(9.8, 0.18, "yellow", True),
+             (9.9, 0.16, "yellow", True),
+             (9.95, 0.22, "yellow", False)],
+            10.0,
+            0.75,
         )
-        distance, source = select_final_advance(
+        self.assertEqual(candidate, 0.16)
+        distance, source, evidence = select_guarded_final_advance(
+            None,
+            None,
+            candidate,
+            0.07,
+            0.09,
+            0.20,
+            0.75,
+            0.015,
+        )
+        self.assertAlmostEqual(distance, 0.07)
+        self.assertEqual(source, "candidate_guarded")
+        self.assertEqual(evidence, 0.16)
+
+    def test_missing_visual_evidence_holds_without_blind_advance(self):
+        distance, source, evidence = select_guarded_final_advance(
+            None,
             None,
             None,
             0.05,
+            0.09,
             0.20,
-            0.155,
             0.75,
             0.015,
-            0.03,
         )
-        self.assertEqual(distance, 0.155)
-        self.assertEqual(source, "no_vision_fallback")
+        self.assertEqual(distance, 0.0)
+        self.assertEqual(source, "unverified_hold")
+        self.assertIsNone(evidence)
+
+    def test_confirmed_visual_distance_has_priority_over_candidates(self):
+        distance, source, evidence = select_guarded_final_advance(
+            0.18, 0.10, 0.30, 0.07, 0.09, 0.20, 0.75, 0.015)
+        self.assertAlmostEqual(distance, 0.11)
+        self.assertEqual(source, "visual_distance")
+        self.assertEqual(evidence, 0.18)
+
+    def test_candidate_filter_rejects_stale_misaligned_and_non_yellow(self):
+        candidate = conservative_candidate_distance(
+            [(8.0, 0.12, "yellow", True),
+             (9.9, 0.13, "yellow", False),
+             (9.9, 0.14, "white", True)],
+            10.0,
+            0.75,
+        )
+        self.assertIsNone(candidate)
 
     def test_fresh_visual_distance_selects_only_required_clearance(self):
         distance, source = select_final_advance(
