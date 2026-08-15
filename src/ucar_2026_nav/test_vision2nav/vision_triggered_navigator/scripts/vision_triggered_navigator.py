@@ -25,6 +25,7 @@ if SCRIPT_DIR not in sys.path:
 
 from navigator_logic import (
     build_quadrilateral_walls,
+    clamp_point_from_wall_ends,
     coverage_anchor_order,
     coverage_motion_is_rotation_stall,
     coverage_near_anchor_action,
@@ -355,6 +356,15 @@ class VisionTriggeredNavigator(object):
             "~parking_goal_offset", self.vision_offset)))
         self.parking_staging_offset = abs(float(rospy.get_param(
             "~parking_staging_offset", 0.55)))
+        # 墙角安全距离：交点距墙端点（墙角）小于该值时沿切向推离，
+        # 避免目标点/预停点贴相邻墙导致全局规划必失败。
+        self.parking_corner_safe_dist = abs(float(rospy.get_param(
+            "~parking_corner_safe_dist", 0.25)))
+        # 每次预停重试额外增大的切向夹取距离，保证重试几何不重复。
+        self.parking_retry_tangent_step = abs(float(rospy.get_param(
+            "~parking_retry_tangent_step", 0.15)))
+        self.parking_staging_max_retries = max(0, int(rospy.get_param(
+            "~parking_staging_max_retries", 2)))
         self.parking_staging_timeout = max(1.0, float(rospy.get_param(
             "~parking_staging_timeout_sec", 20.0)))
         self.parking_staging_acceptance = max(0.01, float(rospy.get_param(
@@ -543,6 +553,10 @@ class VisionTriggeredNavigator(object):
         self.parking_wall_point = None
         self.parking_inward_normal = None
         self.parking_wall_name = None
+        # 预停点失败自愈计数；parking_staging_recovering 标记自愈后的重新触发，
+        # 用于保留计数让墙角夹取距离随重试递增。
+        self.parking_staging_retries = 0
+        self.parking_staging_recovering = False
         self.parking_final_wall_fit = None
         self.parking_final_tangent_error = None
         self.parking_last_wall_fit = None
@@ -736,6 +750,14 @@ class VisionTriggeredNavigator(object):
                 rospy.loginfo("[vision_triggered_navigator] %s触发重复到达，保持已锁存状态.",
                               source)
                 return False
+        if self.parking_staging_recovering:
+            # 预停自愈后的重新触发：保留重试计数，墙角夹取距离继续递增，
+            # 避免重试重复同一失败几何。
+            rospy.loginfo(
+                "[vision_triggered_navigator] 预停自愈重试触发，保留重试计数%d.",
+                self.parking_staging_retries)
+        else:
+            self.parking_staging_retries = 0
         rospy.loginfo("[vision_triggered_navigator] 收到%s触发，打断当前导航.", source)
         self._publish_status("triggered")
         self.cancel_goal()
@@ -2994,6 +3016,7 @@ class VisionTriggeredNavigator(object):
         best_normal = None
         best_point = None
         best_wall_name = None
+        best_wall = None
 
         for wall_name, a, b, normal in self.walls:
             t = ray_segment_intersection((px, py), (dx, dy), a, b)
@@ -3002,10 +3025,29 @@ class VisionTriggeredNavigator(object):
                 best_normal = normal
                 best_point = (px + t * dx, py + t * dy)
                 best_wall_name = wall_name
+                best_wall = (wall_name, a, b, normal)
 
         if best_point is None:
             rospy.logerr("[vision_triggered_navigator] 射线与围墙无交点，无法计算视觉目标.")
             return None
+
+        # 墙角切向夹取：交点距墙端点过近时沿切向推离，避免目标/预停点
+        # 贴相邻墙（垂距小于机器人内切半径时全局规划必失败）。
+        # 有效距离随预停重试次数递增，保证每次重试几何不同。
+        corner_min_dist = (self.parking_corner_safe_dist +
+                           self.parking_staging_retries *
+                           self.parking_retry_tangent_step)
+        clamped_point, clamped = clamp_point_from_wall_ends(
+            best_point, best_wall, corner_min_dist)
+        if clamped:
+            rospy.logwarn(
+                "[vision_triggered_navigator] 墙角夹取生效: 墙段=%s "
+                "原交点=(%.4f,%.4f) 夹取后=(%.4f,%.4f) min_dist=%.3f "
+                "(重试次数=%d)",
+                best_wall_name, best_point[0], best_point[1],
+                clamped_point[0], clamped_point[1], corner_min_dist,
+                self.parking_staging_retries)
+        best_point = clamped_point
 
         ix, iy = best_point
         nx, ny = best_normal
@@ -3253,9 +3295,36 @@ class VisionTriggeredNavigator(object):
                     break
                 self._publish_status("parking_staging")
                 if not self._navigate_to_parking_staging(staging_goal):
+                    if (self.coverage_search_mode and
+                            self.parking_staging_retries <
+                            self.parking_staging_max_retries):
+                        # 预停失败自愈：复位触发并回到当前锚点重扫，
+                        # 重试时墙角夹取距离自动增大，避免重复同一失败几何。
+                        self.parking_staging_retries += 1
+                        self.parking_staging_recovering = True
+                        with self.trigger_lock:
+                            self.triggered = False
+                        self.target_error = None
+                        self.target_payload_at = 0.0
+                        self.last_target_payload = None
+                        self.parking_wall_point = None
+                        self.parking_inward_normal = None
+                        self.parking_wall_name = None
+                        self._clear_costmaps_and_wait()
+                        self._publish_status("parking_staging_recovering")
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 预停点导航失败，"
+                            "复位触发并清理costmap后从当前锚点重扫"
+                            "（第%d/%d次重试）.",
+                            self.parking_staging_retries,
+                            self.parking_staging_max_retries)
+                        state = "PATROL"
+                        continue
                     self._publish_status("parking_staging_failed")
                     self._hold_stopped(self.arrival_hold_sec)
                     break
+                # 预停成功（含重试成功）：本次停车序列结束，清除自愈标记。
+                self.parking_staging_recovering = False
                 if not parking_recenter_required(
                         initial_center_error,
                         self.parking_recenter_tolerance):

@@ -7,7 +7,7 @@
 
 goal_x: -1.3359 
 goal_y: -0.4059
-goal_yaw: 0.0112
+goal_yaw: -0.60
 
 # 可选：导航参数
 move_base_server: "/move_base"

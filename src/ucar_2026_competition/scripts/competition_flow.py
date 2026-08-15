@@ -692,6 +692,17 @@ class CompetitionFlow:
             rospy.logwarn(
                 "task2 target centering lost; rearmed OCR for a fresh "
                 "stationary anchor observation")
+        if status == "parking_staging_recovering":
+            with self.lock:
+                self.vision_trigger_latched = False
+                self.trigger_request_pending = False
+                self.trigger_service_accepted = False
+                self.trigger_acknowledged = False
+                self.ocr_filter.reset()
+                self.current_coverage_anchor = None
+            rospy.logwarn(
+                "task2 parking staging failed; rearmed OCR for a fresh "
+                "stationary anchor observation with adjusted parking geometry")
         observing_prefixes = (
             "coverage_anchor_observing:",
             "coverage_remembered_heading_observing:",
@@ -1951,6 +1962,9 @@ class CompetitionFlow:
             "camera_boresight_yaw_offset": 0.0,
             "parking_goal_offset": 0.26,
             "parking_staging_offset": 0.55,
+            "parking_corner_safe_dist": 0.25,
+            "parking_retry_tangent_step": 0.15,
+            "parking_staging_max_retries": 2,
             "parking_staging_timeout_sec": 20.0,
             "parking_staging_position_tolerance": 0.10,
             "parking_staging_yaw_tolerance": 0.10,

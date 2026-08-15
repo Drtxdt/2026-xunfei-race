@@ -137,6 +137,12 @@ parking_staging_success_yaw_tolerance: 0.12
 parking_staging_watchdog_window_sec: 2.0
 parking_staging_min_progress: 0.03
 parking_staging_max_rotation_deg: 45.0
+# 墙角切向夹取：交点距墙端点小于该值时沿切向推离，防止目标/预停点贴相邻墙。
+parking_corner_safe_dist: 0.25
+# 每次预停重试额外增大的切向夹取距离，保证重试几何不重复。
+parking_retry_tangent_step: 0.15
+# 预停点 move_base 失败后复位重扫的最大重试次数，耗尽仍报 parking_staging_failed。
+parking_staging_max_retries: 2
 parking_docking_timeout_sec: 30.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
@@ -196,9 +202,9 @@ initial_pose:
 
 # 巡航点（9 个点）
 patrol_points:
-  - x: -1.70
-    y: -1.8735
-    yaw: 1.0417
+  - x: -1.65
+    y: -1.9235
+    yaw: 1.04
     rotations:
       - {direction: "left", duration: 4.5}
 
@@ -206,7 +212,7 @@ patrol_points:
     y: -2.2796
     yaw: -3.1404
     rotations:
-      - {direction: "right", duration: 3.0}
+      - {direction: "right", duration: 2.0}
       - {direction: "left", duration: 3.5}
 
   - x: -1.6846
@@ -233,13 +239,13 @@ patrol_points:
     y: -2.7417
     yaw: -2.1786
     rotations:
-      - {direction: "left", duration: 4.5}
+      - {direction: "left", duration: 5.0}
 
   - x: 2.3471
     y: -1.6090
     yaw: -0.8607
     rotations:
-      - {direction: "left", duration: 4.5}
+      - {direction: "left", duration: 7.0}
 
   - x: 1.2641
     y: -1.6452

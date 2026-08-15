@@ -17,6 +17,7 @@ from navigator_logic import (
     build_quadrilateral_walls,
     center_angular_command,
     center_step_angle,
+    clamp_point_from_wall_ends,
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
     coverage_near_anchor_action,
@@ -677,6 +678,42 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
     assert math.isclose(gx, 0.27)
     assert math.isclose(gy, 0.03)
     assert math.isclose(abs(yaw), math.pi)
+
+
+def test_corner_clamp_pushes_intersection_away_from_near_wall_end():
+    wall = ("bottom", (0.0, 0.0), (4.0, 0.0), (0.0, 1.0))
+    clamped, changed = clamp_point_from_wall_ends((0.05, 0.0), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 0.25)
+    assert math.isclose(clamped[1], 0.0)
+    clamped, changed = clamp_point_from_wall_ends((3.97, 0.0), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 3.75)
+    assert math.isclose(clamped[1], 0.0)
+
+
+def test_corner_clamp_keeps_distant_intersection_unchanged():
+    wall = ("bottom", (0.0, 0.0), (4.0, 0.0), (0.0, 1.0))
+    clamped, changed = clamp_point_from_wall_ends((2.0, 0.0), wall, 0.25)
+    assert not changed
+    assert math.isclose(clamped[0], 2.0)
+    assert math.isclose(clamped[1], 0.0)
+
+
+def test_corner_clamp_uses_midpoint_when_wall_is_too_short():
+    wall = ("bottom", (0.0, 0.0), (0.3, 0.0), (0.0, 1.0))
+    clamped, changed = clamp_point_from_wall_ends((0.02, 0.0), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 0.15)
+    assert math.isclose(clamped[1], 0.0)
+
+
+def test_corner_clamp_only_moves_tangent_component():
+    wall = ("right", (2.0, -1.0), (2.0, 3.0), (-1.0, 0.0))
+    clamped, changed = clamp_point_from_wall_ends((2.0, -0.9), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 2.0)
+    assert math.isclose(clamped[1], -0.75)
 
 
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
