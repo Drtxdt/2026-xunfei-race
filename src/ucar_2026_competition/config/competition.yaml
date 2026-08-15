@@ -107,6 +107,31 @@ target_trigger_service: /vision_triggered_navigator/trigger_target
 trigger_ack_timeout_sec: 2.0
 task1_task2_handoff_timeout_sec: 5.0
 task1_task2_handoff_stable_sec: 0.5
+
+# National-finals ramp (38 cm wide, 1.50 m base, 23 cm high).  The nominal
+# entry follows the current map; calibrate entry x/y/yaw on the official mat.
+national_ramp_enabled: true
+ramp_imu_topic: /imu
+ramp_entry_x: 0.301
+ramp_entry_y: -0.52
+ramp_entry_yaw: -1.5596
+ramp_navigation_timeout_sec: 45.0
+ramp_traverse_distance_m: 1.70
+ramp_traverse_timeout_sec: 22.0
+ramp_sensor_wait_sec: 2.0
+ramp_sensor_stale_sec: 0.35
+ramp_pitch_enter_deg: 7.0
+ramp_pitch_level_deg: 3.5
+ramp_pitch_limit_deg: 32.0
+ramp_roll_limit_deg: 7.0
+ramp_lateral_limit_m: 0.045
+ramp_lateral_kp: 0.8
+ramp_yaw_kp: 0.8
+ramp_approach_speed_mps: 0.10
+ramp_ascent_speed_mps: 0.18
+ramp_crest_speed_mps: 0.10
+ramp_descent_speed_mps: 0.08
+ramp_exit_speed_mps: 0.10
 # 每次离开贴墙停车框都先直线倒车，禁止move_base从框内强行规划。
 task2_inter_visit_reverse_distance_m: 0.32
 task2_inter_visit_reverse_speed_mps: 0.08
@@ -195,6 +220,10 @@ traffic_x: 0.2395
 traffic_y: -3.10
 traffic_yaw: -1.5596
 traffic_timeout_sec: 180.0
+task4_stop_line_initial_clearance_m: 0.05
+task4_stop_line_crossing_margin_m: 0.01
+task4_crossing_odom_stale_sec: 0.35
+task4_crossing_timeout_sec: 8.0
 task4_final_progress_tolerance_m: 0.008
 task4_final_stop_min_m: 0.03
 task4_final_stop_max_m: 0.05

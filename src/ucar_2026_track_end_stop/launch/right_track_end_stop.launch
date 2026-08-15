@@ -14,6 +14,12 @@
 
   <node pkg="ucar_2026_track_end_stop" type="right_track_end_stop_node" name="right_track_end_stop_node" output="screen">
     <rosparam command="load" file="$(arg config_file)" />
+    <param name="cmd_vel_topic" value="/track_end_stop/raw_cmd_vel" />
+  </node>
+
+  <node pkg="ucar_2026_track_end_stop" type="national_obstacle_avoidance_mux.py"
+        name="national_obstacle_avoidance_mux" output="screen" required="true">
+    <rosparam command="load" file="$(find ucar_2026_track_end_stop)/config/national_obstacle_avoidance.yaml" />
   </node>
 
   <!-- Debug relay: converts raw debug image to compressed JPEG for MobaXterm -->

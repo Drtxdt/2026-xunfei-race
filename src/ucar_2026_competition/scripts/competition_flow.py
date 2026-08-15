@@ -26,7 +26,7 @@ from move_base_msgs.msg import (
     MoveBaseGoal,
 )
 from nav_msgs.msg import OccupancyGrid, Odometry
-from sensor_msgs.msg import LaserScan
+from sensor_msgs.msg import Imu, LaserScan
 from std_msgs.msg import String
 from std_srvs.srv import Empty, Trigger, TriggerResponse
 from ucar_2026_competition_speech.srv import Announce
@@ -39,6 +39,9 @@ from ucar_2026_competition.logic import (
     TemporalTargetFilter,
     DirectedYawAccumulator,
     JsonLineBuffer,
+    planar_progress,
+    RampPhaseController,
+    StopLinePassageGate,
     TRACK_CONFIG,
     normalize_angle,
     normalize_category,
@@ -214,10 +217,17 @@ class CompetitionFlow:
         self.navigator_status = ""
         self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
+        self.traffic_signal = None
+        self.traffic_signal_at = 0.0
+        self.line_follow_prestarted = False
+        self.traffic_announcement = None
         self.red_announced = False
         self.strict_mission_status = {}
         self.track_status = {}
         self.rotation_scan_min = None
+        self.imu_roll = None
+        self.imu_pitch = None
+        self.imu_received_at = 0.0
 
         rospy.Subscriber("/wakeup", String, self._wakeup_cb, queue_size=5)
         rospy.Subscriber("/question", String, self._question_cb, queue_size=5)
@@ -233,6 +243,9 @@ class CompetitionFlow:
         )
         rospy.Subscriber(
             "/scan", LaserScan, self._handoff_scan_cb, queue_size=1)
+        rospy.Subscriber(
+            rospy.get_param("~ramp_imu_topic", "/imu"),
+            Imu, self._imu_cb, queue_size=10)
         rospy.Subscriber(
             "/move_base/local_costmap/costmap", OccupancyGrid,
             self._handoff_costmap_cb, queue_size=1)
@@ -511,6 +524,18 @@ class CompetitionFlow:
                 float(msg.pose.pose.position.y),
                 yaw,
             )
+
+    def _imu_cb(self, msg):
+        q = msg.orientation
+        sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z)
+        cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+        sinp = 2.0 * (q.w * q.y - q.z * q.x)
+        pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+        with self.lock:
+            self.imu_roll = roll
+            self.imu_pitch = pitch
+            self.imu_received_at = time.monotonic()
 
     def _handoff_scan_cb(self, msg):
         nearest = scan_sector_min(
@@ -798,10 +823,15 @@ class CompetitionFlow:
     def _traffic_cb(self, msg):
         try:
             decision = traffic_decision_from_payload(json.loads(msg.data))
-            if decision:
-                self.traffic_decision = decision
+            with self.lock:
+                self.traffic_signal = decision
+                self.traffic_signal_at = time.monotonic()
+                if decision:
+                    self.traffic_decision = decision
         except Exception:
-            return
+            with self.lock:
+                self.traffic_signal = None
+                self.traffic_signal_at = time.monotonic()
 
     def _strict_mission_cb(self, msg):
         try:
@@ -871,6 +901,105 @@ class CompetitionFlow:
             self.cmd_pub.publish(Twist())
             rospy.sleep(0.03)
 
+    def traverse_national_ramp(self):
+        """Cross the 38 cm national-finals ramp with continuous IMU guarding."""
+        entry_x = float(rospy.get_param("~ramp_entry_x", 0.301))
+        entry_y = float(rospy.get_param("~ramp_entry_y", -0.52))
+        entry_yaw = float(rospy.get_param("~ramp_entry_yaw", -1.5596))
+        self.publish_status(
+            "task1", "ramp_approach",
+            "navigating to calibrated ramp centreline entry")
+        self.navigate(
+            entry_x, entry_y, entry_yaw, "task1",
+            timeout_sec=float(rospy.get_param("~ramp_navigation_timeout_sec", 45.0)),
+            status_state="ramp_approach",
+        )
+        self.safe_stop(cancel_navigation=True)
+        stale_sec = max(0.1, float(rospy.get_param(
+            "~ramp_sensor_stale_sec", 0.35)))
+        wait_deadline = time.monotonic() + float(rospy.get_param(
+            "~ramp_sensor_wait_sec", 2.0))
+        while time.monotonic() < wait_deadline and not rospy.is_shutdown():
+            self.check_abort()
+            now = time.monotonic()
+            with self.lock:
+                ready = (
+                    self.base_pose is not None
+                    and self.imu_pitch is not None
+                    and now - self.qr_odom_received_at <= stale_sec
+                    and now - self.imu_received_at <= stale_sec
+                )
+            if ready:
+                break
+            rospy.sleep(0.02)
+        else:
+            raise StageError("ramp traversal requires fresh odometry and IMU")
+
+        controller = RampPhaseController(
+            target_distance_m=rospy.get_param("~ramp_traverse_distance_m", 1.70),
+            pitch_enter_deg=rospy.get_param("~ramp_pitch_enter_deg", 7.0),
+            pitch_level_deg=rospy.get_param("~ramp_pitch_level_deg", 3.5),
+            roll_limit_deg=rospy.get_param("~ramp_roll_limit_deg", 7.0),
+            pitch_limit_deg=rospy.get_param("~ramp_pitch_limit_deg", 32.0),
+            approach_speed=rospy.get_param("~ramp_approach_speed_mps", 0.10),
+            ascent_speed=rospy.get_param("~ramp_ascent_speed_mps", 0.18),
+            crest_speed=rospy.get_param("~ramp_crest_speed_mps", 0.10),
+            descent_speed=rospy.get_param("~ramp_descent_speed_mps", 0.08),
+            exit_speed=rospy.get_param("~ramp_exit_speed_mps", 0.10),
+        )
+        with self.lock:
+            origin = self.base_pose
+        deadline = time.monotonic() + float(rospy.get_param(
+            "~ramp_traverse_timeout_sec", 22.0))
+        lateral_limit = max(0.01, float(rospy.get_param(
+            "~ramp_lateral_limit_m", 0.045)))
+        lateral_kp = float(rospy.get_param("~ramp_lateral_kp", 0.8))
+        yaw_kp = float(rospy.get_param("~ramp_yaw_kp", 0.8))
+        last_phase = None
+        try:
+            while time.monotonic() < deadline and not rospy.is_shutdown():
+                self.check_abort()
+                now = time.monotonic()
+                with self.lock:
+                    pose = self.base_pose
+                    odom_age = now - self.qr_odom_received_at
+                    pitch = self.imu_pitch
+                    roll = self.imu_roll
+                    imu_age = now - self.imu_received_at
+                if (pose is None or pitch is None or roll is None or
+                        odom_age > stale_sec or imu_age > stale_sec):
+                    raise StageError("ramp odometry or IMU became stale")
+                forward, lateral = planar_progress(origin, pose)
+                if abs(lateral) > lateral_limit:
+                    raise StageError(
+                        "ramp centreline error {:.3f}m exceeds {:.3f}m".format(
+                            lateral, lateral_limit))
+                try:
+                    phase, speed = controller.update(forward, pitch, roll)
+                except ValueError as exc:
+                    raise StageError(str(exc))
+                if phase == "complete":
+                    self.publish_status(
+                        "task1", "ramp_complete",
+                        "continuous ramp passage completed at {:.3f}m".format(forward))
+                    return
+                if phase != last_phase:
+                    self.publish_status(
+                        "task1", "ramp_{}".format(phase),
+                        "progress={:.3f}m pitch={:.1f}deg roll={:.1f}deg".format(
+                            forward, math.degrees(pitch), math.degrees(roll)))
+                    last_phase = phase
+                command = Twist()
+                command.linear.x = speed
+                command.linear.y = max(-0.035, min(0.035, -lateral_kp * lateral))
+                yaw_error = normalize_angle(entry_yaw - pose[2])
+                command.angular.z = max(-0.10, min(0.10, yaw_kp * yaw_error))
+                self.cmd_pub.publish(command)
+                rospy.sleep(0.02)
+            raise StageError("ramp traversal timed out")
+        finally:
+            self.safe_stop(cancel_navigation=True)
+
     def task1_task2_handoff(self):
         """Keep localization alive while proving all motion authority is idle."""
         self.publish_status(
@@ -930,6 +1059,13 @@ class CompetitionFlow:
             raise StageError(
                 "task1->task2 costmap refresh produced no fresh scan/costmap snapshot")
         self._wait_transition_announcement("task1")
+        if bool_param("~national_ramp_enabled", True):
+            self.traverse_national_ramp()
+            try:
+                rospy.wait_for_service("/move_base/clear_costmaps", timeout=2.0)
+                rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
+            except (rospy.ROSException, rospy.ServiceException) as exc:
+                raise StageError("post-ramp costmap refresh failed: {}".format(exc))
         self.safe_stop(cancel_navigation=True)
         self.publish_status(
             "task1", "completed",
@@ -2547,9 +2683,27 @@ class CompetitionFlow:
             self.publish_status(
                 "task4", "stop_line_ready",
                 "using manually positioned stop-line start; vehicle held stopped")
+        initial_clearance = self.strict_mission_status.get("final_stop_distance_m")
+        try:
+            initial_clearance = float(initial_clearance)
+        except (TypeError, ValueError):
+            initial_clearance = float(rospy.get_param(
+                "~task4_stop_line_initial_clearance_m", 0.05))
+        gate = StopLinePassageGate(
+            initial_clearance,
+            rospy.get_param("~task4_stop_line_crossing_margin_m", 0.01))
         self.traffic_decision = ""
-        self.red_announced = False
-        self.publish_status("task4", "detecting", "waiting for traffic-light consensus")
+        self.traffic_signal = None
+        self.traffic_signal_at = 0.0
+        self.line_follow_prestarted = False
+        self.traffic_announcement = None
+        crossing_origin = None
+        active_direction = None
+        crossing_started_at = None
+        passed = False
+        self.publish_status(
+            "task4", "detecting",
+            "waiting for green; yellow/red hold unless front wheels crossed")
         try:
             self.start_child(
                 "traffic_light",
@@ -2567,50 +2721,107 @@ class CompetitionFlow:
             deadline = time.time() + float(rospy.get_param("~traffic_timeout_sec", 180.0))
             while time.time() < deadline:
                 self.check_abort()
-                if self.traffic_decision == "stop":
+                now = time.monotonic()
+                with self.lock:
+                    signal_value = self.traffic_signal
+                    pose = self.base_pose
+                    odom_age = now - self.qr_odom_received_at
+                progress = 0.0
+                if crossing_origin is not None and pose is not None:
+                    progress, _ = planar_progress(crossing_origin, pose)
+                action = gate.update(signal_value, progress)
+                if action == "proceed" and active_direction is None:
+                    stale_sec = float(rospy.get_param(
+                        "~task4_crossing_odom_stale_sec", 0.35))
+                    if pose is None or odom_age > stale_sec:
+                        raise StageError(
+                            "cannot enter intersection without fresh odometry")
+                    if crossing_origin is None:
+                        crossing_origin = pose
+                    active_direction = gate.direction
+                    crossing_started_at = now
+                    launch_file, status_topic, _ = TRACK_CONFIG[active_direction]
+                    self.track_status[status_topic] = ""
+                    self.start_child(
+                        "line_follow", "ucar_2026_track_end_stop", launch_file,
+                        {"start_driver": False, "start_camera": False,
+                         "start_viewer": self.debug})
+                    self.publish_status(
+                        "task4", "crossing_stop_line",
+                        "green {}; motion started immediately, target {:.3f}m".format(
+                            active_direction, gate.crossing_distance_m))
+                elif action == "hold" and active_direction is not None:
+                    self.stop_child("line_follow")
                     self.safe_stop()
-                    if not self.red_announced:
-                        self.announce("task4", decision="stop")
-                        self.red_announced = True
-                        self.publish_status("task4", "red_wait", "red light: holding stop")
-                    self.traffic_decision = ""
-                elif self.traffic_decision in ("left", "right", "straight"):
-                    decision = self.traffic_decision
-                    announcement = self._start_announcement(
-                        "task4", decision=decision)
-                    self.stop_child("traffic_light")
-                    self._wait_announcement(announcement)
+                    active_direction = None
+                    crossing_started_at = None
+                    state = "red_wait" if signal_value == "stop" else "yellow_wait"
+                    self.publish_status(
+                        "task4", state,
+                        "front wheels not across line; stopped at {:.3f}/{:.3f}m".format(
+                            progress, gate.crossing_distance_m))
+                elif action == "hold" and active_direction is None:
+                    self.safe_stop()
+                if action == "passed":
+                    decision = gate.direction
+                    if decision not in TRACK_CONFIG:
+                        raise StageError("stop-line crossed without a latched direction")
+                    if not self._child_is_running("line_follow"):
+                        launch_file, status_topic, _ = TRACK_CONFIG[decision]
+                        self.track_status[status_topic] = ""
+                        self.start_child(
+                            "line_follow", "ucar_2026_track_end_stop", launch_file,
+                            {"start_driver": False, "start_camera": False,
+                             "start_viewer": self.debug})
+                    passed = True
+                    self.traffic_decision = decision
+                    self.line_follow_prestarted = self._child_is_running("line_follow")
+                    if not self.line_follow_prestarted:
+                        raise StageError("line-follow controller stopped during crossing")
                     self.traffic_pub.publish(String(data=decision))
+                    self.stop_child("traffic_light")
+                    self.traffic_announcement = self._start_announcement(
+                        "task4", decision=decision)
                     self.publish_status(
                         "task4", "completed",
-                        "decision={}; detector stopped during speech; task5 may start".format(
-                            decision))
-                    self.traffic_decision = decision
+                        "front wheels crossed at {:.3f}m; {} route remains active".format(
+                            progress, decision))
                     return
+                if (active_direction is not None and crossing_started_at is not None
+                        and now - crossing_started_at > float(rospy.get_param(
+                            "~task4_crossing_timeout_sec", 8.0))):
+                    raise StageError("front wheels did not cross the stop line in time")
                 proc = self.children.get("traffic_light")
                 if proc and proc.poll() is not None:
                     raise StageError("traffic-light detector exited unexpectedly")
-                rospy.sleep(0.1)
+                rospy.sleep(0.02)
             raise StageError("traffic-light recognition timed out")
         finally:
             self.stop_child("traffic_light")
-            self.safe_stop(cancel_navigation=True)
+            if not passed:
+                self.stop_child("line_follow")
+                self.safe_stop(cancel_navigation=True)
 
     def task5(self):
         decision = self.traffic_decision or rospy.get_param("~traffic_decision", "").strip().lower()
         if decision not in TRACK_CONFIG:
             raise StageError("task5 traffic_decision must be left/right/straight")
         launch_file, status_topic, finish_value = TRACK_CONFIG[decision]
-        self.safe_stop(cancel_navigation=True)
-        self.track_status[status_topic] = ""
-        self.publish_status("task5", "line_following", "launching {}".format(launch_file))
+        prestarted = (
+            self.line_follow_prestarted and self._child_is_running("line_follow"))
+        if not prestarted:
+            self.safe_stop(cancel_navigation=True)
+            self.track_status[status_topic] = ""
+        self.publish_status(
+            "task5", "line_following",
+            "continuing {}".format(launch_file) if prestarted
+            else "launching {}".format(launch_file))
         try:
-            self.start_child(
-                "line_follow",
-                "ucar_2026_track_end_stop",
-                launch_file,
-                {"start_driver": False, "start_camera": False, "start_viewer": self.debug},
-            )
+            if not prestarted:
+                self.start_child(
+                    "line_follow", "ucar_2026_track_end_stop", launch_file,
+                    {"start_driver": False, "start_camera": False,
+                     "start_viewer": self.debug})
             timeout = float(rospy.get_param("~track_timeout_sec", 420.0))
             self.wait_loop(
                 timeout,
@@ -2619,7 +2830,11 @@ class CompetitionFlow:
             )
         finally:
             self.stop_child("line_follow")
+            self.line_follow_prestarted = False
             self.safe_stop(cancel_navigation=True)
+        if self.traffic_announcement is not None:
+            self._wait_announcement(self.traffic_announcement)
+            self.traffic_announcement = None
         self.announce("task5")
         self.publish_status("task5", "completed", "competition completed")
 

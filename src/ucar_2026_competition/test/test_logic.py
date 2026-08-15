@@ -19,6 +19,9 @@ from ucar_2026_competition.logic import (
     DirectedYawAccumulator,
     final_advance_completed,
     JsonLineBuffer,
+    planar_progress,
+    RampPhaseController,
+    StopLinePassageGate,
     TRACK_CONFIG,
     TemporalTargetFilter,
     normalize_category,
@@ -50,6 +53,34 @@ from ucar_2026_competition.logic import (
 
 
 class CompetitionLogicTest(unittest.TestCase):
+    def test_stop_line_gate_holds_yellow_and_red_until_front_wheels_pass(self):
+        gate = StopLinePassageGate(0.05, 0.01)
+        self.assertEqual(gate.update("left", 0.0), "proceed")
+        self.assertEqual(gate.update("caution", 0.04), "hold")
+        self.assertEqual(gate.update("stop", 0.059), "hold")
+        self.assertEqual(gate.update("stop", 0.061), "passed")
+        self.assertEqual(gate.direction, "left")
+
+    def test_ramp_profile_is_continuous_and_rejects_excess_roll(self):
+        ramp = RampPhaseController(target_distance_m=1.70)
+        phases = [
+            ramp.update(0.0, 0.0, 0.0)[0],
+            ramp.update(0.2, math.radians(10), 0.0)[0],
+            ramp.update(0.7, math.radians(2), 0.0)[0],
+            ramp.update(1.0, math.radians(9), 0.0)[0],
+            ramp.update(1.3, math.radians(2), 0.0)[0],
+            ramp.update(1.71, 0.0, 0.0)[0],
+        ]
+        self.assertEqual(
+            phases, ["approach", "ascent", "crest", "descent", "exit", "complete"])
+        with self.assertRaises(ValueError):
+            RampPhaseController().update(0.5, 0.0, math.radians(8.0))
+
+    def test_planar_progress_uses_start_heading(self):
+        forward, lateral = planar_progress(
+            (1.0, 2.0, math.pi / 2.0), (0.8, 2.5, 0.0))
+        self.assertAlmostEqual(forward, 0.5)
+        self.assertAlmostEqual(lateral, 0.2)
     def test_task2_prewarm_reuse_requires_matching_live_physical_pair(self):
         self.assertTrue(task2_prewarm_reusable(
             True, "physical", "food", "food", True, True))
@@ -522,7 +553,11 @@ class CompetitionLogicTest(unittest.TestCase):
             node.func.attr == "_wait_announcement"
             for node in stationary_calls))
         self.assertIn("_start_announcement", called("task4"))
-        self.assertIn("_wait_announcement", called("task4"))
+        # National-finals green lasts at most two seconds.  Task4 starts the
+        # direction announcement only after the front-wheel crossing latch;
+        # task5 later joins it without stopping the already-running controller.
+        self.assertNotIn("_wait_announcement", called("task4"))
+        self.assertIn("_wait_announcement", called("task5"))
         self.assertIn("stop_child", called("task4"))
 
     def test_competition_config_uses_faster_safe_qr_scan(self):
@@ -748,6 +783,8 @@ class CompetitionLogicTest(unittest.TestCase):
     def test_traffic_and_track_mapping(self):
         payload = {"consensus": {"active": True, "class_name": "green_straight"}}
         self.assertEqual(traffic_decision_from_payload(payload), "straight")
+        yellow = {"consensus": {"active": True, "class_name": "yellow_light"}}
+        self.assertEqual(traffic_decision_from_payload(yellow), "caution")
         self.assertEqual(TRACK_CONFIG["straight"][0], "stable_right_track_end_stop.launch")
 
     def test_fragmented_json_lines(self):

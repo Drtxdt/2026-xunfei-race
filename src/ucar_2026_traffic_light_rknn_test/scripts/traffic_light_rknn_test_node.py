@@ -20,11 +20,14 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
 from ucar_2026_traffic_light_rknn_test.classifier import (
+    BinarySignalConsensus,
     CLASS_NAMES,
     ScoreConsensus,
+    detect_yellow_signal,
     make_detection_payload,
     preprocess_frame,
     stable_softmax,
+    yellow_override_state,
 )
 
 try:
@@ -135,6 +138,10 @@ class TrafficLightRknnTestNode(object):
             green_confirm_frames=self.green_confirm_frames,
             release_frames=self.release_frames,
         )
+        self.yellow_consensus = BinarySignalConsensus(
+            confirm_frames=self.yellow_confirm_frames,
+            release_frames=self.yellow_release_frames,
+        )
         self.rknn = self._load_rknn()
         self.speak_pub = rospy.Publisher(self.speak_topic, String, queue_size=1)
         self.det_pub = rospy.Publisher(self.detections_topic, String, queue_size=1)
@@ -185,6 +192,19 @@ class TrafficLightRknnTestNode(object):
         self.red_confirm_frames = int(rospy.get_param("~red_confirm_frames", 2))
         self.green_confirm_frames = int(rospy.get_param("~green_confirm_frames", 3))
         self.release_frames = int(rospy.get_param("~consensus_release_frames", 1))
+        self.yellow_enabled = bool(rospy.get_param("~yellow_enabled", True))
+        self.yellow_confirm_frames = int(rospy.get_param("~yellow_confirm_frames", 2))
+        self.yellow_release_frames = int(rospy.get_param("~yellow_release_frames", 1))
+        self.yellow_x_min_ratio = float(rospy.get_param("~yellow_x_min_ratio", 0.25))
+        self.yellow_x_max_ratio = float(rospy.get_param("~yellow_x_max_ratio", 0.75))
+        self.yellow_h_min = int(rospy.get_param("~yellow_h_min", 16))
+        self.yellow_h_max = int(rospy.get_param("~yellow_h_max", 40))
+        self.yellow_s_min = int(rospy.get_param("~yellow_s_min", 110))
+        self.yellow_v_min = int(rospy.get_param("~yellow_v_min", 140))
+        self.yellow_min_area_ratio = float(rospy.get_param(
+            "~yellow_min_area_ratio", 0.0008))
+        self.yellow_max_area_ratio = float(rospy.get_param(
+            "~yellow_max_area_ratio", 0.12))
         self.image_timeout = float(rospy.get_param("~image_timeout", 1.0))
         self.publish_debug = bool(rospy.get_param("~publish_debug", True))
 
@@ -254,6 +274,7 @@ class TrafficLightRknnTestNode(object):
             elif self.last_frame_walltime and time.time() - self.last_frame_walltime > self.image_timeout:
                 if not self.timeout_reported:
                     self.consensus.reset()
+                    self.yellow_consensus.reset()
                     self._publish_status("image_timeout")
                     rospy.logwarn("Camera image timeout; consensus released")
                     self.timeout_reported = True
@@ -276,6 +297,21 @@ class TrafficLightRknnTestNode(object):
                 raise RuntimeError("RKNN classifier returned no outputs")
             probabilities = stable_softmax(outputs[0], len(self.class_names))
             consensus_state = self.consensus.update(probabilities)
+            yellow_detected, yellow_confidence, yellow_bbox = detect_yellow_signal(
+                corrected,
+                roi_bbox,
+                x_min_ratio=self.yellow_x_min_ratio,
+                x_max_ratio=self.yellow_x_max_ratio,
+                h_min=self.yellow_h_min,
+                h_max=self.yellow_h_max,
+                s_min=self.yellow_s_min,
+                v_min=self.yellow_v_min,
+                min_area_ratio=self.yellow_min_area_ratio,
+                max_area_ratio=self.yellow_max_area_ratio,
+            ) if self.yellow_enabled else (False, 0.0, None)
+            yellow_active = self.yellow_consensus.update(yellow_detected)
+            consensus_state = yellow_override_state(
+                consensus_state, yellow_active, yellow_confidence)
             payload = make_detection_payload(
                 stamp,
                 self.class_names,
@@ -285,10 +321,16 @@ class TrafficLightRknnTestNode(object):
                 inference_ms,
                 self.model_quantization,
             )
+            payload["diagnostics"]["yellow_detected"] = bool(yellow_detected)
+            payload["diagnostics"]["yellow_active"] = bool(yellow_active)
+            payload["diagnostics"]["yellow_confidence"] = float(yellow_confidence)
+            payload["diagnostics"]["yellow_bbox"] = yellow_bbox
             self.det_pub.publish(
                 String(data=json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
             )
-            self._publish_debug(corrected, roi_bbox, probabilities, consensus_state, inference_ms)
+            self._publish_debug(
+                corrected, roi_bbox, probabilities, consensus_state,
+                inference_ms, yellow_bbox)
             self._maybe_speak(consensus_state)
             self._publish_status("tracking")
         except Exception as exc:
@@ -296,12 +338,17 @@ class TrafficLightRknnTestNode(object):
             self._publish_status("inference_error")
             rospy.logerr_throttle(2.0, "RKNN classifier inference failed: %s", exc)
 
-    def _publish_debug(self, frame, roi_bbox, probabilities, consensus_state, inference_ms):
+    def _publish_debug(
+            self, frame, roi_bbox, probabilities, consensus_state,
+            inference_ms, yellow_bbox=None):
         if not self.publish_debug:
             return
         image = frame.copy()
         x1, y1, x2, y2 = roi_bbox
         cv2.rectangle(image, (x1, y1), (x2 - 1, y2 - 1), (255, 180, 0), 2)
+        if yellow_bbox is not None:
+            yx1, yy1, yx2, yy2 = yellow_bbox
+            cv2.rectangle(image, (yx1, yy1), (yx2, yy2), (0, 255, 255), 2)
         cv2.putText(
             image,
             "corrected view | crop y=%.2f:%.2f | %.1f ms" % (
@@ -350,6 +397,8 @@ class TrafficLightRknnTestNode(object):
         if not self.enable_speech or not state["active"]:
             return
         class_name = state["class_name"]
+        if class_name not in SPEECH_TEXT:
+            return
         now = time.time()
         if not self.repeat_same and class_name == self.last_spoken_class:
             return

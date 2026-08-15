@@ -6,12 +6,16 @@ add_compile_options(-std=c++14)
 find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   geometry_msgs
+  nav_msgs
   roscpp
+  rospy
   sensor_msgs
   std_msgs
 )
 
 find_package(OpenCV REQUIRED)
+
+catkin_python_setup()
 
 catkin_package()
 
@@ -48,6 +52,15 @@ install(TARGETS track_end_stop_node right_track_end_stop_node stable_right_track
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+catkin_install_python(PROGRAMS
+  scripts/national_obstacle_avoidance_mux.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 install(DIRECTORY config launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_obstacle_logic.py)
+endif()

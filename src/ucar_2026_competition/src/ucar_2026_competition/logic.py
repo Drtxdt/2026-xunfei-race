@@ -27,6 +27,7 @@ TRAFFIC_CLASS_TO_DECISION = {
     "green_right": "right",
     "green_straight": "straight",
     "red_light": "stop",
+    "yellow_light": "caution",
 }
 
 TRACK_CONFIG = {
@@ -46,6 +47,101 @@ TASK4_STAGING_RETIRED = (0.3195, -3.00, -1.5596)
 def normalize_angle(angle):
     """Normalize an angle to [-pi, pi)."""
     return (float(angle) + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def planar_progress(start_pose, current_pose):
+    """Return forward and lateral odometry progress in the start frame."""
+    start_x, start_y, start_yaw = (float(value) for value in start_pose)
+    current_x, current_y = (float(value) for value in current_pose[:2])
+    dx = current_x - start_x
+    dy = current_y - start_y
+    forward = dx * math.cos(start_yaw) + dy * math.sin(start_yaw)
+    lateral = -dx * math.sin(start_yaw) + dy * math.cos(start_yaw)
+    return forward, lateral
+
+
+class StopLinePassageGate(object):
+    """Latch the front-wheel stop-line judgement across a fast light cycle."""
+
+    def __init__(self, initial_clearance_m=0.05, crossing_margin_m=0.01):
+        self.crossing_distance_m = max(
+            0.0, float(initial_clearance_m)) + max(0.0, float(crossing_margin_m))
+        self.direction = None
+        self.passed = False
+
+    def update(self, signal, forward_progress_m):
+        signal = str(signal or "").strip().lower()
+        progress = max(0.0, float(forward_progress_m))
+        if progress >= self.crossing_distance_m:
+            self.passed = True
+        if self.passed:
+            return "passed" if self.direction else "hold"
+        if signal in ("stop", "caution", "", "unknown"):
+            return "hold"
+        if signal not in TRACK_CONFIG:
+            return "hold"
+        if self.direction is None:
+            self.direction = signal
+        return "proceed" if signal == self.direction else "hold"
+
+
+class RampPhaseController(object):
+    """Select a continuous speed profile from ramp pitch and odometry."""
+
+    SPEED_KEYS = {
+        "approach": "approach_speed",
+        "ascent": "ascent_speed",
+        "crest": "crest_speed",
+        "descent": "descent_speed",
+        "exit": "exit_speed",
+    }
+
+    def __init__(
+            self, target_distance_m=1.70, pitch_enter_deg=7.0,
+            pitch_level_deg=3.5, roll_limit_deg=7.0,
+            pitch_limit_deg=32.0, approach_speed=0.10,
+            ascent_speed=0.18, crest_speed=0.10,
+            descent_speed=0.08, exit_speed=0.10):
+        self.target_distance_m = max(0.1, float(target_distance_m))
+        self.pitch_enter = math.radians(abs(float(pitch_enter_deg)))
+        self.pitch_level = math.radians(abs(float(pitch_level_deg)))
+        self.roll_limit = math.radians(abs(float(roll_limit_deg)))
+        self.pitch_limit = math.radians(abs(float(pitch_limit_deg)))
+        self.speeds = {
+            "approach": max(0.01, float(approach_speed)),
+            "ascent": max(0.01, float(ascent_speed)),
+            "crest": max(0.01, float(crest_speed)),
+            "descent": max(0.01, float(descent_speed)),
+            "exit": max(0.01, float(exit_speed)),
+        }
+        self.phase = "approach"
+        self.complete = False
+
+    def update(self, progress_m, pitch_rad, roll_rad):
+        progress = max(0.0, float(progress_m))
+        pitch = abs(float(pitch_rad))
+        roll = abs(float(roll_rad))
+        if roll > self.roll_limit:
+            raise ValueError("ramp roll limit exceeded")
+        if pitch > self.pitch_limit:
+            raise ValueError("ramp pitch limit exceeded")
+        if progress >= self.target_distance_m:
+            self.complete = True
+            self.phase = "complete"
+            return self.phase, 0.0
+        if self.phase == "approach" and (
+                pitch >= self.pitch_enter or progress >= 0.30):
+            self.phase = "ascent"
+        elif self.phase == "ascent" and (
+                pitch <= self.pitch_level and progress >= 0.55):
+            self.phase = "crest"
+        elif self.phase == "crest" and (
+                pitch >= self.pitch_enter or progress >= 0.95):
+            self.phase = "descent"
+        elif self.phase == "descent" and (
+                pitch <= self.pitch_level and progress >= 1.20):
+            self.phase = "exit"
+        return self.phase, self.speeds[self.phase]
 
 
 def normalize_task4_staging_pose(x, y, yaw):

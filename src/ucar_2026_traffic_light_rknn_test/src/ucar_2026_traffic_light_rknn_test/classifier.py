@@ -19,6 +19,111 @@ CLASS_NAMES = (
     "background",
 )
 BACKGROUND_CLASS = "background"
+YELLOW_CLASS = "yellow_light"
+
+
+class BinarySignalConsensus(object):
+    """Debounce a color-only signal without changing the RKNN class layout."""
+
+    def __init__(self, confirm_frames=2, release_frames=1):
+        self.confirm_frames = max(1, int(confirm_frames))
+        self.release_frames = max(1, int(release_frames))
+        self.reset()
+
+    def reset(self):
+        self.hits = 0
+        self.misses = 0
+        self.active = False
+
+    def update(self, detected):
+        if bool(detected):
+            self.hits += 1
+            self.misses = 0
+            if self.hits >= self.confirm_frames:
+                self.active = True
+        else:
+            self.hits = 0
+            self.misses += 1
+            if self.misses >= self.release_frames:
+                self.active = False
+        return self.active
+
+
+def detect_yellow_signal(
+    bgr_frame,
+    roi_bbox,
+    x_min_ratio=0.25,
+    x_max_ratio=0.75,
+    h_min=16,
+    h_max=40,
+    s_min=110,
+    v_min=140,
+    min_area_ratio=0.0008,
+    max_area_ratio=0.12,
+):
+    """Detect a compact yellow lamp inside the classifier crop."""
+    if bgr_frame is None or not isinstance(bgr_frame, np.ndarray):
+        return False, 0.0, None
+    height, width = bgr_frame.shape[:2]
+    x1, y1, x2, y2 = (int(value) for value in roi_bbox)
+    x1 = max(0, min(width - 1, x1))
+    x2 = max(x1 + 1, min(width, x2))
+    y1 = max(0, min(height - 1, y1))
+    y2 = max(y1 + 1, min(height, y2))
+    span = x2 - x1
+    sx1 = x1 + int(round(span * float(x_min_ratio)))
+    sx2 = x1 + int(round(span * float(x_max_ratio)))
+    sx1 = max(x1, min(x2 - 1, sx1))
+    sx2 = max(sx1 + 1, min(x2, sx2))
+    roi = bgr_frame[y1:y2, sx1:sx2]
+    if roi.size == 0:
+        return False, 0.0, None
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        np.array([int(h_min), int(s_min), int(v_min)], dtype=np.uint8),
+        np.array([int(h_max), 255, 255], dtype=np.uint8),
+    )
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    search_area = float(max(1, roi.shape[0] * roi.shape[1]))
+    best = None
+    for index in range(1, count):
+        left, top, comp_width, comp_height, area = (
+            int(value) for value in stats[index]
+        )
+        ratio = float(area) / search_area
+        if not float(min_area_ratio) <= ratio <= float(max_area_ratio):
+            continue
+        if comp_width < 3 or comp_height < 3:
+            continue
+        aspect = float(comp_width) / float(comp_height)
+        fill = float(area) / float(comp_width * comp_height)
+        if not 0.35 <= aspect <= 2.8 or fill < 0.30:
+            continue
+        if best is None or area > best[0]:
+            best = (area, ratio, left, top, comp_width, comp_height)
+    if best is None:
+        return False, 0.0, None
+    _, ratio, left, top, comp_width, comp_height = best
+    confidence = min(1.0, ratio / max(float(min_area_ratio), 1e-9))
+    bbox = [sx1 + left, y1 + top, sx1 + left + comp_width, y1 + top + comp_height]
+    return True, confidence, bbox
+
+
+def yellow_override_state(base_state, active, confidence=0.0):
+    """Return a yellow consensus state while preserving diagnostics shape."""
+    if not active:
+        return base_state
+    state = dict(base_state)
+    state.update({
+        "active": True,
+        "class_name": YELLOW_CLASS,
+        "confidence": float(confidence),
+        "reason": "yellow_hsv_override",
+    })
+    return state
 
 
 def stable_softmax(logits, class_count=5):

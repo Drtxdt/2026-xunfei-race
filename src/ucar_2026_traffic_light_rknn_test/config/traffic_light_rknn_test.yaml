@@ -24,6 +24,20 @@ green_confirm_frames: 3
 # One rejected/background frame immediately makes the published decision inactive.
 consensus_release_frames: 1
 
+# National-finals yellow phase. The RKNN remains the proven fixed five-class
+# model; a compact HSV detector in the same crop supplies yellow_light.
+yellow_enabled: true
+yellow_confirm_frames: 2
+yellow_release_frames: 1
+yellow_x_min_ratio: 0.25
+yellow_x_max_ratio: 0.75
+yellow_h_min: 16
+yellow_h_max: 40
+yellow_s_min: 110
+yellow_v_min: 140
+yellow_min_area_ratio: 0.0008
+yellow_max_area_ratio: 0.12
+
 # Debug and safety
 publish_debug: true
 image_timeout: 1.0

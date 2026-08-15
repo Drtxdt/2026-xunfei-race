@@ -5,6 +5,7 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
+import cv2
 import numpy as np
 
 
@@ -13,11 +14,14 @@ if PACKAGE_SRC not in sys.path:
     sys.path.insert(0, PACKAGE_SRC)
 
 from ucar_2026_traffic_light_rknn_test.classifier import (  # noqa: E402
+    BinarySignalConsensus,
     CLASS_NAMES,
     ScoreConsensus,
+    detect_yellow_signal,
     make_detection_payload,
     preprocess_frame,
     stable_softmax,
+    yellow_override_state,
 )
 
 
@@ -119,3 +123,28 @@ def test_launch_uses_proven_external_tts_wrapper_not_legacy_rospack_lookup():
     assert len(wrappers) == 1
     params = {item.get("name"): item.get("value") for item in wrappers[0].findall("param")}
     assert params == {"start_asr": "false", "start_tts": "true"}
+
+
+def test_yellow_detector_rejects_line_and_accepts_compact_lamp():
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    cv2.circle(frame, (160, 90), 12, (0, 255, 255), -1)
+    active, confidence, bbox = detect_yellow_signal(
+        frame, [0, 40, 320, 180], min_area_ratio=0.0005)
+    assert active and confidence > 0.0 and bbox is not None
+
+    line = np.zeros_like(frame)
+    cv2.rectangle(line, (70, 100), (250, 104), (0, 255, 255), -1)
+    active, _, _ = detect_yellow_signal(
+        line, [0, 40, 320, 180], min_area_ratio=0.0005)
+    assert not active
+
+
+def test_yellow_consensus_and_override_do_not_change_rknn_classes():
+    consensus = BinarySignalConsensus(confirm_frames=2, release_frames=1)
+    assert not consensus.update(True)
+    assert consensus.update(True)
+    base = {"active": True, "class_name": "green_left", "confidence": 0.8}
+    state = yellow_override_state(base, True, 0.7)
+    assert state["class_name"] == "yellow_light"
+    assert CLASS_NAMES == (
+        "green_left", "green_right", "green_straight", "red_light", "background")
