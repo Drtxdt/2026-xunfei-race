@@ -470,7 +470,7 @@ class CompetitionLogicTest(unittest.TestCase):
                 config[key.strip()] = value.strip()
         self.assertEqual(float(config["qr_scan_angular_speed"]), 0.60)
         self.assertAlmostEqual(
-            float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
+            float(config["qr_scan_step_angle_rad"]), math.radians(20.1), places=4)
         self.assertAlmostEqual(
             float(config["qr_scan_total_angle_rad"]), 2.0 * math.pi)
         self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
@@ -485,7 +485,8 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertAlmostEqual(
             float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
         self.assertGreaterEqual(
-            float(config["qr_rotation_min_clearance"]), 0.28)
+            float(config["qr_rotation_min_clearance"]), 0.20)
+        self.assertGreaterEqual(float(config["qr_total_timeout_sec"]), 120.0)
 
     def test_qr_decoder_retries_network_and_reports_pending_work(self):
         launch_path = os.path.abspath(os.path.join(

@@ -10,8 +10,10 @@
     <param name="frame_id" value="map" />
   </node>
 
-  <!-- 2. 启动 rviz（自动加载项目根目录的 rviz1.rviz） -->
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find map_goal_picker)/../../rviz1.rviz" />
+  <!-- 2. 启动 rviz（加载本包配置文件，软件渲染避免 rockchip_dri 崩溃） -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find map_goal_picker)/config/map_goal_picker.rviz">
+    <env name="LIBGL_ALWAYS_SOFTWARE" value="1"/>
+  </node>
 
   <!-- 3. 启动目标点接收节点 -->
   <node pkg="map_goal_picker" type="map_goal_picker" name="map_goal_picker" output="screen">

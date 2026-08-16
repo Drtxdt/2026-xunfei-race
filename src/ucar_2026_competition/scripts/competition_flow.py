@@ -836,6 +836,7 @@ class CompetitionFlow:
             try:
                 return function()
             except StageError as exc:
+                rospy.logerr("stage %s failed: %s", stage, exc)
                 self.stop_all_children()
                 self.pause_and_retry(stage, exc)
 
@@ -1594,18 +1595,18 @@ class CompetitionFlow:
         self.safe_stop()
         raise StageError("QR scan failed to return to its original final yaw")
 
-    def scan_qr_at_current_pose(self, status_state):
+    def scan_qr_at_current_pose(self, status_state, total_angle_override=None,
+                                extra_sweep_override=None, deadline_override=None):
         """Scan one revolution, then drain async results and optionally sweep again."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
         speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
         step_angle = abs(
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(25.0)))
         )
-        total_angle = max(
-            step_angle,
-            abs(float(rospy.get_param(
-                "~qr_scan_total_angle_rad", 2.0 * math.pi))),
-        )
+        total_angle_param = (
+            total_angle_override if total_angle_override is not None
+            else rospy.get_param("~qr_scan_total_angle_rad", 2.0 * math.pi))
+        total_angle = max(step_angle, abs(float(total_angle_param)))
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
         warmup_sec = max(
             settle_sec,
@@ -1618,12 +1619,12 @@ class CompetitionFlow:
             0.5, float(rospy.get_param(
                 "~qr_decoder_ready_timeout_sec", 6.0))
         )
-        extra_sweep_angle = max(
-            0.0,
-            float(rospy.get_param(
+        extra_sweep_param = (
+            extra_sweep_override if extra_sweep_override is not None
+            else rospy.get_param(
                 "~qr_scan_extra_sweep_angle_rad", math.radians(120.0)
-            )),
-        )
+            ))
+        extra_sweep_angle = max(0.0, float(extra_sweep_param))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
@@ -1637,6 +1638,8 @@ class CompetitionFlow:
 
         total_steps = int(math.ceil(total_angle / step_angle))
         scan_deadline = time.monotonic() + scan_timeout
+        if deadline_override is not None:
+            scan_deadline = min(scan_deadline, float(deadline_override))
         self.publish_status(
             "task1",
             status_state,
@@ -1742,6 +1745,52 @@ class CompetitionFlow:
 
         return self._qr_count() >= expected_count
 
+    def scan_qr_at_fallback_point(self, expected_count, qr_total_deadline):
+        """Navigate to the configured fallback point near the wall and rescan.
+
+        到达备用点后持续旋转扫描，直到凑满 expected_count 个码
+        或到达二维码扫描全流程总时间阈值 qr_total_deadline。
+        """
+        if not bool(rospy.get_param("~qr_fallback_enabled", False)):
+            return False
+        goal = rospy.get_param("~qr_fallback_goal", None)
+        try:
+            goal_x = float(goal["x"])
+            goal_y = float(goal["y"])
+            goal_yaw = float(goal["yaw"])
+        except (KeyError, TypeError, ValueError) as exc:
+            rospy.logwarn(
+                "qr_fallback_enabled but ~qr_fallback_goal invalid (%s); "
+                "skip fallback scan", exc)
+            return False
+        remaining = float(qr_total_deadline) - time.monotonic()
+        if remaining <= 0.0:
+            rospy.logwarn(
+                "QR total timeout reached before fallback navigation; "
+                "skip fallback scan")
+            return False
+        nav_timeout = min(
+            float(rospy.get_param("~qr_fallback_navigation_timeout_sec", 45.0)),
+            remaining)
+        # 持续旋转：角度上限按剩余时间换算（事实上只受总时间阈值约束）
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
+        scan_angle = max(2.0 * math.pi, speed * remaining + 2.0 * math.pi)
+        self.publish_status(
+            "task1",
+            "qr_fallback_navigating",
+            "primary scan got {}/{}; moving to fallback point "
+            "x={:.3f} y={:.3f} yaw={:.3f}".format(
+                self._qr_count(), expected_count, goal_x, goal_y, goal_yaw),
+        )
+        self.navigate(
+            goal_x, goal_y, goal_yaw, "task1",
+            timeout_sec=nav_timeout, status_state="qr_fallback_navigating")
+        return self.scan_qr_at_current_pose(
+            "scanning_qr_fallback",
+            total_angle_override=scan_angle,
+            extra_sweep_override=0.0,
+            deadline_override=qr_total_deadline)
+
     # ------------------------------ stages ------------------------------
     def task1(self):
         with self.lock:
@@ -1777,15 +1826,21 @@ class CompetitionFlow:
             self.task1_reasoning_done.clear()
         try:
             qr_scan_started_at = time.monotonic()
+            qr_total_deadline = qr_scan_started_at + float(
+                rospy.get_param("~qr_total_timeout_sec", 240.0))
             with self.lock:
                 self.qr_decoder_ready = False
                 self.qr_decoder_pending_count = 0
                 self.qr_decoder_status_at = 0.0
             self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
             self.qr_collecting = True
-            completed = self.scan_qr_at_current_pose("scanning_qr_primary")
+            completed = self.scan_qr_at_current_pose(
+                "scanning_qr_primary", deadline_override=qr_total_deadline)
 
             expected_count = int(rospy.get_param("~qr_expected_count", 3))
+            if not completed or self._qr_count() < expected_count:
+                completed = self.scan_qr_at_fallback_point(
+                    expected_count, qr_total_deadline)
             if not completed or self._qr_count() < expected_count:
                 raise StageError(
                     "single QR scan pass got {}/{} unique item(s)".format(
@@ -1960,8 +2015,8 @@ class CompetitionFlow:
             "coverage_speed_update_min_interval_sec": 0.50,
             "target_center_steering_sign": -1.0,
             "camera_boresight_yaw_offset": 0.0,
-            "parking_goal_offset": 0.26,
-            "parking_staging_offset": 0.55,
+            "parking_goal_offset": 0.22,
+            "parking_staging_offset": 0.45,
             "parking_corner_safe_dist": 0.25,
             "parking_retry_tangent_step": 0.15,
             "parking_staging_max_retries": 2,
@@ -1974,11 +2029,11 @@ class CompetitionFlow:
             "parking_obstacle_sector_half_angle_deg": 35.0,
             "parking_dock_max_x": 0.10,
             "parking_dock_max_y": 0.06,
-            "parking_dock_max_yaw": 0.15,
-            "parking_dock_min_yaw": 0.15,
-            "parking_dock_normal_tolerance": 0.02,
+            "parking_dock_max_yaw": 0.30,
+            "parking_dock_min_yaw": 0.25,
+            "parking_dock_normal_tolerance": 0.03,
             "parking_dock_tangent_tolerance": 0.02,
-            "parking_dock_yaw_tolerance": 0.05,
+            "parking_dock_yaw_tolerance": 0.07,
             "parking_min_wall_distance": 0.19,
             "parking_lidar_stop_distance": 0.15,
             "parking_recenter_tolerance": 0.04,
