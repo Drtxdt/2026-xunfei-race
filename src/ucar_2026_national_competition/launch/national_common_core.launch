@@ -1,0 +1,29 @@
+<launch>
+  <!-- National common core: the provincial common core with the nav group
+       replaced by the gated national nav stack. -->
+  <arg name="start_nav" default="true" />
+  <arg name="start_camera" default="true" />
+  <arg name="start_speech" default="true" />
+  <arg name="start_asr" default="true" />
+  <arg name="start_tts" default="true" />
+  <arg name="start_llm" default="true" />
+  <arg name="start_rviz" default="false" />
+  <arg name="map" default="$(find ucar_nav)/maps/521.yaml" />
+
+  <include file="$(find ucar_2026_competition)/launch/common_core.launch">
+    <arg name="start_nav" value="false" />
+    <arg name="start_camera" value="$(arg start_camera)" />
+    <arg name="start_speech" value="$(arg start_speech)" />
+    <arg name="start_asr" value="$(arg start_asr)" />
+    <arg name="start_tts" value="$(arg start_tts)" />
+    <arg name="start_llm" value="$(arg start_llm)" />
+    <arg name="start_rviz" value="false" />
+  </include>
+
+  <group if="$(arg start_nav)">
+    <include file="$(find ucar_2026_national_competition)/launch/national_nav.launch">
+      <arg name="start_rviz" value="$(arg start_rviz)" />
+      <arg name="map" value="$(arg map)" />
+    </include>
+  </group>
+</launch>

@@ -1,0 +1,123 @@
+# ============================================================================
+# 国赛总控参数（任务一带坡道 + 省赛 task2~task5 交接）
+# 本文件是国赛流程节点的唯一参数来源：launch 不允许覆盖这里的任何值，
+# 调参只改本文件后重启 roslaunch。
+# 标有【标定】的参数必须在上场前按国赛场地实测修改。
+# ============================================================================
+
+config_loaded: true
+
+# ------------------------------ 运行模式 -----------------------------------
+# 启动阶段模式：
+#   full   - 完整国赛流程（语音->坡道->扫码->推理播报->交接省赛）
+#   task1  - 只跑到任务一播报，不交接
+#   ramp   - 只测坡道段（导航到坡前暂泊点->过坡->恢复定位）
+start_stage: full
+# 是否启用坡道段。false 时 full 模式跳过 traverse_ramp/post_ramp_recovery，
+# 行为等同省赛任务一（用于无坡道场地回归测试）。
+ramp_enabled: true
+# 是否启用仿真（任务三）。决定交接链：
+#   true  : task2 -> task3_task4 -> task4_task5
+#   false : task2 -> task4 -> task5
+enable_simulation: true
+
+# ------------------------------ 坡道暂泊点【标定】---------------------------
+# 坡脚前 20~30cm 的暂泊位姿（map 系，x/y/弧度 yaw）。
+# 车头朝向必须与坡道轴向一致（误差 < 3°），过坡航向保持以此为基准。
+ramp_staging_x: 0.0
+ramp_staging_y: 0.0
+ramp_staging_yaw: 0.0
+# 导航到坡道暂泊点的 move_base 超时（秒）。
+ramp_navigation_timeout_sec: 90.0
+
+# ------------------------------ 坡道执行 -----------------------------------
+# 坡道节点启动服务。
+ramp_start_service: /ramp_traverse/start
+# 等待坡道节点 DONE 的总超时（秒）。应 >= 坡道 traverse_timeout_sec。
+ramp_timeout_sec: 150.0
+# 轮询坡道状态的话题间隔（秒）。
+ramp_poll_interval_sec: 0.1
+# 过坡完成后的静置时间（秒）：等 AMCL 吸收首帧扫描并 clear costmap。
+post_ramp_settle_sec: 1.5
+# 是否在过坡后调用 /move_base/clear_costmaps 清除坡道期间的陈旧标记。
+post_ramp_clear_costmap: true
+
+# ------------------------------ 静止确认 -----------------------------------
+# 交接控制权前（进坡/出坡）等待底盘完全静止：
+# odom 线速度 <= 0.01 m/s 且角速度 <= 0.02 rad/s，持续 stable 秒。
+stationary_timeout_sec: 5.0
+stationary_stable_sec: 0.5
+# odom 数据最大允许间隔（秒）。
+stationary_odom_stale_sec: 0.5
+
+# ------------------------------ 二维码区导航【标定】-------------------------
+# 二维码领取区目标位姿（map 系）。
+qr_area_x: -1.6598
+qr_area_y: -0.8718
+qr_area_yaw: 2.2645
+# 导航到二维码区的 move_base 超时（秒）。
+qr_navigation_timeout_sec: 120.0
+
+# ------------------------------ 旋转扫码 -----------------------------------
+# 需要扫到的二维码个数。
+qr_expected_count: 3
+# 扫码全流程总超时（秒）：主扫+网络等待+备用点补扫全算在内。
+qr_total_timeout_sec: 120.0
+# 旋转角速度（rad/s）。与省赛一致。
+qr_scan_angular_speed: 0.60
+# 每步转角（弧度，约 20.1°），转完停车识别。
+qr_scan_step_rad: 0.3507993877991494
+# 每步停车后的静置识别时间（秒）。
+qr_scan_settle_sec: 0.3
+# 整圈扫完后等待网络结果回收的窗口（秒）。
+qr_drain_sec: 20.0
+# 每步旋转前的全向激光最小净空（m）；雷达数据缺失时不拦截。
+# 国赛注意：下坡后雷达刚恢复，此值可适当放宽。
+qr_rotation_min_clearance: 0.15
+# 主扫不足三码时是否启用备用点补扫。
+qr_fallback_enabled: true
+# 备用扫码点位姿（map 系）【标定】：距二维码墙较近的点位。
+qr_fallback_x: -1.6598
+qr_fallback_y: -0.8718
+qr_fallback_yaw: 2.2645
+# 备用点导航超时（秒）。
+qr_fallback_navigation_timeout_sec: 45.0
+# QR 解码器 ready 等待超时（秒）；超时仅告警不阻断。
+qr_decoder_ready_timeout_sec: 6.0
+
+# ------------------------------ 语音握手 -----------------------------------
+# 唤醒应答与指令确认文案。
+voice_wakeup_reply: "我在"
+voice_command_reply: "好的"
+# AIUI 开始/停止监听服务。
+voice_start_listening_service: /speech_command_node/start_listening
+voice_stop_listening_service: /speech_command_node/stop_listening
+
+# ------------------------------ 大模型与播报 -------------------------------
+# 星火 X2 推理服务（ucar_2026_smart_factory_llm 提供）。
+llm_service: /smart_factory_llm/reason_pickup_order
+# LLM 调用总超时（秒）。
+task1_reasoning_timeout_sec: 200.0
+# 比赛语音播报网关服务。
+announce_service: /competition_speech/announce
+
+# ------------------------------ 省赛交接（task2~task5）---------------------
+# 省赛 flow_node.launch 包名与 launch 文件（正常情况不需要改）。
+handover_package: ucar_2026_competition
+handover_launch_file: flow_node.launch
+# 子进程状态轮询间隔（秒）。
+handover_poll_interval_sec: 0.2
+# 交通灯停车线标定，透传给省赛 task4。【标定】
+# traffic_pose_configured 为 false 时省赛流程会在 task4 安全暂停。
+traffic_pose_configured: false
+traffic_x: 0.2395
+traffic_y: -3.10
+traffic_yaw: -1.5596
+# true = 车已人工摆在停止线前（联调模式），省赛 task4 直接进识别。
+skip_task4_stop_line_approach: false
+
+# ------------------------------ 状态话题 -----------------------------------
+# 国赛总控状态 JSON（stage/state/message/stamp）。
+status_topic: /national/status
+# 任务一结果话题（与省赛 /competition/task1_result 同字段格式）。
+task1_result_topic: /competition/task1_result

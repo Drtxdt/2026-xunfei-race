@@ -1,0 +1,122 @@
+# ============================================================================
+# 国赛坡道通过参数（上22°-平路-下25°，总长1.5m）
+# 本文件是坡道节点的唯一参数来源：launch 不允许覆盖这里的任何值，
+# 调参只改本文件后重启 roslaunch。
+# 所有距离均为里程计路径长度（沿坡面），单位米；角度单位度/弧度见各行注释。
+# ============================================================================
+
+# 配置加载标记：节点启动时检查该参数，若缺失说明 yaml 没有被加载，
+# 会在日志中显著告警，防止比赛时以默认参数误跑。
+config_loaded: true
+
+# ------------------------------ 基础 ---------------------------------------
+# 控制循环频率（Hz）。必须远大于底盘 cmd_timeout(0.2s) 的倒数，
+# 保证坡上 cmd_vel 永不超时断流（建议 >= 10）。
+control_rate_hz: 20.0
+# 状态日志节流间隔：rospy.loginfo 播报间隔（秒），0 = 每循环都打印。
+log_interval_sec: 1.0
+
+# ------------------------------ 话题 / 服务 --------------------------------
+# IMU 话题（base_driver 发布，含 orientation 四元数与 angular_velocity）。
+imu_topic: /imu
+# 轮速里程计话题（坡上唯一的位移来源）。
+odom_topic: /odom
+# 底盘速度指令话题（坡道期间独占）。
+cmd_vel_topic: /cmd_vel
+# 坡道节点状态 JSON 话题（latched，含 state/segment/pitch_deg/distance_m）。
+status_topic: /ramp_traverse/status
+# 雷达门控服务（scan_gate 节点提供，SetBool）。
+gate_service: /scan_gate/set_open
+# 门控状态话题（用于开门后确认扫描恢复流动）。
+gate_status_topic: /scan_gate/status
+# 调用门控服务的等待超时（秒）。超时视为 StageError 安全停车。
+gate_timeout_sec: 5.0
+# 过坡完成后是否自动重新开门（恢复 AMCL）。调试单段时可置 false。
+reopen_gate_on_finish: true
+# 开门后等待雷达恢复流动的确认时长（秒）；0 = 不确认。
+# 确认方式：gate status 中 forwarded 计数在增长。
+gate_reopen_verify_sec: 2.0
+
+# ------------------------------ 俯仰角处理 ---------------------------------
+# pitch 符号修正。上车标定：车头朝上坡放在 22° 坡上，
+# rostopic echo /ramp_traverse/status 看 pitch_deg 必须为正(约+22)；
+# 若为负改为 -1.0。
+pitch_sign: 1.0
+# 平地零偏修正（度）。平地上 pitch_deg 应≈0，否则把稳定偏差填到这里。
+level_offset_deg: 0.0
+# pitch 中值滤波窗口（帧）。滤掉车身颠簸单帧尖峰。
+pitch_filter_window: 5
+
+# ------------------------------ 坡道分段 -----------------------------------
+# 状态机：level -> up -> plateau -> down -> complete（严格顺序，不可跳变）。
+# 进入阈值远离真实坡度(22/25°)防误触；退出阈值带迟滞防坡口抖动回跳。
+# 每次状态切换需连续 confirm_frames 帧满足条件才生效。
+# level->up：pitch >= up_enter_deg
+up_enter_deg: 8.0
+# up->plateau：|pitch| <= up_exit_deg
+up_exit_deg: 3.0
+# plateau->down：pitch <= down_enter_deg
+down_enter_deg: -8.0
+# down->complete：|pitch| <= |down_exit_deg|
+down_exit_deg: -3.0
+# 状态确认帧数（帧）。
+confirm_frames: 3
+
+# ------------------------------ 速度 ---------------------------------------
+# 各段目标速度（m/s）。原则：慢到不打滑、快到不溜车超时。
+# level 段（坡前平地接近段）。
+speed_approach_mps: 0.5
+# 上坡段。麦轮爬 22° 需要持续动力，太慢反而力矩不足。
+speed_up_mps: 0.8
+# 坡顶平路段。
+speed_plateau_mps: 0.5
+# 下坡段。重力分量助跑，稍慢防冲出。
+speed_down_mps: 0.5
+# 下坡结束后的轴距余量前进段。
+speed_exit_mps: 0.12
+# 加速度上限（m/s^2）：起步/提速斜率，防坡上打滑污染里程计。
+accel_limit_mps2: 0.25
+# 减速度上限（m/s^2）：停车减速斜率。
+decel_limit_mps2: 0.40
+
+# ------------------------------ 航向保持 -----------------------------------
+# 航向来源。目标航向在过坡开始瞬间取自同一来源，因此坐标系约定无关。
+#   imu_orientation - IMU 四元数 yaw（推荐，坡上不受轮子打滑影响）
+#   gyro            - 角速度积分（IMU yaw 漂移大时的备选）
+#   odom            - 轮速里程计 yaw（打滑时会漂，最后手段）
+heading_source: imu_orientation
+# 航向 P 增益（rad 误差 -> rad/s 角速度）。
+heading_kp: 1.6
+# 角速度限幅（rad/s），防坡上猛打角导致侧滑。
+heading_max_angular: 0.35
+# 航向死区（度）：死区内不修正，防画龙。
+heading_deadband_deg: 1.5
+
+# ------------------------------ 距离与看门狗 -------------------------------
+# 坡道名义总长（m）。坡长 1.5m。
+nominal_ramp_length_m: 1.5
+# 距离硬预算余量（m）：里程 > 名义长 + 余量 即 FAULT。
+# 覆盖坡前接近段 + 下坡后余量段 + 打滑冗余。
+distance_margin_m: 0.90
+# 下坡结束（pitch 回平）后继续直行的轴距余量（m）。
+# 车长约 0.34m，前轮落地时后轮仍在坡上；必须 >= 半轴距。
+exit_extra_m: 0.28
+# IMU 数据最大允许间隔（秒），超时 FAULT。
+imu_timeout_sec: 1.0
+# 里程计数据最大允许间隔（秒），超时 FAULT。
+odom_timeout_sec: 1.0
+# 整个过坡流程硬超时（秒）。1.5m @ 0.15m/s ≈ 10s，余量给起步停车。
+traverse_timeout_sec: 120.0
+# 到位后持续发送零速度的保持时长（秒），确保完全停稳。
+post_stop_zero_sec: 1.5
+# 开门后额外静置时长（秒），等 AMCL 拿到首帧扫描后再交还控制权。
+post_stop_settle_sec: 0.6
+
+# ------------------------------ 完成校验 -----------------------------------
+# 是否要求坡度签名：complete 时必须真实见过上坡与下坡。
+# 防止平地误判 complete（例如漏上坡直接平推到底）。
+require_pitch_signature: true
+# 整个过程出现过的最大 pitch 必须 >= 该值（度），即真的上过坡。
+min_up_pitch_seen_deg: 12.0
+# 整个过程出现过的最小 pitch 必须 <= 该值（度），即真的下过坡。
+min_down_pitch_seen_deg: -12.0
