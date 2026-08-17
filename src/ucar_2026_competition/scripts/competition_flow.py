@@ -604,10 +604,10 @@ class CompetitionFlow:
                         "odom_yaw": float(yaw),
                         "stamp": time.time(),
                     }
-                    rospy.loginfo(
-                        "task2 warehouse memory: category=%s anchor=%d "
-                        "score=%.3f area=%.4f odom_yaw=%.3f",
-                        category, anchor, score, area_ratio, yaw)
+                    # rospy.loginfo(
+                    #     "task2 warehouse memory: category=%s anchor=%d "
+                    #     "score=%.3f area=%.4f odom_yaw=%.3f",
+                    #     category, anchor, score, area_ratio, yaw)
                 if non_target_observation_is_actionable(
                         self.ocr_target,
                         category,
@@ -630,14 +630,14 @@ class CompetitionFlow:
         if non_target_event is not None:
             self.vision_non_target_pub.publish(String(
                 data=json.dumps(non_target_event, ensure_ascii=False)))
-            rospy.loginfo(
-                "task2 non-target early-exit notice: category=%s anchor=%d "
-                "score=%.3f area=%.4f",
-                non_target_event["category"],
-                non_target_event["anchor"],
-                non_target_event["score"],
-                non_target_event["area_ratio"],
-            )
+            # rospy.loginfo(
+            #     "task2 non-target early-exit notice: category=%s anchor=%d "
+            #     "score=%.3f area=%.4f",
+            #     non_target_event["category"],
+            #     non_target_event["anchor"],
+            #     non_target_event["score"],
+            #     non_target_event["area_ratio"],
+            # )
         if category == self.ocr_target and target_trigger_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
@@ -645,21 +645,21 @@ class CompetitionFlow:
             category if target_trigger_eligible else None,
             time.monotonic(),
         )
-        rospy.loginfo_throttle(
-            0.5,
-            "task2 OCR filter: target=%s observed=%s hits=%d/%d "
-            "bbox=%s close=%s anchor=%s trigger_eligible=%s bbox_ratio=%s",
-            self.ocr_target,
-            category or "none",
-            self.ocr_filter.hit_count,
-            self.ocr_filter.required,
-            bool(bbox),
-            trigger_eligible,
-            active_anchor or "transit",
-            target_trigger_eligible,
-            ("%.3f/%.3f/%.4f" % bbox_ratios
-             if bbox_ratios is not None else "invalid"),
-        )
+        # rospy.loginfo_throttle(
+        #     0.5,
+        #     "task2 OCR filter: target=%s observed=%s hits=%d/%d "
+        #     "bbox=%s close=%s anchor=%s trigger_eligible=%s bbox_ratio=%s",
+        #     self.ocr_target,
+        #     category or "none",
+        #     self.ocr_filter.hit_count,
+        #     self.ocr_filter.required,
+        #     bool(bbox),
+        #     trigger_eligible,
+        #     active_anchor or "transit",
+        #     target_trigger_eligible,
+        #     ("%.3f/%.3f/%.4f" % bbox_ratios
+        #      if bbox_ratios is not None else "invalid"),
+        # )
         if (confirmed and category == self.ocr_target and
                 target_trigger_eligible and
                 not self.vision_trigger_latched):
@@ -671,13 +671,13 @@ class CompetitionFlow:
             self.publish_status(
                 "task2", "trigger_pending",
                 "OCR target confirmed; requesting navigator acknowledgement")
-            rospy.loginfo(
-                "task2 OCR target confirmed: target=%s hits=%d/%d; "
-                "reliable trigger pending (will not retrigger)",
-                self.ocr_target,
-                self.ocr_filter.hit_count,
-                self.ocr_filter.required,
-            )
+            # rospy.loginfo(
+            #     "task2 OCR target confirmed: target=%s hits=%d/%d; "
+            #     "reliable trigger pending (will not retrigger)",
+            #     self.ocr_target,
+            #     self.ocr_filter.hit_count,
+            #     self.ocr_filter.required,
+            # )
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()

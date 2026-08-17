@@ -248,6 +248,8 @@ class StrictMissionNode:
             data=json.dumps(payload, ensure_ascii=False, sort_keys=True)))
 
     def publish_stop(self):
+        if rospy.is_shutdown():
+            return
         self.cmd_pub.publish(Twist())
 
     def set_fault(self, reason):
@@ -551,7 +553,7 @@ class StrictMissionNode:
             )
         command = Twist()
         calibrated_fallback = float(rospy.get_param(
-            "~calibrated_final_advance_fallback_sec", 3.0))
+            "~calibrated_final_advance_fallback_sec", 6.0))
         if alignment_state == "yaw":
             command.angular.z = yaw_speed
             self.band_filter.reset()
@@ -1166,7 +1168,7 @@ class StrictMissionNode:
                 self.line_search_reversals = 0
             self.publish_status("visual stop-line approach armed")
             fallback_timeout = max(0.0, float(rospy.get_param(
-                "~calibrated_final_advance_fallback_sec", 3.0)))
+                "~calibrated_final_advance_fallback_sec", 6.0)))
             try:
                 self.wait_event(
                     self.parked_event,
