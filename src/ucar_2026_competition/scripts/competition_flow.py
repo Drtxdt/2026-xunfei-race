@@ -84,6 +84,10 @@ class CompetitionFlow:
         self.mode = rospy.get_param("~start_stage", "full").strip().lower()
         self.enable_simulation = bool_param("~enable_simulation", False)
         self.debug = bool_param("~debug", False)
+        # task5 line-following package; the national flow overrides this with
+        # the national track package via the hand-over launch arguments.
+        self.track_package = str(rospy.get_param(
+            "~track_package", "ucar_2026_track_end_stop_provincial"))
         self.aborted = threading.Event()
         self.resume_event = threading.Event()
         self.children = {}
@@ -2631,7 +2635,7 @@ class CompetitionFlow:
         try:
             self.start_child(
                 "line_follow",
-                "ucar_2026_track_end_stop_provincial",
+                self.track_package,
                 launch_file,
                 {"start_driver": False, "start_camera": False, "start_viewer": self.debug},
             )

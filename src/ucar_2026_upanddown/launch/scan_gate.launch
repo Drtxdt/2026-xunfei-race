@@ -1,0 +1,8 @@
+<launch>
+  <!-- 雷达门控独立测试。所有参数来自 config/scan_gate.yaml，launch 不覆盖。 -->
+  <node pkg="ucar_2026_upanddown" type="scan_gate_node.py" name="scan_gate"
+        output="screen">
+    <rosparam command="load"
+              file="$(find ucar_2026_upanddown)/config/scan_gate.yaml" />
+  </node>
+</launch>

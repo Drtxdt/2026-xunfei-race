@@ -1,0 +1,20 @@
+<launch>
+  <!-- 一键国赛全流程：门控导航栈 + 语音/ASR/TTS/LLM/相机 + 国赛流程。
+       本 launch 只保留结构性开关（rviz / 地图文件），
+       全部可调参数都在各包 config/*.yaml 中，launch 一律不覆盖。 -->
+  <arg name="debug" default="false" />
+  <arg name="map" default="$(find ucar_nav)/maps/521.yaml" />
+
+  <include file="$(find ucar_2026_national_competition)/launch/national_common_core.launch">
+    <arg name="start_nav" value="true" />
+    <arg name="start_camera" value="true" />
+    <arg name="start_speech" value="true" />
+    <arg name="start_asr" value="true" />
+    <arg name="start_tts" value="true" />
+    <arg name="start_llm" value="true" />
+    <arg name="start_rviz" value="$(arg debug)" />
+    <arg name="map" value="$(arg map)" />
+  </include>
+
+  <include file="$(find ucar_2026_national_competition)/launch/national_flow.launch" />
+</launch>
