@@ -46,7 +46,7 @@
   "calibrated_final_advance_fallback_sec": 6.0,
   "final_advance_m": 0.20,
   "final_advance_target_clearance_m": 0.05,
-  "final_advance_no_vision_m": 0.14,
+  "final_advance_no_vision_m": 0.141,
   "final_advance_visual_max_age_sec": 0.75,
   "final_advance_min_command_m": 0.015,
   "final_advance_visual_bias_m": 0.03,

@@ -132,8 +132,8 @@ coverage_candidate_hold_sec: 1.2
 coverage_scan_max_dwell_sec: 2.0
 coverage_non_target_min_scan_steps: 2
 coverage_scan_pose_timeout_sec: 0.5
-coverage_goal_soft_timeout_sec: 7.0
-coverage_goal_hard_timeout_sec: 10.0
+coverage_goal_soft_timeout_sec: 5.0
+coverage_goal_hard_timeout_sec: 8.0
 coverage_goal_progress_window_sec: 5.0
 coverage_goal_min_progress: 0.03
 coverage_anchor_observation_radius: 0.35
@@ -145,11 +145,11 @@ coverage_rotation_min_clearance: 0.28
 # 交由 move_base/costmap 绕障；设为 0 禁用会误取消整个位点的激光平移门槛。
 coverage_translation_min_clearance: 0.00
 coverage_translation_sector_half_angle_deg: 35.0
-coverage_max_vel_x: 0.72
-coverage_max_vel_y: 0.72
+coverage_max_vel_x: 0.9
+coverage_max_vel_y: 0.9
 coverage_max_vel_theta: 1.45
-coverage_cruise_vel_x: 0.70
-coverage_cruise_vel_y: 0.70
+coverage_cruise_vel_x: 0.9
+coverage_cruise_vel_y: 0.9
 coverage_cruise_vel_theta: 1.30
 coverage_caution_vel_x: 0.53
 coverage_caution_vel_y: 0.53

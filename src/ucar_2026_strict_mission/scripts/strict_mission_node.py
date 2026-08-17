@@ -1114,7 +1114,7 @@ class StrictMissionNode:
         launch_file, status_topic, finish_value = track_launch_for_decision(
             decision)
         command = [
-            "roslaunch", "ucar_2026_track_end_stop", launch_file,
+            "roslaunch", "ucar_2026_track_end_stop_provincial", launch_file,
             "start_driver:=false", "start_camera:=false",
             "start_viewer:=false",
         ]

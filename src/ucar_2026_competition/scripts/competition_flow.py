@@ -2631,7 +2631,7 @@ class CompetitionFlow:
         try:
             self.start_child(
                 "line_follow",
-                "ucar_2026_track_end_stop",
+                "ucar_2026_track_end_stop_provincial",
                 launch_file,
                 {"start_driver": False, "start_camera": False, "start_viewer": self.debug},
             )
