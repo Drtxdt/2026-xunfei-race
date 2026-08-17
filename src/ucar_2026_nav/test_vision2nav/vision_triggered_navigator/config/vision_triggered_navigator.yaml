@@ -241,8 +241,8 @@ patrol_points:
     rotations:
       - {direction: "left", duration: 5.0}
 
-  - x: 2.3471
-    y: -1.6090
+  - x: 2.25
+    y: -1.60
     yaw: -0.8607
     rotations:
       - {direction: "left", duration: 7.0}

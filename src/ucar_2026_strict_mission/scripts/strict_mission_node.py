@@ -112,13 +112,13 @@ class StrictMissionNode:
             speed_creep=float(rospy.get_param("~speed_creep", 0.045)),
         )
         self.band_filter = ConsecutiveBandFilter(
-            int(rospy.get_param("~stop_confirm_frames", 8)),
+            int(rospy.get_param("~stop_confirm_frames", 4)),
             self.target_min_m,
             self.target_max_m,
         )
         self.final_distance_filter = StableLineDistanceFilter(
             int(rospy.get_param("~final_visual_confirm_frames", 3)),
-            float(rospy.get_param("~final_visual_max_spread_m", 0.02)),
+            float(rospy.get_param("~final_visual_max_spread_m", 0.03)),
         )
         self.final_advance_m = float(rospy.get_param(
             "~final_advance_m", 0.0))
@@ -128,7 +128,7 @@ class StrictMissionNode:
         self.final_target_clearance_m = float(rospy.get_param(
             "~final_advance_target_clearance_m", 0.05))
         self.final_no_vision_fallback_m = float(rospy.get_param(
-            "~final_advance_no_vision_m", 0.155))
+            "~final_advance_no_vision_m", 0.14))
         self.final_visual_max_age_sec = float(rospy.get_param(
             "~final_advance_visual_max_age_sec", 0.75))
         self.final_minimum_command_m = float(rospy.get_param(
@@ -250,7 +250,10 @@ class StrictMissionNode:
     def publish_stop(self):
         if rospy.is_shutdown():
             return
-        self.cmd_pub.publish(Twist())
+        try:
+            self.cmd_pub.publish(Twist())
+        except rospy.exceptions.ROSException:
+            pass
 
     def set_fault(self, reason):
         with self.lock:

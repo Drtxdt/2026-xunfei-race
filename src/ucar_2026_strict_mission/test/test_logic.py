@@ -85,17 +85,17 @@ class OdometryProgressTests(unittest.TestCase):
             (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
                 encoding="utf-8"))
         self.assertEqual(
-            config["calibrated_final_advance_fallback_sec"], 3.0)
+            config["calibrated_final_advance_fallback_sec"], 6.0)
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
             config["final_advance_target_clearance_m"], 0.05)
-        self.assertEqual(config["final_advance_no_vision_m"], 0.155)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.14)
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
         self.assertEqual(config["final_advance_visual_bias_m"], 0.03)
         self.assertEqual(config["final_visual_confirm_frames"], 3)
-        self.assertEqual(config["final_visual_max_spread_m"], 0.02)
+        self.assertEqual(config["final_visual_max_spread_m"], 0.03)
         self.assertEqual(
             config["distance_calibration_reference"],
             "front_wheel_to_yellow_line",
@@ -122,9 +122,9 @@ class OdometryProgressTests(unittest.TestCase):
             "using calibrated guarded final advance",
             node_source,
         )
-        self.assertIn('"~final_advance_no_vision_m", 0.155)', node_source)
+        self.assertIn('"~final_advance_no_vision_m", 0.14)', node_source)
         self.assertIn(
-            '"~calibrated_final_advance_fallback_sec", 3.0)',
+            '"~calibrated_final_advance_fallback_sec", 6.0)',
             node_source,
         )
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
