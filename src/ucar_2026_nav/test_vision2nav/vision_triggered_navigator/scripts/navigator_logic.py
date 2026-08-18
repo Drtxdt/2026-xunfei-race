@@ -652,10 +652,23 @@ def coverage_motion_is_rotation_stall(distance_moved, yaw_accumulated,
 
 def coverage_position_needs_yaw_alignment(distance, yaw_error,
                                           position_tolerance=0.15,
-                                          yaw_tolerance=0.06):
-    """Hand a reached position's remaining heading correction to odometry."""
-    return (float(distance) <= abs(float(position_tolerance)) and
-            abs(float(yaw_error)) > abs(float(yaw_tolerance)))
+                                          yaw_tolerance=0.06,
+                                          local_align_max_yaw=None):
+    """Hand a reached position's remaining heading correction to odometry.
+
+    yaw_error above local_align_max_yaw stays with move_base: the local
+    odometry stepper rotates in small increments and is slower than TEB
+    for large heading corrections.
+    """
+    if float(distance) > abs(float(position_tolerance)):
+        return False
+    yaw_error = abs(float(yaw_error))
+    if yaw_error <= abs(float(yaw_tolerance)):
+        return False
+    if (local_align_max_yaw is not None and
+            yaw_error > abs(float(local_align_max_yaw))):
+        return False
+    return True
 
 
 def coverage_near_anchor_action(distance, baseline_distance, elapsed,

@@ -12,7 +12,8 @@ qr_final_return_angular_speed: 1.20
 qr_final_return_min_angular_speed: 0.25
 qr_final_return_slowdown_angle_rad: 0.4363323129985824
 qr_scan_step_angle_rad: 0.3507993877991494
-qr_scan_total_angle_rad: 6.283185307179586
+# 扫码地一圈转多少：
+qr_scan_total_angle_rad: 5.6
 qr_scan_settle_sec: 0.3
 qr_scan_stationary_hold_sec: 0.20
 qr_scan_stop_timeout_sec: 3.0
@@ -30,13 +31,14 @@ qr_expected_count: 3
 # 单轮扫码总时间阈值（导航+主扫+fallback）。到达后不暂停：重置全部预算，
 # 回到第一圈起点清空结果重走完整流程，直到收齐三码或达到重开次数上限。
 qr_total_timeout_sec: 120.0
-# 扫描失败自动兜底：完全重开扫码任务——重新导航回第一圈（主扫描）起点，
+# 扫描失败自动兜底：重开扫码任务——直接经 move_base 返回第一圈（主扫描）起点
+# （不重开 simple_navigator，避免重发 /initialpose 重置 AMCL 导致无法规划），
 # 清空已收结果并从头扫描。qr_scan_max_restarts=0 表示不限次数。
 qr_scan_restart_enabled: true
 qr_scan_max_restarts: 3
 # fallback 点持续旋转扫描的独立时长上限（不占 qr_total_timeout_sec 之外的逻辑，
 # 仅约束 fallback 扫描本身；到点仍 2/3 则按上层逻辑重开全流程）。
-qr_fallback_scan_timeout_sec: 60.0
+qr_fallback_scan_timeout_sec: 30.0
 # 单轮+补扫仍不足三个码时，导航到距墙较近的备用点持续旋转扫描，
 # 直到凑满三个码或到达 qr_total_timeout_sec 总阈值（备用点步进角沿用 qr_scan_step_angle_rad）。
 qr_fallback_enabled: true
@@ -177,6 +179,8 @@ coverage_anchor_position_tolerance: 0.15
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0
+# yaw误差超过该角度时不取消move_base做本地微调，继续由TEB完成大角度转向。
+coverage_anchor_local_align_max_yaw_deg: 30.0
 task2_no_workshop_anchors: []
 # 第二轮优先使用第一轮仓库记忆；未记住目标时从下一个未扫描点继续。
 task2_resume_coverage_enabled: true
@@ -191,7 +195,7 @@ task2_non_target_topic: /vision/non_target_observation
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003
 # 仿真任务总时间阈值：超时（或反复重连失败）后跳过仿真，直接进入黄线停车任务（task4）。
-sim_timeout_sec: 180.0
+sim_timeout_sec: 200.0
 # 子任务3播报前先确认静止，播报期间持续发布零速度；任何运动都会阻止进入任务4。
 stationary_announcement_stable_sec: 0.5
 stationary_announcement_odom_stale_sec: 0.5

@@ -1401,6 +1401,47 @@ class CompetitionFlow:
             "simple_navigator reached the configured QR-area waypoint",
         )
 
+    def _qr_primary_goal(self):
+        """Resolve the primary QR waypoint the same way simple_navigator does."""
+        for namespace in ("/map_goal_picker", "/simple_navigator"):
+            try:
+                return (
+                    float(rospy.get_param(namespace + "/goal_x")),
+                    float(rospy.get_param(namespace + "/goal_y")),
+                    float(rospy.get_param(namespace + "/goal_yaw")),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return None
+
+    def navigate_back_to_qr_point(self):
+        """Return to the primary QR waypoint via move_base directly.
+
+        扫码重开时不再重新 roslaunch simple_navigator：它启动时会向
+        /initialpose 发布 (0,0,0) 重置 AMCL，定位丢失后 move_base 无法规划。
+        首圈导航留下的 /simple_navigator/goal_* 参数仍在参数服务器上，
+        直接用同一目标点继续导航即可。
+        """
+        goal = self._qr_primary_goal()
+        if goal is None:
+            raise StageError(
+                "no QR waypoint parameters available for restart navigation")
+        timeout = float(rospy.get_param("~qr_navigation_timeout_sec", 120.0))
+        self.publish_status(
+            "task1",
+            "navigating",
+            "returning to primary QR point via move_base: "
+            "x={:.3f} y={:.3f} yaw={:.3f}".format(*goal),
+        )
+        self.navigate(
+            goal[0], goal[1], goal[2], "task1",
+            timeout_sec=timeout, status_state="navigating")
+        self.publish_status(
+            "task1",
+            "qr_area_arrived",
+            "returned to the primary QR-area waypoint",
+        )
+
     def _qr_count(self):
         with self.lock:
             return len(self.qr_items)
@@ -1845,7 +1886,11 @@ class CompetitionFlow:
         while not rospy.is_shutdown():
             self.check_abort()
             try:
-                self._scan_qr_round(expected_count, qr_total_deadline)
+                # 首圈用 simple_navigator（负责发布 AMCL 初始定位）；
+                # 重开时直接走 move_base 返回扫码点，不重启导航、不重发定位。
+                self._scan_qr_round(
+                    expected_count, qr_total_deadline,
+                    relaunch_navigator=(attempt == 0))
                 break
             except StageError as exc:
                 rospy.logerr("task1 QR round failed: %s", exc)
@@ -1909,13 +1954,19 @@ class CompetitionFlow:
             self.publish_status(
                 "task1", "completed", "voice, QR and reasoning completed")
 
-    def _scan_qr_round(self, expected_count, qr_total_deadline):
+    def _scan_qr_round(self, expected_count, qr_total_deadline,
+                       relaunch_navigator=True):
         """Navigate to the primary QR point and run the full two-pass scan.
 
         Raises StageError on any failure so the caller can restart the whole
         round (navigation included) as an unattended fallback.
+        relaunch_navigator=False 时不重开 simple_navigator（避免它重发
+        /initialpose 重置 AMCL），直接用 move_base 返回原扫码点。
         """
-        self.navigate_to_qr_area()
+        if relaunch_navigator:
+            self.navigate_to_qr_area()
+        else:
+            self.navigate_back_to_qr_point()
         self.safe_stop(cancel_navigation=True)
         try:
             qr_scan_started_at = time.monotonic()
@@ -2118,6 +2169,11 @@ class CompetitionFlow:
             "coverage_goal_min_progress": 0.03,
             "coverage_anchor_observation_radius": 0.35,
             "coverage_near_anchor_stall_timeout_sec": 3.0,
+            "coverage_anchor_position_tolerance": 0.15,
+            "coverage_anchor_yaw_tolerance_deg": 3.44,
+            "coverage_anchor_yaw_hold_sec": 0.5,
+            "coverage_anchor_yaw_timeout_sec": 20.0,
+            "coverage_anchor_local_align_max_yaw_deg": 30.0,
         }
         for name, default in forwarded_defaults.items():
             param_name = "target_center_max_speed" if (

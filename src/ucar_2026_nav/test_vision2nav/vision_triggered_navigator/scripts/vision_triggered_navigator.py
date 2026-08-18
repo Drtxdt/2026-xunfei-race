@@ -251,6 +251,10 @@ class VisionTriggeredNavigator(object):
             "~coverage_anchor_yaw_hold_sec", 0.5)))
         self.coverage_anchor_yaw_timeout = max(1.0, float(rospy.get_param(
             "~coverage_anchor_yaw_timeout_sec", 20.0)))
+        # yaw误差超过该阈值时不走本地odom微调（10度步进太慢），
+        # 继续交给move_base/TEB完成大角度转向。
+        self.coverage_anchor_local_align_max_yaw = math.radians(abs(float(
+            rospy.get_param("~coverage_anchor_local_align_max_yaw_deg", 30.0))))
         self.max_coverage_anchors = int(rospy.get_param("~max_coverage_anchors", 0))
         self.coverage_start_nearest = bool(rospy.get_param(
             "~coverage_start_nearest", False))
@@ -1336,7 +1340,8 @@ class VisionTriggeredNavigator(object):
                         needs_yaw_alignment = coverage_position_needs_yaw_alignment(
                                 latest_distance, latest_yaw_error,
                                 self.coverage_anchor_position_tolerance,
-                                self.coverage_anchor_yaw_tolerance)
+                                self.coverage_anchor_yaw_tolerance,
+                                self.coverage_anchor_local_align_max_yaw)
                         if needs_yaw_alignment:
                             near_observation_started = None
                             near_observation_distance = None
@@ -1351,14 +1356,25 @@ class VisionTriggeredNavigator(object):
                                 break
                         else:
                             anchor_close_since = None
-                            near_action = coverage_near_anchor_action(
-                                latest_distance,
-                                near_observation_distance,
-                                0.0 if near_observation_started is None
-                                else now - near_observation_started,
-                                self.coverage_anchor_observation_radius,
-                                self.coverage_near_anchor_stall_timeout,
-                                self.coverage_goal_min_progress)
+                            leave_heading_to_move_base = (
+                                latest_distance <=
+                                self.coverage_anchor_position_tolerance and
+                                latest_yaw_error >
+                                self.coverage_anchor_local_align_max_yaw)
+                            if leave_heading_to_move_base:
+                                # 位置已到但朝向差得远：让TEB继续转，不计近锚点停滞
+                                near_observation_started = None
+                                near_observation_distance = None
+                                near_action = "continue"
+                            else:
+                                near_action = coverage_near_anchor_action(
+                                    latest_distance,
+                                    near_observation_distance,
+                                    0.0 if near_observation_started is None
+                                    else now - near_observation_started,
+                                    self.coverage_anchor_observation_radius,
+                                    self.coverage_near_anchor_stall_timeout,
+                                    self.coverage_goal_min_progress)
                             if near_action == "outside":
                                 near_observation_started = None
                                 near_observation_distance = None
@@ -1778,6 +1794,7 @@ class VisionTriggeredNavigator(object):
         result = None
         navigation_reached = False
         for attempt in range(self.coverage_goal_retry_count + 1):
+            heading_left_to_move_base = False
             result = self.send_goal(x, y, yaw)
             if self.triggered:
                 return "triggered"
@@ -1802,12 +1819,26 @@ class VisionTriggeredNavigator(object):
                 self.current_goal_near_observation = False
                 if (yaw_error is not None and
                         yaw_error > self.coverage_anchor_yaw_tolerance):
-                    self.current_goal_needs_yaw_alignment = True
-                    rospy.logwarn(
-                        "[vision_triggered_navigator] move_base ended after reaching "
-                        "anchor %d position (distance=%.3fm yaw_error=%.3f); "
-                        "align yaw locally before scanning.",
-                        patrol_idx + 1, distance, yaw_error)
+                    if (yaw_error > self.coverage_anchor_local_align_max_yaw and
+                            attempt < self.coverage_goal_retry_count):
+                        # 大角度误差交给TEB转向，比odom小步闭环快；
+                        # 落入下方重试分支重发同一目标。
+                        heading_left_to_move_base = True
+                        self.current_goal_needs_yaw_alignment = False
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] 锚点%d位置已到"
+                            "(distance=%.3fm)但yaw_error=%.3f超过%.1fdeg，"
+                            "重发目标由move_base完成转向.",
+                            patrol_idx + 1, distance, yaw_error,
+                            math.degrees(
+                                self.coverage_anchor_local_align_max_yaw))
+                    else:
+                        self.current_goal_needs_yaw_alignment = True
+                        rospy.logwarn(
+                            "[vision_triggered_navigator] move_base ended after "
+                            "reaching anchor %d position (distance=%.3fm "
+                            "yaw_error=%.3f); align yaw locally before scanning.",
+                            patrol_idx + 1, distance, yaw_error)
                 else:
                     navigation_reached = True
                     break
@@ -1859,7 +1890,8 @@ class VisionTriggeredNavigator(object):
             if self.current_goal_near_observation:
                 navigation_reached = True
                 break
-            if result == actionlib.GoalStatus.SUCCEEDED:
+            if (result == actionlib.GoalStatus.SUCCEEDED and
+                    not heading_left_to_move_base):
                 navigation_reached = True
                 break
             if attempt < self.coverage_goal_retry_count:

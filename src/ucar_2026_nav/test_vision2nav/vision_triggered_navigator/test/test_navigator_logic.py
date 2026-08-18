@@ -777,6 +777,15 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
     assert coverage_position_needs_yaw_alignment(0.15, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.151, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
+    # 设了 local_align_max_yaw 后：大误差留给 move_base，小误差才本地微调。
+    assert coverage_position_needs_yaw_alignment(
+        0.15, math.radians(10.0), 0.15, 0.06, math.radians(30.0))
+    assert not coverage_position_needs_yaw_alignment(
+        0.15, math.radians(45.0), 0.15, 0.06, math.radians(30.0))
+    assert coverage_position_needs_yaw_alignment(
+        0.15, math.radians(30.0), 0.15, 0.06, math.radians(30.0))
+    assert not coverage_position_needs_yaw_alignment(
+        0.151, math.radians(10.0), 0.15, 0.06, math.radians(30.0))
 
 
 def test_near_blocked_anchor_becomes_stationary_observation():
