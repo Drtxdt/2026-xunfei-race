@@ -72,6 +72,10 @@ class Aborted(RuntimeError):
     pass
 
 
+class Task2BudgetExceeded(RuntimeError):
+    """Task2 total wall-clock budget exhausted; announce and jump to task3."""
+
+
 def bool_param(name, default=False):
     value = rospy.get_param(name, default)
     if isinstance(value, str):
@@ -213,6 +217,9 @@ class CompetitionFlow:
             "~task2_prewarm_enabled", True)
         self.task2_prewarm_category = None
         self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
+        self.task2_total_timeout_sec = max(0.0, float(rospy.get_param(
+            "~task2_total_timeout_sec", 480.0)))
+        self._task2_deadline = float("inf")
         self.navigator_status = ""
         self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
@@ -2231,6 +2238,10 @@ class CompetitionFlow:
                 rospy.get_param("~ocr_ready_timeout_sec", 12.0))
             while time.time() < ocr_ready_deadline and not self.ocr_last_message_at:
                 self.check_abort()
+                if time.monotonic() >= self._task2_deadline:
+                    raise Task2BudgetExceeded(
+                        "task2 total timeout of {:.1f}s exceeded".format(
+                            self.task2_total_timeout_sec))
                 for key in ("factory_ocr", "factory_navigator"):
                     proc = self.children.get(key)
                     if proc is None or proc.poll() is not None:
@@ -2246,6 +2257,10 @@ class CompetitionFlow:
             deadline = time.time() + timeout
             while time.time() < deadline:
                 self.check_abort()
+                if time.monotonic() >= self._task2_deadline:
+                    raise Task2BudgetExceeded(
+                        "task2 total timeout of {:.1f}s exceeded".format(
+                            self.task2_total_timeout_sec))
                 self._deliver_target_trigger()
                 if self.navigator_status == "arrived":
                     break
@@ -2257,7 +2272,8 @@ class CompetitionFlow:
                         "centering_failed", "parking_staging_failed",
                         "parking_recenter_failed", "parking_wall_fit_failed",
                         "parking_docking_failed", "parking_validation_failed",
-                        "coverage_recovery_disable_failed"):
+                        "coverage_recovery_disable_failed",
+                        "coverage_anchor_failed"):
                     raise StageError("factory navigation {}".format(
                         self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):
@@ -2298,6 +2314,27 @@ class CompetitionFlow:
             "task2", "{}_factory_reached".format(phase),
             "{} target factory reached".format(phase))
 
+    def _task2_timeout_exit(self, visits, visit_index):
+        """Total-budget fallback: announce immediately, then start simulation."""
+        self.stop_child("factory_ocr")
+        self.stop_child("factory_navigator")
+        self.safe_stop(cancel_navigation=True)
+        self.publish_status(
+            "task2", "total_timeout",
+            "task2 total timeout of {:.1f}s exceeded after visit {}/{}; "
+            "announcing and switching to simulation".format(
+                self.task2_total_timeout_sec, visit_index + 1, len(visits)))
+        if not self.task2_announcement_completed:
+            _phase, _category, item, workshop = visits[0]
+            self.announce("task2", item=item, workshop=workshop)
+            self.task2_announcement_completed = True
+            self.publish_status(
+                "task2", "announcement_completed",
+                "task2 timeout announcement completed")
+        self.publish_status(
+            "task2", "timeout_completed",
+            "task2 finished via total-timeout fallback; continuing to simulation")
+
     def task2(self):
         if not self.category or not self.sim_category:
             raise StageError("task2 physical/simulation categories are missing")
@@ -2324,12 +2361,49 @@ class CompetitionFlow:
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
         self.task2_announcement_completed = False
-        for visit_index, (phase, category, item, workshop) in enumerate(visits):
-            if visit_index > 0:
-                self.task2_inter_visit_handoff()
-            self._navigate_factory_target(
-                category, item, workshop, phase, announce=(phase == "physical")
-            )
+        self._task2_deadline = time.monotonic() + self.task2_total_timeout_sec
+        visit_index = 0
+        restart_count = 0
+        handoff_done_for = None
+        while visit_index < len(visits) and not rospy.is_shutdown():
+            self.check_abort()
+            phase, category, item, workshop = visits[visit_index]
+            try:
+                if visit_index > 0 and handoff_done_for != visit_index:
+                    self.task2_inter_visit_handoff()
+                    handoff_done_for = visit_index
+                self._navigate_factory_target(
+                    category, item, workshop, phase,
+                    announce=(phase == "physical"))
+                visit_index += 1
+                continue
+            except Task2BudgetExceeded as exc:
+                rospy.logerr("task2 total budget exceeded: %s", exc)
+                self._task2_timeout_exit(visits, visit_index)
+                return
+            except StageError as exc:
+                rospy.logerr("task2 visit %d attempt failed: %s",
+                             visit_index + 1, exc)
+                if time.monotonic() >= self._task2_deadline:
+                    self._task2_timeout_exit(visits, visit_index)
+                    return
+                restart_count += 1
+                self.stop_child("factory_ocr")
+                self.stop_child("factory_navigator")
+                self.safe_stop(cancel_navigation=True)
+                # Drop all search memory so the next attempt restarts the
+                # coverage scan from the very first factory anchor.
+                with self.lock:
+                    self.task2_warehouse_memory = {}
+                    self.current_coverage_anchor = None
+                    self.last_coverage_anchor = None
+                    for memory_filter in self.ocr_memory_filters.values():
+                        memory_filter.reset()
+                self.publish_status(
+                    "task2", "search_restart_{}".format(restart_count),
+                    "restarting the factory scan from the first anchor",
+                    str(exc))
+                rospy.sleep(2.0)
         if len(visits) == 1:
             self.publish_status(
                 "task2", "simulation_factory_already_reached",
@@ -2341,11 +2415,36 @@ class CompetitionFlow:
     def task3(self):
         if not self.sim_category:
             raise StageError("task3 sim_target_category is missing")
+        total_timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
+        deadline = time.time() + total_timeout
+        attempt = 0
+        while not rospy.is_shutdown():
+            self.check_abort()
+            attempt += 1
+            try:
+                return self._task3_once(deadline)
+            except StageError as exc:
+                rospy.logerr("task3 attempt %d failed: %s", attempt, exc)
+                self.safe_stop(cancel_navigation=True)
+                if time.time() >= deadline:
+                    self.publish_status(
+                        "task3", "timeout_skipped",
+                        "simulation did not finish within the total budget "
+                        "of {:.1f}s; switching to the traffic-light "
+                        "stop-line task".format(total_timeout),
+                        str(exc))
+                    return
+                self.publish_status(
+                    "task3", "retrying",
+                    "simulation attempt {} failed; retrying before the total "
+                    "timeout".format(attempt), str(exc))
+                rospy.sleep(2.0)
+
+    def _task3_once(self, deadline):
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
         if not host:
             raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
-        timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
         self.publish_status("task3", "connecting", "connecting to {}:{}".format(host, port))
         try:
             sock = socket.create_connection((host, port), timeout=10.0)
@@ -2353,7 +2452,6 @@ class CompetitionFlow:
         except OSError as exc:
             raise StageError("simulation bridge connection failed: {}".format(exc))
         request_id = str(uuid.uuid4())
-        deadline = time.time() + timeout
         result_text = ""
         done_received = False
         done_received_at = 0.0

@@ -419,8 +419,10 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("_start_transition_announcement", called("task1"))
         self.assertIn(
             "_wait_transition_announcement", called("task1_task2_handoff"))
-        self.assertIn("_announce_while_stationary", called("task3"))
-        self.assertNotIn("_start_transition_announcement", called("task3"))
+        # task3 is a retry wrapper; the success path lives in _task3_once.
+        task3_calls = called("task3") | called("_task3_once")
+        self.assertIn("_announce_while_stationary", task3_calls)
+        self.assertNotIn("_start_transition_announcement", task3_calls)
         self.assertIn(
             "_wait_transition_announcement", called("production_task4_handoff"))
         self.assertIn(
