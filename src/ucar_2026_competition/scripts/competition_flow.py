@@ -1823,10 +1823,6 @@ class CompetitionFlow:
         instruction = self.question.strip() or build_task1_instruction(
             self.category, self.sim_category
         )
-        self.navigate_to_qr_area()
-        # The configured simple_navigator goal has completed, but explicitly
-        # revoke all navigation authority before this node can rotate the base.
-        self.safe_stop(cancel_navigation=True)
 
         with self.lock:
             self.task1_instruction = instruction
