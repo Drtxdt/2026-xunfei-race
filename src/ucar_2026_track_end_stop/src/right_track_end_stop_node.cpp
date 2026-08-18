@@ -883,7 +883,7 @@ private:
     const cv::Rect obs_roi(obs_x0, obs_y0, kImageCols * 8 / 10, kImageRows * 3 / 4);
     const cv::Scalar obs_color = obstacle.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 140, 255);
     cv::rectangle(debug, obs_roi, obs_color, 1);
-    if (!obstacle.box.empty())
+    if (obstacle.box.area() > 0)
       cv::rectangle(debug, obstacle.box, obs_color, 2);
     if (obstacle.detected)
       cv::putText(debug, "OBSTACLE", cv::Point(kImageCols / 2 - 70, obs_y0 - 10),
