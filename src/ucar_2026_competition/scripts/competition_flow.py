@@ -1829,45 +1829,32 @@ class CompetitionFlow:
         self.safe_stop(cancel_navigation=True)
 
         with self.lock:
-            self.qr_items.clear()
             self.task1_instruction = instruction
             self.task1_reasoning_started = False
             self.task1_reasoning_result = None
             self.task1_reasoning_error = ""
             self.task1_reasoning_done.clear()
-        try:
-            qr_scan_started_at = time.monotonic()
-            qr_total_deadline = qr_scan_started_at + float(
-                rospy.get_param("~qr_total_timeout_sec", 240.0))
-            with self.lock:
-                self.qr_decoder_ready = False
-                self.qr_decoder_pending_count = 0
-                self.qr_decoder_status_at = 0.0
-            self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
-            self.qr_collecting = True
-            completed = self.scan_qr_at_current_pose(
-                "scanning_qr_primary", deadline_override=qr_total_deadline)
-
-            expected_count = int(rospy.get_param("~qr_expected_count", 3))
-            if not completed or self._qr_count() < expected_count:
-                completed = self.scan_qr_at_fallback_point(
-                    expected_count, qr_total_deadline)
-            if not completed or self._qr_count() < expected_count:
-                raise StageError(
-                    "single QR scan pass got {}/{} unique item(s)".format(
-                        self._qr_count(), expected_count
-                    )
-                )
-            self.publish_status(
-                "task1",
-                "qr_scan_completed",
-                "collected {} unique QR items in {:.3f}s".format(
-                    self._qr_count(), time.monotonic() - qr_scan_started_at),
-            )
-        finally:
-            self.qr_collecting = False
-            self.stop_child("qr_decoder")
-            self.safe_stop(cancel_navigation=True)
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        qr_total_deadline = time.monotonic() + float(
+            rospy.get_param("~qr_total_timeout_sec", 240.0))
+        restart_enabled = bool_param("~qr_scan_restart_enabled", True)
+        attempt = 0
+        while not rospy.is_shutdown():
+            self.check_abort()
+            try:
+                self._scan_qr_round(expected_count, qr_total_deadline)
+                break
+            except StageError as exc:
+                rospy.logerr("task1 QR round failed: %s", exc)
+                if not restart_enabled or time.monotonic() >= qr_total_deadline:
+                    raise
+                attempt += 1
+                self.publish_status(
+                    "task1", "qr_scan_restart_{}".format(attempt),
+                    "restarting the QR task: navigating back to the primary "
+                    "scan point and clearing collected results",
+                    str(exc))
+                rospy.sleep(1.0)
 
         with self.lock:
             items = list(self.qr_items.values())[:3]
@@ -1911,6 +1898,46 @@ class CompetitionFlow:
             self.announce("task1", text=result.announcement_full)
             self.publish_status(
                 "task1", "completed", "voice, QR and reasoning completed")
+
+    def _scan_qr_round(self, expected_count, qr_total_deadline):
+        """Navigate to the primary QR point and run the full two-pass scan.
+
+        Raises StageError on any failure so the caller can restart the whole
+        round (navigation included) as an unattended fallback.
+        """
+        self.navigate_to_qr_area()
+        self.safe_stop(cancel_navigation=True)
+        try:
+            qr_scan_started_at = time.monotonic()
+            with self.lock:
+                self.qr_items.clear()
+                self.qr_decoder_ready = False
+                self.qr_decoder_pending_count = 0
+                self.qr_decoder_status_at = 0.0
+            self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
+            self.qr_collecting = True
+            completed = self.scan_qr_at_current_pose(
+                "scanning_qr_primary", deadline_override=qr_total_deadline)
+
+            if not completed or self._qr_count() < expected_count:
+                completed = self.scan_qr_at_fallback_point(
+                    expected_count, qr_total_deadline)
+            if not completed or self._qr_count() < expected_count:
+                raise StageError(
+                    "single QR scan pass got {}/{} unique item(s)".format(
+                        self._qr_count(), expected_count
+                    )
+                )
+            self.publish_status(
+                "task1",
+                "qr_scan_completed",
+                "collected {} unique QR items in {:.3f}s".format(
+                    self._qr_count(), time.monotonic() - qr_scan_started_at),
+            )
+        finally:
+            self.qr_collecting = False
+            self.stop_child("qr_decoder")
+            self.safe_stop(cancel_navigation=True)
 
     def _factory_ocr_launch_args(self, category):
         return {

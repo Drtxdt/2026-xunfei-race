@@ -1,7 +1,7 @@
 # 任务1：先运行团队已有的 simple_navigator/navigate.launch。
 # 目标点继续由 simple_navigator/config/navigation_goal.yaml（或 map_goal_picker）管理，
 # 比赛总控只旁路监听 move_base 的 goal/result，不修改导航包。
-qr_navigation_timeout_sec: 120.0
+qr_navigation_timeout_sec: 40.0
 # 保持扫码起始位姿执行一轮完整扫描；每次转30度后停车0.3秒。
 # 网络结果后台并发返回，收齐三码后立即启动大模型和下一阶段预热。
 qr_odom_topic: /odom
@@ -15,7 +15,7 @@ qr_scan_step_angle_rad: 0.3507993877991494
 qr_scan_total_angle_rad: 6.283185307179586
 qr_scan_settle_sec: 0.3
 qr_scan_stationary_hold_sec: 0.20
-qr_scan_stop_timeout_sec: 1.5
+qr_scan_stop_timeout_sec: 3.0
 qr_decoder_ready_timeout_sec: 6.0
 qr_decoder_warmup_sec: 0.4
 qr_scan_result_grace_sec: 20.0
@@ -28,6 +28,9 @@ qr_rotation_min_clearance: 0.20
 qr_expected_count: 3
 # 二维码扫描全流程总时间阈值：从主扫描开始计时，覆盖主扫描+补扫+fallback导航+fallback持续扫描。
 qr_total_timeout_sec: 120.0
+# 扫描失败自动兜底：完全重开扫码任务——重新导航回第一圈（主扫描）起点，
+# 清空已收结果并从头扫描，直到收齐三码或到达 qr_total_timeout_sec。
+qr_scan_restart_enabled: true
 # 单轮+补扫仍不足三个码时，导航到距墙较近的备用点持续旋转扫描，
 # 直到凑满三个码或到达 qr_total_timeout_sec 总阈值（备用点步进角沿用 qr_scan_step_angle_rad）。
 qr_fallback_enabled: true
