@@ -649,7 +649,12 @@ class CompetitionFlow:
             #     non_target_event["score"],
             #     non_target_event["area_ratio"],
             # )
-        if category == self.ocr_target and target_trigger_eligible:
+        # 居中数据供给只看“类别匹配+有框+在锚点”，不复用触发的近距离尺寸门槛；
+        # 否则正视后框高跌破阈值会掐断 /vision/target，居中最后几步断流超时。
+        # 是否真正触发锁定仍由下方 target_trigger_eligible 门槛把关。
+        target_feed_eligible = task2_target_trigger_is_eligible(
+            bool(bbox), active_anchor)
+        if category == self.ocr_target and target_feed_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
             self.ocr_target,
