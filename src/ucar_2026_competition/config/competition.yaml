@@ -27,11 +27,16 @@ qr_scan_timeout_sec: 90.0
 qr_scan_step_timeout_margin_sec: 2.0
 qr_rotation_min_clearance: 0.20
 qr_expected_count: 3
-# 二维码扫描全流程总时间阈值：从主扫描开始计时，覆盖主扫描+补扫+fallback导航+fallback持续扫描。
+# 单轮扫码总时间阈值（导航+主扫+fallback）。到达后不暂停：重置全部预算，
+# 回到第一圈起点清空结果重走完整流程，直到收齐三码或达到重开次数上限。
 qr_total_timeout_sec: 120.0
 # 扫描失败自动兜底：完全重开扫码任务——重新导航回第一圈（主扫描）起点，
-# 清空已收结果并从头扫描，直到收齐三码或到达 qr_total_timeout_sec。
+# 清空已收结果并从头扫描。qr_scan_max_restarts=0 表示不限次数。
 qr_scan_restart_enabled: true
+qr_scan_max_restarts: 3
+# fallback 点持续旋转扫描的独立时长上限（不占 qr_total_timeout_sec 之外的逻辑，
+# 仅约束 fallback 扫描本身；到点仍 2/3 则按上层逻辑重开全流程）。
+qr_fallback_scan_timeout_sec: 60.0
 # 单轮+补扫仍不足三个码时，导航到距墙较近的备用点持续旋转扫描，
 # 直到凑满三个码或到达 qr_total_timeout_sec 总阈值（备用点步进角沿用 qr_scan_step_angle_rad）。
 qr_fallback_enabled: true

@@ -1760,7 +1760,7 @@ class CompetitionFlow:
         """Navigate to the configured fallback point near the wall and rescan.
 
         到达备用点后持续旋转扫描，直到凑满 expected_count 个码
-        或到达二维码扫描全流程总时间阈值 qr_total_deadline。
+        或到达 fallback 独立扫描时长 qr_fallback_scan_timeout_sec。
         """
         if not bool(rospy.get_param("~qr_fallback_enabled", False)):
             return False
@@ -1783,9 +1783,13 @@ class CompetitionFlow:
         nav_timeout = min(
             float(rospy.get_param("~qr_fallback_navigation_timeout_sec", 45.0)),
             remaining)
-        # 持续旋转：角度上限按剩余时间换算（事实上只受总时间阈值约束）
+        # fallback 扫描时长独立于 qr_total_timeout_sec 单独设置。
+        scan_budget = max(
+            5.0, float(rospy.get_param("~qr_fallback_scan_timeout_sec", 60.0)))
+        scan_deadline = time.monotonic() + scan_budget
         speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
-        scan_angle = max(2.0 * math.pi, speed * remaining + 2.0 * math.pi)
+        scan_angle = max(
+            2.0 * math.pi, speed * scan_budget + 2.0 * math.pi)
         self.publish_status(
             "task1",
             "qr_fallback_navigating",
@@ -1800,7 +1804,7 @@ class CompetitionFlow:
             "scanning_qr_fallback",
             total_angle_override=scan_angle,
             extra_sweep_override=0.0,
-            deadline_override=qr_total_deadline)
+            deadline_override=scan_deadline)
 
     # ------------------------------ stages ------------------------------
     def task1(self):
@@ -1831,9 +1835,12 @@ class CompetitionFlow:
             self.task1_reasoning_error = ""
             self.task1_reasoning_done.clear()
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
-        qr_total_deadline = time.monotonic() + float(
+        total_budget = float(
             rospy.get_param("~qr_total_timeout_sec", 240.0))
         restart_enabled = bool_param("~qr_scan_restart_enabled", True)
+        # 0 表示不限制重开次数（比赛计时本身就是最终约束）。
+        max_restarts = max(0, int(rospy.get_param("~qr_scan_max_restarts", 3)))
+        qr_total_deadline = time.monotonic() + total_budget
         attempt = 0
         while not rospy.is_shutdown():
             self.check_abort()
@@ -1842,13 +1849,20 @@ class CompetitionFlow:
                 break
             except StageError as exc:
                 rospy.logerr("task1 QR round failed: %s", exc)
-                if not restart_enabled or time.monotonic() >= qr_total_deadline:
+                budget_exceeded = time.monotonic() >= qr_total_deadline
+                if not restart_enabled or attempt >= max_restarts:
                     raise
                 attempt += 1
+                # 到达 qr_total_timeout_sec：重置全部时间预算，回到第一圈
+                # 起点清空结果，重走完整扫码流程（导航+主扫+fallback）。
+                if budget_exceeded:
+                    qr_total_deadline = time.monotonic() + total_budget
                 self.publish_status(
                     "task1", "qr_scan_restart_{}".format(attempt),
                     "restarting the QR task: navigating back to the primary "
-                    "scan point and clearing collected results",
+                    "scan point and clearing collected results"
+                    + ("; total timeout reached, full budget reset"
+                       if budget_exceeded else ""),
                     str(exc))
                 rospy.sleep(1.0)
 
