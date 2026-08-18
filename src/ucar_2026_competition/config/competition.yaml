@@ -20,7 +20,8 @@ qr_decoder_ready_timeout_sec: 6.0
 qr_decoder_warmup_sec: 0.4
 qr_scan_result_grace_sec: 20.0
 qr_scan_pending_idle_sec: 0.5
-qr_scan_extra_sweep_angle_rad: 2.0943951023931953
+# 第一圈补扫已关闭（0.0）：主扫描一圈后直接 drain 结果，不再额外补扫120度。
+qr_scan_extra_sweep_angle_rad: 0.0
 qr_final_yaw_tolerance_rad: 0.03490658503988659
 qr_scan_timeout_sec: 90.0
 qr_scan_step_timeout_margin_sec: 2.0
@@ -37,7 +38,7 @@ qr_fallback_enabled: true
 qr_fallback_navigation_timeout_sec: 45.0
 qr_fallback_goal:
   x: -1.6598
-  y: -0.8718
+  y: -0.8018
   yaw: 2.2645
 move_base_timeout_sec: 60.0
 
