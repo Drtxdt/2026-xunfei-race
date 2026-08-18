@@ -155,6 +155,8 @@ class StrictMissionNode:
             "~final_yaw_tolerance_deg", 1.5)))
         self.final_center_tolerance = float(rospy.get_param(
             "~final_center_tolerance_ratio", 0.03))
+        self.final_lateral_hold = bool(rospy.get_param(
+            "~final_lateral_hold", True))
         if self.precision_start_m <= self.target_max_m:
             raise ValueError(
                 "precision_start_m must exceed the target stop distance")
@@ -553,6 +555,8 @@ class StrictMissionNode:
                     "~line_yaw_min_speed", 0.04)),
                 lateral_min=float(rospy.get_param(
                     "~line_lateral_min_speed", 0.015)),
+                hold_lateral=(
+                    final_visual_approach and self.final_lateral_hold),
             )
         command = Twist()
         calibrated_fallback = float(rospy.get_param(

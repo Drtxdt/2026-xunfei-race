@@ -93,6 +93,7 @@
   "precision_start_m": 0.14,
   "final_yaw_tolerance_deg": 1.5,
   "final_center_tolerance_ratio": 0.03,
+  "final_lateral_hold": true,
   "final_yaw_max_speed": 0.10,
   "final_lateral_max_speed": 0.03,
 

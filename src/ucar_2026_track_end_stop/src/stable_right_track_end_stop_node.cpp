@@ -134,6 +134,7 @@ private:
     double width_ratio = 0.0;
     double height_ratio = 0.0;
     double bottom_ratio = 0.0;
+    cv::Rect box;
   };
 
   void loadParams()
@@ -251,6 +252,7 @@ private:
       cv::resize(frame, frame, cv::Size(kImageCols, kImageRows), 0, 0, cv::INTER_AREA);
 
     const ros::Time now = ros::Time::now();
+    ++frame_count_;
     cv::Mat roi = frame(cv::Range(clampInt(static_cast<int>(frame.rows * roi_y_start_ratio_), 0, frame.rows - 1),
                                   frame.rows),
                         cv::Range(0, frame.cols));
@@ -471,8 +473,9 @@ private:
         break;
     }
 
-    publishDebug(frame, mask, follow, end_result, now);
-    publishDebugInfo(follow, end_result, now);
+    last_proc_ms_ = (ros::Time::now() - now).toSec() * 1000.0;
+    publishDebug(frame, mask, follow, end_result, obstacle, now);
+    publishDebugInfo(follow, end_result, obstacle, now);
     publishStatus();
   }
 
@@ -547,6 +550,7 @@ private:
         result.width_ratio = width_ratio;
         result.height_ratio = height_ratio;
         result.bottom_ratio = bottom_ratio;
+        result.box = cv::Rect(box.x + x0, box.y + y0, box.width, box.height);
       }
     }
 
@@ -974,7 +978,8 @@ private:
   }
 
   void publishDebug(const cv::Mat& frame, const cv::Mat& mask, const FollowResult& follow,
-                    const EndOfTrackResult& end_result, const ros::Time& now)
+                    const EndOfTrackResult& end_result, const GrayObstacleResult& obstacle,
+                    const ros::Time& now)
   {
     cv::Mat debug = frame.clone();
     cv::Mat mask_bgr;
@@ -994,6 +999,17 @@ private:
                   end_result.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 220, 255), 1);
     if (end_result.detected)
       cv::putText(debug, "END DETECTED", cv::Point(kImageCols / 2 - 90, end_y0 - 10),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
+
+    const int obs_x0 = kImageCols / 10;
+    const int obs_y0 = kImageRows / 10;
+    const cv::Rect obs_roi(obs_x0, obs_y0, kImageCols * 8 / 10, kImageRows * 3 / 4);
+    const cv::Scalar obs_color = obstacle.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 140, 255);
+    cv::rectangle(debug, obs_roi, obs_color, 1);
+    if (!obstacle.box.empty())
+      cv::rectangle(debug, obstacle.box, obs_color, 2);
+    if (obstacle.detected)
+      cv::putText(debug, "OBSTACLE", cv::Point(kImageCols / 2 - 70, obs_y0 - 10),
                   cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
 
     std::ostringstream line1;
@@ -1023,7 +1039,8 @@ private:
     }
   }
 
-  void publishDebugInfo(const FollowResult& follow, const EndOfTrackResult& end_result, const ros::Time& now)
+  void publishDebugInfo(const FollowResult& follow, const EndOfTrackResult& end_result,
+                        const GrayObstacleResult& obstacle, const ros::Time& now)
   {
     std::ostringstream ss;
     ss << "status=" << status_
@@ -1036,6 +1053,7 @@ private:
        << " line_span_ratio=" << follow.line_span_ratio
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
+       << " filtered_err=" << filtered_error_
        << " near_error=" << follow.near_error
        << " guard_level=" << follow.guard_level
        << " low_confidence=" << boolText(follow.low_confidence)
@@ -1044,7 +1062,17 @@ private:
        << " cmd_angular=" << last_angular_
        << " end_detected=" << boolText(end_result.detected)
        << " end_width_ratio=" << end_result.best_width_ratio
-       << " end_y_ratio=" << end_result.best_y_ratio;
+       << " end_y_ratio=" << end_result.best_y_ratio
+       << " obstacle=" << boolText(obstacle.detected)
+       << " obs_area=" << obstacle.area_ratio
+       << " obs_width=" << obstacle.width_ratio
+       << " obs_height=" << obstacle.height_ratio
+       << " obs_bottom=" << obstacle.bottom_ratio
+       << " obs_hits=" << obstacle_hit_count_
+       << " obs_gate=" << obstacleGateString(now)
+       << " obs_enable_in=" << obstacleEnableIn(now)
+       << " frame=" << frame_count_
+       << " proc_ms=" << std::fixed << std::setprecision(1) << last_proc_ms_;
     std_msgs::String msg;
     msg.data = ss.str();
     debug_info_pub_.publish(msg);
@@ -1053,7 +1081,29 @@ private:
 
   void setStatus(const std::string& status)
   {
+    if (status != status_)
+    {
+      ROS_INFO("stable_right_track_end_stop state %s -> %s at %.2fs",
+               status_.c_str(), status.c_str(),
+               (ros::Time::now() - start_time_).toSec());
+    }
     status_ = status;
+  }
+
+  std::string obstacleGateString(const ros::Time& now) const
+  {
+    if (state_ != State::Follow)
+      return "not_follow";
+    if (obstacle_completed_)
+      return "completed";
+    if ((now - start_time_).toSec() < obstacle_enable_delay_)
+      return "delay";
+    return "active";
+  }
+
+  double obstacleEnableIn(const ros::Time& now) const
+  {
+    return std::max(0.0, obstacle_enable_delay_ - (now - start_time_).toSec());
   }
 
   void publishStatus()
@@ -1169,6 +1219,8 @@ private:
   int reacquire_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
+  int frame_count_ = 0;
+  double last_proc_ms_ = 0.0;
 };
 
 int main(int argc, char** argv)

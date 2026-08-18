@@ -225,6 +225,7 @@ private:
       cv::resize(frame, frame, cv::Size(kImageCols, kImageRows), 0, 0, cv::INTER_AREA);
 
     const ros::Time now = ros::Time::now();
+    ++frame_count_;
     cv::Mat roi = frame(cv::Range(clampInt(static_cast<int>(frame.rows * roi_y_start_ratio_), 0, frame.rows - 1),
                                   frame.rows),
                         cv::Range(0, frame.cols));
@@ -375,6 +376,7 @@ private:
         break;
     }
 
+    last_proc_ms_ = (ros::Time::now() - now).toSec() * 1000.0;
     publishDebug(frame, mask, follow, end_result, now);
     publishDebugInfo(follow, end_result, now);
     publishStatus();
@@ -885,6 +887,7 @@ private:
        << " line_span_ratio=" << follow.line_span_ratio
        << " error=" << follow.error
        << " filtered_error=" << follow.filtered_error
+       << " filtered_err=" << filtered_error_
        << " near_error=" << follow.near_error
        << " guard_level=" << follow.guard_level
        << " low_confidence=" << boolText(follow.low_confidence)
@@ -893,7 +896,9 @@ private:
        << " cmd_angular=" << last_angular_
        << " end_detected=" << boolText(end_result.detected)
        << " end_width_ratio=" << end_result.best_width_ratio
-       << " end_y_ratio=" << end_result.best_y_ratio;
+       << " end_y_ratio=" << end_result.best_y_ratio
+       << " frame=" << frame_count_
+       << " proc_ms=" << std::fixed << std::setprecision(1) << last_proc_ms_;
     std_msgs::String msg;
     msg.data = ss.str();
     debug_info_pub_.publish(msg);
@@ -902,6 +907,12 @@ private:
 
   void setStatus(const std::string& status)
   {
+    if (status != status_)
+    {
+      ROS_INFO("stable_right_track_end_stop state %s -> %s at %.2fs",
+               status_.c_str(), status.c_str(),
+               (ros::Time::now() - start_time_).toSec());
+    }
     status_ = status;
   }
 
@@ -1002,6 +1013,8 @@ private:
   int reacquire_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
+  int frame_count_ = 0;
+  double last_proc_ms_ = 0.0;
 };
 
 int main(int argc, char** argv)
