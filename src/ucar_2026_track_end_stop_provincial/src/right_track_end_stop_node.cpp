@@ -208,7 +208,6 @@ private:
 
     ros::Time now = ros::Time::now();
     last_image_time_ = now;
-    ++frame_count_;
 
     cv::Mat mask = extractWhiteMask(frame);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
@@ -347,7 +346,6 @@ private:
         break;
     }
 
-    last_proc_ms_ = (ros::Time::now() - now).toSec() * 1000.0;
     publishDebug(frame, mask, follow, end_result, now);
     publishDebugInfo(follow, end_result, now);
     publishStatus();
@@ -590,14 +588,12 @@ private:
       const bool timed_out = (now - last_detection_time_).toSec() > lost_timeout_;
       if (stop_on_lost_ && timed_out)
       {
-        last_speed_stage_ = "lost_stop";
         setStatus("right_lost_stop");
         resetPid();
         hardStop();
         return;
       }
 
-      last_speed_stage_ = "wait";
       setStatus("right_line_wait");
       geometry_msgs::Twist cmd;
       cmd.linear.x = lost_speed_;
@@ -620,19 +616,14 @@ private:
     const double error_abs = std::abs(filtered_error_px_);
     double linear = min_speed_;
     if (error_abs <= fast_error_px_)
-    {
-      last_speed_stage_ = "fast";
       linear = effective_base_speed;
-    }
     else if (error_abs <= medium_error_px_)
     {
-      last_speed_stage_ = "medium";
       const double t = (error_abs - fast_error_px_) / std::max(1e-6, medium_error_px_ - fast_error_px_);
       linear = effective_base_speed + t * (medium_speed_ - effective_base_speed);
     }
     else
     {
-      last_speed_stage_ = "hard";
       const double t = std::min((error_abs - medium_error_px_) /
                                   std::max(1e-6, hard_error_px_ - medium_error_px_),
                               1.0);
@@ -756,16 +747,12 @@ private:
        << " target_x=" << follow.target_x
        << " target_y=" << follow.target_y
        << " error=" << follow.error
-       << " filtered_err=" << filtered_error_px_
-       << " speed_stage=" << last_speed_stage_
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
        << " raw_points=" << follow.raw_line.size()
        << " end_detected=" << boolText(end_result.detected)
        << " end_width_ratio=" << end_result.best_width_ratio
-       << " end_y_ratio=" << end_result.best_y_ratio
-       << " frame=" << frame_count_
-       << " proc_ms=" << std::fixed << std::setprecision(1) << last_proc_ms_;
+       << " end_y_ratio=" << end_result.best_y_ratio;
     std_msgs::String msg;
     msg.data = ss.str();
     debug_info_pub_.publish(msg);
@@ -774,12 +761,6 @@ private:
 
   void setStatus(const std::string& status)
   {
-    if (status != status_)
-    {
-      ROS_INFO("right_track_end_stop state %s -> %s at %.2fs",
-               status_.c_str(), status.c_str(),
-               (ros::Time::now() - start_time_).toSec());
-    }
     status_ = status;
   }
 
@@ -880,9 +861,6 @@ private:
   double last_angular_ = 0.0;
   double last_mask_ratio_ = 0.0;
   std::string last_mask_mode_ = "normal";
-  std::string last_speed_stage_ = "none";
-  int frame_count_ = 0;
-  double last_proc_ms_ = 0.0;
 };
 
 int main(int argc, char** argv)
