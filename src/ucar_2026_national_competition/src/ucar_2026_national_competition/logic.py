@@ -37,7 +37,7 @@ NATIONAL_STAGES = (
 )
 
 # Provincial flow_node.launch start_stage values, in execution order.
-HANDOVER_CHAIN_SIM = ("task2", "task3_task4", "task4_task5")
+HANDOVER_CHAIN_SIM = ("task2", "task3", "task4_task5")
 HANDOVER_CHAIN_NO_SIM = ("task2", "task4", "task5")
 
 
