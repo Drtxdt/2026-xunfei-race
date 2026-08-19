@@ -1317,6 +1317,10 @@ class StrictMissionNode:
                 self.state = "DONE"
             self.publish_status("strict post-warehouse mission completed")
         except Exception as exc:
+            if rospy.is_shutdown():
+                rospy.loginfo(
+                    "strict mission interrupted by shutdown during: %s", exc)
+                return
             self.set_fault(str(exc))
 
     def shutdown(self):

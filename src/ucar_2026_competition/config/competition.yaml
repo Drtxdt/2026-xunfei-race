@@ -182,6 +182,9 @@ coverage_anchor_yaw_timeout_sec: 20.0
 # yaw误差超过该角度时不取消move_base做本地微调，继续由TEB完成大角度转向。
 coverage_anchor_local_align_max_yaw_deg: 30.0
 task2_no_workshop_anchors: []
+# 仅兜底轮扫描的锚点（1-based）：patrol_points 最前面追加的 5 个补扫点。
+# 首轮跳过它们只扫原 9 点；失败后重扫时不跳过，先扫这 5 个再扫原 9 点。
+task2_fallback_only_anchors: [1, 2, 3, 4, 5]
 # 第二轮优先使用第一轮仓库记忆；未记住目标时从下一个未扫描点继续。
 task2_resume_coverage_enabled: true
 task2_second_search_abort_fail_fast_count: 0

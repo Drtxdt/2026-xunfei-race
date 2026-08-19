@@ -202,8 +202,40 @@ initial_pose:
   y: 0.0
   yaw: 0.0
 
-# 巡航点（9 个点）
+# 巡航点（14 个点：前 5 个为兜底轮补扫点，后 9 个为常规点）。
+# 第一轮由 competition_flow 通过 coverage_skip_anchors 跳过前 5 个；
+# 找厂牌失败重扫时全量扫描（先 5 个补扫点，再 9 个常规点）。
 patrol_points:
+  - x: 2.33
+    y: -2.26
+    yaw: -0.4
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: -1.1
+    y: -2.85
+    yaw: -2.2
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: 1.8
+    y: -2.75
+    yaw: -2.2
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: 0.78
+    y: -1.69
+    yaw: 0.85
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: 1.755
+    y: -1.69
+    yaw: 0.85
+    rotations:
+      - {direction: "left", duration: 3.0}
+
   - x: -1.65
     y: -1.9235
     yaw: 1.04

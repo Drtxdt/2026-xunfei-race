@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import math
 
+from ucar_2026_competition.logic import normalize_category
+
 
 NATIONAL_STAGES = (
     "voice_handshake",
@@ -78,6 +80,7 @@ def flow_launch_args(
     traffic_pose=None,
     skip_task4_stop_line_approach=False,
     track_package="ucar_2026_track_end_stop",
+    sim_bridge_host="192.168.1.28",
 ):
     """Build the roslaunch arguments for one provincial hand-over launch.
 
@@ -105,6 +108,7 @@ def flow_launch_args(
         "enable_simulation": bool(enable_simulation),
         "skip_task4_stop_line_approach": bool(skip_task4_stop_line_approach),
         "track_package": str(track_package),
+        "sim_bridge_host": str(sim_bridge_host),
     }
     if traffic_pose is not None:
         x, y, yaw, configured = traffic_pose
@@ -170,12 +174,23 @@ def rotation_clearance_ok(nearest_range, clearance_m):
 
 
 def task1_categories_match(result, pickup_category, sim_category):
-    """The LLM result must agree with the voice-parsed target categories."""
-    if str(result.get("pickup_major") or "") != str(pickup_category or ""):
+    """The LLM result must agree with the voice-parsed target categories.
+
+    The Spark X2 response may return Chinese category names
+    (e.g. '日用品大类', '食品大类') while the voice parser returns the
+    canonical English keys ('daily', 'food').  Normalize both sides before
+    comparing.
+    """
+    result_pickup = normalize_category(result.get("pickup_major"))
+    result_sim = normalize_category(result.get("sim_major"))
+    expected_pickup = normalize_category(pickup_category)
+    expected_sim = normalize_category(sim_category)
+
+    if result_pickup != expected_pickup:
         return False
-    if not sim_category:
+    if not expected_sim:
         return True
-    return str(result.get("sim_major") or "") == str(sim_category)
+    return result_sim == expected_sim
 
 
 def items_equal_allowed(pickup_category, sim_category):

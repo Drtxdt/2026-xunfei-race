@@ -20,6 +20,8 @@ ramp_enabled: true
 #   true  : task2 -> task3_task4 -> task4_task5
 #   false : task2 -> task4 -> task5
 enable_simulation: true
+# 仿真桥接主机地址（task3 连接仿真环境）。可通过 launch 参数 sim_bridge_host 覆盖。
+sim_bridge_host: 192.168.1.28
 
 # ------------------------------ 初始定位【标定】-----------------------------
 # 启动时是否自动发布 /initialpose 给 AMCL。
@@ -93,9 +95,9 @@ stationary_odom_stale_sec: 0.5
 
 # ------------------------------ 二维码区导航【标定】-------------------------
 # 二维码领取区目标位姿（map 系）。
-qr_area_x: -1.3359
-qr_area_y: 0.405
-qr_area_yaw: -0.6
+qr_area_x: -1.367
+qr_area_y: -0.533
+qr_area_yaw: -0.3883
 # 导航到二维码区的 move_base 超时（秒）。
 qr_navigation_timeout_sec: 120.0
 
@@ -153,7 +155,7 @@ track_package: ucar_2026_track_end_stop
 handover_poll_interval_sec: 0.2
 # 交通灯停车线标定，透传给省赛 task4。【标定】
 # traffic_pose_configured 为 false 时省赛流程会在 task4 安全暂停。
-traffic_pose_configured: false
+traffic_pose_configured: true
 traffic_x: 0.2395
 traffic_y: -3.10
 traffic_yaw: -1.5596
