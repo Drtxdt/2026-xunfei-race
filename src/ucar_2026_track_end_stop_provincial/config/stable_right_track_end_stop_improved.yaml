@@ -3,27 +3,28 @@ auto_start: true
 startup_time: 2.0
 startup_speed: 0.35
 
-target_right_x: 205
+right_line_offset_px: 195.0
+target_right_x: 515
 base_speed: 0.23
-curve_speed: 0.14
+curve_speed: 0.12
 search_speed: 0.07
 search_angular_speed: -0.30
 lost_linear_speed: 0.06
 lost_angular_speed: -0.18
 
-kp: 0.0040
+kp: 0.0033
 kd: 0.0010
 error_alpha: 0.14
 curve_error_threshold: 34.0
-curve_angular_gain: 1.10
+curve_angular_gain: 0.95
 max_angular_speed: 0.42
 steering_deadband_px: 7.0
 max_straight_angular_speed: 0.16
 max_right_angular_speed: 0.32
 straight_angular_alpha: 0.84
-curve_angular_alpha: 0.58
+curve_angular_alpha: 0.68
 straight_angular_step: 0.025
-curve_angular_step: 0.065
+curve_angular_step: 0.04
 right_guard_error_px: 60.0
 right_guard_speed: 0.10
 deadband_angular_decay: 0.40

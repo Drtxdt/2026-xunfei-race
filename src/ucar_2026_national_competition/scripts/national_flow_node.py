@@ -635,10 +635,12 @@ class NationalFlowNode:
                 _fmt(payload.get("speed_cmd")))
 
     def stage_post_ramp_recovery(self):
-        rospy.loginfo("【国赛·坡道】过坡完成, 静置 %.1fs 等待 AMCL 吸收恢复后的"
-                      "雷达数据...", self.post_ramp_settle_sec)
+        rospy.loginfo("【国赛·坡道】过坡完成, 静置 %.1fs 等待雷达门控完全打开、"
+                      "AMCL 恢复更新...", self.post_ramp_settle_sec)
         self.publish_status("settling after the ramp")
         rospy.sleep(self.post_ramp_settle_sec)
+
+    def _clear_costmaps(self):
         if not self.post_ramp_clear_costmap:
             rospy.loginfo("【国赛·坡道】按配置跳过代价地图清除")
             return
@@ -646,21 +648,19 @@ class NationalFlowNode:
         try:
             rospy.wait_for_service("/move_base/clear_costmaps", timeout=5.0)
             rospy.ServiceProxy("/move_base/clear_costmaps", Empty)()
-            rospy.loginfo("【国赛·坡道】代价地图已清除, 定位恢复阶段结束")
+            rospy.loginfo("【国赛·坡道】代价地图已清除")
         except (rospy.ROSException, rospy.ServiceException) as exc:
             rospy.logwarn("【国赛·坡道】clear_costmaps 服务不可用: %s (继续)", exc)
 
     def stage_relocalize_after_ramp(self):
         if not self.relocalize_enabled:
             rospy.loginfo("【国赛·重定位】按配置跳过坡道后重定位")
+            self._clear_costmaps()
             return
 
-        rospy.loginfo("【国赛·重定位】开始坡道后重定位: 前进 %.2fm 后发布 /initialpose",
-                      self.relocalize_forward_m)
+        rospy.loginfo("【国赛·重定位】开始坡道后重定位: 下坡静止后直接发布 /initialpose")
         self.publish_status("relocalizing after the ramp")
 
-        self.wait_stationary(stable_sec=self.relocalize_stationary_sec)
-        self._open_loop_forward(self.relocalize_forward_m)
         self.wait_stationary(stable_sec=self.relocalize_stationary_sec)
 
         self._publish_initialpose()
@@ -668,6 +668,9 @@ class NationalFlowNode:
                       self.relocalize_settle_sec)
         rospy.sleep(self.relocalize_settle_sec)
         rospy.loginfo("【国赛·重定位】重定位完成")
+
+        # 在 AMCL 收敛到新位姿后再清除代价地图，避免旧位姿上的陈旧障碍。
+        self._clear_costmaps()
 
     def _open_loop_forward(self, distance_m):
         """开环直行指定距离，靠 /odom 估算里程。"""

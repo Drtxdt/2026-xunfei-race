@@ -44,7 +44,7 @@ initial_pose_settle_sec: 2.0
 # 车头朝向必须与坡道轴向一致（误差 < 3°），过坡航向保持以此为基准。
 ramp_staging_x: 2.4581
 ramp_staging_y: -0.9451
-ramp_staging_yaw: -3.2415
+ramp_staging_yaw: -3.2615
 # 导航到坡道暂泊点的 move_base 超时（秒）。
 ramp_navigation_timeout_sec: 90.0
 
@@ -61,15 +61,16 @@ post_ramp_settle_sec: 1.5
 post_ramp_clear_costmap: true
 
 # ------------------------------ 坡道后重定位【标定】---------------------------
-# 是否在下坡后的平地往前走一段固定距离后重新发布 /initialpose。
+# 是否在下坡后静止时重新发布 /initialpose。
 # 用于修正轮式里程计在坡道上的漂移，避免 AMCL 后续匹配失败。
 relocalize_enabled: true
-# 下坡后平地再往前开的距离（米）。建议 0.20~0.30，让车完全离开坡道尽头。
-relocalize_forward_m: 0.25
-# 重定位位姿（map 系，x/y/弧度 yaw）。即往前开完指定距离后车应停的坐标。
+# 下坡后平地再往前开的距离（米）。
+# 当前实现已改为“下坡静止后直接重定位”，本参数保留但不再使用，填 0 即可。
+relocalize_forward_m: 0.0
+# 重定位位姿（map 系，x/y/弧度 yaw）。即下坡完全停稳后车应停的坐标。
 # 该位姿由人工在场地实测得到，误差由下面协方差描述。
-relocalize_x: 0.458
-relocalize_y: -0.97
+relocalize_x: 0.336
+relocalize_y: -0.913
 relocalize_yaw: -3.1415
 # 位姿协方差：x/y 标准差（米），yaw 标准差（度）。
 # 用户给定误差约 x=10cm, y=10cm, yaw=20°，故默认值按此设置。
@@ -77,7 +78,7 @@ relocalize_xy_sigma_m: 0.20
 relocalize_yaw_sigma_deg: 25.0
 # 发布 /initialpose 前的静止确认，以及发布后的静置等待（秒）。
 relocalize_stationary_sec: 2.5
-relocalize_settle_sec: 2.0
+relocalize_settle_sec: 5.0
 # 开环前进速度（m/s）与最大允许时间（秒）。
 relocalize_forward_speed: 0.30
 relocalize_forward_timeout_sec: 10.0
@@ -92,9 +93,9 @@ stationary_odom_stale_sec: 0.5
 
 # ------------------------------ 二维码区导航【标定】-------------------------
 # 二维码领取区目标位姿（map 系）。
-qr_area_x: -1.6598
-qr_area_y: -0.8718
-qr_area_yaw: 2.2645
+qr_area_x: -1.3359
+qr_area_y: 0.405
+qr_area_yaw: -0.6
 # 导航到二维码区的 move_base 超时（秒）。
 qr_navigation_timeout_sec: 120.0
 

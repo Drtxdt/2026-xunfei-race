@@ -3,7 +3,7 @@
        本 launch 只保留结构性开关（rviz / 地图文件），
        全部可调参数都在各包 config/*.yaml 中，launch 一律不覆盖。 -->
   <arg name="debug" default="false" />
-  <arg name="map" default="$(find ucar_nav)/maps/521.yaml" />
+  <arg name="map" default="$(find ucar_nav)/maps/nation.yaml" />
 
   <include file="$(find ucar_2026_national_competition)/launch/national_common_core.launch">
     <arg name="start_nav" value="true" />
