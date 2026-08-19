@@ -42,9 +42,9 @@ initial_pose_settle_sec: 2.0
 # ------------------------------ 坡道暂泊点【标定】---------------------------
 # 坡脚前 20~30cm 的暂泊位姿（map 系，x/y/弧度 yaw）。
 # 车头朝向必须与坡道轴向一致（误差 < 3°），过坡航向保持以此为基准。
-ramp_staging_x: 2.4981
-ramp_staging_y: -0.9051
-ramp_staging_yaw: -3.1415
+ramp_staging_x: 2.4581
+ramp_staging_y: -0.9451
+ramp_staging_yaw: -3.2415
 # 导航到坡道暂泊点的 move_base 超时（秒）。
 ramp_navigation_timeout_sec: 90.0
 

@@ -577,7 +577,7 @@ class NationalFlowNode:
 
     def stage_traverse_ramp(self):
         self.wait_stationary()
-        rospy.loginfo("【国赛·坡道】调用过坡服务 %s ...", self.ramp_start_service)
+        rospy.loginfo("【国赛·坡道】调用过坡服务 %s ...", self.ramp_service)
         self.publish_status("starting the ramp traverse")
         try:
             rospy.wait_for_service(self.ramp_service, timeout=10.0)
