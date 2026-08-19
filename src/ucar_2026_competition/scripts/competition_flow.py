@@ -2016,7 +2016,7 @@ class CompetitionFlow:
             "required": True,
         }
 
-    def _factory_search_context(self, category, phase):
+    def _factory_search_context(self, category, phase, full_rescan=False):
         resume_enabled = bool_param("~task2_resume_coverage_enabled", True)
         with self.lock:
             anchor_count = len(rospy.get_param(
@@ -2043,17 +2043,30 @@ class CompetitionFlow:
                 rospy.get_param("~task2_no_workshop_anchors", []),
                 anchor_count,
             )
+            fallback_only_anchors = normalize_coverage_anchor_ids(
+                rospy.get_param("~task2_fallback_only_anchors", []),
+                anchor_count,
+            )
         if preferred_anchor in no_workshop_anchors:
             preferred_anchor = 0
         skipped_anchors = tuple(sorted(
             set(skipped_anchors).union(no_workshop_anchors)))
+        # Fallback-only anchors (the prepended extra bay points) stay out of
+        # the first-pass scan; a restarted search covers them first.  Keep
+        # them reachable when the remembered target sits at one of them.
+        if (not full_rescan and fallback_only_anchors and
+                preferred_anchor not in fallback_only_anchors):
+            skipped_anchors = tuple(sorted(
+                set(skipped_anchors).union(fallback_only_anchors)))
         return {
             "resume_enabled": resume_enabled,
+            "anchor_count": anchor_count,
             "preferred_anchor": preferred_anchor,
             "skipped_anchors": skipped_anchors,
             "remembered_heading_enabled": remembered_heading_enabled,
             "remembered_odom_yaw": remembered_odom_yaw,
             "no_workshop_anchors": no_workshop_anchors,
+            "fallback_only_anchors": fallback_only_anchors,
         }
 
     def _factory_navigator_launch_args(
@@ -2282,7 +2295,8 @@ class CompetitionFlow:
             "Task2 navigation released after fresh OCR frame: %s",
             response.message)
 
-    def _navigate_factory_target(self, category, item, workshop, phase, announce):
+    def _navigate_factory_target(self, category, item, workshop, phase, announce,
+                                 full_rescan=False):
         if not category or not item or not workshop:
             raise StageError("task2 {} target is incomplete".format(phase))
         center_only = bool_param("~task2_center_only", False)
@@ -2301,7 +2315,8 @@ class CompetitionFlow:
             self.task2_non_target_announced = set()
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
-        search_context = self._factory_search_context(category, phase)
+        search_context = self._factory_search_context(
+            category, phase, full_rescan=full_rescan)
         resume_coverage_enabled = search_context["resume_enabled"]
         preferred_anchor = search_context["preferred_anchor"]
         skipped_anchors = search_context["skipped_anchors"]
@@ -2313,6 +2328,13 @@ class CompetitionFlow:
             rospy.loginfo(
                 "task2 calibrated no-workshop anchors skipped: %s",
                 ",".join(str(value) for value in no_workshop_anchors))
+        if full_rescan and search_context["fallback_only_anchors"]:
+            rospy.loginfo(
+                "task2 fallback rescan: extra anchors %s included before the "
+                "regular points",
+                ",".join(
+                    str(value)
+                    for value in search_context["fallback_only_anchors"]))
         if phase == "simulation" and preferred_anchor:
             rospy.loginfo(
                 "task2 coverage resume: starting %s search at anchor %d; "
@@ -2323,7 +2345,8 @@ class CompetitionFlow:
                 remembered_heading_enabled, remembered_odom_yaw)
         self.publish_status(
             "task2", "searching_{}".format(phase),
-            "searching {} factory sign with existing 9-point navigation".format(category))
+            "searching {} factory sign with {}-point navigation".format(
+                category, search_context["anchor_count"]))
         try:
             self._start_factory_children(
                 category, phase, center_only, search_context)
@@ -2462,6 +2485,7 @@ class CompetitionFlow:
         self._task2_deadline = time.monotonic() + self.task2_total_timeout_sec
         visit_index = 0
         restart_count = 0
+        visit_retrying = False
         handoff_done_for = None
         while visit_index < len(visits) and not rospy.is_shutdown():
             self.check_abort()
@@ -2472,8 +2496,10 @@ class CompetitionFlow:
                     handoff_done_for = visit_index
                 self._navigate_factory_target(
                     category, item, workshop, phase,
-                    announce=(phase == "physical"))
+                    announce=(phase == "physical"),
+                    full_rescan=visit_retrying)
                 visit_index += 1
+                visit_retrying = False
                 continue
             except Task2BudgetExceeded as exc:
                 rospy.logerr("task2 total budget exceeded: %s", exc)
@@ -2486,11 +2512,13 @@ class CompetitionFlow:
                     self._task2_timeout_exit(visits, visit_index)
                     return
                 restart_count += 1
+                visit_retrying = True
                 self.stop_child("factory_ocr")
                 self.stop_child("factory_navigator")
                 self.safe_stop(cancel_navigation=True)
                 # Drop all search memory so the next attempt restarts the
-                # coverage scan from the very first factory anchor.
+                # coverage scan from the very first factory anchor.  The
+                # restart round also covers the fallback-only anchors.
                 with self.lock:
                     self.task2_warehouse_memory = {}
                     self.current_coverage_anchor = None
@@ -2499,7 +2527,8 @@ class CompetitionFlow:
                         memory_filter.reset()
                 self.publish_status(
                     "task2", "search_restart_{}".format(restart_count),
-                    "restarting the factory scan from the first anchor",
+                    "restarting the factory scan from the first anchor "
+                    "(fallback-only anchors included)",
                     str(exc))
                 rospy.sleep(2.0)
         if len(visits) == 1:
