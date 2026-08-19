@@ -4,6 +4,7 @@
        全部可调参数都在各包 config/*.yaml 中，launch 一律不覆盖。 -->
   <arg name="debug" default="false" />
   <arg name="map" default="$(find ucar_nav)/maps/nation.yaml" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
 
   <include file="$(find ucar_2026_national_competition)/launch/national_common_core.launch">
     <arg name="start_nav" value="true" />
@@ -16,5 +17,7 @@
     <arg name="map" value="$(arg map)" />
   </include>
 
-  <include file="$(find ucar_2026_national_competition)/launch/national_flow.launch" />
+  <include file="$(find ucar_2026_national_competition)/launch/national_flow.launch">
+    <arg name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+  </include>
 </launch>

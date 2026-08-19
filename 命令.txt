@@ -59,6 +59,10 @@ roslaunch ucar_2026_national_competition national_full_competition.launch \
   sim_bridge_host:=192.168.x.x \
   debug:=true
 
+roslaunch ucar_2026_national_competition national_full_competition.launch \
+  enable_simulation:=true \
+  sim_bridge_host:=192.168.1.30 \
+  debug:=true
 
 
 ```

@@ -254,6 +254,8 @@ class NationalFlowNode:
         )
         self.skip_task4_stop_line_approach = bool(rospy.get_param(
             "~skip_task4_stop_line_approach", False))
+        self.sim_bridge_host = str(rospy.get_param(
+            "~sim_bridge_host", "192.168.1.28")).strip()
 
         # ------------------------------ interfaces ---------------------------
         self.status_topic = rospy.get_param("~status_topic", "/national/status")
@@ -944,6 +946,7 @@ class NationalFlowNode:
                 skip_task4_stop_line_approach=(
                     self.skip_task4_stop_line_approach),
                 track_package=self.track_package,
+                sim_bridge_host=self.sim_bridge_host,
             )
             self.publish_status(
                 "handing over to the provincial flow: {}".format(start_stage))
