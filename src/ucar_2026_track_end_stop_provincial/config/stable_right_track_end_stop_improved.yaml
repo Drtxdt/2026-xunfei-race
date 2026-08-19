@@ -12,20 +12,22 @@ search_angular_speed: -0.26
 lost_linear_speed: 0.14
 lost_angular_speed: -0.22
 
-kp: 0.0042
+kp: 0.0065
 kd: 0.0018
 error_alpha: 0.20
 curve_error_threshold: 38.0
 curve_angular_gain: 1.18
 max_angular_speed: 0.55
-steering_deadband_px: 7.0
-max_straight_angular_speed: 0.16
-max_right_angular_speed: 0.46
-straight_angular_alpha: 0.84
-curve_angular_alpha: 0.45
-straight_angular_step: 0.025
+steering_deadband_px: 3
+max_straight_angular_speed: 0.25
+max_right_angular_speed: 0.32
+straight_angular_alpha: 0.60
+curve_angular_alpha: 0.68
+straight_angular_step: 0.05
 curve_angular_step: 0.08
 right_guard_error_px: 60.0
+right_warning_error_px: 20
+right_near_warning_error_px: 8
 right_guard_speed: 0.10
 deadband_angular_decay: 0.40
 
