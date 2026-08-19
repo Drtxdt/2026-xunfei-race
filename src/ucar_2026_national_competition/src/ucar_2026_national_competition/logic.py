@@ -27,6 +27,7 @@ NATIONAL_STAGES = (
     "navigate_ramp_staging",
     "traverse_ramp",
     "post_ramp_recovery",
+    "relocalize_after_ramp",
     "navigate_qr_area",
     "scan_qr",
     "reason_and_announce",
@@ -51,13 +52,14 @@ def stage_sequence(mode="full", enable_simulation=True, ramp_enabled=True):
         if not ramp_enabled:
             stages.remove("traverse_ramp")
             stages.remove("post_ramp_recovery")
+            stages.remove("relocalize_after_ramp")
         return tuple(stages)
     if normalized == "task1":
         return tuple(
             stage for stage in NATIONAL_STAGES if stage != "handover")
     if normalized == "ramp":
         return ("navigate_ramp_staging", "traverse_ramp",
-                "post_ramp_recovery")
+                "post_ramp_recovery", "relocalize_after_ramp")
     raise ValueError("unsupported national start_stage: {}".format(mode))
 
 

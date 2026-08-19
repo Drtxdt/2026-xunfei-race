@@ -29,7 +29,7 @@ import threading
 import time
 
 import actionlib
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from sensor_msgs.msg import LaserScan
@@ -114,6 +114,24 @@ class NationalFlowNode:
         self.enable_simulation = bool(rospy.get_param(
             "~enable_simulation", True))
 
+        # ------------------------------ initial pose -------------------------
+        self.publish_initial_pose_at_startup = bool(rospy.get_param(
+            "~publish_initial_pose_at_startup", True))
+        self.initial_pose = validate_pose(
+            rospy.get_param("~initial_pose_x", 0.0),
+            rospy.get_param("~initial_pose_y", 0.0),
+            rospy.get_param("~initial_pose_yaw", 0.0),
+            "initial pose",
+        )
+        self.initial_pose_xy_sigma = float(rospy.get_param(
+            "~initial_pose_xy_sigma_m", 0.3))
+        self.initial_pose_yaw_sigma_deg = float(rospy.get_param(
+            "~initial_pose_yaw_sigma_deg", 30.0))
+        self.initial_pose_subscriber_wait_sec = float(rospy.get_param(
+            "~initial_pose_subscriber_wait_sec", 5.0))
+        self.initial_pose_settle_sec = float(rospy.get_param(
+            "~initial_pose_settle_sec", 2.0))
+
         # ------------------------------ poses --------------------------------
         self.ramp_staging_pose = validate_pose(
             rospy.get_param("~ramp_staging_x", 0.0),
@@ -143,6 +161,30 @@ class NationalFlowNode:
             "~post_ramp_settle_sec", 1.5))
         self.post_ramp_clear_costmap = bool(rospy.get_param(
             "~post_ramp_clear_costmap", True))
+
+        # ------------------------------ relocalization -----------------------
+        self.relocalize_enabled = bool(rospy.get_param(
+            "~relocalize_enabled", True))
+        self.relocalize_forward_m = float(rospy.get_param(
+            "~relocalize_forward_m", 0.25))
+        self.relocalize_pose = validate_pose(
+            rospy.get_param("~relocalize_x", -1.2),
+            rospy.get_param("~relocalize_y", -0.9),
+            rospy.get_param("~relocalize_yaw", 2.2645),
+            "relocalize after ramp",
+        )
+        self.relocalize_xy_sigma = float(rospy.get_param(
+            "~relocalize_xy_sigma_m", 0.1))
+        self.relocalize_yaw_sigma_deg = float(rospy.get_param(
+            "~relocalize_yaw_sigma_deg", 20.0))
+        self.relocalize_stationary_sec = float(rospy.get_param(
+            "~relocalize_stationary_sec", 0.5))
+        self.relocalize_settle_sec = float(rospy.get_param(
+            "~relocalize_settle_sec", 2.0))
+        self.relocalize_forward_speed = float(rospy.get_param(
+            "~relocalize_forward_speed", 0.30))
+        self.relocalize_forward_timeout_sec = float(rospy.get_param(
+            "~relocalize_forward_timeout_sec", 10.0))
 
         # ------------------------------ stationary ---------------------------
         self.stationary_timeout_sec = float(rospy.get_param(
@@ -219,6 +261,8 @@ class NationalFlowNode:
             "~task1_result_topic", "/competition/task1_result")
 
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
+        self.initialpose_pub = rospy.Publisher(
+            "/initialpose", PoseWithCovarianceStamped, queue_size=1)
         self.status_pub = rospy.Publisher(
             self.status_topic, String, queue_size=10, latch=True)
         self.task1_result_pub = rospy.Publisher(
@@ -463,11 +507,13 @@ class NationalFlowNode:
         if status != 3:  # GoalStatus.SUCCEEDED
             raise StageError("move_base failed with state {}".format(status))
 
-    def wait_stationary(self):
+    def wait_stationary(self, stable_sec=None, timeout_sec=None):
+        stable_sec = self.stationary_stable_sec if stable_sec is None else float(stable_sec)
+        timeout_sec = self.stationary_timeout_sec if timeout_sec is None else float(timeout_sec)
         rospy.loginfo("【国赛·坡道】等待底盘完全静止 (线速度≤0.01m/s 角速度≤"
-                      "0.02rad/s, 持续 %.1fs)...", self.stationary_stable_sec)
+                      "0.02rad/s, 持续 %.1fs)...", stable_sec)
         self.publish_status("waiting for a stationary base")
-        deadline = time.monotonic() + self.stationary_timeout_sec
+        deadline = time.monotonic() + timeout_sec
         stable_since = None
         while time.monotonic() < deadline and not rospy.is_shutdown():
             self.check_abort()
@@ -481,14 +527,13 @@ class NationalFlowNode:
                     and abs(twist.angular.z) <= 0.02:
                 if stable_since is None:
                     stable_since = time.monotonic()
-                elif time.monotonic() - stable_since >= self.stationary_stable_sec:
+                elif time.monotonic() - stable_since >= stable_sec:
                     rospy.loginfo("【国赛·坡道】底盘已确认静止, 可以交接控制权")
                     return
             else:
                 stable_since = None
             rospy.sleep(0.1)
-        raise StageError("等待底盘静止超时 ({:.0f}s)".format(
-            self.stationary_timeout_sec))
+        raise StageError("等待底盘静止超时 ({:.0f}s)".format(timeout_sec))
 
     def odom_yaw(self):
         msg = self.odom_msg
@@ -604,6 +649,128 @@ class NationalFlowNode:
             rospy.loginfo("【国赛·坡道】代价地图已清除, 定位恢复阶段结束")
         except (rospy.ROSException, rospy.ServiceException) as exc:
             rospy.logwarn("【国赛·坡道】clear_costmaps 服务不可用: %s (继续)", exc)
+
+    def stage_relocalize_after_ramp(self):
+        if not self.relocalize_enabled:
+            rospy.loginfo("【国赛·重定位】按配置跳过坡道后重定位")
+            return
+
+        rospy.loginfo("【国赛·重定位】开始坡道后重定位: 前进 %.2fm 后发布 /initialpose",
+                      self.relocalize_forward_m)
+        self.publish_status("relocalizing after the ramp")
+
+        self.wait_stationary(stable_sec=self.relocalize_stationary_sec)
+        self._open_loop_forward(self.relocalize_forward_m)
+        self.wait_stationary(stable_sec=self.relocalize_stationary_sec)
+
+        self._publish_initialpose()
+        rospy.loginfo("【国赛·重定位】/initialpose 已发布, 静置 %.1fs 等待 AMCL 收敛",
+                      self.relocalize_settle_sec)
+        rospy.sleep(self.relocalize_settle_sec)
+        rospy.loginfo("【国赛·重定位】重定位完成")
+
+    def _open_loop_forward(self, distance_m):
+        """开环直行指定距离，靠 /odom 估算里程。"""
+        rospy.loginfo("【国赛·重定位】开环前进 %.2fm (速度 %.2fm/s)",
+                      distance_m, self.relocalize_forward_speed)
+        start_pos = self._odom_position()
+        if start_pos is None:
+            raise StageError("重定位前进前无有效里程计")
+
+        deadline = time.monotonic() + self.relocalize_forward_timeout_sec
+        rate = rospy.Rate(20)
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            current = self._odom_position()
+            if current is None:
+                raise StageError("重定位前进中丢失里程计")
+            traveled = math.hypot(
+                current[0] - start_pos[0], current[1] - start_pos[1])
+            if traveled >= distance_m:
+                break
+            twist = Twist()
+            twist.linear.x = self.relocalize_forward_speed
+            self.cmd_pub.publish(twist)
+            rate.sleep()
+        self.safe_stop()
+        end_pos = self._odom_position()
+        if end_pos is not None:
+            rospy.loginfo("【国赛·重定位】开环前进结束, 里程计估算行走 %.3fm",
+                          math.hypot(end_pos[0] - start_pos[0],
+                                     end_pos[1] - start_pos[1]))
+
+    def _odom_position(self):
+        msg = self.odom_msg
+        if msg is None:
+            return None
+        return (msg.pose.pose.position.x, msg.pose.pose.position.y)
+
+    def _publish_initialpose(self):
+        pose = PoseWithCovarianceStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.pose.position.x = self.relocalize_pose[0]
+        pose.pose.pose.position.y = self.relocalize_pose[1]
+        pose.pose.pose.position.z = 0.0
+        yaw = self.relocalize_pose[2]
+        pose.pose.pose.orientation.z = math.sin(yaw * 0.5)
+        pose.pose.pose.orientation.w = math.cos(yaw * 0.5)
+
+        xy_var = self.relocalize_xy_sigma ** 2
+        yaw_var = math.radians(self.relocalize_yaw_sigma_deg) ** 2
+        cov = [0.0] * 36
+        cov[0] = xy_var      # x
+        cov[7] = xy_var      # y
+        cov[35] = yaw_var    # yaw
+        pose.pose.covariance = cov
+
+        self.initialpose_pub.publish(pose)
+        rospy.loginfo(
+            "【国赛·重定位】已发布 /initialpose: x=%.3f y=%.3f yaw=%.2f° "
+            "xy_σ=%.2fm yaw_σ=%.1f°",
+            self.relocalize_pose[0], self.relocalize_pose[1],
+            math.degrees(yaw), self.relocalize_xy_sigma,
+            self.relocalize_yaw_sigma_deg)
+
+    def _publish_initial_pose_at_startup(self):
+        """流程启动前发布 /initialpose，让 AMCL 在第一次导航前完成定位。"""
+        rospy.loginfo("【国赛·初始定位】等待 AMCL 订阅 /initialpose ...")
+        deadline = rospy.get_time() + self.initial_pose_subscriber_wait_sec
+        while (self.initialpose_pub.get_num_connections() == 0 and
+               rospy.get_time() < deadline and not rospy.is_shutdown()):
+            rospy.sleep(0.1)
+
+        if self.initialpose_pub.get_num_connections() == 0:
+            rospy.logwarn("【国赛·初始定位】%.1fs 内没有 /initialpose 订阅者，"
+                          "仍尝试发布", self.initial_pose_subscriber_wait_sec)
+
+        pose = PoseWithCovarianceStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.pose.position.x = self.initial_pose[0]
+        pose.pose.pose.position.y = self.initial_pose[1]
+        pose.pose.pose.position.z = 0.0
+        yaw = self.initial_pose[2]
+        pose.pose.pose.orientation.z = math.sin(yaw * 0.5)
+        pose.pose.pose.orientation.w = math.cos(yaw * 0.5)
+
+        xy_var = self.initial_pose_xy_sigma ** 2
+        yaw_var = math.radians(self.initial_pose_yaw_sigma_deg) ** 2
+        cov = [0.0] * 36
+        cov[0] = xy_var
+        cov[7] = xy_var
+        cov[35] = yaw_var
+        pose.pose.covariance = cov
+
+        self.initialpose_pub.publish(pose)
+        rospy.loginfo(
+            "【国赛·初始定位】已发布 /initialpose: x=%.3f y=%.3f yaw=%.2f° "
+            "xy_σ=%.2fm yaw_σ=%.1f° | 订阅者=%d, 等待 %.1fs 让 AMCL 处理",
+            self.initial_pose[0], self.initial_pose[1], math.degrees(yaw),
+            self.initial_pose_xy_sigma, self.initial_pose_yaw_sigma_deg,
+            self.initialpose_pub.get_num_connections(),
+            self.initial_pose_settle_sec)
+        rospy.sleep(self.initial_pose_settle_sec)
 
     def stage_navigate_qr_area(self):
         self.safe_stop(cancel_navigation=True)
@@ -817,6 +984,9 @@ class NationalFlowNode:
 
     # ------------------------------ orchestration -------------------------
     def run(self):
+        if self.publish_initial_pose_at_startup:
+            self._publish_initial_pose_at_startup()
+
         try:
             stages = stage_sequence(
                 self.start_mode, self.enable_simulation, self.ramp_enabled)

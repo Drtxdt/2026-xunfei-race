@@ -53,7 +53,7 @@ from ucar_2026_upanddown.logic import (
 )
 
 
-TERMINAL_STATES = frozenset(("DONE", "FAULT", "ABORTED"))
+TERMINAL_STATES = ("DONE", "FAULT", "ABORTED")
 HEADING_SOURCES = ("imu_orientation", "gyro", "odom")
 
 SEGMENT_ZH = {

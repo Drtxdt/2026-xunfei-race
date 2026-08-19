@@ -41,9 +41,12 @@ gate_reopen_verify_sec: 2.0
 # pitch 符号修正。上车标定：车头朝上坡放在 22° 坡上，
 # rostopic echo /ramp_traverse/status 看 pitch_deg 必须为正(约+22)；
 # 若为负改为 -1.0。
-pitch_sign: 1.0
+# 标定结果：2026-08-19 22° 上坡 296 样本原始 pitch = -22.24°，扣除零偏后为负，
+# 因此取 -1.0 使上坡显示为正。
+pitch_sign: -1.0
 # 平地零偏修正（度）。平地上 pitch_deg 应≈0，否则把稳定偏差填到这里。
-level_offset_deg: 0.0
+# 标定结果：2026-08-19 平地 297 样本平均 pitch = -0.6709°
+level_offset_deg: -0.6709
 # pitch 中值滤波窗口（帧）。滤掉车身颠簸单帧尖峰。
 pitch_filter_window: 5
 
@@ -67,11 +70,11 @@ confirm_frames: 3
 # level 段（坡前平地接近段）。
 speed_approach_mps: 0.5
 # 上坡段。麦轮爬 22° 需要持续动力，太慢反而力矩不足。
-speed_up_mps: 0.8
+speed_up_mps: 0.5
 # 坡顶平路段。
-speed_plateau_mps: 0.5
+speed_plateau_mps: 0.1
 # 下坡段。重力分量助跑，稍慢防冲出。
-speed_down_mps: 0.5
+speed_down_mps: 0.1
 # 下坡结束后的轴距余量前进段。
 speed_exit_mps: 0.12
 # 加速度上限（m/s^2）：起步/提速斜率，防坡上打滑污染里程计。

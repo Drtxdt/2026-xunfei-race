@@ -21,12 +21,30 @@ ramp_enabled: true
 #   false : task2 -> task4 -> task5
 enable_simulation: true
 
+# ------------------------------ 初始定位【标定】-----------------------------
+# 启动时是否自动发布 /initialpose 给 AMCL。
+# 国赛起点固定，建议 true；若想在 rviz 里手动给初始位姿则设为 false。
+publish_initial_pose_at_startup: true
+# 起点在 map 系下的位姿（x/y/弧度 yaw）。默认值 (0,0,0) 仅作占位，
+# 必须按国赛实际发车位置实测修改。
+initial_pose_x: 0.0
+initial_pose_y: 0.0
+initial_pose_yaw: 0.0
+# 初始位姿协方差：x/y 标准差（米）, yaw 标准差（度）。
+# 发车位置已知且较准时可设小些；不确定时可放大让 AMCL 快速收敛。
+initial_pose_xy_sigma_m: 0.30
+initial_pose_yaw_sigma_deg: 30.0
+# 发布前等待 /initialpose 订阅者连接的最长时间（秒）。
+initial_pose_subscriber_wait_sec: 5.0
+# 发布 /initialpose 后等待 AMCL 处理的时间（秒）。
+initial_pose_settle_sec: 2.0
+
 # ------------------------------ 坡道暂泊点【标定】---------------------------
 # 坡脚前 20~30cm 的暂泊位姿（map 系，x/y/弧度 yaw）。
 # 车头朝向必须与坡道轴向一致（误差 < 3°），过坡航向保持以此为基准。
-ramp_staging_x: 0.0
-ramp_staging_y: 0.0
-ramp_staging_yaw: 0.0
+ramp_staging_x: 2.4981
+ramp_staging_y: -0.9051
+ramp_staging_yaw: -3.1415
 # 导航到坡道暂泊点的 move_base 超时（秒）。
 ramp_navigation_timeout_sec: 90.0
 
@@ -41,6 +59,28 @@ ramp_poll_interval_sec: 0.1
 post_ramp_settle_sec: 1.5
 # 是否在过坡后调用 /move_base/clear_costmaps 清除坡道期间的陈旧标记。
 post_ramp_clear_costmap: true
+
+# ------------------------------ 坡道后重定位【标定】---------------------------
+# 是否在下坡后的平地往前走一段固定距离后重新发布 /initialpose。
+# 用于修正轮式里程计在坡道上的漂移，避免 AMCL 后续匹配失败。
+relocalize_enabled: true
+# 下坡后平地再往前开的距离（米）。建议 0.20~0.30，让车完全离开坡道尽头。
+relocalize_forward_m: 0.25
+# 重定位位姿（map 系，x/y/弧度 yaw）。即往前开完指定距离后车应停的坐标。
+# 该位姿由人工在场地实测得到，误差由下面协方差描述。
+relocalize_x: 0.458
+relocalize_y: -0.97
+relocalize_yaw: -3.1415
+# 位姿协方差：x/y 标准差（米），yaw 标准差（度）。
+# 用户给定误差约 x=10cm, y=10cm, yaw=20°，故默认值按此设置。
+relocalize_xy_sigma_m: 0.20
+relocalize_yaw_sigma_deg: 25.0
+# 发布 /initialpose 前的静止确认，以及发布后的静置等待（秒）。
+relocalize_stationary_sec: 2.5
+relocalize_settle_sec: 2.0
+# 开环前进速度（m/s）与最大允许时间（秒）。
+relocalize_forward_speed: 0.30
+relocalize_forward_timeout_sec: 10.0
 
 # ------------------------------ 静止确认 -----------------------------------
 # 交接控制权前（进坡/出坡）等待底盘完全静止：
