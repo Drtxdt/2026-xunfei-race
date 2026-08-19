@@ -176,6 +176,9 @@ private:
     private_nh_.param("obstacle_forward_distance_m", obstacle_forward_distance_m_, 0.50);
     private_nh_.param("obstacle_lateral_speed", obstacle_lateral_speed_, 0.30);
     private_nh_.param("obstacle_forward_speed", obstacle_forward_speed_, 0.32);
+    private_nh_.param("obstacle_return_lateral_distance_m",
+                      obstacle_return_lateral_distance_m_, 0.45);
+    private_nh_.param("obstacle_debug", obstacle_debug_, true);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
@@ -360,7 +363,7 @@ private:
 
       case State::ObstacleShiftBack:
       {
-        const double duration = obstacle_lateral_distance_m_ /
+        const double duration = obstacle_return_lateral_distance_m_ /
                                 std::max(obstacle_lateral_speed_, 1e-6);
         if ((now - state_start_time_).toSec() < duration)
         {
@@ -544,6 +547,17 @@ private:
                            result.bottom_ratio >= obstacle_min_bottom_ratio_;
     obstacle_hit_count_ = candidate ? obstacle_hit_count_ + 1 : 0;
     result.detected = obstacle_hit_count_ >= obstacle_confirm_frames_;
+    if (obstacle_debug_)
+    {
+      ROS_INFO_THROTTLE(0.5,
+          "obstacle candidate: area=%.3f(>=%.2f) width=%.2f(>=%.2f) height=%.2f(>=%.2f) bottom=%.2f(>=%.2f) hits=%d/%d %s",
+          result.area_ratio, obstacle_min_area_ratio_,
+          result.width_ratio, obstacle_min_width_ratio_,
+          result.height_ratio, obstacle_min_height_ratio_,
+          result.bottom_ratio, obstacle_min_bottom_ratio_,
+          obstacle_hit_count_, obstacle_confirm_frames_,
+          candidate ? "PASS" : "fail");
+    }
     return result;
   }
 
@@ -1000,6 +1014,8 @@ private:
   double obstacle_lateral_distance_m_ = 0.50;
   double obstacle_forward_distance_m_ = 0.50;
   double obstacle_lateral_speed_ = 0.30;
+  double obstacle_return_lateral_distance_m_ = 0.45;
+  bool obstacle_debug_ = true;
   double obstacle_forward_speed_ = 0.32;
   int obstacle_hit_count_ = 0;
   bool obstacle_completed_ = false;
