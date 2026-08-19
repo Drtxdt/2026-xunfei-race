@@ -110,7 +110,6 @@ private:
     double width_ratio = 0.0;
     double height_ratio = 0.0;
     double bottom_ratio = 0.0;
-    cv::Rect box;
   };
 
   void loadParams()
@@ -239,7 +238,6 @@ private:
 
     ros::Time now = ros::Time::now();
     last_image_time_ = now;
-    ++frame_count_;
 
     cv::Mat mask = extractWhiteMask(frame);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
@@ -449,9 +447,8 @@ private:
         break;
     }
 
-    last_proc_ms_ = (ros::Time::now() - now).toSec() * 1000.0;
-    publishDebug(frame, mask, follow, end_result, obstacle, now);
-    publishDebugInfo(follow, end_result, obstacle, now);
+    publishDebug(frame, mask, follow, end_result, now);
+    publishDebugInfo(follow, end_result, now);
     publishStatus();
   }
 
@@ -540,7 +537,6 @@ private:
         result.width_ratio = width_ratio;
         result.height_ratio = height_ratio;
         result.bottom_ratio = bottom_ratio;
-        result.box = cv::Rect(box.x + x0, box.y + y0, box.width, box.height);
       }
     }
 
@@ -799,14 +795,12 @@ private:
       const bool timed_out = (now - last_detection_time_).toSec() > lost_timeout_;
       if (stop_on_lost_ && timed_out)
       {
-        last_speed_stage_ = "lost_stop";
         setStatus("lost_stop");
         resetPid();
         hardStop();
         return;
       }
 
-      last_speed_stage_ = "wait";
       setStatus("line_wait");
       geometry_msgs::Twist cmd;
       cmd.linear.x = lost_speed_;
@@ -829,19 +823,14 @@ private:
     const double error_abs = std::abs(filtered_error_px_);
     double linear = min_speed_;
     if (error_abs <= fast_error_px_)
-    {
-      last_speed_stage_ = "fast";
       linear = effective_base_speed;
-    }
     else if (error_abs <= medium_error_px_)
     {
-      last_speed_stage_ = "medium";
       const double t = (error_abs - fast_error_px_) / std::max(1e-6, medium_error_px_ - fast_error_px_);
       linear = effective_base_speed + t * (medium_speed_ - effective_base_speed);
     }
     else
     {
-      last_speed_stage_ = "hard";
       const double t = std::min((error_abs - medium_error_px_) /
                                   std::max(1e-6, hard_error_px_ - medium_error_px_),
                               1.0);
@@ -891,8 +880,7 @@ private:
   }
 
   void publishDebug(const cv::Mat& frame, const cv::Mat& mask, const FollowResult& follow,
-                    const EndOfTrackResult& end_result, const GrayObstacleResult& obstacle,
-                    const ros::Time& now)
+                    const EndOfTrackResult& end_result, const ros::Time& now)
   {
     cv::Mat debug = frame.clone();
 
@@ -931,17 +919,6 @@ private:
                   cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
     }
 
-    const int obs_x0 = kImageCols / 10;
-    const int obs_y0 = kImageRows / 10;
-    const cv::Rect obs_roi(obs_x0, obs_y0, kImageCols * 8 / 10, kImageRows * 3 / 4);
-    const cv::Scalar obs_color = obstacle.detected ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 140, 255);
-    cv::rectangle(debug, obs_roi, obs_color, 1);
-    if (obstacle.box.area() > 0)
-      cv::rectangle(debug, obstacle.box, obs_color, 2);
-    if (obstacle.detected)
-      cv::putText(debug, "OBSTACLE", cv::Point(kImageCols / 2 - 70, obs_y0 - 10),
-                  cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 255), 2);
-
     std::ostringstream line1;
     line1 << "state=" << status_ << " cmd=(" << std::fixed << std::setprecision(2) << last_linear_ << ","
           << last_angular_ << ") found=" << boolText(follow.found);
@@ -966,8 +943,7 @@ private:
     }
   }
 
-  void publishDebugInfo(const FollowResult& follow, const EndOfTrackResult& end_result,
-                        const GrayObstacleResult& obstacle, const ros::Time& now)
+  void publishDebugInfo(const FollowResult& follow, const EndOfTrackResult& end_result, const ros::Time& now)
   {
     std::ostringstream ss;
     ss << "status=" << status_
@@ -978,24 +954,12 @@ private:
        << " target_x=" << follow.target_x
        << " target_y=" << follow.target_y
        << " error=" << follow.error
-       << " filtered_err=" << filtered_error_px_
-       << " speed_stage=" << last_speed_stage_
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
        << " raw_points=" << follow.raw_line.size()
        << " end_detected=" << boolText(end_result.detected)
        << " end_width_ratio=" << end_result.best_width_ratio
-       << " end_y_ratio=" << end_result.best_y_ratio
-       << " obstacle=" << boolText(obstacle.detected)
-       << " obs_area=" << obstacle.area_ratio
-       << " obs_width=" << obstacle.width_ratio
-       << " obs_height=" << obstacle.height_ratio
-       << " obs_bottom=" << obstacle.bottom_ratio
-       << " obs_hits=" << obstacle_hit_count_
-       << " obs_gate=" << obstacleGateString(now)
-       << " obs_enable_in=" << obstacleEnableIn(now)
-       << " frame=" << frame_count_
-       << " proc_ms=" << std::fixed << std::setprecision(1) << last_proc_ms_;
+       << " end_y_ratio=" << end_result.best_y_ratio;
     std_msgs::String msg;
     msg.data = ss.str();
     debug_info_pub_.publish(msg);
@@ -1004,29 +968,7 @@ private:
 
   void setStatus(const std::string& status)
   {
-    if (status != status_)
-    {
-      ROS_INFO("track_end_stop state %s -> %s at %.2fs",
-               status_.c_str(), status.c_str(),
-               (ros::Time::now() - start_time_).toSec());
-    }
     status_ = status;
-  }
-
-  std::string obstacleGateString(const ros::Time& now) const
-  {
-    if (state_ != State::Follow)
-      return "not_follow";
-    if (obstacle_completed_)
-      return "completed";
-    if ((now - start_time_).toSec() < obstacle_enable_delay_)
-      return "delay";
-    return "active";
-  }
-
-  double obstacleEnableIn(const ros::Time& now) const
-  {
-    return std::max(0.0, obstacle_enable_delay_ - (now - start_time_).toSec());
   }
 
   void publishStatus()
@@ -1145,9 +1087,6 @@ private:
   double last_angular_ = 0.0;
   double last_mask_ratio_ = 0.0;
   std::string last_mask_mode_ = "normal";
-  std::string last_speed_stage_ = "none";
-  int frame_count_ = 0;
-  double last_proc_ms_ = 0.0;
 };
 
 int main(int argc, char** argv)
