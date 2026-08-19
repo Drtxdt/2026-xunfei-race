@@ -54,14 +54,35 @@ lost_speed: 0.06
 lost_angular_speed: 0.00
 stop_on_lost: true
 
+# Gray obstacle (board) detection.
+# Trigger condition: largest gray contour in the center ROI must satisfy ALL of
+# area/width/height/bottom thresholds for obstacle_confirm_frames consecutive
+# frames. bottom_ratio = board bottom edge / image height -- the larger, the
+# closer the board must be before avoidance starts.
+obstacle_enable_delay: 3.0        # no detection within N seconds after start
+obstacle_gray_s_max: 70           # HSV gray range: S<=70, 45<=V<=215
+obstacle_gray_v_min: 45
+obstacle_gray_v_max: 215
+obstacle_min_area_ratio: 0.06
+obstacle_min_width_ratio: 0.30
+obstacle_min_height_ratio: 0.18
+obstacle_min_bottom_ratio: 0.62   # was 0.50 code default; raise to trigger closer
+obstacle_confirm_frames: 3
+obstacle_lateral_distance_m: 0.50
+obstacle_forward_distance_m: 0.8  # commanded 0.5m only yielded ~half actual travel (accel ramp); double to compensate
+obstacle_lateral_speed: 0.30
+obstacle_forward_speed: 0.32
+obstacle_debug: true              # throttled print of best candidate vs thresholds
+
 # End-of-track detection (segment-based — same strategy as Python reference).
 # Scans the bottom portion of the mask for a single continuous white segment
 # whose width covers most of the image width. Unlike pixel-counting, this
 # naturally distinguishes a real stop line from scattered turn noise.
 # Detection works on the SAME post-morphology mask as line-following.
 end_enable_delay: 3.0
-end_roi_y_start_ratio: 0.87       # start scanning from 87% height (match Python effective region)
-end_min_width_ratio: 0.45         # segment width / image width threshold
+end_roi_y_start_ratio: 0.93       # start scanning from 93% height (was 0.90, narrower window = detect later)
+end_min_width_ratio: 0.70         # segment width / image width threshold (was 0.60, stop line must be closer/wider)
+end_confirm_frames: 3             # require N consecutive frames above threshold before triggering (filters transient wide blobs)
 end_stop_hold: 1.0
 end_forward_distance_m: 0.65        # drive forward 65cm after alignment
 end_forward_speed: 0.15             # fast forward speed (m/s)

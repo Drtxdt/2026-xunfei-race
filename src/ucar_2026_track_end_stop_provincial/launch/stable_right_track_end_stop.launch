@@ -19,17 +19,20 @@
     <param name="debug_info_topic" value="/stable_right_track_end_stop/debug_info" />
     <param name="target_right_x" value="200" />
     <param name="base_speed" value="0.32" />
-    <param name="curve_speed" value="0.28" />
+    <param name="curve_speed" value="0.12" />
     <param name="search_speed" value="0.10" />
     <param name="search_angular_speed" value="-0.26" />
     <param name="lost_linear_speed" value="0.14" />
     <param name="lost_angular_speed" value="-0.22" />
-    <param name="kp" value="0.0052" />
+    <param name="kp" value="0.0042" />
     <param name="kd" value="0.0018" />
-    <param name="error_alpha" value="0.22" />
+    <param name="error_alpha" value="0.20" />
     <param name="curve_error_threshold" value="38.0" />
     <param name="curve_angular_gain" value="1.18" />
     <param name="max_angular_speed" value="0.55" />
+    <param name="max_right_angular_speed" value="0.46" />
+    <param name="curve_angular_alpha" value="0.45" />
+    <param name="curve_angular_step" value="0.08" />
     <param name="roi_y_start_ratio" value="0.60" />
     <param name="white_s_max" value="45" />
     <param name="white_v_min" value="200" />

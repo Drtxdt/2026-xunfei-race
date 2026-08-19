@@ -177,10 +177,12 @@ private:
     private_nh_.param("obstacle_forward_distance_m", obstacle_forward_distance_m_, 0.50);
     private_nh_.param("obstacle_lateral_speed", obstacle_lateral_speed_, 0.30);
     private_nh_.param("obstacle_forward_speed", obstacle_forward_speed_, 0.32);
+    private_nh_.param("obstacle_debug", obstacle_debug_, true);
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.80);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
+    private_nh_.param("end_confirm_frames", end_confirm_frames_, 3);
     private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
     private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
     private_nh_.param("end_forward_speed", end_forward_speed_, 0.15);
@@ -548,6 +550,17 @@ private:
                            result.bottom_ratio >= obstacle_min_bottom_ratio_;
     obstacle_hit_count_ = candidate ? obstacle_hit_count_ + 1 : 0;
     result.detected = obstacle_hit_count_ >= obstacle_confirm_frames_;
+    if (obstacle_debug_)
+    {
+      ROS_INFO_THROTTLE(0.5,
+          "obstacle candidate: area=%.3f(>=%.2f) width=%.2f(>=%.2f) height=%.2f(>=%.2f) bottom=%.2f(>=%.2f) hits=%d/%d %s",
+          result.area_ratio, obstacle_min_area_ratio_,
+          result.width_ratio, obstacle_min_width_ratio_,
+          result.height_ratio, obstacle_min_height_ratio_,
+          result.bottom_ratio, obstacle_min_bottom_ratio_,
+          obstacle_hit_count_, obstacle_confirm_frames_,
+          candidate ? "PASS" : "fail");
+    }
     return result;
   }
 
@@ -586,37 +599,72 @@ private:
   {
     EndOfTrackResult result;
     const double elapsed = (now - start_time_).toSec();
-    if (elapsed < end_enable_delay_)
+    if (elapsed < end_enable_delay_ || state_ != State::Follow)
+    {
+      end_hit_count_ = 0;
       return result;
+    }
 
-    // Segment-based horizontal line detection 鈥?matches Python
+    // Segment-based horizontal line detection — matches Python
     // detect_horizontal_line in line_follow_straight_right.py.
-    // Scan the bottom region; return on the FIRST row whose single
-    // continuous white segment covers >= end_min_width_ratio_ of the
-    // image width AND sits low enough (r > bottom_height * 0.45).
+    // Scan the bottom region and pick the WIDEST single continuous white
+    // segment that sits low enough (r > bottom_height * 0.45). The segment
+    // must exceed end_min_width_ratio_ for end_confirm_frames_ consecutive
+    // frames before it counts — filters out transient wide blobs.
     const int bottom_y0 = clampInt(static_cast<int>(mask.rows * end_roi_y_start_ratio_), 0, mask.rows - 1);
     const int bottom_height = mask.rows - bottom_y0;
     const int min_segment_width = static_cast<int>(mask.cols * end_min_width_ratio_);
     const int min_r = static_cast<int>(bottom_height * 0.45);
 
+    int best_width = 0;
+    int best_y = -1;
     for (int y = mask.rows - 1; y >= bottom_y0; --y)
     {
       int r = y - bottom_y0;
       if (r <= min_r)
-        continue;
+        break;  // rows only get higher from here
 
       std::vector<Segment> segments = findSegments(mask.row(y));
       for (const auto& seg : segments)
       {
-        if (seg.width >= min_segment_width)
+        if (seg.width > best_width)
         {
-          result.detected = true;
-          result.best_width_ratio = static_cast<double>(seg.width) / static_cast<double>(mask.cols);
-          result.best_y_ratio = static_cast<double>(y) / static_cast<double>(mask.rows);
-          return result;
+          best_width = seg.width;
+          best_y = y;
         }
       }
     }
+
+    if (best_y >= 0)
+    {
+      result.best_width_ratio = static_cast<double>(best_width) / static_cast<double>(mask.cols);
+      result.best_y_ratio = static_cast<double>(best_y) / static_cast<double>(mask.rows);
+    }
+
+    if (best_width >= min_segment_width)
+    {
+      ++end_hit_count_;
+      ROS_INFO_THROTTLE(0.2,
+          "track end candidate: width_ratio=%.2f y_ratio=%.2f hits=%d/%d",
+          result.best_width_ratio, result.best_y_ratio,
+          end_hit_count_, end_confirm_frames_);
+    }
+    else
+    {
+      if (end_hit_count_ > 0)
+        ROS_INFO("track end candidate lost after %d hit(s)", end_hit_count_);
+      end_hit_count_ = 0;
+      // Throttled diagnostic for data-driven threshold tuning: shows the
+      // widest bottom segment even when it is below the trigger threshold.
+      if (best_width > static_cast<int>(mask.cols * 0.30))
+      {
+        ROS_INFO_THROTTLE(1.0,
+            "track end best segment below threshold: width_ratio=%.2f y_ratio=%.2f (need %.2f)",
+            result.best_width_ratio, result.best_y_ratio, end_min_width_ratio_);
+      }
+    }
+
+    result.detected = end_hit_count_ >= end_confirm_frames_;
     return result;
   }
 
@@ -1064,12 +1112,15 @@ private:
   double obstacle_forward_distance_m_ = 0.50;
   double obstacle_lateral_speed_ = 0.30;
   double obstacle_forward_speed_ = 0.32;
+  bool obstacle_debug_ = true;
   int obstacle_hit_count_ = 0;
   bool obstacle_completed_ = false;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;
   double end_min_width_ratio_ = 0.45;
+  int end_confirm_frames_ = 3;
+  int end_hit_count_ = 0;
   double end_stop_hold_ = 1.0;
   double end_forward_distance_m_ = 0.65;
   double end_forward_speed_ = 0.15;
