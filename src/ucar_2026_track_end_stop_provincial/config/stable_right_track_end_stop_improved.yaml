@@ -51,7 +51,7 @@ white_v_min: 200
 morph_kernel_size: 5
 min_component_area: 260.0
 
-end_enable_delay: 3.0
+end_enable_delay: 35.0
 end_roi_y_start_ratio: 0.87
 end_min_width_ratio: 0.45
 end_stop_hold: 1.0

@@ -138,98 +138,18 @@ private:
 
   void loadParams()
   {
-    private_nh_.param<std::string>("image_topic", image_topic_, "/usb_cam/image_raw");
-    private_nh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/cmd_vel");
-    private_nh_.param<std::string>("status_topic", status_topic_, "/stable_right_track_end_stop/status");
-    private_nh_.param<std::string>("debug_image_topic", debug_image_topic_, "/stable_right_track_end_stop/debug_image");
-    private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
+    // All parameters are intentionally hard-coded below.  Launch/YAML
+    // overrides are ignored so that the provincial-competition line-following
+    // values are always applied exactly as written in this file.
 
-    private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_forward_distance_m",
-                      startup_forward_distance_m_, 0.25);
-    private_nh_.param("startup_speed", startup_speed_, 0.45);
-
-    private_nh_.param("right_line_offset_px", right_line_offset_px_, 185.0);
     target_right_x_ = clampInt(
         static_cast<int>(std::round(kImageCols * 0.5 +
                                     right_line_offset_px_)),
         0, kImageCols - 1);
-    private_nh_.param("base_speed", base_speed_, 0.24);
-    private_nh_.param("curve_speed", curve_speed_, 0.15);
-    private_nh_.param("search_speed", search_speed_, 0.0);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
-    private_nh_.param("lost_guard_frames", lost_guard_frames_, 3);
-    private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
-    private_nh_.param("kp", kp_, 0.0037);
-    private_nh_.param("kd", kd_, 0.0006);
-    private_nh_.param("error_alpha", error_alpha_, 0.15);
-    private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
-    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
-    private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
-    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.15);
-    private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.82);
-    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.03);
-    private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
-    private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
-    private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
-    private_nh_.param("right_guard_speed", right_guard_speed_, 0.11);
-    private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.22);
-    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.38);
-    private_nh_.param("low_confidence_threshold", low_confidence_threshold_, 0.45);
-    private_nh_.param("low_confidence_speed", low_confidence_speed_, 0.09);
-    private_nh_.param("right_near_warning_error_px", right_near_warning_error_px_, 8.0);
-    private_nh_.param("right_near_hard_error_px", right_near_hard_error_px_, 18.0);
-    private_nh_.param("right_near_guard_speed", right_near_guard_speed_, 0.03);
-    private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
-    private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
-    private_nh_.param("white_s_max", white_s_max_, 45);
-    private_nh_.param("white_v_min", white_v_min_, 200);
-    private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
-    private_nh_.param("min_component_area", min_component_area_, 260.0);
-
-    private_nh_.param("obstacle_enable_delay", obstacle_enable_delay_, 3.0);
-    private_nh_.param("obstacle_gray_s_max", obstacle_gray_s_max_, 50);
-    private_nh_.param("obstacle_gray_v_min", obstacle_gray_v_min_, 45);
-    private_nh_.param("obstacle_gray_v_max", obstacle_gray_v_max_, 215);
-    private_nh_.param("obstacle_min_area_ratio", obstacle_min_area_ratio_, 0.50);
-    private_nh_.param("obstacle_min_width_ratio", obstacle_min_width_ratio_, 0.30);
-    private_nh_.param("obstacle_min_height_ratio", obstacle_min_height_ratio_, 0.18);
-    private_nh_.param("obstacle_min_bottom_ratio", obstacle_min_bottom_ratio_, 0.50);
-    private_nh_.param("obstacle_confirm_frames", obstacle_confirm_frames_, 5);
-    private_nh_.param("obstacle_lateral_distance_m", obstacle_lateral_distance_m_, 0.40);
-    private_nh_.param("obstacle_forward_distance_m", obstacle_forward_distance_m_, 0.45);
-    private_nh_.param("obstacle_lateral_speed", obstacle_lateral_speed_, 0.30);
-    private_nh_.param("obstacle_forward_speed", obstacle_forward_speed_, 0.32);
-    private_nh_.param("obstacle_return_lateral_distance_m",
-                      obstacle_return_lateral_distance_m_, 0.45);
-    private_nh_.param("obstacle_debug", obstacle_debug_, true);
     right_scan_rows_ = {
-        0.985, 0.965, 0.94, 0.90, 0.85,
-        0.80, 0.75, 0.70, 0.64, 0.58};
-    private_nh_.param("right_scan_bottom_weight",
-                      right_scan_bottom_weight_, 2.4);
-    private_nh_.param("min_line_width_px", min_line_width_px_, 5);
-    private_nh_.param("max_line_segment_width_px",
-                      max_line_segment_width_px_, 90);
-    private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
-    private_nh_.param("right_min_scan_support",
-                      right_min_scan_support_, 3);
-    private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
-
-    private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
-    private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
-    private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
-    private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
-    private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
-    private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
-    private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
-    private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
+        0.95, 0.92, 0.88, 0.84, 0.80,
+        0.75, 0.70, 0.64, 0.58};
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -1121,13 +1041,13 @@ private:
   double right_warning_error_px_ = 28.0;
   double right_hard_error_px_ = 52.0;
   double right_guard_speed_ = 0.11;
-  double right_guard_away_angular_ = 0.22;
-  double right_hard_away_angular_ = 0.38;
+  double right_guard_away_angular_ = 0.16;
+  double right_hard_away_angular_ = 0.30;
   double low_confidence_threshold_ = 0.45;
   double low_confidence_speed_ = 0.09;
-  double right_near_warning_error_px_ = 8.0;
-  double right_near_hard_error_px_ = 18.0;
-  double right_near_guard_speed_ = 0.03;
+  double right_near_warning_error_px_ = 12.0;
+  double right_near_hard_error_px_ = 24.0;
+  double right_near_guard_speed_ = 0.06;
   double deadband_angular_decay_ = 0.45;
 
   double roi_y_start_ratio_ = 0.60;
@@ -1154,7 +1074,7 @@ private:
   int obstacle_hit_count_ = 0;
   bool obstacle_completed_ = false;
   std::vector<double> right_scan_rows_;
-  double right_scan_bottom_weight_ = 2.4;
+  double right_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;
   int max_line_segment_width_px_ = 90;
   int min_segment_gap_px_ = 10;

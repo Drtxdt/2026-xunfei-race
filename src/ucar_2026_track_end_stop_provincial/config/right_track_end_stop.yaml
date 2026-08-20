@@ -59,7 +59,7 @@ stop_on_lost: true
 # whose width covers most of the image width. Unlike pixel-counting, this
 # naturally distinguishes a real stop line from scattered turn noise.
 # Detection works on the SAME post-morphology mask as line-following.
-end_enable_delay: 3.0
+end_enable_delay: 22.0
 end_roi_y_start_ratio: 0.87       # start scanning from 87% height (match Python effective region)
 end_min_width_ratio: 0.45         # segment width / image width threshold
 end_stop_hold: 1.0
