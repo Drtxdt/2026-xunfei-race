@@ -135,6 +135,10 @@ class StrictMissionNode:
             "~final_advance_min_command_m", 0.015))
         self.final_visual_bias_m = float(rospy.get_param(
             "~final_advance_visual_bias_m", 0.03))
+        self.final_near_line_advance_m = float(rospy.get_param(
+            "~final_advance_near_line_m", 0.0))
+        self.final_near_line_min_distance_m = float(rospy.get_param(
+            "~final_advance_near_line_min_distance_m", self.target_min_m))
         select_final_advance(
             None,
             None,
@@ -144,6 +148,8 @@ class StrictMissionNode:
             self.final_visual_max_age_sec,
             self.final_minimum_command_m,
             self.final_visual_bias_m,
+            self.final_near_line_advance_m,
+            self.final_near_line_min_distance_m,
         )
         self.precision_start_m = float(rospy.get_param(
             "~precision_start_m", 0.14))
@@ -990,6 +996,8 @@ class StrictMissionNode:
             self.final_visual_max_age_sec,
             self.final_minimum_command_m,
             self.final_visual_bias_m,
+            self.final_near_line_advance_m,
+            self.final_near_line_min_distance_m,
         )
         with self.lock:
             self.planned_final_advance_m = distance
@@ -998,7 +1006,8 @@ class StrictMissionNode:
             "TASK4_FINAL_ADVANCE planned=%.3fm source=%s "
             "confirmed=%s confirmed_color=%s age=%s "
             "candidate=%s candidate_color=%s candidate_age=%s "
-            "target=%.3fm visual_bias=%.3fm",
+            "target=%.3fm visual_bias=%.3fm near_line=%.3fm "
+            "near_line_min=%.3fm",
             distance,
             source,
             "none" if measured_distance is None
@@ -1013,6 +1022,8 @@ class StrictMissionNode:
             else "{:.3f}s".format(candidate_age),
             self.final_target_clearance_m,
             self.final_visual_bias_m,
+            self.final_near_line_advance_m,
+            self.final_near_line_min_distance_m,
         )
         return distance
 

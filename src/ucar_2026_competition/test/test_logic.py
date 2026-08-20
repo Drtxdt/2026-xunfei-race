@@ -177,7 +177,15 @@ class CompetitionLogicTest(unittest.TestCase):
     def test_variable_final_advance_completion(self):
         self.assertTrue(final_advance_completed(0.048, 0.047, 0.008))
         self.assertTrue(final_advance_completed(0.0, 0.0, 0.008))
+        self.assertTrue(final_advance_completed(0.05, 0.043, 0.008))
+        self.assertFalse(final_advance_completed(0.05, 0.041, 0.008))
         self.assertFalse(final_advance_completed(0.13, 0.10, 0.008))
+
+        flow_path = os.path.abspath(os.path.join(
+            os.path.dirname(__file__), "..", "scripts", "competition_flow.py"))
+        with open(flow_path, "r", encoding="utf-8") as stream:
+            flow = stream.read()
+        self.assertIn('"visual_near_line_calibration"', flow)
 
     def test_normalizes_calibrated_no_workshop_anchors(self):
         self.assertEqual(normalize_coverage_anchor_ids([4, "4", 0, 10]), (4,))

@@ -55,6 +55,8 @@ def select_final_advance(
     max_measurement_age_sec,
     minimum_command_m=0.0,
     measurement_bias_m=0.0,
+    near_line_advance_m=0.0,
+    near_line_min_distance_m=0.0,
 ):
     """Choose a bounded final advance from confirmed stop-line vision."""
     target = float(target_clearance_m)
@@ -63,6 +65,8 @@ def select_final_advance(
     max_age = float(max_measurement_age_sec)
     minimum = float(minimum_command_m)
     bias = float(measurement_bias_m)
+    near_line_advance = float(near_line_advance_m)
+    near_line_min_distance = float(near_line_min_distance_m)
     if target < 0.0:
         raise ValueError("target clearance must be non-negative")
     if maximum < 0.0:
@@ -76,6 +80,12 @@ def select_final_advance(
     if not 0.0 <= bias <= target:
         raise ValueError(
             "measurement bias must be between zero and target clearance")
+    if not 0.0 <= near_line_advance <= maximum:
+        raise ValueError(
+            "near-line advance must be within the advance limit")
+    if not 0.0 <= near_line_min_distance <= target:
+        raise ValueError(
+            "near-line minimum distance must be within target clearance")
 
     measurement_is_fresh = False
     measured = None
@@ -96,6 +106,9 @@ def select_final_advance(
 
     raw_advance = max(0.0, measured - target)
     if raw_advance < minimum:
+        if (near_line_advance > 0.0 and near_line_advance >= minimum and
+                measured >= near_line_min_distance):
+            return near_line_advance, "visual_near_line_calibration"
         return 0.0, "visual_hold"
     advance = min(maximum, raw_advance + bias)
     return advance, "visual_distance"

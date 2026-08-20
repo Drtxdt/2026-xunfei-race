@@ -50,6 +50,8 @@
   "final_advance_visual_max_age_sec": 0.75,
   "final_advance_min_command_m": 0.015,
   "final_advance_visual_bias_m": 0.03,
+  "final_advance_near_line_m": 0.05,
+  "final_advance_near_line_min_distance_m": 0.03,
   "final_visual_confirm_frames": 3,
   "final_visual_max_spread_m": 0.03,
   "final_visual_approach_timeout_sec": 3.0,

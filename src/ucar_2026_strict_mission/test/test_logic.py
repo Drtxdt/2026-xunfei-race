@@ -89,11 +89,14 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertEqual(config["final_advance_m"], 0.20)
         self.assertEqual(
             config["final_advance_target_clearance_m"], 0.05)
-        self.assertEqual(config["final_advance_no_vision_m"], 0.14)
+        self.assertEqual(config["final_advance_no_vision_m"], 0.141)
         self.assertEqual(
             config["final_advance_visual_max_age_sec"], 0.75)
         self.assertEqual(config["final_advance_min_command_m"], 0.015)
         self.assertEqual(config["final_advance_visual_bias_m"], 0.03)
+        self.assertEqual(config["final_advance_near_line_m"], 0.05)
+        self.assertEqual(
+            config["final_advance_near_line_min_distance_m"], 0.03)
         self.assertEqual(config["final_visual_confirm_frames"], 3)
         self.assertEqual(config["final_visual_max_spread_m"], 0.03)
         self.assertEqual(
@@ -130,6 +133,7 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn("TASK4_FINAL_ADVANCE planned=", node_source)
         self.assertIn("confirmed_color=%s", node_source)
         self.assertIn("candidate_color=%s", node_source)
+        self.assertIn("self.final_near_line_advance_m", node_source)
         self.assertIn('self.state = "FINAL_VISUAL_APPROACH"', node_source)
         self.assertIn("self.final_parked_event", node_source)
         self.assertIn("final yellow stop-line clearance confirmed", node_source)
@@ -211,6 +215,34 @@ class OdometryProgressTests(unittest.TestCase):
         )
         self.assertEqual(distance, 0.0)
         self.assertEqual(source, "visual_hold")
+
+    def test_confirmed_near_yellow_line_uses_five_centimeter_calibration(self):
+        distance, source = select_final_advance(
+            0.0345833333,
+            0.059,
+            0.05,
+            0.20,
+            0.141,
+            0.75,
+            0.015,
+            0.03,
+            0.05,
+            0.03,
+        )
+        self.assertEqual(distance, 0.05)
+        self.assertEqual(source, "visual_near_line_calibration")
+
+        distance, source = select_final_advance(
+            0.025, 0.059, 0.05, 0.20, 0.141, 0.75,
+            0.015, 0.03, 0.05, 0.03)
+        self.assertEqual(distance, 0.0)
+        self.assertEqual(source, "visual_hold")
+
+    def test_near_line_calibration_stays_within_hard_advance_limit(self):
+        with self.assertRaises(ValueError):
+            select_final_advance(
+                0.035, 0.10, 0.05, 0.20, 0.141, 0.75,
+                0.015, 0.03, 0.21)
 
     def test_stable_line_distance_requires_yellow_consensus(self):
         distance_filter = StableLineDistanceFilter(
