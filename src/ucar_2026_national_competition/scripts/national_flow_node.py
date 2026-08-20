@@ -558,6 +558,7 @@ class NationalFlowNode:
             with self.lock:
                 ready = bool(self.category and self.sim_category)
             if ready:
+                rospy.sleep(1.0)
                 return
             rospy.sleep(0.1)
 

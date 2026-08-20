@@ -100,7 +100,7 @@ heading_deadband_deg: 1.5
 nominal_ramp_length_m: 1.5
 # 距离硬预算余量（m）：里程 > 名义长 + 余量 即 FAULT。
 # 覆盖坡前接近段 + 下坡后余量段 + 打滑冗余。
-distance_margin_m: 0.90
+distance_margin_m: 2.0
 # 下坡结束（pitch 回平）后继续直行的轴距余量（m）。
 # 车长约 0.34m，前轮落地时后轮仍在坡上；必须 >= 半轴距。
 exit_extra_m: 0.28
