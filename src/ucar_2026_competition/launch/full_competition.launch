@@ -6,7 +6,7 @@
   <arg name="sim_bridge_port" default="26003" />
   <arg name="traffic_pose_configured" default="true" />
   <arg name="traffic_x" default="0.2395" />
-  <arg name="traffic_y" default="-3.10" />
+  <arg name="traffic_y" default="-3.14" />
   <arg name="traffic_yaw" default="-1.5596" />
   <arg name="parking_normal_offset" default="0.0" />
   <arg name="parking_tangent_offset" default="0.0" />
