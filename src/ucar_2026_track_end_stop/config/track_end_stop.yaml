@@ -59,40 +59,43 @@ stop_on_lost: true
 # 面积 / 宽度 / 高度 / 底边位置 四个阈值，并且连续 obstacle_confirm_frames 帧
 # 都满足，才开始侧移避障。
 # 调参口诀：bottom 是距离闸（最常用），area/width/height 是形状闸（防误检）。
-obstacle_enable_delay: 3.0        # 起步后 N 秒内不检测（防起步时把赛道误判成障碍）
-obstacle_gray_s_max: 70           # 灰色 HSV 范围：饱和度 S<=70，亮度 45<=V<=215
-obstacle_gray_v_min: 45           #   挡板检测不到时先调这三个（受光线影响大）
+obstacle_enable_delay: 3.0 # 起步后 N 秒内不检测（防起步时把赛道误判成障碍）
+obstacle_gray_s_max: 70 # 灰色 HSV 范围：饱和度 S<=70，亮度 45<=V<=215
+obstacle_gray_v_min: 45 #   挡板检测不到时先调这三个（受光线影响大）
 obstacle_gray_v_max: 215
-obstacle_min_area_ratio: 0.06     # 面积阈值：轮廓面积 / 整幅画面。调大可防小杂物误触发
-obstacle_min_width_ratio: 0.30    # 宽度阈值：轮廓宽度 / 画面宽度
-obstacle_min_height_ratio: 0.18   # 高度阈值：轮廓高度 / 画面高度
-obstacle_min_bottom_ratio: 0.74   # 【触发距离主闸】挡板底边 / 画面高度。越大 = 挡板越贴近车才触发
-                                  #   触发早了就 +0.01~0.02；快撞上还不触发就 -0.01~0.02
-                                  #   调参记录：0.62 太早 → 0.72 仍早约 5cm → 0.74
-obstacle_confirm_frames: 3        # 连续 N 帧满足才触发，防单帧误检；调小更灵敏，调大更稳
+obstacle_min_area_ratio: 0.06 # 面积阈值：轮廓面积 / 整幅画面。调大可防小杂物误触发
+obstacle_min_width_ratio: 0.30 # 宽度阈值：轮廓宽度 / 画面宽度
+obstacle_min_height_ratio: 0.18 # 高度阈值：轮廓高度 / 画面高度
+obstacle_min_bottom_ratio:
+  0.74 # 【触发距离主闸】挡板底边 / 画面高度。越大 = 挡板越贴近车才触发
+  #   触发早了就 +0.01~0.02；快撞上还不触发就 -0.01~0.02
+  #   调参记录：0.62 太早 → 0.72 仍早约 5cm → 0.74
+obstacle_confirm_frames: 3 # 连续 N 帧满足才触发，防单帧误检；调小更灵敏，调大更稳
 obstacle_lateral_distance_m: 0.50 # 侧移距离（米）：先向右移这么远绕开挡板
-obstacle_forward_distance_m: 0.65 # 侧移后向前走的距离（米），要足够越过挡板
-                                  #   注意：实际走的比指令值短（加速度爬坡），已按比例补偿过
-obstacle_return_lateral_distance_m: 0.40 # 回程侧移距离（米）：越过挡板后向左回移这么远回到原线
-                                         #   出/回可以不相等，回多了就调小，回少了就调大
-obstacle_lateral_speed: 0.30      # 侧移速度（m/s），太快会滑、姿态飘
-obstacle_forward_speed: 0.32      # 避障前进速度（m/s）
-obstacle_debug: true              # 打印候选挡板的 area/width/height/bottom 实测值和阈值，调参时必开
+obstacle_forward_distance_m:
+  0.65 # 侧移后向前走的距离（米），要足够越过挡板
+  #   注意：实际走的比指令值短（加速度爬坡），已按比例补偿过
+obstacle_return_lateral_distance_m:
+  0.40 # 回程侧移距离（米）：越过挡板后向左回移这么远回到原线
+  #   出/回可以不相等，回多了就调小，回少了就调大
+obstacle_lateral_speed: 0.30 # 侧移速度（m/s），太快会滑、姿态飘
+obstacle_forward_speed: 0.32 # 避障前进速度（m/s）
+obstacle_debug: true # 打印候选挡板的 area/width/height/bottom 实测值和阈值，调参时必开
 
 # End-of-track detection (segment-based — same strategy as Python reference).
 # Scans the bottom portion of the mask for a single continuous white segment
 # whose width covers most of the image width. Unlike pixel-counting, this
 # naturally distinguishes a real stop line from scattered turn noise.
 # Detection works on the SAME post-morphology mask as line-following.
-end_enable_delay: 3.0
-end_roi_y_start_ratio: 0.87       # 与省赛一致：从画面 87% 高度开始扫描（0.93 太严触发不到）
-end_min_width_ratio: 0.45         # 与省赛一致：单段宽度 / 画面宽度（0.70 太严，实测线最宽才 0.71 且只维持 1 帧）
-end_confirm_frames: 3             # 连续 3 帧满足才触发（比省赛单帧更稳，0.45 阈值下不影响触发）
+end_enable_delay: 26.0
+end_roi_y_start_ratio: 0.87 # 与省赛一致：从画面 87% 高度开始扫描（0.93 太严触发不到）
+end_min_width_ratio: 0.45 # 与省赛一致：单段宽度 / 画面宽度（0.70 太严，实测线最宽才 0.71 且只维持 1 帧）
+end_confirm_frames: 3 # 连续 3 帧满足才触发（比省赛单帧更稳，0.45 阈值下不影响触发）
 end_stop_hold: 1.0
-end_forward_distance_m: 0.65        # drive forward 65cm after alignment
-end_forward_speed: 0.15             # fast forward speed (m/s)
-end_turn_right_angle_deg: 10.0      # turn right ~10° to be perpendicular to stop line
-end_turn_right_angular_speed: 0.50  # angular speed for the right turn (rad/s)
+end_forward_distance_m: 0.65 # drive forward 65cm after alignment
+end_forward_speed: 0.15 # fast forward speed (m/s)
+end_turn_right_angle_deg: 10.0 # turn right ~10° to be perpendicular to stop line
+end_turn_right_angular_speed: 0.50 # angular speed for the right turn (rad/s)
 
 # Debug relay (compressed JPEG for MobaXterm)
 compressed_debug_topic: /track_end_stop/debug_image/compressed
