@@ -74,6 +74,10 @@ class Aborted(RuntimeError):
     pass
 
 
+class Task2BudgetExceeded(RuntimeError):
+    """Task2 total wall-clock budget exhausted; announce and jump to task3."""
+
+
 def bool_param(name, default=False):
     value = rospy.get_param(name, default)
     if isinstance(value, str):
@@ -86,6 +90,10 @@ class CompetitionFlow:
         self.mode = rospy.get_param("~start_stage", "full").strip().lower()
         self.enable_simulation = bool_param("~enable_simulation", False)
         self.debug = bool_param("~debug", False)
+        # task5 line-following package; the national flow overrides this with
+        # the national track package via the hand-over launch arguments.
+        self.track_package = str(rospy.get_param(
+            "~track_package", "ucar_2026_track_end_stop_provincial"))
         self.aborted = threading.Event()
         self.resume_event = threading.Event()
         self.children = {}
@@ -211,6 +219,9 @@ class CompetitionFlow:
             "~task2_prewarm_enabled", True)
         self.task2_prewarm_category = None
         self.trigger_ack_timeout = float(rospy.get_param("~trigger_ack_timeout_sec", 2.0))
+        self.task2_total_timeout_sec = max(0.0, float(rospy.get_param(
+            "~task2_total_timeout_sec", 480.0)))
+        self._task2_deadline = float("inf")
         self.navigator_status = ""
         self.task2_announcement_completed = False
         self.traffic_decision = rospy.get_param("~traffic_decision", "").strip().lower()
@@ -634,11 +645,10 @@ class CompetitionFlow:
                         "odom_yaw": float(yaw),
                         "stamp": time.time(),
                     }
-                    rospy.loginfo(
-                        "task2 warehouse memory: category=%s anchor=%d "
-                        "score=%.3f area=%.4f odom_yaw=%.3f",
-                        observed_category, anchor, observed_score,
-                        area_ratio, yaw)
+                    # rospy.loginfo(
+                    #     "task2 warehouse memory: category=%s anchor=%d "
+                    #     "score=%.3f area=%.4f odom_yaw=%.3f",
+                    #     category, anchor, score, area_ratio, yaw)
                 if non_target_observation_is_actionable(
                         self.ocr_target, observed_category, True,
                         observed_close, observed_score,
@@ -657,42 +667,41 @@ class CompetitionFlow:
         if non_target_event is not None:
             self.vision_non_target_pub.publish(String(
                 data=json.dumps(non_target_event, ensure_ascii=False)))
-            rospy.loginfo(
-                "task2 non-target early-exit notice: category=%s anchor=%d "
-                "score=%.3f area=%.4f",
-                non_target_event["category"],
-                non_target_event["anchor"],
-                non_target_event["score"],
-                non_target_event["area_ratio"],
-            )
-        target_update_publishable = task2_target_update_is_publishable(
-                category == self.ocr_target,
-                target_trigger_eligible,
-                self.vision_trigger_latched)
-        if target_update_publishable:
+            # rospy.loginfo(
+            #     "task2 non-target early-exit notice: category=%s anchor=%d "
+            #     "score=%.3f area=%.4f",
+            #     non_target_event["category"],
+            #     non_target_event["anchor"],
+            #     non_target_event["score"],
+            #     non_target_event["area_ratio"],
+            # )
+        # 居中数据供给只看“类别匹配+有框+在锚点”，不复用触发的近距离尺寸门槛；
+        # 否则正视后框高跌破阈值会掐断 /vision/target，居中最后几步断流超时。
+        # 是否真正触发锁定仍由下方 target_trigger_eligible 门槛把关。
+        target_feed_eligible = task2_target_trigger_is_eligible(
+            bool(bbox), active_anchor)
+        if category == self.ocr_target and target_feed_eligible:
             self.vision_target_pub.publish(msg)
         confirmed = self.ocr_filter.push(
             self.ocr_target,
             category if target_trigger_eligible else None,
             time.monotonic(),
         )
-        rospy.loginfo_throttle(
-            0.5,
-            "task2 OCR filter: target=%s observed=%s hits=%d/%d "
-            "bbox=%s close=%s anchor=%s trigger_eligible=%s "
-            "tracking_forwarded=%s bbox_ratio=%s",
-            self.ocr_target,
-            category or "none",
-            self.ocr_filter.hit_count,
-            self.ocr_filter.required,
-            bool(bbox),
-            trigger_eligible,
-            active_anchor or "transit",
-            target_trigger_eligible,
-            target_update_publishable,
-            ("%.3f/%.3f/%.4f" % bbox_ratios
-             if bbox_ratios is not None else "invalid"),
-        )
+        # rospy.loginfo_throttle(
+        #     0.5,
+        #     "task2 OCR filter: target=%s observed=%s hits=%d/%d "
+        #     "bbox=%s close=%s anchor=%s trigger_eligible=%s bbox_ratio=%s",
+        #     self.ocr_target,
+        #     category or "none",
+        #     self.ocr_filter.hit_count,
+        #     self.ocr_filter.required,
+        #     bool(bbox),
+        #     trigger_eligible,
+        #     active_anchor or "transit",
+        #     target_trigger_eligible,
+        #     ("%.3f/%.3f/%.4f" % bbox_ratios
+        #      if bbox_ratios is not None else "invalid"),
+        # )
         if (confirmed and category == self.ocr_target and
                 target_trigger_eligible and
                 not self.vision_trigger_latched):
@@ -704,13 +713,13 @@ class CompetitionFlow:
             self.publish_status(
                 "task2", "trigger_pending",
                 "OCR target confirmed; requesting navigator acknowledgement")
-            rospy.loginfo(
-                "task2 OCR target confirmed: target=%s hits=%d/%d; "
-                "reliable trigger pending (will not retrigger)",
-                self.ocr_target,
-                self.ocr_filter.hit_count,
-                self.ocr_filter.required,
-            )
+            # rospy.loginfo(
+            #     "task2 OCR target confirmed: target=%s hits=%d/%d; "
+            #     "reliable trigger pending (will not retrigger)",
+            #     self.ocr_target,
+            #     self.ocr_filter.hit_count,
+            #     self.ocr_filter.required,
+            # )
 
     def _navigator_cb(self, msg):
         status = msg.data.strip().lower()
@@ -725,6 +734,17 @@ class CompetitionFlow:
             rospy.logwarn(
                 "task2 target centering lost; rearmed OCR for a fresh "
                 "stationary anchor observation")
+        if status == "parking_staging_recovering":
+            with self.lock:
+                self.vision_trigger_latched = False
+                self.trigger_request_pending = False
+                self.trigger_service_accepted = False
+                self.trigger_acknowledged = False
+                self.ocr_filter.reset()
+                self.current_coverage_anchor = None
+            rospy.logwarn(
+                "task2 parking staging failed; rearmed OCR for a fresh "
+                "stationary anchor observation with adjusted parking geometry")
         observing_prefixes = (
             "coverage_anchor_observing:",
             "coverage_remembered_heading_observing:",
@@ -858,6 +878,7 @@ class CompetitionFlow:
             try:
                 return function()
             except StageError as exc:
+                rospy.logerr("stage %s failed: %s", stage, exc)
                 self.stop_all_children()
                 self.pause_and_retry(stage, exc)
 
@@ -1411,6 +1432,47 @@ class CompetitionFlow:
             "simple_navigator reached the configured QR-area waypoint",
         )
 
+    def _qr_primary_goal(self):
+        """Resolve the primary QR waypoint the same way simple_navigator does."""
+        for namespace in ("/map_goal_picker", "/simple_navigator"):
+            try:
+                return (
+                    float(rospy.get_param(namespace + "/goal_x")),
+                    float(rospy.get_param(namespace + "/goal_y")),
+                    float(rospy.get_param(namespace + "/goal_yaw")),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return None
+
+    def navigate_back_to_qr_point(self):
+        """Return to the primary QR waypoint via move_base directly.
+
+        扫码重开时不再重新 roslaunch simple_navigator：它启动时会向
+        /initialpose 发布 (0,0,0) 重置 AMCL，定位丢失后 move_base 无法规划。
+        首圈导航留下的 /simple_navigator/goal_* 参数仍在参数服务器上，
+        直接用同一目标点继续导航即可。
+        """
+        goal = self._qr_primary_goal()
+        if goal is None:
+            raise StageError(
+                "no QR waypoint parameters available for restart navigation")
+        timeout = float(rospy.get_param("~qr_navigation_timeout_sec", 120.0))
+        self.publish_status(
+            "task1",
+            "navigating",
+            "returning to primary QR point via move_base: "
+            "x={:.3f} y={:.3f} yaw={:.3f}".format(*goal),
+        )
+        self.navigate(
+            goal[0], goal[1], goal[2], "task1",
+            timeout_sec=timeout, status_state="navigating")
+        self.publish_status(
+            "task1",
+            "qr_area_arrived",
+            "returned to the primary QR-area waypoint",
+        )
+
     def _qr_count(self):
         with self.lock:
             return len(self.qr_items)
@@ -1616,18 +1678,18 @@ class CompetitionFlow:
         self.safe_stop()
         raise StageError("QR scan failed to return to its original final yaw")
 
-    def scan_qr_at_current_pose(self, status_state):
+    def scan_qr_at_current_pose(self, status_state, total_angle_override=None,
+                                extra_sweep_override=None, deadline_override=None):
         """Scan one revolution, then drain async results and optionally sweep again."""
         expected_count = int(rospy.get_param("~qr_expected_count", 3))
         speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
         step_angle = abs(
             float(rospy.get_param("~qr_scan_step_angle_rad", math.radians(25.0)))
         )
-        total_angle = max(
-            step_angle,
-            abs(float(rospy.get_param(
-                "~qr_scan_total_angle_rad", 2.0 * math.pi))),
-        )
+        total_angle_param = (
+            total_angle_override if total_angle_override is not None
+            else rospy.get_param("~qr_scan_total_angle_rad", 2.0 * math.pi))
+        total_angle = max(step_angle, abs(float(total_angle_param)))
         settle_sec = max(0.0, float(rospy.get_param("~qr_scan_settle_sec", 0.6)))
         warmup_sec = max(
             settle_sec,
@@ -1640,12 +1702,12 @@ class CompetitionFlow:
             0.5, float(rospy.get_param(
                 "~qr_decoder_ready_timeout_sec", 6.0))
         )
-        extra_sweep_angle = max(
-            0.0,
-            float(rospy.get_param(
+        extra_sweep_param = (
+            extra_sweep_override if extra_sweep_override is not None
+            else rospy.get_param(
                 "~qr_scan_extra_sweep_angle_rad", math.radians(120.0)
-            )),
-        )
+            ))
+        extra_sweep_angle = max(0.0, float(extra_sweep_param))
         scan_timeout = float(rospy.get_param("~qr_scan_timeout_sec", 60.0))
         stale_sec = float(rospy.get_param("~qr_odom_stale_sec", 0.5))
         odom_wait_sec = float(rospy.get_param("~qr_odom_wait_sec", 2.0))
@@ -1659,6 +1721,8 @@ class CompetitionFlow:
 
         total_steps = int(math.ceil(total_angle / step_angle))
         scan_deadline = time.monotonic() + scan_timeout
+        if deadline_override is not None:
+            scan_deadline = min(scan_deadline, float(deadline_override))
         self.publish_status(
             "task1",
             status_state,
@@ -1764,6 +1828,56 @@ class CompetitionFlow:
 
         return self._qr_count() >= expected_count
 
+    def scan_qr_at_fallback_point(self, expected_count, qr_total_deadline):
+        """Navigate to the configured fallback point near the wall and rescan.
+
+        到达备用点后持续旋转扫描，直到凑满 expected_count 个码
+        或到达 fallback 独立扫描时长 qr_fallback_scan_timeout_sec。
+        """
+        if not bool(rospy.get_param("~qr_fallback_enabled", False)):
+            return False
+        goal = rospy.get_param("~qr_fallback_goal", None)
+        try:
+            goal_x = float(goal["x"])
+            goal_y = float(goal["y"])
+            goal_yaw = float(goal["yaw"])
+        except (KeyError, TypeError, ValueError) as exc:
+            rospy.logwarn(
+                "qr_fallback_enabled but ~qr_fallback_goal invalid (%s); "
+                "skip fallback scan", exc)
+            return False
+        remaining = float(qr_total_deadline) - time.monotonic()
+        if remaining <= 0.0:
+            rospy.logwarn(
+                "QR total timeout reached before fallback navigation; "
+                "skip fallback scan")
+            return False
+        nav_timeout = min(
+            float(rospy.get_param("~qr_fallback_navigation_timeout_sec", 45.0)),
+            remaining)
+        # fallback 扫描时长独立于 qr_total_timeout_sec 单独设置。
+        scan_budget = max(
+            5.0, float(rospy.get_param("~qr_fallback_scan_timeout_sec", 60.0)))
+        scan_deadline = time.monotonic() + scan_budget
+        speed = abs(float(rospy.get_param("~qr_scan_angular_speed", 0.80)))
+        scan_angle = max(
+            2.0 * math.pi, speed * scan_budget + 2.0 * math.pi)
+        self.publish_status(
+            "task1",
+            "qr_fallback_navigating",
+            "primary scan got {}/{}; moving to fallback point "
+            "x={:.3f} y={:.3f} yaw={:.3f}".format(
+                self._qr_count(), expected_count, goal_x, goal_y, goal_yaw),
+        )
+        self.navigate(
+            goal_x, goal_y, goal_yaw, "task1",
+            timeout_sec=nav_timeout, status_state="qr_fallback_navigating")
+        return self.scan_qr_at_current_pose(
+            "scanning_qr_fallback",
+            total_angle_override=scan_angle,
+            extra_sweep_override=0.0,
+            deadline_override=scan_deadline)
+
     # ------------------------------ stages ------------------------------
     def task1(self):
         with self.lock:
@@ -1785,45 +1899,48 @@ class CompetitionFlow:
         instruction = self.question.strip() or build_task1_instruction(
             self.category, self.sim_category
         )
-        self.navigate_to_qr_area()
-        # The configured simple_navigator goal has completed, but explicitly
-        # revoke all navigation authority before this node can rotate the base.
-        self.safe_stop(cancel_navigation=True)
 
         with self.lock:
-            self.qr_items.clear()
             self.task1_instruction = instruction
             self.task1_reasoning_started = False
             self.task1_reasoning_result = None
             self.task1_reasoning_error = ""
             self.task1_reasoning_done.clear()
-        try:
-            qr_scan_started_at = time.monotonic()
-            with self.lock:
-                self.qr_decoder_ready = False
-                self.qr_decoder_pending_count = 0
-                self.qr_decoder_status_at = 0.0
-            self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
-            self.qr_collecting = True
-            completed = self.scan_qr_at_current_pose("scanning_qr_primary")
-
-            expected_count = int(rospy.get_param("~qr_expected_count", 3))
-            if not completed or self._qr_count() < expected_count:
-                raise StageError(
-                    "single QR scan pass got {}/{} unique item(s)".format(
-                        self._qr_count(), expected_count
-                    )
-                )
-            self.publish_status(
-                "task1",
-                "qr_scan_completed",
-                "collected {} unique QR items in {:.3f}s".format(
-                    self._qr_count(), time.monotonic() - qr_scan_started_at),
-            )
-        finally:
-            self.qr_collecting = False
-            self.stop_child("qr_decoder")
-            self.safe_stop(cancel_navigation=True)
+        expected_count = int(rospy.get_param("~qr_expected_count", 3))
+        total_budget = float(
+            rospy.get_param("~qr_total_timeout_sec", 240.0))
+        restart_enabled = bool_param("~qr_scan_restart_enabled", True)
+        # 0 表示不限制重开次数（比赛计时本身就是最终约束）。
+        max_restarts = max(0, int(rospy.get_param("~qr_scan_max_restarts", 3)))
+        qr_total_deadline = time.monotonic() + total_budget
+        attempt = 0
+        while not rospy.is_shutdown():
+            self.check_abort()
+            try:
+                # 首圈用 simple_navigator（负责发布 AMCL 初始定位）；
+                # 重开时直接走 move_base 返回扫码点，不重启导航、不重发定位。
+                self._scan_qr_round(
+                    expected_count, qr_total_deadline,
+                    relaunch_navigator=(attempt == 0))
+                break
+            except StageError as exc:
+                rospy.logerr("task1 QR round failed: %s", exc)
+                budget_exceeded = time.monotonic() >= qr_total_deadline
+                if not restart_enabled or attempt >= max_restarts:
+                    raise
+                attempt += 1
+                # 到达 qr_total_timeout_sec：重置全部时间预算，回到第一圈
+                # 起点清空结果，重走完整扫码流程（导航+主扫+fallback）。
+                if budget_exceeded:
+                    qr_total_deadline = time.monotonic() + total_budget
+                self.publish_status(
+                    "task1", "qr_scan_restart_{}".format(attempt),
+                    "restarting the QR task: navigating back to the primary "
+                    "scan point and clearing collected results"
+                    + ("; total timeout reached, full budget reset"
+                       if budget_exceeded else ""),
+                    str(exc))
+                rospy.sleep(1.0)
 
         with self.lock:
             items = list(self.qr_items.values())[:3]
@@ -1868,6 +1985,52 @@ class CompetitionFlow:
             self.publish_status(
                 "task1", "completed", "voice, QR and reasoning completed")
 
+    def _scan_qr_round(self, expected_count, qr_total_deadline,
+                       relaunch_navigator=True):
+        """Navigate to the primary QR point and run the full two-pass scan.
+
+        Raises StageError on any failure so the caller can restart the whole
+        round (navigation included) as an unattended fallback.
+        relaunch_navigator=False 时不重开 simple_navigator（避免它重发
+        /initialpose 重置 AMCL），直接用 move_base 返回原扫码点。
+        """
+        if relaunch_navigator:
+            self.navigate_to_qr_area()
+        else:
+            self.navigate_back_to_qr_point()
+        self.safe_stop(cancel_navigation=True)
+        try:
+            qr_scan_started_at = time.monotonic()
+            with self.lock:
+                self.qr_items.clear()
+                self.qr_decoder_ready = False
+                self.qr_decoder_pending_count = 0
+                self.qr_decoder_status_at = 0.0
+            self.start_child("qr_decoder", "ucar_2026_competition", "qr_decoder.launch")
+            self.qr_collecting = True
+            completed = self.scan_qr_at_current_pose(
+                "scanning_qr_primary", deadline_override=qr_total_deadline)
+
+            if not completed or self._qr_count() < expected_count:
+                completed = self.scan_qr_at_fallback_point(
+                    expected_count, qr_total_deadline)
+            if not completed or self._qr_count() < expected_count:
+                raise StageError(
+                    "single QR scan pass got {}/{} unique item(s)".format(
+                        self._qr_count(), expected_count
+                    )
+                )
+            self.publish_status(
+                "task1",
+                "qr_scan_completed",
+                "collected {} unique QR items in {:.3f}s".format(
+                    self._qr_count(), time.monotonic() - qr_scan_started_at),
+            )
+        finally:
+            self.qr_collecting = False
+            self.stop_child("qr_decoder")
+            self.safe_stop(cancel_navigation=True)
+
     def _factory_ocr_launch_args(self, category):
         return {
             "start_camera": False,
@@ -1879,7 +2042,7 @@ class CompetitionFlow:
             "required": True,
         }
 
-    def _factory_search_context(self, category, phase):
+    def _factory_search_context(self, category, phase, full_rescan=False):
         resume_enabled = bool_param("~task2_resume_coverage_enabled", True)
         with self.lock:
             anchor_count = len(rospy.get_param(
@@ -1906,17 +2069,30 @@ class CompetitionFlow:
                 rospy.get_param("~task2_no_workshop_anchors", []),
                 anchor_count,
             )
+            fallback_only_anchors = normalize_coverage_anchor_ids(
+                rospy.get_param("~task2_fallback_only_anchors", []),
+                anchor_count,
+            )
         if preferred_anchor in no_workshop_anchors:
             preferred_anchor = 0
         skipped_anchors = tuple(sorted(
             set(skipped_anchors).union(no_workshop_anchors)))
+        # Fallback-only anchors (the prepended extra bay points) stay out of
+        # the first-pass scan; a restarted search covers them first.  Keep
+        # them reachable when the remembered target sits at one of them.
+        if (not full_rescan and fallback_only_anchors and
+                preferred_anchor not in fallback_only_anchors):
+            skipped_anchors = tuple(sorted(
+                set(skipped_anchors).union(fallback_only_anchors)))
         return {
             "resume_enabled": resume_enabled,
+            "anchor_count": anchor_count,
             "preferred_anchor": preferred_anchor,
             "skipped_anchors": skipped_anchors,
             "remembered_heading_enabled": remembered_heading_enabled,
             "remembered_odom_yaw": remembered_odom_yaw,
             "no_workshop_anchors": no_workshop_anchors,
+            "fallback_only_anchors": fallback_only_anchors,
         }
 
     def _factory_navigator_launch_args(
@@ -1986,10 +2162,15 @@ class CompetitionFlow:
             "coverage_fast_enter_clearance": 0.90,
             "coverage_speed_update_min_interval_sec": 0.50,
             "target_center_steering_sign": -1.0,
-            "camera_boresight_yaw_offset": 0.292,
-            "parking_goal_offset": 0.26,
-            "parking_staging_offset": 0.55,
-            "parking_endpoint_min_clearance": 0.16,
+            "camera_boresight_yaw_offset": 0.0,
+            "parking_goal_offset": 0.22,
+            "parking_staging_offset": 0.45,
+            "parking_corner_safe_dist": 0.25,
+            "parking_retry_tangent_step": 0.15,
+            "parking_staging_max_retries": 2,
+            "parking_staging_timeout_sec": 20.0,
+            "parking_staging_position_tolerance": 0.10,
+            "parking_staging_yaw_tolerance": 0.10,
             "parking_docking_timeout_sec": 30.0,
             "parking_obstacle_min_clearance": 0.24,
             "parking_obstacle_clearance_tolerance": 0.005,
@@ -2000,11 +2181,11 @@ class CompetitionFlow:
             "parking_recovery_timeout_sec": 8.0,
             "parking_dock_max_x": 0.10,
             "parking_dock_max_y": 0.06,
-            "parking_dock_max_yaw": 0.15,
-            "parking_dock_min_yaw": 0.15,
-            "parking_dock_normal_tolerance": 0.02,
+            "parking_dock_max_yaw": 0.30,
+            "parking_dock_min_yaw": 0.25,
+            "parking_dock_normal_tolerance": 0.03,
             "parking_dock_tangent_tolerance": 0.02,
-            "parking_dock_yaw_tolerance": 0.05,
+            "parking_dock_yaw_tolerance": 0.07,
             "parking_min_wall_distance": 0.19,
             "parking_lidar_stop_distance": 0.15,
             "parking_recenter_tolerance": 0.04,
@@ -2040,7 +2221,12 @@ class CompetitionFlow:
             "coverage_goal_progress_window_sec": 5.0,
             "coverage_goal_min_progress": 0.03,
             "coverage_anchor_observation_radius": 0.35,
-            "coverage_near_anchor_stall_timeout_sec": 0.8,
+            "coverage_near_anchor_stall_timeout_sec": 3.0,
+            "coverage_anchor_position_tolerance": 0.15,
+            "coverage_anchor_yaw_tolerance_deg": 3.44,
+            "coverage_anchor_yaw_hold_sec": 0.5,
+            "coverage_anchor_yaw_timeout_sec": 20.0,
+            "coverage_anchor_local_align_max_yaw_deg": 30.0,
         }
         for name, default in forwarded_defaults.items():
             param_name = "target_center_max_speed" if (
@@ -2144,7 +2330,8 @@ class CompetitionFlow:
             "Task2 navigation released after fresh OCR frame: %s",
             response.message)
 
-    def _navigate_factory_target(self, category, item, workshop, phase, announce):
+    def _navigate_factory_target(self, category, item, workshop, phase, announce,
+                                 full_rescan=False):
         if not category or not item or not workshop:
             raise StageError("task2 {} target is incomplete".format(phase))
         center_only = bool_param("~task2_center_only", False)
@@ -2163,7 +2350,8 @@ class CompetitionFlow:
             self.task2_non_target_announced = set()
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
-        search_context = self._factory_search_context(category, phase)
+        search_context = self._factory_search_context(
+            category, phase, full_rescan=full_rescan)
         resume_coverage_enabled = search_context["resume_enabled"]
         preferred_anchor = search_context["preferred_anchor"]
         skipped_anchors = search_context["skipped_anchors"]
@@ -2175,6 +2363,13 @@ class CompetitionFlow:
             rospy.loginfo(
                 "task2 calibrated no-workshop anchors skipped: %s",
                 ",".join(str(value) for value in no_workshop_anchors))
+        if full_rescan and search_context["fallback_only_anchors"]:
+            rospy.loginfo(
+                "task2 fallback rescan: extra anchors %s included before the "
+                "regular points",
+                ",".join(
+                    str(value)
+                    for value in search_context["fallback_only_anchors"]))
         if phase == "simulation" and preferred_anchor:
             rospy.loginfo(
                 "task2 coverage resume: starting %s search at anchor %d; "
@@ -2185,7 +2380,8 @@ class CompetitionFlow:
                 remembered_heading_enabled, remembered_odom_yaw)
         self.publish_status(
             "task2", "searching_{}".format(phase),
-            "searching {} factory sign with existing 9-point navigation".format(category))
+            "searching {} factory sign with {}-point navigation".format(
+                category, search_context["anchor_count"]))
         try:
             self._start_factory_children(
                 category, phase, center_only, search_context)
@@ -2198,6 +2394,10 @@ class CompetitionFlow:
                 rospy.get_param("~ocr_ready_timeout_sec", 12.0))
             while time.time() < ocr_ready_deadline and not self.ocr_last_message_at:
                 self.check_abort()
+                if time.monotonic() >= self._task2_deadline:
+                    raise Task2BudgetExceeded(
+                        "task2 total timeout of {:.1f}s exceeded".format(
+                            self.task2_total_timeout_sec))
                 for key in ("factory_ocr", "factory_navigator"):
                     proc = self.children.get(key)
                     if proc is None or proc.poll() is not None:
@@ -2213,6 +2413,10 @@ class CompetitionFlow:
             deadline = time.time() + timeout
             while time.time() < deadline:
                 self.check_abort()
+                if time.monotonic() >= self._task2_deadline:
+                    raise Task2BudgetExceeded(
+                        "task2 total timeout of {:.1f}s exceeded".format(
+                            self.task2_total_timeout_sec))
                 self._deliver_target_trigger()
                 if self.navigator_status == "arrived":
                     break
@@ -2225,11 +2429,9 @@ class CompetitionFlow:
                         "parking_wall_align_failed",
                         "parking_reverse_rejected",
                         "parking_recenter_failed", "parking_wall_fit_failed",
-                        "parking_docking_failed", "parking_obstacle_blocked",
-                        "parking_validation_failed",
+                        "parking_docking_failed", "parking_validation_failed",
                         "coverage_recovery_disable_failed",
-                        "coverage_teb_restore_failed",
-                        "coverage_navigation_blocked"):
+                        "coverage_anchor_failed"):
                     raise StageError("factory navigation {}".format(
                         self.navigator_status))
                 for key in ("factory_navigator", "factory_ocr"):
@@ -2270,6 +2472,27 @@ class CompetitionFlow:
             "task2", "{}_factory_reached".format(phase),
             "{} target factory reached".format(phase))
 
+    def _task2_timeout_exit(self, visits, visit_index):
+        """Total-budget fallback: announce immediately, then start simulation."""
+        self.stop_child("factory_ocr")
+        self.stop_child("factory_navigator")
+        self.safe_stop(cancel_navigation=True)
+        self.publish_status(
+            "task2", "total_timeout",
+            "task2 total timeout of {:.1f}s exceeded after visit {}/{}; "
+            "announcing and switching to simulation".format(
+                self.task2_total_timeout_sec, visit_index + 1, len(visits)))
+        if not self.task2_announcement_completed:
+            _phase, _category, item, workshop = visits[0]
+            self.announce("task2", item=item, workshop=workshop)
+            self.task2_announcement_completed = True
+            self.publish_status(
+                "task2", "announcement_completed",
+                "task2 timeout announcement completed")
+        self.publish_status(
+            "task2", "timeout_completed",
+            "task2 finished via total-timeout fallback; continuing to simulation")
+
     def task2(self):
         if not self.category or not self.sim_category:
             raise StageError("task2 physical/simulation categories are missing")
@@ -2296,12 +2519,55 @@ class CompetitionFlow:
             for memory_filter in self.ocr_memory_filters.values():
                 memory_filter.reset()
         self.task2_announcement_completed = False
-        for visit_index, (phase, category, item, workshop) in enumerate(visits):
-            if visit_index > 0:
-                self.task2_inter_visit_handoff()
-            self._navigate_factory_target(
-                category, item, workshop, phase, announce=(phase == "physical")
-            )
+        self._task2_deadline = time.monotonic() + self.task2_total_timeout_sec
+        visit_index = 0
+        restart_count = 0
+        visit_retrying = False
+        handoff_done_for = None
+        while visit_index < len(visits) and not rospy.is_shutdown():
+            self.check_abort()
+            phase, category, item, workshop = visits[visit_index]
+            try:
+                if visit_index > 0 and handoff_done_for != visit_index:
+                    self.task2_inter_visit_handoff()
+                    handoff_done_for = visit_index
+                self._navigate_factory_target(
+                    category, item, workshop, phase,
+                    announce=(phase == "physical"),
+                    full_rescan=visit_retrying)
+                visit_index += 1
+                visit_retrying = False
+                continue
+            except Task2BudgetExceeded as exc:
+                rospy.logerr("task2 total budget exceeded: %s", exc)
+                self._task2_timeout_exit(visits, visit_index)
+                return
+            except StageError as exc:
+                rospy.logerr("task2 visit %d attempt failed: %s",
+                             visit_index + 1, exc)
+                if time.monotonic() >= self._task2_deadline:
+                    self._task2_timeout_exit(visits, visit_index)
+                    return
+                restart_count += 1
+                visit_retrying = True
+                self.stop_child("factory_ocr")
+                self.stop_child("factory_navigator")
+                self.safe_stop(cancel_navigation=True)
+                # Drop all search memory so the next attempt restarts the
+                # coverage scan from the very first factory anchor.  The
+                # restart round also covers the fallback-only anchors.
+                with self.lock:
+                    self.task2_warehouse_memory = {}
+                    self.current_coverage_anchor = None
+                    self.last_coverage_anchor = None
+                    for memory_filter in self.ocr_memory_filters.values():
+                        memory_filter.reset()
+                self.publish_status(
+                    "task2", "search_restart_{}".format(restart_count),
+                    "restarting the factory scan from the first anchor "
+                    "(fallback-only anchors included)",
+                    str(exc))
+                rospy.sleep(2.0)
         if len(visits) == 1:
             self.publish_status(
                 "task2", "simulation_factory_already_reached",
@@ -2313,11 +2579,36 @@ class CompetitionFlow:
     def task3(self):
         if not self.sim_category:
             raise StageError("task3 sim_target_category is missing")
+        total_timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
+        deadline = time.time() + total_timeout
+        attempt = 0
+        while not rospy.is_shutdown():
+            self.check_abort()
+            attempt += 1
+            try:
+                return self._task3_once(deadline)
+            except StageError as exc:
+                rospy.logerr("task3 attempt %d failed: %s", attempt, exc)
+                self.safe_stop(cancel_navigation=True)
+                if time.time() >= deadline:
+                    self.publish_status(
+                        "task3", "timeout_skipped",
+                        "simulation did not finish within the total budget "
+                        "of {:.1f}s; switching to the traffic-light "
+                        "stop-line task".format(total_timeout),
+                        str(exc))
+                    return
+                self.publish_status(
+                    "task3", "retrying",
+                    "simulation attempt {} failed; retrying before the total "
+                    "timeout".format(attempt), str(exc))
+                rospy.sleep(2.0)
+
+    def _task3_once(self, deadline):
         host = rospy.get_param("~sim_bridge_host", "").strip()
         port = int(rospy.get_param("~sim_bridge_port", 26003))
         if not host:
             raise StageError("SIM_BRIDGE_HOST / sim_bridge_host is missing")
-        timeout = float(rospy.get_param("~sim_timeout_sec", 900.0))
         self.publish_status("task3", "connecting", "connecting to {}:{}".format(host, port))
         try:
             sock = socket.create_connection((host, port), timeout=10.0)
@@ -2325,7 +2616,6 @@ class CompetitionFlow:
         except OSError as exc:
             raise StageError("simulation bridge connection failed: {}".format(exc))
         request_id = str(uuid.uuid4())
-        deadline = time.time() + timeout
         result_text = ""
         done_received = False
         done_received_at = 0.0
@@ -2607,7 +2897,7 @@ class CompetitionFlow:
         try:
             self.start_child(
                 "line_follow",
-                "ucar_2026_track_end_stop",
+                self.track_package,
                 launch_file,
                 {"start_driver": False, "start_camera": False, "start_viewer": self.debug},
             )

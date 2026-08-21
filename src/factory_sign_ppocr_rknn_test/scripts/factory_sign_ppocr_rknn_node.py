@@ -1006,23 +1006,25 @@ class FactorySignPPOCRRknnNode:
             "error": result.error,
             "stamp": time.time(),
         }, ensure_ascii=False)))
-        self.rospy.loginfo(
-            "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f evidence=%s view=%.2f candidates=%d match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
-            result.raw_text,
-            result.category,
-            result.confidence,
-            result.evidence,
-            result.view_scale,
-            result.candidate_count,
-            result.match_debug,
-            self._texts_debug(result.texts),
-            confirmed,
-            spoken,
-            result.elapsed_ms,
-            result.det_ms,
-            result.rec_ms,
-            result.error,
-        )
+        # 空结果且无错误时不打印，避免刷屏；有识别文本或出错时才记录
+        if result.raw_text or result.error:
+            self.rospy.loginfo(
+                "factory_sign_ppocr_rknn: text=%r category=%s conf=%.3f evidence=%s view=%.2f candidates=%d match=%s texts=%s decision=%s spoken=%s elapsed_ms=%d det_ms=%d rec_ms=%d error=%s",
+                result.raw_text,
+                result.category,
+                result.confidence,
+                result.evidence,
+                result.view_scale,
+                result.candidate_count,
+                result.match_debug,
+                self._texts_debug(result.texts),
+                confirmed,
+                spoken,
+                result.elapsed_ms,
+                result.det_ms,
+                result.rec_ms,
+                result.error,
+            )
         self._publish_debug_images(frame, debug_preprocess, spoken)
         if self.debug_show_image:
             self._show_debug(debug_preprocess)

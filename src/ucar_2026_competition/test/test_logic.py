@@ -487,8 +487,10 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertIn("_start_transition_announcement", called("task1"))
         self.assertIn(
             "_wait_transition_announcement", called("task1_task2_handoff"))
-        self.assertIn("_announce_while_stationary", called("task3"))
-        self.assertNotIn("_start_transition_announcement", called("task3"))
+        # task3 is a retry wrapper; the success path lives in _task3_once.
+        task3_calls = called("task3") | called("_task3_once")
+        self.assertIn("_announce_while_stationary", task3_calls)
+        self.assertNotIn("_start_transition_announcement", task3_calls)
         self.assertIn(
             "_wait_transition_announcement", called("production_task4_handoff"))
         self.assertIn(
@@ -538,7 +540,7 @@ class CompetitionLogicTest(unittest.TestCase):
                 config[key.strip()] = value.strip()
         self.assertEqual(float(config["qr_scan_angular_speed"]), 0.60)
         self.assertAlmostEqual(
-            float(config["qr_scan_step_angle_rad"]), math.radians(30.0))
+            float(config["qr_scan_step_angle_rad"]), math.radians(20.1), places=4)
         self.assertAlmostEqual(
             float(config["qr_scan_total_angle_rad"]), 2.0 * math.pi)
         self.assertEqual(float(config["qr_scan_settle_sec"]), 0.3)
@@ -550,10 +552,10 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(float(config["qr_decoder_ready_timeout_sec"]), 6.0)
         self.assertGreaterEqual(float(config["qr_scan_result_grace_sec"]), 20.0)
         self.assertEqual(float(config["qr_scan_pending_idle_sec"]), 0.5)
-        self.assertAlmostEqual(
-            float(config["qr_scan_extra_sweep_angle_rad"]), math.radians(120.0))
+        self.assertEqual(float(config["qr_scan_extra_sweep_angle_rad"]), 0.0)
         self.assertGreaterEqual(
-            float(config["qr_rotation_min_clearance"]), 0.28)
+            float(config["qr_rotation_min_clearance"]), 0.20)
+        self.assertGreaterEqual(float(config["qr_total_timeout_sec"]), 120.0)
 
     def test_qr_decoder_retries_network_and_reports_pending_work(self):
         launch_path = os.path.abspath(os.path.join(

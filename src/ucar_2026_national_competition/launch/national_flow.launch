@@ -1,0 +1,19 @@
+<launch>
+  <!-- 国赛总控流程节点 + 坡道节点。
+       所有参数来自各包 config/*.yaml，launch 不覆盖任何值；
+       调参只改 yaml 后重启 roslaunch。 -->
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
+
+  <node pkg="ucar_2026_national_competition" type="national_flow_node.py"
+        name="national_flow" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find ucar_2026_national_competition)/config/national_competition.yaml" />
+    <param name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+  </node>
+
+  <node pkg="ucar_2026_upanddown" type="ramp_traverse_node.py"
+        name="ramp_traverse" output="screen">
+    <rosparam command="load"
+              file="$(find ucar_2026_upanddown)/config/ramp_traverse.yaml" />
+  </node>
+</launch>

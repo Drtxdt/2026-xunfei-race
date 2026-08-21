@@ -1,0 +1,44 @@
+<launch>
+  <!-- 国赛导航栈：与省赛 ucar_amcl_nav.launch 参数完全一致，仅 AMCL 与
+       move_base 订阅门控雷达 /scan_gated（remap 在 group 内完成），
+       并附带 scan_gate 节点。导航栈参数仍由省赛 ucar_nav yaml 管理。 -->
+  <arg name="start_rviz" default="false" />
+  <arg name="map" default="$(find ucar_nav)/maps/521.yaml" />
+
+  <include file="$(find ucar_controller)/launch/base_driver.launch" />
+  <include file="$(find ydlidar)/launch/ydlidar.launch" />
+
+  <node name="map_server" pkg="map_server" type="map_server"
+        args="$(arg map)" output="screen">
+    <param name="frame_id" value="map" />
+  </node>
+
+  <group>
+    <remap from="/scan" to="/scan_gated" />
+    <include file="$(find ucar_nav)/launch/config/amcl/amcl_omni2.launch" />
+    <node pkg="move_base" type="move_base" respawn="false" name="move_base"
+          output="screen">
+      <param name="base_global_planner" value="global_planner/GlobalPlanner" />
+      <param name="base_local_planner" value="teb_local_planner/TebLocalPlannerROS" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/costmap_common_params.yaml" command="load" ns="global_costmap" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/costmap_common_params.yaml" command="load" ns="local_costmap" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/global_planner_params.yaml" command="load" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/teb_local_planner_params.yaml" command="load" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/local_costmap_params.yaml" command="load" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/global_costmap_params.yaml" command="load" />
+      <rosparam file="$(find ucar_nav)/launch/config/move_base/move_base_params.yaml" command="load" />
+    </node>
+  </group>
+
+  <!-- 雷达门控：参数见 ucar_2026_upanddown/config/scan_gate.yaml。 -->
+  <node pkg="ucar_2026_upanddown" type="scan_gate_node.py" name="scan_gate"
+        output="screen">
+    <rosparam command="load"
+              file="$(find ucar_2026_upanddown)/config/scan_gate.yaml" />
+  </node>
+
+  <group if="$(arg start_rviz)">
+    <node pkg="rviz" type="rviz" name="rviz" required="true"
+          args="-d $(find ucar_nav)/launch/config/rviz/tebrviz.rviz" />
+  </group>
+</launch>

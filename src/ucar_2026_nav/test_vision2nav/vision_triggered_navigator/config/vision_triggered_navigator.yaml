@@ -83,10 +83,12 @@ coverage_speed_update_min_interval_sec: 0.50
 coverage_goal_retry_count: 1
 coverage_anchor_position_tolerance: 0.15
 coverage_anchor_observation_radius: 0.35
-coverage_near_anchor_stall_timeout_sec: 0.8
+coverage_near_anchor_stall_timeout_sec: 3.0
 coverage_anchor_yaw_tolerance_deg: 3.44
 coverage_anchor_yaw_hold_sec: 0.5
 coverage_anchor_yaw_timeout_sec: 20.0
+# yaw误差超过该角度时不走本地odom微调，继续由move_base/TEB完成大角度转向。
+coverage_anchor_local_align_max_yaw_deg: 30.0
 max_coverage_anchors: 0
 center_only: false
 coverage_scan_settle_sec: 0.35
@@ -134,18 +136,30 @@ arrival_hold_sec: 0.6
 validate_parking_box: false
 parking_box_width: 0.50
 parking_box_depth: 0.50
-parking_goal_offset: 0.26
-parking_staging_offset: 0.55
-# 校准光轴命中点过于靠近墙端时只安全停止，不再移动复观测。
-parking_endpoint_min_clearance: 0.16
+parking_goal_offset: 0.22
+parking_staging_offset: 0.45
+parking_staging_timeout_sec: 20.0
+parking_staging_position_tolerance: 0.10
+parking_staging_yaw_tolerance: 0.10
+parking_staging_success_position_tolerance: 0.15
+parking_staging_success_yaw_tolerance: 0.12
+parking_staging_watchdog_window_sec: 2.0
+parking_staging_min_progress: 0.03
+parking_staging_max_rotation_deg: 45.0
+# 墙角切向夹取：交点距墙端点小于该值时沿切向推离，防止目标/预停点贴相邻墙。
+parking_corner_safe_dist: 0.25
+# 每次预停重试额外增大的切向夹取距离，保证重试几何不重复。
+parking_retry_tangent_step: 0.15
+# 预停点 move_base 失败后复位重扫的最大重试次数，耗尽仍报 parking_staging_failed。
+parking_staging_max_retries: 2
 parking_docking_timeout_sec: 30.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
 parking_dock_max_yaw: 0.15
-parking_dock_min_yaw: 0.15
-parking_dock_normal_tolerance: 0.02
+parking_dock_min_yaw: 0.25
+parking_dock_normal_tolerance: 0.03
 parking_dock_tangent_tolerance: 0.02
-parking_dock_yaw_tolerance: 0.05
+parking_dock_yaw_tolerance: 0.07
 parking_dock_stable_sec: 0.5
 parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15
@@ -199,11 +213,43 @@ initial_pose:
   y: 0.0
   yaw: 0.0
 
-# 巡航点（9 个点）
+# 巡航点（14 个点：前 5 个为兜底轮补扫点，后 9 个为常规点）。
+# 第一轮由 competition_flow 通过 coverage_skip_anchors 跳过前 5 个；
+# 找厂牌失败重扫时全量扫描（先 5 个补扫点，再 9 个常规点）。
 patrol_points:
-  - x: -1.70
-    y: -1.8735
-    yaw: 1.0417
+  - x: 2.33
+    y: -2.26
+    yaw: -0.4
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: -1.1
+    y: -2.85
+    yaw: -2.2
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: 1.8
+    y: -2.75
+    yaw: -2.2
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: 0.78
+    y: -1.69
+    yaw: 0.85
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: 1.755
+    y: -1.69
+    yaw: 0.85
+    rotations:
+      - {direction: "left", duration: 3.0}
+
+  - x: -1.65
+    y: -1.9235
+    yaw: 1.04
     rotations:
       - {direction: "left", duration: 4.5}
 
@@ -211,7 +257,7 @@ patrol_points:
     y: -2.2796
     yaw: -3.1404
     rotations:
-      - {direction: "right", duration: 3.0}
+      - {direction: "right", duration: 2.0}
       - {direction: "left", duration: 3.5}
 
   - x: -1.6846
@@ -224,7 +270,7 @@ patrol_points:
     y: -2.9239
     yaw: -1.5594
     rotations:
-      - {direction: "right", duration: 2.5}
+      - {direction: "right", duration: 1.5}
       - {direction: "left", duration: 3.0}
 
   - x: 1.30
@@ -238,22 +284,22 @@ patrol_points:
     y: -2.7417
     yaw: -2.1786
     rotations:
-      - {direction: "left", duration: 4.5}
+      - {direction: "left", duration: 5.0}
 
-  - x: 2.3471
-    y: -1.6090
+  - x: 2.25
+    y: -1.69
     yaw: -0.8607
     rotations:
-      - {direction: "left", duration: 4.5}
+      - {direction: "left", duration: 7.0}
 
   - x: 1.2641
-    y: -1.6452
+    y: -1.6952
     yaw: 0.8530
     rotations:
-      - {direction: "left", duration: 4.0}
+      - {direction: "left", duration: 3.0}
 
   - x: 0.3011
-    y: -1.6319
+    y: -1.6919
     yaw: 0.8913
     rotations:
       - {direction: "left", duration: 4.0}

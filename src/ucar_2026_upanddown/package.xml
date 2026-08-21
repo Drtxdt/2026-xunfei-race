@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>ucar_2026_upanddown</name>
+  <version>0.1.0</version>
+  <description>National ramp traversal: scan gating plus IMU-segmented up-flat-down crossing.</description>
+  <maintainer email="team@example.com">U-CAR 2026 Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <depend>rospy</depend>
+  <test_depend>python3-nose</test_depend>
+
+  <export />
+</package>

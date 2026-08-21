@@ -1,0 +1,21 @@
+# ============================================================================
+# 雷达门控参数：/scan -> /scan_gated 中继
+# 关门(gate closed)：丢帧，AMCL 的 map->odom 冻结（航位推算），
+#                    局部代价地图不再标记坡道幻影墙。
+# 开门(gate open)  ：原样转发，AMCL 恢复正常更新。
+# ============================================================================
+
+config_loaded: true
+
+# 原始雷达输入话题。
+input_topic: /scan
+# 门控输出话题。国赛导航栈中 AMCL / move_base 必须订阅该话题
+# （national_nav.launch 已用 remap 完成，不要改动这里除非同步改 remap）。
+output_topic: /scan_gated
+# 门控状态 JSON 话题（含 state/forwarded/dropped 计数）。
+status_topic: /scan_gate/status
+# 节点启动时门是否打开。保持 true：平时雷达正常，只在过坡时由
+# ramp_traverse 服务调用关门。
+initial_open: true
+# 开门状态下周期性打印转发/丢弃统计的间隔（秒）；0 = 关闭统计日志。
+stats_log_interval_sec: 10.0

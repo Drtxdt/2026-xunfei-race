@@ -17,14 +17,14 @@ TebLocalPlannerROS:
  global_plan_viapoint_sep: -1 #当前没启用  # 是否从全局路径中抽取全局规划途经点来约束TEB，>0 时，TEB 会在全局路径上按此间距采样 via points，并在优化中加入"轨迹应尽量经过这些点"的约束
  global_plan_prune_distance: 0.6 #1.0    # 从全局路径中删除已经走过的点。0.6m 意味着已经过的、距离当前位姿小于 0.6m 的全局路径点会被剪掉。防止TEB为了"回头贴全局路径"而产生不必要的绕圈
  exact_arc_length: False                 # False：用欧几里得距离近似  True：用圆弧积分计算真实弧长（考虑朝向变化
- feasibility_check_no_poses: 4 #！3 #5   # 优化完成后，检查轨迹上多少个位姿的可行性。值越大检查越严格，但可能因微小碰撞 footprint 而误报失败
+ feasibility_check_no_poses: 3 #！3 #5   # 优化完成后，检查轨迹上多少个位姿的可行性。值越大检查越严格，但可能因微小碰撞 footprint 而误报失败
  publish_feedback: False #调试信息发布 设为 True 可在 RViz 中可视化 TEB 的内部轨迹（话题如 /teb_feedback），用于调参观察
     
  # Robot运动学约束
          
- max_vel_x: 0.8 #！1.2 #0.4
+ max_vel_x: 0.9 #！1.2 #0.4
  max_vel_x_backwards: 0.7 #！0.5 #0.2
- max_vel_y: 0.8 #0.1
+ max_vel_y: 0.9 #0.1
  max_vel_theta: 2.0 #@1.5 #！1 #0.3
  acc_lim_x: 0.5
  acc_lim_y: 0.5 #0.2

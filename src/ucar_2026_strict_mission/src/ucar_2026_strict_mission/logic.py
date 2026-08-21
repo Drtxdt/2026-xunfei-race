@@ -342,8 +342,14 @@ def line_alignment_command(
     lateral_sign,
     yaw_min=0.0,
     lateral_min=0.0,
+    hold_lateral=False,
 ):
-    """Return (mode, lateral_mps, yaw_rps, aligned) for stop-line alignment."""
+    """Return (mode, lateral_mps, yaw_rps, aligned) for stop-line alignment.
+
+    When hold_lateral is True, a lateral center offset never produces a
+    sideways translation: the vehicle keeps yaw correction and longitudinal
+    motion, and the center error no longer blocks the "aligned" verdict.
+    """
     angle = float(angle_error_rad)
     center = float(center_error_ratio)
     yaw_tolerance = float(yaw_tolerance_rad)
@@ -363,6 +369,8 @@ def line_alignment_command(
             yaw = math.copysign(float(yaw_min), yaw)
         return "yaw", 0.0, yaw, False
     if abs(center) > center_tolerance:
+        if bool(hold_lateral):
+            return "forward", 0.0, 0.0, True
         lateral = float(lateral_sign) * float(lateral_kp) * center
         lateral = max(
             -float(lateral_limit), min(float(lateral_limit), lateral))

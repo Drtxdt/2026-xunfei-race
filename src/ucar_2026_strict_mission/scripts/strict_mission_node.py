@@ -112,13 +112,13 @@ class StrictMissionNode:
             speed_creep=float(rospy.get_param("~speed_creep", 0.045)),
         )
         self.band_filter = ConsecutiveBandFilter(
-            int(rospy.get_param("~stop_confirm_frames", 8)),
+            int(rospy.get_param("~stop_confirm_frames", 4)),
             self.target_min_m,
             self.target_max_m,
         )
         self.final_distance_filter = StableLineDistanceFilter(
             int(rospy.get_param("~final_visual_confirm_frames", 3)),
-            float(rospy.get_param("~final_visual_max_spread_m", 0.02)),
+            float(rospy.get_param("~final_visual_max_spread_m", 0.03)),
         )
         self.final_advance_m = float(rospy.get_param(
             "~final_advance_m", 0.0))
@@ -128,7 +128,7 @@ class StrictMissionNode:
         self.final_target_clearance_m = float(rospy.get_param(
             "~final_advance_target_clearance_m", 0.05))
         self.final_no_vision_fallback_m = float(rospy.get_param(
-            "~final_advance_no_vision_m", 0.155))
+            "~final_advance_no_vision_m", 0.14))
         self.final_visual_max_age_sec = float(rospy.get_param(
             "~final_advance_visual_max_age_sec", 0.75))
         self.final_minimum_command_m = float(rospy.get_param(
@@ -155,6 +155,8 @@ class StrictMissionNode:
             "~final_yaw_tolerance_deg", 1.5)))
         self.final_center_tolerance = float(rospy.get_param(
             "~final_center_tolerance_ratio", 0.03))
+        self.final_lateral_hold = bool(rospy.get_param(
+            "~final_lateral_hold", True))
         if self.precision_start_m <= self.target_max_m:
             raise ValueError(
                 "precision_start_m must exceed the target stop distance")
@@ -248,7 +250,12 @@ class StrictMissionNode:
             data=json.dumps(payload, ensure_ascii=False, sort_keys=True)))
 
     def publish_stop(self):
-        self.cmd_pub.publish(Twist())
+        if rospy.is_shutdown():
+            return
+        try:
+            self.cmd_pub.publish(Twist())
+        except rospy.exceptions.ROSException:
+            pass
 
     def set_fault(self, reason):
         with self.lock:
@@ -548,10 +555,12 @@ class StrictMissionNode:
                     "~line_yaw_min_speed", 0.04)),
                 lateral_min=float(rospy.get_param(
                     "~line_lateral_min_speed", 0.015)),
+                hold_lateral=(
+                    final_visual_approach and self.final_lateral_hold),
             )
         command = Twist()
         calibrated_fallback = float(rospy.get_param(
-            "~calibrated_final_advance_fallback_sec", 3.0))
+            "~calibrated_final_advance_fallback_sec", 6.0))
         if alignment_state == "yaw":
             command.angular.z = yaw_speed
             self.band_filter.reset()
@@ -1109,7 +1118,7 @@ class StrictMissionNode:
         launch_file, status_topic, finish_value = track_launch_for_decision(
             decision)
         command = [
-            "roslaunch", "ucar_2026_track_end_stop", launch_file,
+            "roslaunch", "ucar_2026_track_end_stop_provincial", launch_file,
             "start_driver:=false", "start_camera:=false",
             "start_viewer:=false",
         ]
@@ -1166,7 +1175,7 @@ class StrictMissionNode:
                 self.line_search_reversals = 0
             self.publish_status("visual stop-line approach armed")
             fallback_timeout = max(0.0, float(rospy.get_param(
-                "~calibrated_final_advance_fallback_sec", 3.0)))
+                "~calibrated_final_advance_fallback_sec", 6.0)))
             try:
                 self.wait_event(
                     self.parked_event,
@@ -1308,6 +1317,10 @@ class StrictMissionNode:
                 self.state = "DONE"
             self.publish_status("strict post-warehouse mission completed")
         except Exception as exc:
+            if rospy.is_shutdown():
+                rospy.loginfo(
+                    "strict mission interrupted by shutdown during: %s", exc)
+                return
             self.set_fault(str(exc))
 
     def shutdown(self):

@@ -1,0 +1,11 @@
+<launch>
+  <!-- 坡道通过独立测试（无需导航栈，需外部提供 /imu /odom /scan）。
+       所有参数来自 config/*.yaml，launch 不覆盖任何值。 -->
+  <include file="$(find ucar_2026_upanddown)/launch/scan_gate.launch" />
+
+  <node pkg="ucar_2026_upanddown" type="ramp_traverse_node.py"
+        name="ramp_traverse" output="screen">
+    <rosparam command="load"
+              file="$(find ucar_2026_upanddown)/config/ramp_traverse.yaml" />
+  </node>
+</launch>

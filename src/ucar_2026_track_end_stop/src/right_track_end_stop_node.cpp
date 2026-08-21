@@ -66,6 +66,9 @@ private:
     StartupTurn,
     StartupEnter,
     Follow,
+    ObstacleShiftOut,
+    ObstacleForward,
+    ObstacleShiftBack,
     EndDetected,
     TurnRight,
     Forward50cm,
@@ -100,6 +103,15 @@ private:
     double best_y_ratio = 0.0;
   };
 
+  struct GrayObstacleResult
+  {
+    bool detected = false;
+    double area_ratio = 0.0;
+    double width_ratio = 0.0;
+    double height_ratio = 0.0;
+    double bottom_ratio = 0.0;
+  };
+
   void loadParams()
   {
     private_nh_.param<std::string>("image_topic", image_topic_, "/usb_cam/image_raw");
@@ -109,7 +121,7 @@ private:
     private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/right_track_end_stop/debug_info");
 
     private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_forward_duration", startup_forward_duration_, 1.8875);
+    private_nh_.param("startup_forward_duration", startup_forward_duration_, 2.2);
     private_nh_.param("startup_forward_speed", startup_forward_speed_, 0.16);
     private_nh_.param("startup_turn_duration", startup_turn_duration_, 3.85);
     private_nh_.param("startup_turn_angular_speed", startup_turn_angular_speed_, -0.34);
@@ -151,6 +163,23 @@ private:
     private_nh_.param("lost_angular_speed", lost_angular_speed_, 0.0);
     private_nh_.param("stop_on_lost", stop_on_lost_, true);
 
+    private_nh_.param("obstacle_enable_delay", obstacle_enable_delay_, 3.0);
+    private_nh_.param("obstacle_gray_s_max", obstacle_gray_s_max_, 70);
+    private_nh_.param("obstacle_gray_v_min", obstacle_gray_v_min_, 45);
+    private_nh_.param("obstacle_gray_v_max", obstacle_gray_v_max_, 215);
+    private_nh_.param("obstacle_min_area_ratio", obstacle_min_area_ratio_, 0.06);
+    private_nh_.param("obstacle_min_width_ratio", obstacle_min_width_ratio_, 0.30);
+    private_nh_.param("obstacle_min_height_ratio", obstacle_min_height_ratio_, 0.18);
+    private_nh_.param("obstacle_min_bottom_ratio", obstacle_min_bottom_ratio_, 0.50);
+    private_nh_.param("obstacle_confirm_frames", obstacle_confirm_frames_, 3);
+    private_nh_.param("obstacle_lateral_distance_m", obstacle_lateral_distance_m_, 0.50);
+    private_nh_.param("obstacle_forward_distance_m", obstacle_forward_distance_m_, 0.50);
+    private_nh_.param("obstacle_lateral_speed", obstacle_lateral_speed_, 0.30);
+    private_nh_.param("obstacle_forward_speed", obstacle_forward_speed_, 0.32);
+    private_nh_.param("obstacle_return_lateral_distance_m",
+                      obstacle_return_lateral_distance_m_, 0.45);
+    private_nh_.param("obstacle_debug", obstacle_debug_, true);
+
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
     private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
@@ -160,8 +189,10 @@ private:
     private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
     private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
 
-    // Preserve the existing 5 cm reduction on the final forward segment. The
-    // startup reduction is represented directly by startup_forward_duration.
+    // Keep the existing launch/YAML values compatible while shortening only the
+    // two requested straight segments by 5 cm.
+    startup_forward_duration_ = std::max(
+        0.0, startup_forward_duration_ - 0.05 / std::max(startup_forward_speed_, 1e-6));
     end_forward_distance_m_ = std::max(0.0, end_forward_distance_m_ - 0.05);
 
     if (morph_kernel_size_ % 2 == 0)
@@ -212,6 +243,7 @@ private:
     cv::Mat mask = extractWhiteMask(frame);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
     FollowResult follow = computeFollow(mask, now);
+    GrayObstacleResult obstacle = detectGrayObstacle(frame, now);
     geometry_msgs::Twist cmd;
 
     const double elapsed = (now - start_time_).toSec();
@@ -268,7 +300,16 @@ private:
         break;
 
       case State::Follow:
-        if (end_result.detected)
+        if (obstacle.detected)
+        {
+          ROS_INFO("gray obstacle detected: area=%.2f width=%.2f height=%.2f bottom=%.2f",
+                   obstacle.area_ratio, obstacle.width_ratio,
+                   obstacle.height_ratio, obstacle.bottom_ratio);
+          state_ = State::ObstacleShiftOut;
+          state_start_time_ = now;
+          hardStop();
+        }
+        else if (end_result.detected)
         {
           ROS_INFO("right track end detected! width_ratio=%.2f y_ratio=%.2f",
                    end_result.best_width_ratio, end_result.best_y_ratio);
@@ -281,6 +322,67 @@ private:
           publishFollowCommand(follow, now);
         }
         break;
+
+      case State::ObstacleShiftOut:
+      {
+        const double duration = obstacle_lateral_distance_m_ /
+                                std::max(obstacle_lateral_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("right_obstacle_shift_left");
+          cmd.linear.y = obstacle_lateral_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::ObstacleForward;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
+
+      case State::ObstacleForward:
+      {
+        const double duration = obstacle_forward_distance_m_ /
+                                std::max(obstacle_forward_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("right_obstacle_forward");
+          cmd.linear.x = obstacle_forward_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::ObstacleShiftBack;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
+
+      case State::ObstacleShiftBack:
+      {
+        const double duration = obstacle_return_lateral_distance_m_ /
+                                std::max(obstacle_lateral_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("right_obstacle_shift_right_return");
+          cmd.linear.y = -obstacle_lateral_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          obstacle_completed_ = true;
+          obstacle_hit_count_ = 0;
+          state_ = State::Follow;
+          state_start_time_ = now;
+          last_detection_time_ = now;
+          resetPid();
+          hardStop();
+        }
+        break;
+      }
 
       case State::EndDetected:
         setStatus("right_end_detected");
@@ -391,6 +493,72 @@ private:
     cv::morphologyEx(mask, mask, cv::MORPH_CLOSE, kernel);
     cv::medianBlur(mask, mask, 5);
     return mask;
+  }
+
+  GrayObstacleResult detectGrayObstacle(const cv::Mat& frame, const ros::Time& now)
+  {
+    GrayObstacleResult result;
+    if (state_ != State::Follow || obstacle_completed_ ||
+        (now - start_time_).toSec() < obstacle_enable_delay_)
+    {
+      obstacle_hit_count_ = 0;
+      return result;
+    }
+
+    const int x0 = frame.cols / 10;
+    const int y0 = frame.rows / 10;
+    const int width = frame.cols * 8 / 10;
+    const int height = frame.rows * 3 / 4;
+    const cv::Rect roi_rect(x0, y0, width, height);
+    cv::Mat hsv;
+    cv::cvtColor(frame(roi_rect), hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat gray_mask;
+    cv::inRange(hsv,
+                cv::Scalar(0, 0, obstacle_gray_v_min_),
+                cv::Scalar(179, obstacle_gray_s_max_, obstacle_gray_v_max_),
+                gray_mask);
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9, 9));
+    cv::morphologyEx(gray_mask, gray_mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(gray_mask, gray_mask, cv::MORPH_CLOSE, kernel);
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(gray_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    for (const auto& contour : contours)
+    {
+      const double area_ratio = cv::contourArea(contour) /
+                                static_cast<double>(frame.rows * frame.cols);
+      const cv::Rect box = cv::boundingRect(contour);
+      const double width_ratio = static_cast<double>(box.width) / frame.cols;
+      const double height_ratio = static_cast<double>(box.height) / frame.rows;
+      const double bottom_ratio = static_cast<double>(box.y + y0 + box.height) / frame.rows;
+      if (area_ratio > result.area_ratio)
+      {
+        result.area_ratio = area_ratio;
+        result.width_ratio = width_ratio;
+        result.height_ratio = height_ratio;
+        result.bottom_ratio = bottom_ratio;
+      }
+    }
+
+    const bool candidate = result.area_ratio >= obstacle_min_area_ratio_ &&
+                           result.width_ratio >= obstacle_min_width_ratio_ &&
+                           result.height_ratio >= obstacle_min_height_ratio_ &&
+                           result.bottom_ratio >= obstacle_min_bottom_ratio_;
+    obstacle_hit_count_ = candidate ? obstacle_hit_count_ + 1 : 0;
+    result.detected = obstacle_hit_count_ >= obstacle_confirm_frames_;
+    if (obstacle_debug_)
+    {
+      ROS_INFO_THROTTLE(0.5,
+          "obstacle candidate: area=%.3f(>=%.2f) width=%.2f(>=%.2f) height=%.2f(>=%.2f) bottom=%.2f(>=%.2f) hits=%d/%d %s",
+          result.area_ratio, obstacle_min_area_ratio_,
+          result.width_ratio, obstacle_min_width_ratio_,
+          result.height_ratio, obstacle_min_height_ratio_,
+          result.bottom_ratio, obstacle_min_bottom_ratio_,
+          obstacle_hit_count_, obstacle_confirm_frames_,
+          candidate ? "PASS" : "fail");
+    }
+    return result;
   }
 
   cv::Mat buildWhiteMask(const cv::Mat& hsv, const cv::Mat& gray, int s_max, int v_min, int gray_threshold,
@@ -792,7 +960,7 @@ private:
   std::string debug_info_topic_;
 
   bool auto_start_ = true;
-  double startup_forward_duration_ = 1.8875;
+  double startup_forward_duration_ = 2.2;
   double startup_forward_speed_ = 0.16;
   double startup_turn_duration_ = 3.85;
   double startup_turn_angular_speed_ = -0.34;
@@ -833,6 +1001,24 @@ private:
   double lost_speed_ = 0.06;
   double lost_angular_speed_ = 0.0;
   bool stop_on_lost_ = true;
+
+  double obstacle_enable_delay_ = 3.0;
+  int obstacle_gray_s_max_ = 70;
+  int obstacle_gray_v_min_ = 45;
+  int obstacle_gray_v_max_ = 215;
+  double obstacle_min_area_ratio_ = 0.06;
+  double obstacle_min_width_ratio_ = 0.30;
+  double obstacle_min_height_ratio_ = 0.18;
+  double obstacle_min_bottom_ratio_ = 0.50;
+  int obstacle_confirm_frames_ = 3;
+  double obstacle_lateral_distance_m_ = 0.50;
+  double obstacle_forward_distance_m_ = 0.50;
+  double obstacle_lateral_speed_ = 0.30;
+  double obstacle_return_lateral_distance_m_ = 0.45;
+  bool obstacle_debug_ = true;
+  double obstacle_forward_speed_ = 0.32;
+  int obstacle_hit_count_ = 0;
+  bool obstacle_completed_ = false;
 
   double end_enable_delay_ = 3.0;
   double end_roi_y_start_ratio_ = 0.87;

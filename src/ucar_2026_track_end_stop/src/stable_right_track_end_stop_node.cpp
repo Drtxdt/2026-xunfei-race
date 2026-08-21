@@ -66,6 +66,9 @@ private:
     StartupForward,
     SearchRightLine,
     Follow,
+    ObstacleShiftOut,
+    ObstacleForward,
+    ObstacleShiftBack,
     EndDetected,
     TurnRight,
     Forward50cm,
@@ -124,83 +127,29 @@ private:
     double best_y_ratio = 0.0;
   };
 
+  struct GrayObstacleResult
+  {
+    bool detected = false;
+    double area_ratio = 0.0;
+    double width_ratio = 0.0;
+    double height_ratio = 0.0;
+    double bottom_ratio = 0.0;
+  };
+
   void loadParams()
   {
-    private_nh_.param<std::string>("image_topic", image_topic_, "/usb_cam/image_raw");
-    private_nh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_, "/cmd_vel");
-    private_nh_.param<std::string>("status_topic", status_topic_, "/stable_right_track_end_stop/status");
-    private_nh_.param<std::string>("debug_image_topic", debug_image_topic_, "/stable_right_track_end_stop/debug_image");
-    private_nh_.param<std::string>("debug_info_topic", debug_info_topic_, "/stable_right_track_end_stop/debug_info");
+    // All parameters are intentionally hard-coded below.  Launch/YAML
+    // overrides are ignored so that the provincial-competition line-following
+    // values are always applied exactly as written in this file.
 
-    private_nh_.param("auto_start", auto_start_, true);
-    private_nh_.param("startup_forward_distance_m",
-                      startup_forward_distance_m_, 0.25);
-    private_nh_.param("startup_speed", startup_speed_, 0.45);
-
-    private_nh_.param("right_line_offset_px", right_line_offset_px_, 185.0);
     target_right_x_ = clampInt(
         static_cast<int>(std::round(kImageCols * 0.5 +
                                     right_line_offset_px_)),
         0, kImageCols - 1);
-    private_nh_.param("base_speed", base_speed_, 0.24);
-    private_nh_.param("curve_speed", curve_speed_, 0.15);
-    private_nh_.param("search_speed", search_speed_, 0.0);
-    private_nh_.param("search_angular_speed", search_angular_speed_, -0.08);
-    private_nh_.param("lost_linear_speed", lost_linear_speed_, 0.0);
-    private_nh_.param("lost_angular_speed", lost_angular_speed_, -0.08);
-    private_nh_.param("lost_guard_frames", lost_guard_frames_, 3);
-    private_nh_.param("reacquire_confirm_frames", reacquire_confirm_frames_, 3);
-    private_nh_.param("kp", kp_, 0.0037);
-    private_nh_.param("kd", kd_, 0.0006);
-    private_nh_.param("error_alpha", error_alpha_, 0.15);
-    private_nh_.param("curve_error_threshold", curve_error_threshold_, 38.0);
-    private_nh_.param("curve_angular_gain", curve_angular_gain_, 1.05);
-    private_nh_.param("max_angular_speed", max_angular_speed_, 0.40);
-    private_nh_.param("steering_deadband_px", steering_deadband_px_, 7.0);
-    private_nh_.param("max_straight_angular_speed", max_straight_angular_speed_, 0.15);
-    private_nh_.param("max_right_angular_speed", max_right_angular_speed_, 0.34);
-    private_nh_.param("straight_angular_alpha", straight_angular_alpha_, 0.82);
-    private_nh_.param("curve_angular_alpha", curve_angular_alpha_, 0.58);
-    private_nh_.param("straight_angular_step", straight_angular_step_, 0.03);
-    private_nh_.param("curve_angular_step", curve_angular_step_, 0.06);
-    private_nh_.param("right_warning_error_px", right_warning_error_px_, 28.0);
-    private_nh_.param("right_hard_error_px", right_hard_error_px_, 52.0);
-    private_nh_.param("right_guard_speed", right_guard_speed_, 0.11);
-    private_nh_.param("right_guard_away_angular", right_guard_away_angular_, 0.16);
-    private_nh_.param("right_hard_away_angular", right_hard_away_angular_, 0.30);
-    private_nh_.param("low_confidence_threshold", low_confidence_threshold_, 0.45);
-    private_nh_.param("low_confidence_speed", low_confidence_speed_, 0.09);
-    private_nh_.param("right_near_warning_error_px", right_near_warning_error_px_, 12.0);
-    private_nh_.param("right_near_hard_error_px", right_near_hard_error_px_, 24.0);
-    private_nh_.param("right_near_guard_speed", right_near_guard_speed_, 0.06);
-    private_nh_.param("deadband_angular_decay", deadband_angular_decay_, 0.45);
 
-    private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, 0.60);
-    private_nh_.param("white_s_max", white_s_max_, 45);
-    private_nh_.param("white_v_min", white_v_min_, 200);
-    private_nh_.param("morph_kernel_size", morph_kernel_size_, 5);
-    private_nh_.param("min_component_area", min_component_area_, 260.0);
     right_scan_rows_ = {
         0.95, 0.92, 0.88, 0.84, 0.80,
         0.75, 0.70, 0.64, 0.58};
-    private_nh_.param("right_scan_bottom_weight",
-                      right_scan_bottom_weight_, 1.8);
-    private_nh_.param("min_line_width_px", min_line_width_px_, 5);
-    private_nh_.param("max_line_segment_width_px",
-                      max_line_segment_width_px_, 90);
-    private_nh_.param("min_segment_gap_px", min_segment_gap_px_, 10);
-    private_nh_.param("right_min_scan_support",
-                      right_min_scan_support_, 3);
-    private_nh_.param("max_target_jump_px", max_target_jump_px_, 160.0);
-
-    private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
-    private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.87);
-    private_nh_.param("end_min_width_ratio", end_min_width_ratio_, 0.45);
-    private_nh_.param("end_stop_hold", end_stop_hold_, 1.0);
-    private_nh_.param("end_forward_distance_m", end_forward_distance_m_, 0.65);
-    private_nh_.param("end_forward_speed", end_forward_speed_, 0.17);
-    private_nh_.param("end_turn_left_angle_deg", end_turn_left_angle_deg_, 10.0);
-    private_nh_.param("end_turn_left_angular_speed", end_turn_left_angular_speed_, 0.50);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
@@ -230,6 +179,7 @@ private:
                         cv::Range(0, frame.cols));
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
+    GrayObstacleResult obstacle = detectGrayObstacle(frame, now);
     FollowResult follow;
     geometry_msgs::Twist cmd;
 
@@ -296,7 +246,16 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask);
-        if (end_result.detected)
+        if (obstacle.detected)
+        {
+          ROS_INFO("gray obstacle detected: area=%.2f width=%.2f height=%.2f bottom=%.2f",
+                   obstacle.area_ratio, obstacle.width_ratio,
+                   obstacle.height_ratio, obstacle.bottom_ratio);
+          state_ = State::ObstacleShiftOut;
+          state_start_time_ = now;
+          hardStop();
+        }
+        else if (end_result.detected)
         {
           ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
                    end_result.best_width_ratio, end_result.best_y_ratio);
@@ -309,6 +268,66 @@ private:
           publishFollowCommand(follow);
         }
         break;
+
+      case State::ObstacleShiftOut:
+      {
+        const double duration = obstacle_lateral_distance_m_ /
+                                std::max(obstacle_lateral_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("middle_obstacle_shift_right");
+          cmd.linear.y = -obstacle_lateral_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::ObstacleForward;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
+
+      case State::ObstacleForward:
+      {
+        const double duration = obstacle_forward_distance_m_ /
+                                std::max(obstacle_forward_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("middle_obstacle_forward");
+          cmd.linear.x = obstacle_forward_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          state_ = State::ObstacleShiftBack;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
+
+      case State::ObstacleShiftBack:
+      {
+        const double duration = obstacle_return_lateral_distance_m_ /
+                                std::max(obstacle_lateral_speed_, 1e-6);
+        if ((now - state_start_time_).toSec() < duration)
+        {
+          setStatus("middle_obstacle_shift_left_return");
+          cmd.linear.y = obstacle_lateral_speed_;
+          publishCmd(cmd);
+        }
+        else
+        {
+          obstacle_completed_ = true;
+          obstacle_hit_count_ = 0;
+          reacquire_count_ = 0;
+          state_ = State::SearchRightLine;
+          state_start_time_ = now;
+          hardStop();
+        }
+        break;
+      }
 
       case State::EndDetected:
         setStatus("stable_right_end_detected");
@@ -406,6 +425,72 @@ private:
         cv::drawContours(clean_mask, std::vector<std::vector<cv::Point>>{contour}, -1, cv::Scalar(255), cv::FILLED);
     }
     return clean_mask;
+  }
+
+  GrayObstacleResult detectGrayObstacle(const cv::Mat& frame, const ros::Time& now)
+  {
+    GrayObstacleResult result;
+    if (state_ != State::Follow || obstacle_completed_ ||
+        (now - start_time_).toSec() < obstacle_enable_delay_)
+    {
+      obstacle_hit_count_ = 0;
+      return result;
+    }
+
+    const int x0 = frame.cols / 10;
+    const int y0 = frame.rows / 10;
+    const int width = frame.cols * 8 / 10;
+    const int height = frame.rows * 3 / 4;
+    const cv::Rect roi_rect(x0, y0, width, height);
+    cv::Mat hsv;
+    cv::cvtColor(frame(roi_rect), hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat gray_mask;
+    cv::inRange(hsv,
+                cv::Scalar(0, 0, obstacle_gray_v_min_),
+                cv::Scalar(179, obstacle_gray_s_max_, obstacle_gray_v_max_),
+                gray_mask);
+    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9, 9));
+    cv::morphologyEx(gray_mask, gray_mask, cv::MORPH_OPEN, kernel);
+    cv::morphologyEx(gray_mask, gray_mask, cv::MORPH_CLOSE, kernel);
+
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(gray_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+    for (const auto& contour : contours)
+    {
+      const double area_ratio = cv::contourArea(contour) /
+                                static_cast<double>(frame.rows * frame.cols);
+      const cv::Rect box = cv::boundingRect(contour);
+      const double width_ratio = static_cast<double>(box.width) / frame.cols;
+      const double height_ratio = static_cast<double>(box.height) / frame.rows;
+      const double bottom_ratio = static_cast<double>(box.y + y0 + box.height) / frame.rows;
+      if (area_ratio > result.area_ratio)
+      {
+        result.area_ratio = area_ratio;
+        result.width_ratio = width_ratio;
+        result.height_ratio = height_ratio;
+        result.bottom_ratio = bottom_ratio;
+      }
+    }
+
+    const bool candidate = result.area_ratio >= obstacle_min_area_ratio_ &&
+                           result.width_ratio >= obstacle_min_width_ratio_ &&
+                           result.height_ratio >= obstacle_min_height_ratio_ &&
+                           result.bottom_ratio >= obstacle_min_bottom_ratio_;
+    obstacle_hit_count_ = candidate ? obstacle_hit_count_ + 1 : 0;
+    result.detected = obstacle_hit_count_ >= obstacle_confirm_frames_;
+    if (obstacle_debug_)
+    {
+      ROS_INFO_THROTTLE(0.5,
+          "obstacle candidate: area=%.3f(>=%.2f) width=%.2f(>=%.2f) height=%.2f(>=%.2f) bottom=%.2f(>=%.2f) hits=%d/%d %s",
+          result.area_ratio, obstacle_min_area_ratio_,
+          result.width_ratio, obstacle_min_width_ratio_,
+          result.height_ratio, obstacle_min_height_ratio_,
+          result.bottom_ratio, obstacle_min_bottom_ratio_,
+          obstacle_hit_count_, obstacle_confirm_frames_,
+          candidate ? "PASS" : "fail");
+    }
+    return result;
   }
 
   FollowResult computeFollow(const cv::Mat& mask)
@@ -970,6 +1055,24 @@ private:
   int white_v_min_ = 200;
   int morph_kernel_size_ = 5;
   double min_component_area_ = 260.0;
+
+  double obstacle_enable_delay_ = 3.0;
+  int obstacle_gray_s_max_ = 70;
+  int obstacle_gray_v_min_ = 45;
+  int obstacle_gray_v_max_ = 215;
+  double obstacle_min_area_ratio_ = 0.06;
+  double obstacle_min_width_ratio_ = 0.30;
+  double obstacle_min_height_ratio_ = 0.18;
+  double obstacle_min_bottom_ratio_ = 0.50;
+  int obstacle_confirm_frames_ = 3;
+  double obstacle_lateral_distance_m_ = 0.40;
+  double obstacle_forward_distance_m_ = 0.45;
+  double obstacle_lateral_speed_ = 0.30;
+  double obstacle_return_lateral_distance_m_ = 0.45;
+  bool obstacle_debug_ = true;
+  double obstacle_forward_speed_ = 0.32;
+  int obstacle_hit_count_ = 0;
+  bool obstacle_completed_ = false;
   std::vector<double> right_scan_rows_;
   double right_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;

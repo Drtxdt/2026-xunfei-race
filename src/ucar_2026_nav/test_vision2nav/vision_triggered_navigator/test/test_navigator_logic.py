@@ -17,6 +17,7 @@ from navigator_logic import (
     build_quadrilateral_walls,
     center_angular_command,
     center_step_angle,
+    clamp_point_from_wall_ends,
     coverage_motion_is_rotation_stall,
     coverage_anchor_order,
     coverage_near_anchor_action,
@@ -915,27 +916,45 @@ def test_parking_goal_supports_independent_normal_and_tangent_calibration():
     assert math.isclose(abs(yaw), math.pi)
 
 
-def test_positive_tangent_offset_moves_to_vehicle_right_on_every_wall():
-    for normal in ((1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)):
-        centered = parking_goal_from_wall(
-            (0.0, 0.0), normal, 0.26, tangent_offset=0.0)
-        shifted = parking_goal_from_wall(
-            (0.0, 0.0), normal, 0.26, tangent_offset=0.03)
-        delta = (shifted[0] - centered[0], shifted[1] - centered[1])
-        yaw = centered[2]
-        vehicle_right = (math.sin(yaw), -math.cos(yaw))
-        vehicle_forward = (math.cos(yaw), math.sin(yaw))
-        assert math.isclose(
-            delta[0] * vehicle_right[0] + delta[1] * vehicle_right[1],
-            0.03, abs_tol=1e-9)
-        assert math.isclose(
-            delta[0] * vehicle_forward[0] + delta[1] * vehicle_forward[1],
-            0.0, abs_tol=1e-9)
+def test_corner_clamp_pushes_intersection_away_from_near_wall_end():
+    wall = ("bottom", (0.0, 0.0), (4.0, 0.0), (0.0, 1.0))
+    clamped, changed = clamp_point_from_wall_ends((0.05, 0.0), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 0.25)
+    assert math.isclose(clamped[1], 0.0)
+    clamped, changed = clamp_point_from_wall_ends((3.97, 0.0), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 3.75)
+    assert math.isclose(clamped[1], 0.0)
+
+
+def test_corner_clamp_keeps_distant_intersection_unchanged():
+    wall = ("bottom", (0.0, 0.0), (4.0, 0.0), (0.0, 1.0))
+    clamped, changed = clamp_point_from_wall_ends((2.0, 0.0), wall, 0.25)
+    assert not changed
+    assert math.isclose(clamped[0], 2.0)
+    assert math.isclose(clamped[1], 0.0)
+
+
+def test_corner_clamp_uses_midpoint_when_wall_is_too_short():
+    wall = ("bottom", (0.0, 0.0), (0.3, 0.0), (0.0, 1.0))
+    clamped, changed = clamp_point_from_wall_ends((0.02, 0.0), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 0.15)
+    assert math.isclose(clamped[1], 0.0)
+
+
+def test_corner_clamp_only_moves_tangent_component():
+    wall = ("right", (2.0, -1.0), (2.0, 3.0), (-1.0, 0.0))
+    clamped, changed = clamp_point_from_wall_ends((2.0, -0.9), wall, 0.25)
+    assert changed
+    assert math.isclose(clamped[0], 2.0)
+    assert math.isclose(clamped[1], -0.75)
 
 
 def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
     calibrated = [
-        (-1.7000, -1.8735, 1.0417),
+        (-1.6499, -1.8735, 1.0417),
         (-1.6613, -2.2796, -3.1404),
         (-1.6846, -2.7856, -3.1176),
         (-0.6965, -2.9239, -1.5594),
@@ -962,8 +981,8 @@ def test_calibrated_nine_anchor_order_is_preserved_without_offsets():
         [("left", 4.5)],
         [("right", 3.0), ("left", 3.5)],
         [("left", 4.5)],
-        [("right", 2.5), ("left", 3.0)],
-        [("right", 1.5), ("left", 3.0)],
+        [("right", 3.0), ("left", 3.0)],
+        [("right", 1.0), ("left", 5.0)],
         [("left", 4.5)],
         [("left", 4.5)],
         [("left", 4.0)],
@@ -994,6 +1013,15 @@ def test_coverage_rotation_stall_and_local_yaw_handoff():
     assert coverage_position_needs_yaw_alignment(0.15, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.151, math.pi, 0.15, 0.06)
     assert not coverage_position_needs_yaw_alignment(0.10, 0.05, 0.15, 0.06)
+    # 设了 local_align_max_yaw 后：大误差留给 move_base，小误差才本地微调。
+    assert coverage_position_needs_yaw_alignment(
+        0.15, math.radians(10.0), 0.15, 0.06, math.radians(30.0))
+    assert not coverage_position_needs_yaw_alignment(
+        0.15, math.radians(45.0), 0.15, 0.06, math.radians(30.0))
+    assert coverage_position_needs_yaw_alignment(
+        0.15, math.radians(30.0), 0.15, 0.06, math.radians(30.0))
+    assert not coverage_position_needs_yaw_alignment(
+        0.151, math.radians(10.0), 0.15, 0.06, math.radians(30.0))
 
 
 def test_near_blocked_anchor_becomes_stationary_observation():
