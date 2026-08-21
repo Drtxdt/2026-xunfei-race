@@ -13,7 +13,7 @@
   <arg name="view_scales" default="0.55,0.75,0.95" />
   <arg name="resize_scale" default="1.0" />
   <arg name="rec_resize_mode" default="stretch" />
-  <arg name="max_rec_crops" default="3" />
+  <arg name="max_rec_crops" default="4" />
   <arg name="use_global_rec_candidates" default="true" />
   <arg name="global_fallback_crops" default="1" />
   <arg name="box_padding_x" default="0.15" />

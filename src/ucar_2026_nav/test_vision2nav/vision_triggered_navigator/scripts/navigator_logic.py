@@ -64,6 +64,142 @@ def obstacle_clearance_requires_stop(nearest_range, min_clearance,
             abs(float(min_clearance)))
 
 
+def swept_footprint_obstacle(points, command, errors,
+                             footprint_half_length,
+                             footprint_half_width, margin=0.02):
+    """Return diagnostics for scan points inside the commanded swept body.
+
+    Points and commands are in ``base_link``.  Parking is phase ordered, so a
+    translation sweep is an axis-aligned rectangle extended through the full
+    remaining axis error.  A turn uses the rectangular footprint's
+    circumscribed radius and is therefore conservative for every intermediate
+    yaw.
+    """
+    command_x, command_y, command_yaw = [float(value) for value in command]
+    normal_error, tangent_error, _yaw_error = [float(value) for value in errors]
+    raw_half_length = abs(float(footprint_half_length))
+    raw_half_width = abs(float(footprint_half_width))
+    safety_margin = max(0.0, float(margin))
+    half_length = raw_half_length + safety_margin
+    half_width = raw_half_width + safety_margin
+    phase = None
+    bounds = None
+    radius = None
+    if abs(command_yaw) > 1e-9:
+        phase = "rotation"
+        radius = math.hypot(raw_half_length, raw_half_width) + safety_margin
+    elif abs(command_y) > 1e-9:
+        phase = "left" if command_y > 0.0 else "right"
+        displacement = tangent_error
+        bounds = (
+            -half_length, half_length,
+            min(0.0, displacement) - half_width,
+            max(0.0, displacement) + half_width,
+        )
+    elif abs(command_x) > 1e-9:
+        phase = "forward" if command_x > 0.0 else "rear"
+        displacement = normal_error
+        bounds = (
+            min(0.0, displacement) - half_length,
+            max(0.0, displacement) + half_length,
+            -half_width, half_width,
+        )
+    if phase is None:
+        return {"blocked": False, "phase": None, "point": None,
+                "clearance": float("inf"), "bounds": None}
+
+    nearest_point = None
+    nearest_clearance = float("inf")
+    for point_x, point_y in points or ():
+        point_x, point_y = float(point_x), float(point_y)
+        if not math.isfinite(point_x) or not math.isfinite(point_y):
+            continue
+        if radius is not None:
+            clearance = math.hypot(point_x, point_y) - radius
+            inside = clearance <= 0.0
+        else:
+            min_x, max_x, min_y, max_y = bounds
+            dx = max(min_x - point_x, 0.0, point_x - max_x)
+            dy = max(min_y - point_y, 0.0, point_y - max_y)
+            clearance = math.hypot(dx, dy)
+            inside = (min_x <= point_x <= max_x and
+                      min_y <= point_y <= max_y)
+        if clearance < nearest_clearance:
+            nearest_clearance = clearance
+            nearest_point = (point_x, point_y)
+        if inside:
+            return {
+                "blocked": True,
+                "phase": phase,
+                "point": (point_x, point_y),
+                "clearance": clearance,
+                "bounds": bounds,
+                "radius": radius,
+            }
+    return {
+        "blocked": False,
+        "phase": phase,
+        "point": nearest_point,
+        "clearance": nearest_clearance,
+        "bounds": bounds,
+        "radius": radius,
+    }
+
+
+def coverage_obstacle_confirmation(blocked, previous_count,
+                                   fresh_sample=True, required_scans=2):
+    """Count consecutive fresh blocking scans and report confirmation."""
+    if not bool(blocked):
+        return 0, False
+    count = max(0, int(previous_count))
+    if bool(fresh_sample):
+        count += 1
+    return count, count >= max(2, int(required_scans))
+
+
+def rotation_swept_obstacle(points, footprint_radius=0.215, margin=0.02):
+    """Return a circular in-place-rotation envelope in ``base_link``."""
+    return swept_footprint_obstacle(
+        points,
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        abs(float(footprint_radius)),
+        0.0,
+        margin,
+    )
+
+
+def staging_wall_frame_accepted(normal_error, tangent_error, yaw_error,
+                                normal_tolerance=0.08,
+                                tangent_tolerance=0.04,
+                                yaw_tolerance=0.08):
+    """Require axis-specific staging accuracy before close-range docking."""
+    return (
+        abs(float(normal_error)) <= abs(float(normal_tolerance)) and
+        abs(float(tangent_error)) <= abs(float(tangent_tolerance)) and
+        abs(float(yaw_error)) <= abs(float(yaw_tolerance))
+    )
+
+
+def parking_obstacle_action(consecutive_blocks, recovery_attempts,
+                            required_blocks=2, retry_count=1):
+    """Choose hold, one bounded recovery, or a terminal safe stop."""
+    if int(consecutive_blocks) < max(1, int(required_blocks)):
+        return "hold"
+    if int(recovery_attempts) < max(0, int(retry_count)):
+        return "recover"
+    return "fail"
+
+
+def recovery_rear_distance(wall_distance_error, wall_normal_angle,
+                           minimum_projection=0.30):
+    """Convert perpendicular wall error to required base-frame rear travel."""
+    projection = math.cos(float(wall_normal_angle))
+    if projection <= abs(float(minimum_projection)):
+        return None
+    return float(wall_distance_error) / projection
+
+
 def coverage_speed_profile(clearance, current_profile,
                            caution_enter_clearance,
                            caution_exit_clearance,
@@ -214,7 +350,8 @@ def coverage_anchor_order(count, preferred_anchor=0, skipped_anchors=(),
 
     Public anchor parameters are one-based.  An explicit remembered anchor
     wins; otherwise the caller may provide an order beginning at the nearest
-    current anchor.  Confirmed irrelevant anchors are omitted.
+    current anchor.  Only explicitly supplied (manually calibrated) anchors
+    are omitted.
     """
     count = max(0, int(count))
     if count == 0:
@@ -308,6 +445,35 @@ def ray_segment_intersection(origin, direction, start, end):
     return ray_t
 
 
+def nearest_wall_hit(walls, origin, ray_yaw):
+    """Return the nearest measured wall hit and endpoint clearance."""
+    ox, oy = [float(value) for value in origin]
+    direction = (math.cos(float(ray_yaw)), math.sin(float(ray_yaw)))
+    best = None
+    for wall_name, start, end, normal in walls:
+        distance = ray_segment_intersection(
+            (ox, oy), direction, start, end)
+        if distance is None:
+            continue
+        if best is not None and distance >= best["distance"]:
+            continue
+        point = (
+            ox + distance * direction[0],
+            oy + distance * direction[1],
+        )
+        best = {
+            "wall": wall_name,
+            "point": point,
+            "normal": normal,
+            "distance": distance,
+            "endpoint_clearance": min(
+                math.hypot(point[0] - endpoint[0],
+                           point[1] - endpoint[1])
+                for endpoint in (start, end)),
+        }
+    return best
+
+
 def parking_goal_from_wall(wall_point, inward_normal, offset,
                            normal_offset=0.0, tangent_offset=0.0):
     """Return a continuous parking pose from a measured wall intersection."""
@@ -366,6 +532,19 @@ def docking_pose_errors(current_pose, target_pose):
     forward = cos_yaw * dx + sin_yaw * dy
     lateral = -sin_yaw * dx + cos_yaw * dy
     return forward, lateral, normalize_angle(target_yaw - yaw)
+
+
+def wall_frame_pose_errors(current_pose, target_pose):
+    """Return errors on the target wall-normal and wall-tangent axes."""
+    x, y, yaw = [float(value) for value in current_pose]
+    target_x, target_y, target_yaw = [float(value) for value in target_pose]
+    dx = target_x - x
+    dy = target_y - y
+    cos_target = math.cos(target_yaw)
+    sin_target = math.sin(target_yaw)
+    normal = cos_target * dx + sin_target * dy
+    tangent = -sin_target * dx + cos_target * dy
+    return normal, tangent, normalize_angle(target_yaw - yaw)
 
 
 def bounded_axis_command(error, tolerance, gain, maximum, minimum=0.0):
@@ -673,7 +852,7 @@ def coverage_position_needs_yaw_alignment(distance, yaw_error,
 
 def coverage_near_anchor_action(distance, baseline_distance, elapsed,
                                 observation_radius=0.45,
-                                stall_timeout=3.0,
+                                stall_timeout=0.8,
                                 minimum_progress=0.03):
     """Decide whether a blocked near-anchor goal should become an observation.
 

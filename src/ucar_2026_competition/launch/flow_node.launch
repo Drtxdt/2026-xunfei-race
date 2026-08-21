@@ -23,7 +23,7 @@
   <arg name="task2_prewarm_enabled" default="true" />
   <arg name="factory_navigation_start_service" default="/vision_triggered_navigator/start_navigation" />
   <arg name="target_center_steering_sign" default="-1.0" />
-  <arg name="camera_boresight_yaw_offset" default="0.0" />
+  <arg name="camera_boresight_yaw_offset" default="0.292" />
   <arg name="task2_vision_offset" default="0.4" />
   <arg name="coverage_scan_step_deg" default="20.0" />
   <arg name="coverage_scan_angular_speed" default="0.50" />
@@ -39,6 +39,11 @@
   <arg name="coverage_anchor_observation_radius" default="0.35" />
   <arg name="coverage_near_anchor_stall_timeout_sec" default="3.0" />
   <arg name="coverage_rotation_min_clearance" default="0.28" />
+  <arg name="coverage_obstacle_required_scans" default="2" />
+  <arg name="coverage_teb_weight_kinematics_nh" default="1.0" />
+  <arg name="coverage_teb_weight_kinematics_forward_drive" default="10.0" />
+  <arg name="coverage_teb_min_turning_radius" default="0.0" />
+  <arg name="coverage_teb_global_plan_overwrite_orientation" default="false" />
   <arg name="target_center_coarse_step_deg" default="4.0" />
   <arg name="target_center_fine_step_deg" default="2.0" />
   <arg name="target_center_start_speed" default="0.28" />
@@ -52,6 +57,10 @@
   <arg name="parking_staging_position_tolerance" default="0.16" />
   <arg name="parking_staging_yaw_tolerance" default="0.10" />
   <arg name="parking_docking_timeout_sec" default="30.0" />
+  <arg name="parking_obstacle_required_scans" default="2" />
+  <arg name="parking_recovery_retry_count" default="1" />
+  <arg name="parking_recovery_reverse_speed" default="0.06" />
+  <arg name="parking_recovery_timeout_sec" default="8.0" />
   <arg name="parking_dock_max_x" default="0.10" />
   <arg name="parking_dock_max_y" default="0.06" />
   <arg name="parking_dock_max_yaw" default="0.30" />
@@ -75,7 +84,7 @@
   <arg name="parking_xy_tolerance" default="0.04" />
   <arg name="parking_yaw_tolerance" default="0.06" />
   <arg name="parking_normal_offset" default="0.0" />
-  <arg name="parking_tangent_offset" default="0.0" />
+  <arg name="parking_tangent_offset" default="0.03" />
   <arg name="trigger_ack_timeout_sec" default="2.0" />
   <arg name="track_package" default="ucar_2026_track_end_stop_provincial" />
 
@@ -121,6 +130,11 @@
     <param name="coverage_anchor_observation_radius" value="$(arg coverage_anchor_observation_radius)" />
     <param name="coverage_near_anchor_stall_timeout_sec" value="$(arg coverage_near_anchor_stall_timeout_sec)" />
     <param name="coverage_rotation_min_clearance" value="$(arg coverage_rotation_min_clearance)" />
+    <param name="coverage_obstacle_required_scans" value="$(arg coverage_obstacle_required_scans)" />
+    <param name="coverage_teb_weight_kinematics_nh" value="$(arg coverage_teb_weight_kinematics_nh)" />
+    <param name="coverage_teb_weight_kinematics_forward_drive" value="$(arg coverage_teb_weight_kinematics_forward_drive)" />
+    <param name="coverage_teb_min_turning_radius" value="$(arg coverage_teb_min_turning_radius)" />
+    <param name="coverage_teb_global_plan_overwrite_orientation" value="$(arg coverage_teb_global_plan_overwrite_orientation)" />
     <param name="target_center_coarse_step_deg" value="$(arg target_center_coarse_step_deg)" />
     <param name="target_center_fine_step_deg" value="$(arg target_center_fine_step_deg)" />
     <param name="target_center_start_speed" value="$(arg target_center_start_speed)" />
@@ -130,10 +144,12 @@
     <param name="parking_box_depth" value="$(arg parking_box_depth)" />
     <param name="parking_goal_offset" value="$(arg parking_goal_offset)" />
     <param name="parking_staging_offset" value="$(arg parking_staging_offset)" />
-    <param name="parking_staging_timeout_sec" value="$(arg parking_staging_timeout_sec)" />
-    <param name="parking_staging_position_tolerance" value="$(arg parking_staging_position_tolerance)" />
-    <param name="parking_staging_yaw_tolerance" value="$(arg parking_staging_yaw_tolerance)" />
+    <param name="parking_endpoint_min_clearance" value="$(arg parking_endpoint_min_clearance)" />
     <param name="parking_docking_timeout_sec" value="$(arg parking_docking_timeout_sec)" />
+    <param name="parking_obstacle_required_scans" value="$(arg parking_obstacle_required_scans)" />
+    <param name="parking_recovery_retry_count" value="$(arg parking_recovery_retry_count)" />
+    <param name="parking_recovery_reverse_speed" value="$(arg parking_recovery_reverse_speed)" />
+    <param name="parking_recovery_timeout_sec" value="$(arg parking_recovery_timeout_sec)" />
     <param name="parking_dock_max_x" value="$(arg parking_dock_max_x)" />
     <param name="parking_dock_max_y" value="$(arg parking_dock_max_y)" />
     <param name="parking_dock_max_yaw" value="$(arg parking_dock_max_yaw)" />

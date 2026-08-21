@@ -241,6 +241,13 @@ def select_factory_sign_box(texts: Sequence[OCRText],
     target = select_category_box(texts, category, classifier)
     if target is None:
         return None
+    target_normalized = classifier._normalize(target.text)
+    # A complete one-line sign already has the correct localisation.  Never
+    # attach a neighbouring sign's generic second line (for example the
+    # ``生产车间`` below an adjacent ``电子产品`` board).
+    if any(token in target_normalized for token in (
+            "加工车间", "生产车间", "加工车", "生产车", "车间")):
+        return target
     target_bounds = _box_bounds(target.box)
     if target_bounds is None:
         return target
@@ -268,20 +275,65 @@ def select_factory_sign_box(texts: Sequence[OCRText],
         cy = 0.5 * (y0 + y1)
         dx = abs(cx - target_cx)
         dy = abs(cy - target_cy)
-        if (dx > 1.5 * max(target_w, width) + 10.0 or
+        horizontal_overlap = max(
+            0.0, min(tx1, x1) - max(tx0, x0))
+        minimum_width = max(1.0, min(target_w, width))
+        horizontally_aligned = (
+            horizontal_overlap / minimum_width >= 0.30 or
+            dx <= 0.35 * max(target_w, width) + 10.0)
+        if (not horizontally_aligned or
                 dy > 2.5 * max(target_h, height) + 10.0):
             continue
-        companions.append((math.hypot(dx, dy), bounds))
+        companions.append((math.hypot(dx, dy), bounds, item))
 
     if not companions:
         return target
-    _distance, companion = min(companions, key=lambda value: value[0])
+    _distance, companion, companion_item = min(
+        companions, key=lambda value: value[0])
     cx0, cy0, cx1, cy1 = companion
     merged = _bounds_box((
         min(tx0, cx0), min(ty0, cy0),
         max(tx1, cx1), max(ty1, cy1),
     ))
-    return OCRText(text=target.text, score=target.score, box=merged)
+    merged_text = "{} {}".format(
+        target.text.strip(), companion_item.text.strip()).strip()
+    return OCRText(
+        text=merged_text,
+        score=min(float(target.score), float(companion_item.score)),
+        box=merged,
+    )
+
+
+def collect_factory_sign_detections(texts: Sequence[OCRText], classifier):
+    """Return one independently classified observation for each category.
+
+    Frame-level classification deliberately rejects competing categories, but
+    task2 may legitimately see two neighbouring factory signs in one frame.
+    Keep that conservative legacy decision while exposing the independently
+    supported boxes to target-aware consumers.
+    """
+    detections = []
+    for category in ("food", "daily", "electronic"):
+        item = select_factory_sign_box(texts, category, classifier)
+        if item is None:
+            continue
+        observed, score, evidence, _debug = classifier.classify_evidence([item])
+        if observed != category:
+            # A merged companion line does not change the category-bearing
+            # text, but retain a defensive fallback to the original box.
+            item = select_category_box(texts, category, classifier)
+            if item is None:
+                continue
+            observed, score, evidence, _debug = classifier.classify_evidence([item])
+        if observed == category:
+            detections.append({
+                "category": category,
+                "category_score": float(score),
+                "evidence": evidence,
+                "raw_text": item.text,
+                "box": item.box,
+            })
+    return detections
 
 
 class VoteWindow:
@@ -473,9 +525,6 @@ class PPOCRRknnRecognizer:
                 rec_ms += one_rec_ms
                 if text and score >= self.min_score:
                     texts.append(OCRText(text=text, score=score, box=candidate.box))
-                    category, _score, _evidence, _debug = self.classifier.classify_evidence(texts)
-                    if category and (not self.target_category or category == self.target_category):
-                        break
             if (
                 self.small_crop_retry
                 and candidates
@@ -506,8 +555,11 @@ class PPOCRRknnRecognizer:
             )
 
     def _has_target_evidence(self, texts: Sequence[OCRText]) -> bool:
+        if self.target_category:
+            return select_category_box(
+                texts, self.target_category, self.classifier) is not None
         category, _score, _evidence, _debug = self.classifier.classify_evidence(texts)
-        return bool(category and (not self.target_category or category == self.target_category))
+        return bool(category)
 
     def _fallback_candidates(self, image) -> List[OCRCandidate]:
         if self.global_fallback_crops <= 0:
@@ -830,7 +882,7 @@ class FactorySignPPOCRRknnNode:
             rec_image_height=int(self.rospy.get_param("~rec_image_height", 48)),
             rec_image_width=int(self.rospy.get_param("~rec_image_width", 320)),
             rec_resize_mode=self.rospy.get_param("~rec_resize_mode", "stretch"),
-            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 3)),
+            max_rec_crops=int(self.rospy.get_param("~max_rec_crops", 4)),
             use_global_rec_candidates=ros_bool(self.rospy.get_param("~use_global_rec_candidates", True), True),
             box_padding_x=float(self.rospy.get_param("~box_padding_x", 0.15)),
             box_padding_y=float(self.rospy.get_param("~box_padding_y", 0.35)),
@@ -878,7 +930,23 @@ class FactorySignPPOCRRknnNode:
         self.view_index += 1
         ocr_image, debug_preprocess = self._make_ocr_image(frame, view_scale)
         result = self.recognizer.recognize(ocr_image)
-        result.category, result.category_score, result.evidence, match_debug = self.classifier.classify_evidence(result.texts)
+        legacy_category, legacy_score, legacy_evidence, match_debug = (
+            self.classifier.classify_evidence(result.texts))
+        detections = collect_factory_sign_detections(
+            result.texts, self.classifier)
+        target_category = self.recognizer.target_category
+        selected_detection = next((
+            detection for detection in detections
+            if detection["category"] == target_category
+        ), None)
+        if selected_detection is not None:
+            result.category = selected_detection["category"]
+            result.category_score = selected_detection["category_score"]
+            result.evidence = selected_detection["evidence"]
+        else:
+            result.category = legacy_category
+            result.category_score = legacy_score
+            result.evidence = legacy_evidence
         result.view_scale = view_scale
         result.match_debug = "score={:.2f} evidence={} {}".format(result.category_score, result.evidence or "-", match_debug)
         confirmed = result.category
@@ -896,6 +964,29 @@ class FactorySignPPOCRRknnNode:
             target_center_x = sum(point[0] for point in target_box) / len(target_box)
             target_center_y = sum(point[1] for point in target_box) / len(target_box)
         frame_height, frame_width = frame.shape[:2]
+        published_detections = []
+        for detection in detections:
+            mapped_box = map_box_to_frame(
+                detection["box"], self.last_roi_box,
+                self.last_ocr_scale_factor)
+            center_x = (
+                sum(point[0] for point in mapped_box) / len(mapped_box)
+                if mapped_box else None)
+            center_y = (
+                sum(point[1] for point in mapped_box) / len(mapped_box)
+                if mapped_box else None)
+            published_detections.append({
+                "category": detection["category"],
+                "workshop": CATEGORY_NAMES.get(detection["category"], ""),
+                "confidence": detection["category_score"],
+                "category_score": detection["category_score"],
+                "evidence": detection["evidence"],
+                "raw_text": detection["raw_text"],
+                "bbox": mapped_box,
+                "target_bbox": mapped_box,
+                "target_center_x": center_x,
+                "target_center_y": center_y,
+            })
         self.result_pub.publish(self.String(data=json.dumps({
             "category": confirmed or "",
             "workshop": CATEGORY_NAMES.get(confirmed, ""),
@@ -909,6 +1000,7 @@ class FactorySignPPOCRRknnNode:
             "target_bbox": target_box,
             "target_center_x": target_center_x,
             "target_center_y": target_center_y,
+            "detections": published_detections,
             "image_width": int(frame_width),
             "image_height": int(frame_height),
             "error": result.error,

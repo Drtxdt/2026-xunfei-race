@@ -3,6 +3,7 @@
 trigger_mode: "keyboard"
 vision_topic: "/vision/detected"
 trigger_service: "/vision_triggered_navigator/trigger_target"
+parking_diagnostics_topic: "/vision_triggered_navigator/parking_diagnostics"
 
 # 参考坐标系
 # map_frame: AMCL / move_base 使用 "map"
@@ -40,7 +41,7 @@ coverage_skip_anchors: ""
 coverage_abort_fail_fast_count: 0
 target_topic: "/vision/target"
 non_target_topic: "/vision/non_target_observation"
-coverage_non_target_early_exit: true
+coverage_non_target_early_exit: false
 coverage_non_target_min_scan_steps: 2
 # 精确锚点先执行25秒软时限；仍在有效接近时最多延长到40秒。
 coverage_goal_soft_timeout_sec: 7.0
@@ -50,7 +51,9 @@ coverage_goal_min_progress: 0.03
 coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 45.0
+# 0.28m仅用于覆盖搜索的提前降速；硬停止由0.215m车体旋转半径+0.020m余量决定。
 coverage_rotation_min_clearance: 0.28
+coverage_obstacle_required_scans: 2
 coverage_rotation_clearance_tolerance: 0.005
 coverage_rotation_consensus_window_sec: 0.35
 coverage_rotation_consensus_min_samples: 3
@@ -68,6 +71,10 @@ coverage_cruise_vel_theta: 1.30
 coverage_caution_vel_x: 0.53
 coverage_caution_vel_y: 0.53
 coverage_caution_vel_theta: 1.12
+coverage_teb_weight_kinematics_nh: 1.0
+coverage_teb_weight_kinematics_forward_drive: 10.0
+coverage_teb_min_turning_radius: 0.0
+coverage_teb_global_plan_overwrite_orientation: false
 coverage_caution_enter_clearance: 0.45
 coverage_caution_exit_clearance: 0.55
 coverage_fast_exit_clearance: 0.75
@@ -122,7 +129,7 @@ target_center_reverse_threshold: 0.03
 target_center_min_clearance: 0.23
 odom_topic: /odom
 odom_stale_sec: 0.5
-camera_boresight_yaw_offset: 0.0
+camera_boresight_yaw_offset: 0.292
 arrival_hold_sec: 0.6
 
 # 任务2完整模式覆盖这些参数；独立导航默认维持原0.4m目标且不做50cm框验证。
@@ -156,11 +163,15 @@ parking_dock_yaw_tolerance: 0.07
 parking_dock_stable_sec: 0.5
 parking_min_wall_distance: 0.19
 parking_lidar_stop_distance: 0.15
-# ydlidar.launch中laser_frame位于base_link前方0.08m；安全阈值以base中心墙距解释。
+# 下列固定距离参数仅供旧启动文件兼容；正常停泊使用TF后的扫掠包络。
 parking_lidar_forward_offset: 0.08
 parking_obstacle_min_clearance: 0.24
 parking_obstacle_clearance_tolerance: 0.005
 parking_obstacle_sector_half_angle_deg: 35.0
+parking_obstacle_required_scans: 2
+parking_recovery_retry_count: 1
+parking_recovery_reverse_speed: 0.06
+parking_recovery_timeout_sec: 8.0
 scan_topic: /scan
 scan_stale_sec: 0.5
 scan_front_half_angle_deg: 15.0
@@ -176,7 +187,7 @@ parking_wall_fit_max_normal_jump_deg: 8.0
 parking_wall_fit_max_residual: 0.015
 parking_wall_fit_max_normal_error_deg: 20.0
 parking_normal_offset: 0.0
-parking_tangent_offset: 0.0
+parking_tangent_offset: 0.03
 parking_xy_tolerance: 0.04
 parking_yaw_tolerance: 0.06
 parking_validation_margin: 0.01
