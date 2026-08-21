@@ -37,6 +37,7 @@ from ucar_2026_competition.logic import (
     task2_resumed_coverage_hint,
     task2_target_trigger_is_eligible,
     task2_semantic_coverage_hint,
+    task1_transcript_is_complete,
     task4_handoff_required,
     task4_start_action,
     traffic_decision_from_payload,
@@ -571,6 +572,55 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertEqual(parse_task1_categories(command), ("daily", "food"))
         self.assertEqual(
             build_task1_instruction("daily", "food"), command)
+
+    def test_task1_command_extracts_free_form_and_reversed_wording(self):
+        commands = (
+            ("仿真中要食品，现实场地拿电子产品", ("electronics", "food")),
+            ("食品是仿真任务，日用品是实体任务", ("daily", "food")),
+            ("实体任务送日用品，模拟环境处理电子产品", ("daily", "electronics")),
+            ("线上任务需要数码产品，线下环境领取生活用品", ("daily", "electronics")),
+            ("实际场地取得食材，虚拟场景需要清洁用品", ("food", "daily")),
+            ("仿真环境需要食品物品领取区负责电子产品", ("electronics", "food")),
+            ("电子产品交给现实场地，食品交给仿真环境", ("electronics", "food")),
+            ("先拿日用品再去仿真环境处理食品", ("daily", "food")),
+            ("模拟拿生鲜，现场领取日常用品", ("daily", "food")),
+            ("实体端负责日化，仿真端需要电器", ("daily", "electronics")),
+        )
+        for command, expected in commands:
+            with self.subTest(command=command):
+                self.assertEqual(parse_task1_categories(command), expected)
+
+    def test_task1_command_waits_for_both_streaming_targets(self):
+        partial_commands = (
+            "前往物品领取区取得日用品，仿真环境中需要的",
+            "仿真环境需要食品",
+            "食品是仿真任务，实体任务稍后再说",
+            "食品、日用品和电子产品中，仿真环境需要食品",
+            "实体和仿真的目标不相同，仿真环境需要食品",
+        )
+        for command in partial_commands:
+            with self.subTest(command=command):
+                pickup, simulation = parse_task1_categories(command)
+                self.assertFalse(pickup and simulation)
+
+    def test_task1_command_supports_one_shared_category(self):
+        self.assertEqual(
+            parse_task1_categories("实体和仿真都要食品"),
+            ("food", "food"),
+        )
+        self.assertEqual(
+            parse_task1_categories("日用品是实体任务和模拟任务的共同目标"),
+            ("daily", "daily"),
+        )
+        self.assertEqual(
+            parse_task1_categories("实体任务领取电子产品，仿真任务也需要电子产品"),
+            ("electronics", "electronics"),
+        )
+
+    def test_task1_command_waits_for_iat_final_result(self):
+        self.assertFalse(task1_transcript_is_complete("daily", "food", False))
+        self.assertFalse(task1_transcript_is_complete("daily", None, True))
+        self.assertTrue(task1_transcript_is_complete("daily", "food", True))
 
     def test_task2_visits_physical_then_distinct_simulation_workshop(self):
         self.assertEqual(

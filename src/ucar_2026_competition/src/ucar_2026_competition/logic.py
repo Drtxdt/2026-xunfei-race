@@ -277,31 +277,204 @@ def task2_announcement_required(navigator_status, already_completed):
             not bool(already_completed))
 
 
-def parse_category(text):
-    compact = "".join(str(text or "").split()).lower()
-    if "日用品" in compact or "daily" in compact:
-        return "daily"
-    if "电子产品" in compact or "electronics" in compact or "electronic" in compact:
-        return "electronics"
-    if "食品" in compact or "food" in compact:
-        return "food"
+_TASK_CATEGORY_ALIASES = (
+    (
+        "electronics",
+        (
+            "电子产品", "电子设备", "数码产品", "电子类", "数码类", "电器类",
+            "电子", "数码", "电器", "electronics", "electronic",
+        ),
+    ),
+    (
+        "daily",
+        (
+            "日用品", "生活用品", "日常用品", "日用百货", "清洁用品", "日用类",
+            "日化类", "日化", "纺织", "daily",
+        ),
+    ),
+    (
+        "food",
+        ("食品", "食物", "食材", "生鲜类", "生鲜", "food"),
+    ),
+)
+
+_TASK_SIMULATION_MARKERS = (
+    "仿真环境", "仿真系统", "仿真任务", "仿真场景", "仿真",
+    "模拟环境", "模拟系统", "模拟任务", "模拟场景",
+    "虚拟环境", "虚拟任务", "虚拟场景",
+    "仿真端", "模拟端", "虚拟端", "模拟", "虚拟",
+    "线上环境", "线上任务", "线上", "simulation", "simulated", "virtual", "sim",
+)
+
+_TASK_PHYSICAL_MARKERS = (
+    "物品领取区", "领取区", "实体环境", "实体场地", "实体任务", "实体部分",
+    "实体车", "实体", "实车", "物理环境", "物理任务",
+    "现实环境", "现实场地", "现实任务", "真实环境", "真实场地",
+    "实体端", "现实", "现场", "实物", "实际环境", "实际场地",
+    "线下环境", "线下任务", "线下",
+    "physical", "realworld", "real-world",
+)
+
+_TASK_SHARED_TARGET_MARKERS = (
+    "都要", "都需要", "都是", "均为", "均需", "同为", "相同", "同样", "同一",
+    "一致", "共同", "both",
+)
+
+_TASK_DISTINCT_TARGET_MARKERS = (
+    "不相同", "不同", "不一样", "分别", "distinct", "different",
+)
+
+
+def _semantic_text(text):
+    return "".join(str(text or "").split()).lower()
+
+
+def _find_semantic_mentions(text, alias_groups):
+    """Return non-overlapping (value, start, end) aliases, preferring longest."""
+    candidates = []
+    for value, aliases in alias_groups:
+        for alias in aliases:
+            offset = 0
+            while True:
+                start = text.find(alias, offset)
+                if start < 0:
+                    break
+                end = start + len(alias)
+                candidates.append((value, start, end))
+                offset = start + 1
+
+    candidates.sort(key=lambda mention: (
+        mention[1], -(mention[2] - mention[1]), mention[0]))
+    mentions = []
+    for candidate in candidates:
+        if any(
+                candidate[1] < selected[2] and candidate[2] > selected[1]
+                for selected in mentions):
+            continue
+        mentions.append(candidate)
+    mentions.sort(key=lambda mention: (mention[1], mention[2]))
+    return mentions
+
+
+def _category_association_score(text, marker, category, categories):
+    if category[2] <= marker[1]:
+        between_start, between_end = category[2], marker[1]
+        gap = marker[1] - category[2]
+        direction_penalty = 1
+    elif marker[2] <= category[1]:
+        between_start, between_end = marker[2], category[1]
+        gap = category[1] - marker[2]
+        direction_penalty = 0
+    else:
+        between_start = between_end = category[1]
+        gap = 0
+        direction_penalty = 0
+    intervening = sum(
+        1
+        for other in categories
+        if other is not category
+        and other[1] >= between_start
+        and other[2] <= between_end
+    )
+    clause_boundaries = sum(
+        text.count(separator, between_start, between_end)
+        for separator in ("，", ",", "。", ".", "；", ";", "！", "!", "？", "?", "：", ":")
+    )
+    return intervening, clause_boundaries, gap, direction_penalty, category[1]
+
+
+def _closest_category_index(text, markers, categories, excluded=()):
+    excluded = set(excluded)
+    candidates = []
+    for marker in markers:
+        for index, category in enumerate(categories):
+            if index in excluded:
+                continue
+            candidates.append((
+                _category_association_score(text, marker, category, categories),
+                index,
+            ))
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
+def _implicit_physical_index(categories, simulation_index):
+    available = [
+        index for index in range(len(categories)) if index != simulation_index
+    ]
+    if not available:
+        return None
+    if len(available) == 1:
+        return available[0]
+
+    simulation_category = categories[simulation_index][0]
+    other_categories = {
+        categories[index][0]
+        for index in available
+        if categories[index][0] != simulation_category
+    }
+    if len(other_categories) == 1:
+        expected = next(iter(other_categories))
+        return next(
+            index for index in available if categories[index][0] == expected)
+
+    available_categories = {categories[index][0] for index in available}
+    if len(available_categories) == 1:
+        return available[0]
     return None
 
 
+def parse_category(text):
+    compact = _semantic_text(text)
+    mentions = _find_semantic_mentions(compact, _TASK_CATEGORY_ALIASES)
+    return mentions[0][0] if mentions else None
+
+
 def parse_task1_categories(text):
-    """Parse the physical and simulation categories from the official command."""
-    compact = "".join(str(text or "").split()).lower()
-    marker_positions = [
-        compact.find(marker)
-        for marker in (
-            "仿真环境", "仿真", "模拟环境", "虚拟环境", "simulation", "sim"
-        )
-        if compact.find(marker) >= 0
-    ]
-    if not marker_positions:
+    """Extract physical and simulation targets from free-form task speech."""
+    compact = _semantic_text(text)
+    categories = _find_semantic_mentions(compact, _TASK_CATEGORY_ALIASES)
+    simulation_markers = _find_semantic_mentions(
+        compact, (("simulation", _TASK_SIMULATION_MARKERS),))
+    if not simulation_markers:
         return parse_category(compact), None
-    split_at = min(marker_positions)
-    return parse_category(compact[:split_at]), parse_category(compact[split_at:])
+    if not categories:
+        return None, None
+
+    physical_markers = _find_semantic_mentions(
+        compact, (("physical", _TASK_PHYSICAL_MARKERS),))
+
+    # "实体和仿真都要食品" states two targets with one category occurrence.
+    if len(categories) == 1 and physical_markers:
+        category = categories[0]
+        shared_wording = any(
+            marker in compact for marker in _TASK_SHARED_TARGET_MARKERS)
+        distinct_wording = any(
+            marker in compact for marker in _TASK_DISTINCT_TARGET_MARKERS)
+        if shared_wording and not distinct_wording:
+            return category[0], category[0]
+
+    simulation_index = _closest_category_index(
+        compact, simulation_markers, categories)
+    if simulation_index is None:
+        return None, None
+
+    if physical_markers:
+        physical_index = _closest_category_index(
+            compact, physical_markers, categories, excluded=(simulation_index,))
+    else:
+        physical_index = _implicit_physical_index(categories, simulation_index)
+
+    simulation_category = categories[simulation_index][0]
+    if physical_index is None:
+        return None, simulation_category
+    return categories[physical_index][0], simulation_category
+
+
+def task1_transcript_is_complete(pickup_category, sim_category, is_final):
+    """Accept a task command only after IAT has finalized both target roles."""
+    return bool(is_final and pickup_category and sim_category)
 
 
 def parse_task_categories(text):

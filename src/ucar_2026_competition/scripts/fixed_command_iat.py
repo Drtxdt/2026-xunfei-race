@@ -20,7 +20,10 @@ import rospy
 import websocket
 from std_msgs.msg import String, UInt8MultiArray
 
-from ucar_2026_competition.logic import parse_task1_categories
+from ucar_2026_competition.logic import (
+    parse_task1_categories,
+    task1_transcript_is_complete,
+)
 
 
 class FixedCommandIat:
@@ -172,6 +175,9 @@ class FixedCommandIat:
 
     def _receive(self, ws, done, accepted):
         segments = {}
+        full_text = ""
+        pickup_category = None
+        sim_category = None
         try:
             while not self.shutdown_event.is_set() and not done.is_set():
                 response = json.loads(ws.recv())
@@ -185,6 +191,7 @@ class FixedCommandIat:
                     break
                 data = response.get("data") or {}
                 result = data.get("result") or {}
+                is_final = data.get("status") == 2
                 sn = int(result.get("sn", len(segments)))
                 if result.get("pgs") == "rpl":
                     replace_range = result.get("rg") or []
@@ -201,17 +208,24 @@ class FixedCommandIat:
                     segments[sn] = text
                     full_text = "".join(segments[key] for key in sorted(segments))
                     pickup_category, sim_category = self._publish_text(
-                        full_text, data.get("status") == 2
+                        full_text, is_final
                     )
-                    if pickup_category and sim_category and not accepted.is_set():
-                        accepted.set()
-                        self.question_pub.publish(String(data=full_text))
-                        rospy.loginfo(
-                            "fixed command accepted: pickup=%s simulation=%s",
-                            pickup_category,
-                            sim_category,
-                        )
-                if data.get("status") == 2:
+                elif is_final and full_text:
+                    pickup_category, sim_category = self._publish_text(
+                        full_text, True
+                    )
+
+                if (task1_transcript_is_complete(
+                        pickup_category, sim_category, is_final)
+                        and not accepted.is_set()):
+                    accepted.set()
+                    self.question_pub.publish(String(data=full_text))
+                    rospy.loginfo(
+                        "final task command accepted: pickup=%s simulation=%s",
+                        pickup_category,
+                        sim_category,
+                    )
+                if is_final:
                     break
         except (ValueError, websocket.WebSocketException, OSError) as exc:
             if not self.shutdown_event.is_set():

@@ -1870,9 +1870,9 @@ class CompetitionFlow:
 
         category_name = CATEGORY_LABELS[self.category][0]
         sim_category_name = CATEGORY_LABELS[self.sim_category][0]
-        instruction = self.question.strip() or build_task1_instruction(
-            self.category, self.sim_category
-        )
+        # The spoken wording is free-form. Pass a canonical instruction to the
+        # reasoning service after the local extractor has resolved both roles.
+        instruction = build_task1_instruction(self.category, self.sim_category)
 
         with self.lock:
             self.task1_instruction = instruction
@@ -1928,9 +1928,6 @@ class CompetitionFlow:
             raise StageError("LLM physical category does not match voice category")
         if normalize_category(result.sim_major) != self.sim_category:
             raise StageError("LLM simulation category does not match voice category")
-        if normalize_category(result.pickup_major) == normalize_category(result.sim_major):
-            raise StageError("LLM returned the same category for physical and simulation")
-
         self.task1_result = {
             "qr_items": items,
             "category": self.category,
