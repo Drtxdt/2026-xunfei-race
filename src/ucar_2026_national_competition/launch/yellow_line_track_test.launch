@@ -1,0 +1,49 @@
+<launch>
+  <!--
+    Yellow-line-stop-to-track integration test launch.
+
+    Same as ramp_to_track_test.launch but skips the ramp entirely:
+      1. Publish /initialpose guess for AMCL.
+      2. Navigate directly to the yellow-line stop pose (traffic_x/y/yaw).
+      3. Hand over to the provincial task4_task5 flow:
+         traffic-light wait at the yellow line, then line following.
+
+    This is useful for testing the task4/task5 end of the national track on
+    a flat floor or when the ramp is not available.
+
+    Speech/ASR/TTS/LLM/QR/factory-sign nodes are not started.
+  -->
+  <arg name="debug" default="false" />
+  <arg name="map" default="$(find ucar_nav)/maps/nation.yaml" />
+  <arg name="sim_bridge_host" default="$(optenv SIM_BRIDGE_HOST 192.168.1.28)" />
+
+  <!--
+    Low-bandwidth camera (MJPEG 320x240@15fps) to avoid xhci bandwidth errors.
+  -->
+  <include file="$(find ucar_2026_national_competition)/launch/usb_cam_lowbandwidth.launch" />
+
+  <!-- National common core: navigation stack, no camera/speech/llm. -->
+  <include file="$(find ucar_2026_national_competition)/launch/national_common_core.launch">
+    <arg name="start_nav" value="true" />
+    <arg name="start_camera" value="false" />
+    <arg name="start_speech" value="false" />
+    <arg name="start_asr" value="false" />
+    <arg name="start_tts" value="false" />
+    <arg name="start_llm" value="false" />
+    <arg name="start_rviz" value="$(arg debug)" />
+    <arg name="map" value="$(arg map)" />
+  </include>
+
+  <!--
+    Test flow node: orchestrates yellow-line stop -> provincial task4_task5.
+    skip_ramp=true disables the ramp staging / ramp traverse / relocalization
+    stages.  All tunable parameters come from config/national_competition.yaml.
+  -->
+  <node pkg="ucar_2026_national_competition" type="ramp_to_track_test_node.py"
+        name="ramp_to_track_test" output="screen" required="true">
+    <rosparam command="load"
+              file="$(find ucar_2026_national_competition)/config/national_competition.yaml" />
+    <param name="skip_ramp" value="true" />
+    <param name="sim_bridge_host" value="$(arg sim_bridge_host)" />
+  </node>
+</launch>
