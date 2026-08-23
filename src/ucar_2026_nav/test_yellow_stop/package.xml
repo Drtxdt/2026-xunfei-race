@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>test_yellow_stop</name>
+  <version>0.1.0</version>
+  <description>Yellow-line stop-line staging pose navigation accuracy test.</description>
+  <maintainer email="team@example.com">U-CAR 2026 Team</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>actionlib</depend>
+  <depend>geometry_msgs</depend>
+  <depend>move_base_msgs</depend>
+  <depend>rospy</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2_ros</depend>
+
+  <export />
+</package>
