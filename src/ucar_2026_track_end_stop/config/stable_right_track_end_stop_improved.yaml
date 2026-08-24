@@ -43,8 +43,8 @@ lost_brake_frames: 3
 lost_stop_frames: 10
 
 roi_y_start_ratio: 0.60
-white_s_max: 50
-white_v_min: 140
+white_s_max: 35
+white_v_min: 155
 morph_kernel_size: 5
 min_component_area: 220.0
 

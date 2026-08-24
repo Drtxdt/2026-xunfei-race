@@ -25,7 +25,7 @@ max_straight_angular_speed: 0.25
 max_right_angular_speed: 0.32
 straight_angular_alpha: 0.60
 #################################################################
-curve_angular_alpha: 0.68 # 0.70 # 增大转向平滑度
+curve_angular_alpha: 0.70 # 0.70 # 增大转向平滑度
 #################################################################
 straight_angular_step: 0.05
 curve_angular_step: 0.08
@@ -34,7 +34,7 @@ right_warning_error_px: 20
 right_near_warning_error_px: 8
 right_guard_speed: 0.10
 ################################################################
-deadband_angular_decay: 0.45 # 0.40 # 死区衰减系数原本抖动略大
+deadband_angular_decay: 0.40 # 0.40 # 死区衰减系数原本抖动略大
 #################################################################
 # 防压右线保护：right_x 越小表示右线越靠近车体中心
 right_danger_x: 150
