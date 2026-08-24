@@ -1,8 +1,13 @@
 # 致所有人：登录小车后，先
 cd 2026-xunfei-race
 
-# 可选：构建
-catkin_make
+# 可选：构建（必须强制使用系统 Python 3.7，否则 cv_bridge 等 Python 绑定会链接到 conda
+# 的 Python 3.9 并导致 strict_mission 等节点启动时 SIGABRT 崩溃）
+catkin_make \
+  -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+  -DPYTHON_INCLUDE_DIR=/usr/include/python3.7m \
+  -DPYTHON_LIBRARY=/usr/lib/aarch64-linux-gnu/libpython3.7m.so \
+  -DPYTHON_NUMPY_INCLUDE_DIR=/usr/lib/python3/dist-packages/numpy/core/include
 # 指定某一个包构建
 catkin_make --pkg ucar_2026_line_follow
 
@@ -66,3 +71,7 @@ roslaunch ucar_2026_national_competition national_full_competition.launch \
 
 # 黄线停车测试
 roslaunch test_yellow_stop test_yellow_stop.launch
+
+roslaunch ucar_2026_national_competition ramp_to_track_test.launch
+
+roslaunch ucar_2026_national_competition yellow_line_track_test.launch
