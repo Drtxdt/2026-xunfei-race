@@ -44,38 +44,30 @@ lost_stop_frames: 10
 
 roi_y_start_ratio: 0.60
 white_s_max: 50
-white_v_min: 190
+white_v_min: 140
 morph_kernel_size: 5
 min_component_area: 220.0
 
-# ===================== 灰色障碍物（挡板）检测与避障（中间巡线版）=====================
-# 触发条件：画面中央 ROI 内最大的灰色轮廓，必须【同时】满足
-# 面积 / 宽度 / 高度 / 底边位置 四个阈值，并且连续 obstacle_confirm_frames 帧
-# 都满足，才开始侧移避障。动作序列：向【右】移出 → 前进越过 → 向【左】移回。
-# 调参口诀：bottom 是距离闸（最常用），area/width/height 是形状闸（防误检）。
-# 注意：不写这些参数时代码默认值很苛刻（area>=0.50、连续5帧），基本触发不了。
-obstacle_enable_delay: 3.0 # 起步后 N 秒内不检测（防起步时把赛道误判成障碍）
-obstacle_gray_s_max: 70 # 灰色 HSV 范围：饱和度 S<=70，亮度 45<=V<=215
-obstacle_gray_v_min: 45 #   挡板检测不到时先调这三个（受光线影响大）
-obstacle_gray_v_max: 215
-obstacle_min_area_ratio: 0.06 # 面积阈值：轮廓面积 / 整幅画面。调大可防小杂物误触发
-obstacle_min_width_ratio: 0.30 # 宽度阈值：轮廓宽度 / 画面宽度
-obstacle_min_height_ratio: 0.18 # 高度阈值：轮廓高度 / 画面高度
-obstacle_min_bottom_ratio:
-  0.74 # 【触发距离主闸】挡板底边 / 画面高度。越大 = 挡板越贴近车才触发
-  #   触发早了就 +0.01~0.02；快撞上还不触发就 -0.01~0.02
-  #   左巡线调参记录：0.62 太早 → 0.72 仍早约 5cm → 0.74
-obstacle_confirm_frames: 3 # 连续 N 帧满足才触发，防单帧误检；调小更灵敏，调大更稳
-obstacle_lateral_distance_m: 0.50 # 侧移距离（米）：先向右移这么远绕开挡板
-obstacle_forward_distance_m:
-  0.75 # 侧移后向前走的距离（米），要足够越过挡板
+# ===================== 雷达障碍物检测（中间巡线版）=====================
+# 订阅 /scan（sensor_msgs/LaserScan）话题，遍历所有有效测距点，
+# 取最小欧式距离作为最近障碍物距离。障碍物颜色不固定，因此不再使用视觉灰度检测。
+radar_enabled: true                # 是否启用雷达避障
+radar_topic: /scan                 # 激光雷达话题名
+radar_obstacle_threshold_m: 0.15   # 触发避障的最小距离阈值（米），默认 15cm；越小触发越晚
+radar_obstacle_confirm_frames: 3   # 连续 N 帧检测到障碍物才触发，防单帧误检；调小更灵敏
+radar_min_range_m: 0.03            # 小于该值的测距点视为无效（雷达最小量程/盲区）
+radar_max_range_m: 2.0             # 大于该值的测距点视为无效（超出量程或 inf）
+
+# ===================== 避障动作参数（中间巡线版）=====================
+# 雷达检测到障碍物后执行的侧移-前进-回移动作。
+# 动作序列：向【右】移出 → 前进越过 → 向【左】移回。
+obstacle_lateral_distance_m: 0.50  # 侧移距离（米）：先向右移这么远绕开挡板
+obstacle_forward_distance_m: 0.75  # 侧移后向前走的距离（米），要足够越过挡板
   #   注意：实际走的比指令值短（加速度爬坡），已按比例补偿过
-obstacle_return_lateral_distance_m:
-  0.45 # 回程侧移距离（米）：越过挡板后向左回移这么远回到原线
+obstacle_return_lateral_distance_m: 0.47  # 回程侧移距离（米）：越过挡板后向左回移这么远回到原线
   #   出/回可以不相等，回多了就调小，回少了就调大
-obstacle_lateral_speed: 0.30 # 侧移速度（m/s），太快会滑、姿态飘
-obstacle_forward_speed: 0.32 # 避障前进速度（m/s）
-obstacle_debug: true # 打印候选挡板的 area/width/height/bottom 实测值和阈值，调参时必开
+obstacle_lateral_speed: 0.30       # 侧移速度（m/s），太快会滑、姿态飘
+obstacle_forward_speed: 0.32       # 避障前进速度（m/s）
 
 end_enable_delay: 38.0
 end_roi_y_start_ratio: 0.87

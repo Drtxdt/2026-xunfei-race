@@ -30,10 +30,13 @@
     <param name="curve_error_threshold" value="38.0" />
     <param name="curve_angular_gain" value="1.18" />
     <param name="max_angular_speed" value="0.55" />
-    <param name="roi_y_start_ratio" value="0.60" />
-    <param name="white_s_max" value="45" />
-    <param name="white_v_min" value="200" />
+    <!-- Current-car camera profile. Baseline was ROI=0.60, S<=45, V>=200. -->
+    <param name="roi_y_start_ratio" value="0.50" />
+    <param name="white_s_max" value="95" />
+    <param name="white_v_min" value="170" />
+    <param name="morph_kernel_size" value="5" />
     <param name="min_component_area" value="260" />
+    <rosparam param="right_scan_rows">[0.55, 0.45, 0.35, 0.30, 0.25, 0.20, 0.15, 0.10, 0.05]</rosparam>
   </node>
 
   <node pkg="ucar_2026_line_follow" type="right_debug_relay_node.py" name="stable_right_track_end_stop_debug_relay" output="screen">
