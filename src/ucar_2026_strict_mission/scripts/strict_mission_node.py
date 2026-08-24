@@ -15,7 +15,6 @@ import cv2
 import dynamic_reconfigure.client
 import numpy as np
 import rospy
-import tf2_ros
 from cv_bridge import CvBridge, CvBridgeError
 from geometry_msgs.msg import Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -30,7 +29,6 @@ from ucar_2026_strict_mission.logic import (
     DistanceCalibration,
     StableLineDistanceFilter,
     forward_progress,
-    heading_alignment_command,
     lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
@@ -77,8 +75,6 @@ class StrictMissionNode:
         self.final_stop_source = "unconfirmed"
         self.odom_pose = None
         self.odom_received_at = 0.0
-        self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
-        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.traffic_hits = 0
         self.last_traffic_decision = None
         self.selected_decision = None
@@ -888,82 +884,6 @@ class StrictMissionNode:
                 "unable to tighten task4 TEB goal tolerances: {}".format(
                     exc))
 
-    def align_to_staging_heading(self):
-        target_yaw = float(rospy.get_param("~traffic_staging_yaw"))
-        target_frame = str(rospy.get_param("~traffic_frame", "map"))
-        base_frame = str(rospy.get_param(
-            "~staging_heading_base_frame", "base_link"))
-        tolerance = math.radians(float(rospy.get_param(
-            "~staging_heading_tolerance_deg", 6.0)))
-        timeout = max(1.0, float(rospy.get_param(
-            "~staging_heading_timeout_sec", 20.0)))
-        kp = float(rospy.get_param("~staging_heading_kp", 0.9))
-        min_speed = float(rospy.get_param(
-            "~staging_heading_min_speed", 0.20))
-        max_speed = float(rospy.get_param(
-            "~staging_heading_max_speed", 0.30))
-        deadline = time.monotonic() + timeout
-        rate = rospy.Rate(30)
-        last_error = None
-        while not rospy.is_shutdown() and time.monotonic() < deadline:
-            try:
-                transform = self.tf_buffer.lookup_transform(
-                    target_frame,
-                    base_frame,
-                    rospy.Time(0),
-                    rospy.Duration(0.10),
-                )
-            except tf2_ros.TransformException:
-                self.publish_stop()
-                rate.sleep()
-                continue
-            orientation = transform.transform.rotation
-            current_yaw = math.atan2(
-                2.0 * (orientation.w * orientation.z
-                       + orientation.x * orientation.y),
-                1.0 - 2.0 * (orientation.y * orientation.y
-                             + orientation.z * orientation.z),
-            )
-            error = self.normalized_angle(target_yaw - current_yaw)
-            last_error = error
-            angular = heading_alignment_command(
-                error, tolerance, kp, min_speed, max_speed)
-            if angular == 0.0:
-                self.publish_stop()
-                self.publish_status(
-                    "staging heading aligned",
-                    heading_error_deg=math.degrees(error),
-                )
-                return
-            command = Twist()
-            command.angular.z = angular
-            self.cmd_pub.publish(command)
-            self.publish_status(
-                "aligning staging heading before line search",
-                heading_error_deg=math.degrees(error),
-                commanded_yaw_rps=angular,
-            )
-            rate.sleep()
-        self.publish_stop()
-        if bool(rospy.get_param(
-                "~staging_heading_fallback_to_vision", True)):
-            error_text = (
-                "unknown" if last_error is None
-                else "{:.2f}deg".format(math.degrees(last_error)))
-            rospy.logwarn(
-                "staging heading alignment timed out at %s; vehicle stopped, "
-                "continuing with visual stop-line alignment",
-                error_text,
-            )
-            self.publish_status(
-                "staging heading incomplete; visual alignment taking over",
-                heading_error_deg=(
-                    None if last_error is None
-                    else math.degrees(last_error)),
-            )
-            return
-        raise RuntimeError("staging heading alignment timed out")
-
     def plan_final_advance(self):
         now = time.monotonic()
         with self.lock:
@@ -1142,10 +1062,6 @@ class StrictMissionNode:
             self.publish_status("navigating to calibrated staging pose")
             self.navigate_to_staging_pose()
             self.publish_stop()
-            with self.lock:
-                self.state = "ALIGN_STAGING_HEADING"
-            self.publish_status("correcting staging heading")
-            self.align_to_staging_heading()
             with self.lock:
                 self.state = "APPROACH_LINE"
                 self.last_image_at = time.monotonic()

@@ -15,7 +15,6 @@ from ucar_2026_strict_mission.logic import (  # noqa: E402
     DistanceCalibration,
     StableLineDistanceFilter,
     forward_progress,
-    heading_alignment_command,
     lateral_displacement,
     line_alignment_command,
     lowest_horizontal_band,
@@ -315,48 +314,28 @@ class OdometryProgressTests(unittest.TestCase):
         )
 
 
-class HeadingAlignmentTests(unittest.TestCase):
-    def test_staging_heading_config_clears_drive_deadband(self):
+class NoPostNavigationYawAlignmentTests(unittest.TestCase):
+    def test_extra_staging_heading_alignment_is_retired(self):
         config = json.loads(
             (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
                 encoding="utf-8"))
-        self.assertGreaterEqual(config["staging_heading_tolerance_deg"], 5.8)
-        self.assertGreaterEqual(config["staging_heading_min_speed"], 0.20)
-        self.assertGreaterEqual(
-            config["staging_heading_max_speed"],
-            config["staging_heading_min_speed"],
-        )
-        self.assertTrue(config["staging_heading_fallback_to_vision"])
+        for retired_parameter in (
+                "staging_heading_base_frame",
+                "staging_heading_tolerance_deg",
+                "staging_heading_timeout_sec",
+                "staging_heading_fallback_to_vision",
+                "staging_heading_kp",
+                "staging_heading_min_speed",
+                "staging_heading_max_speed"):
+            self.assertNotIn(retired_parameter, config)
 
         node_source = (
             PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
         ).read_text(encoding="utf-8")
-        self.assertIn(
-            "continuing with visual stop-line alignment",
-            node_source,
-        )
-
-    def test_stops_inside_heading_tolerance(self):
-        self.assertEqual(
-            heading_alignment_command(0.02, 0.04, 0.9, 0.06, 0.16),
-            0.0,
-        )
-
-    def test_preserves_turn_direction_and_speed_bounds(self):
-        self.assertAlmostEqual(
-            heading_alignment_command(-0.20, 0.04, 0.9, 0.06, 0.16),
-            -0.16,
-        )
-        self.assertAlmostEqual(
-            heading_alignment_command(0.05, 0.04, 0.9, 0.06, 0.16),
-            0.06,
-        )
-
-    def test_rejects_invalid_heading_parameters(self):
-        with self.assertRaises(ValueError):
-            heading_alignment_command(0.2, 0.0, 0.9, 0.06, 0.16)
-        with self.assertRaises(ValueError):
-            heading_alignment_command(0.2, 0.04, 0.9, 0.20, 0.16)
+        self.assertNotIn("ALIGN_STAGING_HEADING", node_source)
+        self.assertNotIn("align_to_staging_heading", node_source)
+        self.assertNotIn("correcting staging heading", node_source)
+        self.assertIn('self.state = "APPROACH_LINE"', node_source)
 
 
 class ApproachPolicyTests(unittest.TestCase):
