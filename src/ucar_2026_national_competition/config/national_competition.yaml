@@ -156,12 +156,12 @@ handover_poll_interval_sec: 0.2
 # 交通灯停车线标定，透传给省赛 task4。【标定】
 # traffic_pose_configured 为 false 时省赛流程会在 task4 安全暂停。
 traffic_pose_configured: true
-#traffic_x: 0.2895
-#traffic_y: -3.10
-#traffic_yaw: -1.5596
-traffic_x: 2.47
-traffic_y: -5.63
+traffic_x: 0.2395
+traffic_y: -3.10
 traffic_yaw: -1.5596
+#traffic_x: 2.47
+#traffic_y: -5.63
+#traffic_yaw: -1.5596
 # true = 车已人工摆在停止线前（联调模式），省赛 task4 直接进识别。
 skip_task4_stop_line_approach: false
 
