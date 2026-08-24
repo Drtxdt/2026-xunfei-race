@@ -20,6 +20,8 @@ max_angular_speed: 0.42
 steering_deadband_px: 7.0
 max_straight_angular_speed: 0.16
 max_right_angular_speed: 0.32
+right_guard_speed: 0.10
+right_guard_angular: 0.32
 straight_angular_alpha: 0.84
 curve_angular_alpha: 0.58
 straight_angular_step: 0.025
@@ -43,8 +45,8 @@ lost_brake_frames: 3
 lost_stop_frames: 10
 
 roi_y_start_ratio: 0.60
-white_s_max: 50
-white_v_min: 140
+white_s_max: 40
+white_v_min: 170
 morph_kernel_size: 5
 min_component_area: 220.0
 

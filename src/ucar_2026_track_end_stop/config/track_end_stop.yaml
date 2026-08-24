@@ -15,9 +15,9 @@ startup_enter_duration: 1.8
 startup_enter_speed: 0.10
 
 # White-line extraction
-white_s_max: 85
-white_v_min: 125
-gray_white_threshold: 130
+white_s_max: 35
+white_v_min: 170
+gray_white_threshold: 170
 morph_kernel_size: 5
 min_component_area: 80
 max_component_area_ratio: 0.70
