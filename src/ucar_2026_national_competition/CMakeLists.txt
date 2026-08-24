@@ -10,6 +10,7 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   std_srvs
+  tf2_ros
 )
 
 catkin_python_setup()
@@ -17,6 +18,7 @@ catkin_package()
 
 catkin_install_python(
   PROGRAMS scripts/national_flow_node.py
+           scripts/ramp_to_track_test_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

@@ -73,6 +73,37 @@ def validate_pose(x, y, yaw, name):
     return values
 
 
+def shortest_angular_error(target_yaw, current_yaw):
+    """Return the signed shortest turn from current yaw to target yaw."""
+    delta = float(target_yaw) - float(current_yaw)
+    if not math.isfinite(delta):
+        raise ValueError("heading values must be finite")
+    return math.atan2(math.sin(delta), math.cos(delta))
+
+
+def heading_alignment_command(error_rad, tolerance_rad, kp, min_speed,
+                              max_speed):
+    """Return a bounded in-place angular command for a heading error."""
+    error = float(error_rad)
+    tolerance = float(tolerance_rad)
+    gain = float(kp)
+    minimum = float(min_speed)
+    maximum = float(max_speed)
+    values = (error, tolerance, gain, minimum, maximum)
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("heading alignment parameters must be finite")
+    if tolerance <= 0.0:
+        raise ValueError("heading tolerance must be positive")
+    if gain <= 0.0:
+        raise ValueError("heading kp must be positive")
+    if minimum < 0.0 or maximum <= 0.0 or minimum > maximum:
+        raise ValueError("heading angular speed limits are invalid")
+    if abs(error) <= tolerance:
+        return 0.0
+    magnitude = min(maximum, max(minimum, gain * abs(error)))
+    return math.copysign(magnitude, error)
+
+
 def flow_launch_args(
     start_stage,
     task1_result,

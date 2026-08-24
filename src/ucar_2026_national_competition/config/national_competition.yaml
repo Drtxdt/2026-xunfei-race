@@ -49,6 +49,20 @@ ramp_staging_y: -0.9451
 ramp_staging_yaw: -3.1415
 # 导航到坡道暂泊点的 move_base 超时（秒）。
 ramp_navigation_timeout_sec: 90.0
+# move_base 到点后是否退出导航，并用 map->base_link 独立闭环对正坡道轴向。
+# 必须开启：全局 TEB 的 yaw_goal_tolerance=0.10rad（约5.7°），不足以满足
+# 坡道要求的 <3°，且坡道节点会把接管瞬间的航向锁定为全程目标。
+ramp_heading_alignment_enabled: true
+ramp_heading_frame: map
+ramp_heading_base_frame: base_link
+# 航向误差连续 stable 秒都在 tolerance 内才允许坡道节点接管。
+ramp_heading_tolerance_deg: 2.0
+ramp_heading_stable_sec: 0.4
+ramp_heading_timeout_sec: 12.0
+# 原地对正 P 控制与底盘死区补偿（rad/s）。
+ramp_heading_kp: 1.5
+ramp_heading_min_angular_speed: 0.20
+ramp_heading_max_angular_speed: 0.25
 
 # ------------------------------ 坡道执行 -----------------------------------
 # 坡道节点启动服务。

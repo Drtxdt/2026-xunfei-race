@@ -9,12 +9,14 @@ import unittest
 from ucar_2026_national_competition.logic import (
     build_roslaunch_command,
     flow_launch_args,
+    heading_alignment_command,
     handover_chain,
     items_equal_allowed,
     min_valid_range,
     provincial_flow_paused,
     provincial_flow_terminal,
     rotation_clearance_ok,
+    shortest_angular_error,
     stage_sequence,
     status_state,
     task1_categories_match,
@@ -150,6 +152,34 @@ class SafetyTests(unittest.TestCase):
     def test_duplicate_item_rule(self):
         self.assertTrue(items_equal_allowed("food", "food"))
         self.assertFalse(items_equal_allowed("food", "daily"))
+
+
+class HeadingAlignmentTests(unittest.TestCase):
+    def test_shortest_error_wraps_across_pi(self):
+        error = shortest_angular_error(
+            math.radians(-179.0), math.radians(179.0))
+        self.assertAlmostEqual(math.degrees(error), 2.0, places=6)
+
+    def test_command_stops_inside_tolerance(self):
+        self.assertEqual(
+            heading_alignment_command(
+                math.radians(1.0), math.radians(2.0), 1.5, 0.20, 0.25),
+            0.0,
+        )
+
+    def test_command_uses_minimum_and_direction(self):
+        command = heading_alignment_command(
+            math.radians(-3.0), math.radians(2.0), 1.5, 0.20, 0.25)
+        self.assertAlmostEqual(command, -0.20)
+
+    def test_command_is_capped(self):
+        command = heading_alignment_command(
+            math.radians(30.0), math.radians(2.0), 1.5, 0.20, 0.25)
+        self.assertAlmostEqual(command, 0.25)
+
+    def test_invalid_speed_limits_are_rejected(self):
+        with self.assertRaises(ValueError):
+            heading_alignment_command(0.2, 0.02, 1.5, 0.30, 0.25)
 
 
 if __name__ == "__main__":

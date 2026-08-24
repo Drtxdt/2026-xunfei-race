@@ -36,6 +36,7 @@ import time
 
 import actionlib
 import rospy
+import tf2_ros
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from nav_msgs.msg import Odometry
@@ -46,6 +47,8 @@ from std_srvs.srv import Empty, Trigger
 from ucar_2026_competition_speech.srv import Announce, AnnounceResponse
 from ucar_2026_national_competition.logic import (
     build_roslaunch_command,
+    heading_alignment_command,
+    shortest_angular_error,
     validate_pose,
 )
 
@@ -92,6 +95,24 @@ class RampToTrackTestNode:
         )
         self.ramp_navigation_timeout_sec = float(rospy.get_param(
             "~ramp_navigation_timeout_sec", 90.0))
+        self.ramp_heading_alignment_enabled = bool(rospy.get_param(
+            "~ramp_heading_alignment_enabled", True))
+        self.ramp_heading_frame = str(rospy.get_param(
+            "~ramp_heading_frame", "map")).strip()
+        self.ramp_heading_base_frame = str(rospy.get_param(
+            "~ramp_heading_base_frame", "base_link")).strip()
+        self.ramp_heading_tolerance_rad = math.radians(float(rospy.get_param(
+            "~ramp_heading_tolerance_deg", 2.0)))
+        self.ramp_heading_stable_sec = float(rospy.get_param(
+            "~ramp_heading_stable_sec", 0.4))
+        self.ramp_heading_timeout_sec = float(rospy.get_param(
+            "~ramp_heading_timeout_sec", 12.0))
+        self.ramp_heading_kp = float(rospy.get_param(
+            "~ramp_heading_kp", 1.5))
+        self.ramp_heading_min_speed = float(rospy.get_param(
+            "~ramp_heading_min_angular_speed", 0.20))
+        self.ramp_heading_max_speed = float(rospy.get_param(
+            "~ramp_heading_max_angular_speed", 0.25))
 
         # ------------------------------ ramp execution -----------------------
         self.ramp_start_service = rospy.get_param(
@@ -153,6 +174,8 @@ class RampToTrackTestNode:
 
         # ------------------------------ publishers / subscribers -------------
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
+        self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.initialpose_pub = rospy.Publisher(
             "/initialpose", PoseWithCovarianceStamped, queue_size=1)
 
@@ -299,6 +322,94 @@ class RampToTrackTestNode:
                 stable_since = None
             rospy.sleep(0.1)
         raise StageError("wait_stationary timed out ({:.0f}s)".format(timeout_sec))
+
+    def align_ramp_staging_heading(self):
+        if not self.ramp_heading_alignment_enabled:
+            rospy.logwarn("[ramp-to-track] ramp heading alignment disabled")
+            return
+        if not self.ramp_heading_frame or not self.ramp_heading_base_frame:
+            raise StageError("ramp heading alignment frames must not be empty")
+
+        target_yaw = self.ramp_staging_pose[2]
+        deadline = time.monotonic() + max(1.0, self.ramp_heading_timeout_sec)
+        stable_since = None
+        last_error = None
+        tf_received = False
+        rate = rospy.Rate(30)
+        rospy.loginfo(
+            "[ramp-to-track] aligning ramp heading: target=%.2fdeg "
+            "tolerance=%.2fdeg stable=%.1fs",
+            math.degrees(target_yaw),
+            math.degrees(self.ramp_heading_tolerance_rad),
+            self.ramp_heading_stable_sec,
+        )
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.ramp_heading_frame,
+                    self.ramp_heading_base_frame,
+                    rospy.Time(0),
+                    rospy.Duration(0.15),
+                )
+            except tf2_ros.TransformException:
+                self.cmd_pub.publish(Twist())
+                stable_since = None
+                rate.sleep()
+                continue
+
+            tf_received = True
+            orientation = transform.transform.rotation
+            current_yaw = math.atan2(
+                2.0 * (orientation.w * orientation.z
+                       + orientation.x * orientation.y),
+                1.0 - 2.0 * (orientation.y * orientation.y
+                             + orientation.z * orientation.z),
+            )
+            error = shortest_angular_error(target_yaw, current_yaw)
+            last_error = error
+            angular = heading_alignment_command(
+                error,
+                self.ramp_heading_tolerance_rad,
+                self.ramp_heading_kp,
+                self.ramp_heading_min_speed,
+                self.ramp_heading_max_speed,
+            )
+            if angular == 0.0:
+                self.cmd_pub.publish(Twist())
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif (time.monotonic() - stable_since >=
+                      max(0.1, self.ramp_heading_stable_sec)):
+                    self.safe_stop(cancel_navigation=True)
+                    rospy.loginfo(
+                        "[ramp-to-track] ramp heading aligned: actual=%.2fdeg "
+                        "error=%+.2fdeg",
+                        math.degrees(current_yaw), math.degrees(error))
+                    return
+            else:
+                stable_since = None
+                command = Twist()
+                command.angular.z = angular
+                self.cmd_pub.publish(command)
+                rospy.loginfo_throttle(
+                    0.5,
+                    "[ramp-to-track] heading actual=%.2fdeg error=%+.2fdeg "
+                    "cmd=%+.3f",
+                    math.degrees(current_yaw), math.degrees(error), angular)
+            rate.sleep()
+
+        self.safe_stop(cancel_navigation=True)
+        if not tf_received:
+            raise StageError(
+                "no TF {} -> {} for ramp heading alignment".format(
+                    self.ramp_heading_frame, self.ramp_heading_base_frame))
+        raise StageError(
+            "ramp heading alignment timed out after {:.1f}s; "
+            "error={:+.2f}deg".format(
+                self.ramp_heading_timeout_sec,
+                math.degrees(last_error)
+                if last_error is not None else float("nan")))
 
     def clear_costmaps(self):
         if not self.post_ramp_clear_costmap:
@@ -447,6 +558,8 @@ class RampToTrackTestNode:
                     self.ramp_navigation_timeout_sec,
                     "navigating to ramp staging",
                 )
+                self.wait_stationary()
+                self.align_ramp_staging_heading()
 
                 self.start_ramp()
                 self.wait_ramp_done()

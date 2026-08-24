@@ -37,6 +37,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Empty, Trigger, TriggerResponse
 
 import rospy
+import tf2_ros
 from ucar_2026_competition.logic import (
     DirectedYawAccumulator,
     build_task1_instruction,
@@ -49,11 +50,13 @@ from ucar_2026_smart_factory_llm.srv import ReasonPickupOrder
 from ucar_2026_national_competition.logic import (
     build_roslaunch_command,
     flow_launch_args,
+    heading_alignment_command,
     handover_chain,
     items_equal_allowed,
     min_valid_range,
     provincial_flow_paused,
     rotation_clearance_ok,
+    shortest_angular_error,
     stage_sequence,
     task1_categories_match,
     validate_pose,
@@ -141,6 +144,24 @@ class NationalFlowNode:
         )
         self.ramp_navigation_timeout_sec = float(rospy.get_param(
             "~ramp_navigation_timeout_sec", 90.0))
+        self.ramp_heading_alignment_enabled = bool(rospy.get_param(
+            "~ramp_heading_alignment_enabled", True))
+        self.ramp_heading_frame = str(rospy.get_param(
+            "~ramp_heading_frame", "map")).strip()
+        self.ramp_heading_base_frame = str(rospy.get_param(
+            "~ramp_heading_base_frame", "base_link")).strip()
+        self.ramp_heading_tolerance_rad = math.radians(float(rospy.get_param(
+            "~ramp_heading_tolerance_deg", 2.0)))
+        self.ramp_heading_stable_sec = float(rospy.get_param(
+            "~ramp_heading_stable_sec", 0.4))
+        self.ramp_heading_timeout_sec = float(rospy.get_param(
+            "~ramp_heading_timeout_sec", 12.0))
+        self.ramp_heading_kp = float(rospy.get_param(
+            "~ramp_heading_kp", 1.5))
+        self.ramp_heading_min_speed = float(rospy.get_param(
+            "~ramp_heading_min_angular_speed", 0.20))
+        self.ramp_heading_max_speed = float(rospy.get_param(
+            "~ramp_heading_max_angular_speed", 0.25))
         self.qr_area_pose = validate_pose(
             rospy.get_param("~qr_area_x", -1.6598),
             rospy.get_param("~qr_area_y", -0.8718),
@@ -263,6 +284,8 @@ class NationalFlowNode:
             "~task1_result_topic", "/competition/task1_result")
 
         self.cmd_pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
+        self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.initialpose_pub = rospy.Publisher(
             "/initialpose", PoseWithCovarianceStamped, queue_size=1)
         self.status_pub = rospy.Publisher(
@@ -551,6 +574,94 @@ class NationalFlowNode:
         nearest = min_valid_range(msg.ranges, msg.range_min, msg.range_max)
         return rotation_clearance_ok(nearest, self.qr_rotation_clearance)
 
+    def align_ramp_staging_heading(self):
+        """Precisely align the chassis with the calibrated ramp axis."""
+        if not self.ramp_heading_alignment_enabled:
+            rospy.logwarn("【国赛·坡道】坡前独立航向对正已由参数关闭")
+            return
+        if not self.ramp_heading_frame or not self.ramp_heading_base_frame:
+            raise StageError("坡前航向对正坐标系不能为空")
+
+        target_yaw = self.ramp_staging_pose[2]
+        deadline = time.monotonic() + max(1.0, self.ramp_heading_timeout_sec)
+        stable_since = None
+        last_error = None
+        tf_received = False
+        rate = rospy.Rate(30)
+        rospy.loginfo(
+            "【国赛·坡道】move_base 已退出，独立对正坡道轴向: target=%.2f° "
+            "tolerance=%.2f° stable=%.1fs",
+            math.degrees(target_yaw),
+            math.degrees(self.ramp_heading_tolerance_rad),
+            self.ramp_heading_stable_sec,
+        )
+
+        while time.monotonic() < deadline and not rospy.is_shutdown():
+            self.check_abort()
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    self.ramp_heading_frame,
+                    self.ramp_heading_base_frame,
+                    rospy.Time(0),
+                    rospy.Duration(0.15),
+                )
+            except tf2_ros.TransformException:
+                self.cmd_pub.publish(Twist())
+                stable_since = None
+                rate.sleep()
+                continue
+
+            tf_received = True
+            orientation = transform.transform.rotation
+            current_yaw = math.atan2(
+                2.0 * (orientation.w * orientation.z
+                       + orientation.x * orientation.y),
+                1.0 - 2.0 * (orientation.y * orientation.y
+                             + orientation.z * orientation.z),
+            )
+            error = shortest_angular_error(target_yaw, current_yaw)
+            last_error = error
+            angular = heading_alignment_command(
+                error,
+                self.ramp_heading_tolerance_rad,
+                self.ramp_heading_kp,
+                self.ramp_heading_min_speed,
+                self.ramp_heading_max_speed,
+            )
+            if angular == 0.0:
+                self.cmd_pub.publish(Twist())
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif (time.monotonic() - stable_since >=
+                      max(0.1, self.ramp_heading_stable_sec)):
+                    self.safe_stop(cancel_navigation=True)
+                    rospy.loginfo(
+                        "【国赛·坡道】坡前航向对正完成: actual=%.2f° error=%+.2f°",
+                        math.degrees(current_yaw), math.degrees(error))
+                    self.publish_status("ramp staging heading aligned")
+                    return
+            else:
+                stable_since = None
+                command = Twist()
+                command.angular.z = angular
+                self.cmd_pub.publish(command)
+                rospy.loginfo_throttle(
+                    0.5,
+                    "【国赛·坡道】正在对正: actual=%.2f° error=%+.2f° cmd=%+.3f",
+                    math.degrees(current_yaw), math.degrees(error), angular)
+            rate.sleep()
+
+        self.safe_stop(cancel_navigation=True)
+        if not tf_received:
+            raise StageError(
+                "坡前航向对正失败: 无法获取 {} -> {} TF".format(
+                    self.ramp_heading_frame, self.ramp_heading_base_frame))
+        raise StageError(
+            "坡前航向对正超时 ({:.1f}s), 最后误差 {:+.2f}°".format(
+                self.ramp_heading_timeout_sec,
+                math.degrees(last_error)
+                if last_error is not None else float("nan")))
+
     # ------------------------------ stage runners -------------------------
     def stage_voice_handshake(self):
         while not rospy.is_shutdown():
@@ -576,6 +687,8 @@ class NationalFlowNode:
             self.ramp_navigation_timeout_sec,
             "导航至坡道暂泊点",
         )
+        self.wait_stationary()
+        self.align_ramp_staging_heading()
         rospy.loginfo("【国赛·坡道】已到达坡道暂泊点, 准备过坡")
 
     def stage_traverse_ramp(self):

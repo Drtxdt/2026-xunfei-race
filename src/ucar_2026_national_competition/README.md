@@ -54,6 +54,7 @@ roslaunch ucar_2026_national_competition national_full_competition.launch
 |---|---|
 | `start_stage` | 运行模式 full / task1 / ramp |
 | `ramp_staging_x/y/yaw` | 坡道暂泊点（坡脚前 20~30cm，朝向=坡道轴向） |
+| `ramp_heading_*` | move_base 到点后的坡道轴向闭环对正参数（默认误差不超过 2°） |
 | `qr_area_x/y/yaw` | 二维码区导航点 |
 | `qr_fallback_x/y/yaw` | 补扫备用点 |
 | `traffic_pose_configured/x/y/yaw` | 透传给省赛 task4 的停车线标定 |
