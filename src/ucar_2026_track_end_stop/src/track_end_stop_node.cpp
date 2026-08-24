@@ -10,6 +10,8 @@
 #include <geometry_msgs/Twist.h>
 #include <opencv2/opencv.hpp>
 #include <ros/ros.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
+#include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/Image.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/String.h>
@@ -48,6 +50,7 @@ public:
     debug_info_pub_ = nh_.advertise<std_msgs::String>(debug_info_topic_, 1);
     debug_image_pub_ = nh_.advertise<sensor_msgs::Image>(debug_image_topic_, 1);
     image_sub_ = nh_.subscribe(image_topic_, 1, &TrackEndStopNode::imageCallback, this);
+    cloud_sub_ = nh_.subscribe("/cloud", 1, &TrackEndStopNode::cloudCallback, this);
 
     start_time_ = ros::Time::now();
     last_image_time_ = start_time_;
@@ -59,22 +62,22 @@ public:
   }
 
 private:
-  enum class State
-  {
-    Idle,
-    StartupForward,
-    StartupTurn,
-    StartupEnter,
-    Follow,
-    ObstacleShiftOut,
-    ObstacleForward,
-    ObstacleShiftBack,
-    EndDetected,
-    TurnRight,
-    Forward50cm,
-    FinalStop,
-    Finish
-  };
+enum class State
+    {
+      Idle,
+      StartupForward,
+      StartupTurn,
+      StartupEnter,
+      Follow,
+      ObstacleShiftOut,
+      ObstacleForward,
+      ObstacleShiftBack,
+      EndDetected,
+      TurnRight,
+      Forward50cm,
+      FinalStop,
+      Finish
+    };
 
   struct FollowResult
   {
@@ -179,6 +182,13 @@ private:
     private_nh_.param("obstacle_return_lateral_distance_m",
                       obstacle_return_lateral_distance_m_, 0.45);
     private_nh_.param("obstacle_debug", obstacle_debug_, true);
+
+    // Radar parameters
+    radar_min_distance_m_ = 0.15;  // 15 cm minimum detection distance
+    radar_obstacle_threshold_m_ = 0.15;  // trigger when obstacle < 15cm
+    radar_enabled_ = true;
+    radar_obstacle_confirm_frames_ = 3;  // consecutive frames to trigger
+    radar_obstacle_hit_count_ = 0;
 
     private_nh_.param("end_enable_delay", end_enable_delay_, 3.0);
     private_nh_.param("end_roi_y_start_ratio", end_roi_y_start_ratio_, 0.80);
@@ -301,26 +311,88 @@ private:
         break;
 
       case State::Follow:
-        if (obstacle.detected)
         {
-          ROS_INFO("gray obstacle detected: area=%.2f width=%.2f height=%.2f bottom=%.2f",
-                   obstacle.area_ratio, obstacle.width_ratio,
-                   obstacle.height_ratio, obstacle.bottom_ratio);
-          state_ = State::ObstacleShiftOut;
-          state_start_time_ = now;
-          hardStop();
-        }
-        else if (end_result.detected)
-        {
-          ROS_INFO("track end detected! width_ratio=%.2f y_ratio=%.2f",
-                   end_result.best_width_ratio, end_result.best_y_ratio);
-          state_ = State::EndDetected;
-          state_start_time_ = now;
-          hardStop();
-        }
-        else
-        {
-          publishFollowCommand(follow, now);
+          // Check radar obstacle first - if obstacle < 15cm detected, trigger avoidance
+          bool radar_obstacle = false;
+          // Check minimum Euclidean distance from all points
+          if (radar_enabled_ && cloud_storage_)
+          {
+            double min_dist = std::numeric_limits<double>::max();
+            int point_count = 0;
+            
+            // Get point cloud data
+            const uint8_t* data = &cloud_storage_->data[0];
+            size_t data_size = cloud_storage_->data.size();
+            size_t point_step = cloud_storage_->point_step;
+            
+            // Iterate through points to find minimum forward distance
+            for (size_t i = 0; i + point_step <= data_size; i += point_step)
+            {
+              // Extract x, y, z coordinates (assuming XYZ float32 format)
+              float x = 0, y = 0, z = 0;
+              memcpy(&x, data, sizeof(float));
+              memcpy(&y, data + 4, sizeof(float));
+              memcpy(&z, data + 8, sizeof(float));
+              
+              // Calculate Euclidean distance
+              double dist = std::sqrt(x * x + y * y + z * z);
+              
+              // Only consider forward points (y > 0, assuming radar forward is y-axis)
+              if (y > 0 && dist < min_dist)
+              {
+                min_dist = dist;
+              }
+              point_count++;
+              data += point_step;  // Move to next point
+            }
+            
+            if (point_count > 0 && min_dist < radar_obstacle_threshold_m_)
+            {
+              radar_obstacle_hit_count_++;
+              if (radar_obstacle_hit_count_ >= radar_obstacle_confirm_frames_)
+              {
+                ROS_INFO("radar obstacle detected within 15cm, triggering obstacle avoidance");
+                radar_obstacle_hit_count_ = 0;  // Reset after triggering
+                state_ = State::ObstacleShiftOut;
+                state_start_time_ = now;
+                hardStop();
+              }
+              else
+              {
+                radar_obstacle = true;  // Will be detected in next frame
+              }
+            }
+            else
+            {
+              radar_obstacle_hit_count_ = 0;
+            }
+          }
+          
+          // If radar hasn't triggered yet, proceed with normal logic
+          if (!radar_obstacle)
+          {
+            if (obstacle.detected)
+            {
+              ROS_INFO("gray obstacle detected: area=%.2f width=%.2f height=%.2f bottom=%.2f",
+                       obstacle.area_ratio, obstacle.width_ratio,
+                       obstacle.height_ratio, obstacle.bottom_ratio);
+              state_ = State::ObstacleShiftOut;
+              state_start_time_ = now;
+              hardStop();
+            }
+            else if (end_result.detected)
+            {
+              ROS_INFO("track end detected! width_ratio=%.2f y_ratio=%.2f",
+                       end_result.best_width_ratio, end_result.best_y_ratio);
+              state_ = State::EndDetected;
+              state_start_time_ = now;
+              hardStop();
+            }
+            else
+            {
+              publishFollowCommand(follow, now);
+            }
+          }
         }
         break;
 
@@ -980,6 +1052,12 @@ private:
     status_pub_.publish(msg);
   }
 
+  void cloudCallback(const sensor_msgs::PointCloud2::ConstPtr& msg)
+  {
+    // Store the point cloud data for radar obstacle detection
+    cloud_storage_ = msg;
+  }
+
   cv::Point toPixel(const cv::Point2f& point) const
   {
     return cv::Point(clampInt(static_cast<int>(std::round(point.x)), 0, kImageCols - 1),
@@ -1079,6 +1157,9 @@ private:
   ros::Time last_image_time_;
   std::string status_ = "idle";
 
+  // Cloud storage for radar obstacle detection
+  sensor_msgs::PointCloud2::Ptr cloud_storage_;
+
   double filtered_angular_ = 0.0;
   double filtered_error_px_ = 0.0;
   double last_error_px_ = 0.0;
@@ -1090,6 +1171,12 @@ private:
   double last_angular_ = 0.0;
   double last_mask_ratio_ = 0.0;
   std::string last_mask_mode_ = "normal";
+
+  // Radar parameters
+  bool radar_enabled_ = true;
+  double radar_obstacle_threshold_m_ = 0.15;  // trigger when obstacle < 15cm
+  int radar_obstacle_confirm_frames_ = 3;  // consecutive frames to trigger
+  int radar_obstacle_hit_count_ = 0;
 };
 
 int main(int argc, char** argv)
