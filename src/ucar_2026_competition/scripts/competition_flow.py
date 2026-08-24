@@ -2750,7 +2750,10 @@ class CompetitionFlow:
                         and final_min <= final_distance_value <= final_max
                     )
                     hard_advance_fallback = (
-                        final_stop_source == "hard_advance_timeout"
+                        final_stop_source in (
+                            "hard_advance_timeout",
+                            "hard_advance_line_lost",
+                        )
                         and not final_verified
                     )
                     if not (visual_stop_valid or hard_advance_fallback):

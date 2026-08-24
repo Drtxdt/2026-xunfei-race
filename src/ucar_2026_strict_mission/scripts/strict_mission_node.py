@@ -58,9 +58,6 @@ class StrictMissionNode:
         self.started = False
         self.last_image_at = 0.0
         self.line_missing_since = None
-        self.line_search_origin_yaw = None
-        self.line_search_direction = 1.0
-        self.line_search_reversals = 0
         self.last_distance_m = None
         self.last_distance_at = 0.0
         self.last_stop_line_color = None
@@ -467,30 +464,60 @@ class StrictMissionNode:
             self.final_stop_confirm_hits = 0
             if self.line_missing_since is None:
                 self.line_missing_since = now
-                with self.lock:
-                    pose = self.odom_pose
-                self.line_search_origin_yaw = pose[2] if pose else None
-                self.line_search_direction = 1.0
-                self.line_search_reversals = 0
+            self.publish_stop()
             if final_visual_approach:
-                self.publish_stop()
+                with self.lock:
+                    if self.state != "FINAL_VISUAL_APPROACH":
+                        return
+                    self.final_visual_verified = False
+                    self.final_stop_distance_m = self.last_distance_m
+                    self.final_stop_line_color = self.last_distance_color
+                    self.final_stop_source = "hard_advance_line_lost"
+                    self.state = "FINAL_VISUAL_LINE_LOST"
+                    self.final_parked_event.set()
                 self.publish_status(
-                    "final yellow stop line missing; holding stop",
+                    "final yellow stop line lost after guarded advance; "
+                    "task4 parking accepted",
                     stop_confirm_hits=0,
                 )
             else:
-                command = self.missing_line_search_command(now)
-                self.cmd_pub.publish(command)
-                self.publish_status(
-                    "yellow stop line not trusted; bounded yaw reacquisition",
-                    commanded_yaw_rps=command.angular.z,
-                    search_reversals=self.line_search_reversals,
-                )
+                with self.lock:
+                    candidate_distance = self.last_distance_m
+                    candidate_at = self.last_distance_at
+                    candidate_color = self.last_distance_color
+                    candidate_age = (
+                        None if candidate_at <= 0.0
+                        else max(0.0, now - candidate_at))
+                    candidate_is_fresh = (
+                        candidate_distance is not None
+                        and candidate_color == "yellow"
+                        and candidate_age is not None
+                        and candidate_age <= self.final_visual_max_age_sec
+                    )
+                    accepted = (
+                        candidate_is_fresh and self.state == "APPROACH_LINE")
+                    if accepted:
+                        self.visual_stop_distance_m = candidate_distance
+                        self.visual_stop_distance_at = candidate_at
+                        self.visual_stop_line_color = candidate_color
+                        self.state = "VISUAL_CONFIRM"
+                        self.parked_event.set()
+                if accepted:
+                    self.publish_status(
+                        "yellow stop line lost after a fresh observation; "
+                        "guarded final advance armed",
+                        distance_m=candidate_distance,
+                        candidate_age_sec=candidate_age,
+                        commanded_yaw_rps=0.0,
+                    )
+                else:
+                    self.publish_status(
+                        "yellow stop line not observed; holding for calibrated "
+                        "advance fallback",
+                        commanded_yaw_rps=0.0,
+                    )
             return
         self.line_missing_since = None
-        self.line_search_origin_yaw = None
-        self.line_search_direction = 1.0
-        self.line_search_reversals = 0
         distance = self.calibration.distance_for_ratio(bottom_ratio)
         with self.lock:
             self.last_distance_m = distance
@@ -702,35 +729,6 @@ class StrictMissionNode:
     @staticmethod
     def normalized_angle(angle):
         return math.atan2(math.sin(float(angle)), math.cos(float(angle)))
-
-    def missing_line_search_command(self, now):
-        """Sweep in place within a small yaw window; never advance blind."""
-        command = Twist()
-        delay = max(0.0, float(rospy.get_param(
-            "~line_search_delay_sec", 0.40)))
-        if self.line_missing_since is None or now - self.line_missing_since < delay:
-            return command
-        with self.lock:
-            pose = self.odom_pose
-            odom_age = now - self.odom_received_at
-        stale = float(rospy.get_param("~line_search_odom_stale_sec", 0.50))
-        if pose is None or odom_age > stale:
-            return command
-        if self.line_search_origin_yaw is None:
-            self.line_search_origin_yaw = pose[2]
-        delta = self.normalized_angle(pose[2] - self.line_search_origin_yaw)
-        limit = math.radians(max(1.0, float(rospy.get_param(
-            "~line_search_yaw_limit_deg", 8.0))))
-        if self.line_search_direction > 0.0 and delta >= limit:
-            self.line_search_direction = -1.0
-            self.line_search_reversals += 1
-        elif self.line_search_direction < 0.0 and delta <= -limit:
-            self.line_search_direction = 1.0
-            self.line_search_reversals += 1
-        speed = max(0.01, float(rospy.get_param(
-            "~line_search_yaw_speed", 0.10)))
-        command.angular.z = self.line_search_direction * speed
-        return command
 
     def traffic_callback(self, msg):
         with self.lock:
@@ -1169,10 +1167,6 @@ class StrictMissionNode:
                 self.final_distance_filter.reset()
                 self.band_filter.reset()
                 self.line_missing_since = None
-                self.line_search_origin_yaw = (
-                    self.odom_pose[2] if self.odom_pose else None)
-                self.line_search_direction = 1.0
-                self.line_search_reversals = 0
             self.publish_status("visual stop-line approach armed")
             fallback_timeout = max(0.0, float(rospy.get_param(
                 "~calibrated_final_advance_fallback_sec", 6.0)))
@@ -1228,9 +1222,6 @@ class StrictMissionNode:
                 self.band_filter.reset()
                 self.final_distance_filter.reset()
                 self.line_missing_since = None
-                self.line_search_origin_yaw = None
-                self.line_search_direction = 1.0
-                self.line_search_reversals = 0
             self.publish_status(
                 "hard advance complete; fresh yellow-line precision stop armed")
             final_visual_timeout = float(rospy.get_param(
@@ -1271,7 +1262,10 @@ class StrictMissionNode:
                 )
                 hard_advance_fallback = (
                     not self.final_visual_verified
-                    and self.final_stop_source == "hard_advance_timeout"
+                    and self.final_stop_source in (
+                        "hard_advance_timeout",
+                        "hard_advance_line_lost",
+                    )
                 )
                 if not (visual_valid or hard_advance_fallback):
                     raise RuntimeError(

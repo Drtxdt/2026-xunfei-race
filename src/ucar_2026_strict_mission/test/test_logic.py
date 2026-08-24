@@ -78,7 +78,8 @@ class OdometryProgressTests(unittest.TestCase):
         self.assertIn('status.get("final_visual_verified"', flow)
         self.assertIn('status.get("final_stop_line_color")', flow)
         self.assertIn("task4 final stop not accepted", flow)
-        self.assertIn('final_stop_source == "hard_advance_timeout"', flow)
+        self.assertIn('"hard_advance_timeout"', flow)
+        self.assertIn('"hard_advance_line_lost"', flow)
 
     def test_calibrated_advance_uses_verified_hard_stop_distance(self):
         config = json.loads(
@@ -110,11 +111,6 @@ class OdometryProgressTests(unittest.TestCase):
             config["final_advance_creep_speed_mps"],
             config["final_advance_speed_mps"],
         )
-        self.assertGreater(
-            config["calibrated_final_advance_fallback_sec"],
-            config["line_search_delay_sec"],
-        )
-
         node_source = (
             PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
         ).read_text(encoding="utf-8")
@@ -138,6 +134,29 @@ class OdometryProgressTests(unittest.TestCase):
             "accepting the completed guarded hard advance", node_source)
         self.assertNotIn('color_mode="white"', node_source)
         self.assertNotIn('~white_v_min', node_source)
+
+    def test_yellow_line_loss_completes_without_yaw_reacquisition(self):
+        config = json.loads(
+            (PACKAGE_ROOT / "config" / "strict_mission.yaml").read_text(
+                encoding="utf-8"))
+        for retired_parameter in (
+                "line_search_delay_sec",
+                "line_search_yaw_limit_deg",
+                "line_search_yaw_speed",
+                "line_search_odom_stale_sec"):
+            self.assertNotIn(retired_parameter, config)
+
+        node_source = (
+            PACKAGE_ROOT / "scripts" / "strict_mission_node.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'self.final_stop_source = "hard_advance_line_lost"',
+            node_source,
+        )
+        self.assertIn('self.state = "FINAL_VISUAL_LINE_LOST"', node_source)
+        self.assertIn("self.final_parked_event.set()", node_source)
+        self.assertNotIn("missing_line_search_command", node_source)
+        self.assertNotIn("bounded yaw reacquisition", node_source)
 
     def test_unconfirmed_visual_candidate_is_diagnostic_only(self):
         node_source = (
