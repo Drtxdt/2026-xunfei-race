@@ -10,6 +10,7 @@
 #include <geometry_msgs/Twist.h>
 #include <opencv2/opencv.hpp>
 #include <ros/ros.h>
+#include <sensor_msgs/LaserScan.h>
 #include <sensor_msgs/Image.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/String.h>
@@ -48,6 +49,7 @@ public:
     debug_info_pub_ = nh_.advertise<std_msgs::String>(debug_info_topic_, 1);
     debug_image_pub_ = nh_.advertise<sensor_msgs::Image>(debug_image_topic_, 1);
     image_sub_ = nh_.subscribe(image_topic_, 1, &StableRightTrackEndStopNode::imageCallback, this);
+    scan_sub_ = nh_.subscribe(radar_topic_, 1, &StableRightTrackEndStopNode::scanCallback, this);
 
     start_time_ = ros::Time::now();
     state_start_time_ = start_time_;
@@ -55,8 +57,9 @@ public:
     state_ = auto_start_ ? State::StartupForward : State::Idle;
     setStatus(auto_start_ ? "stable_right_startup_forward" : "idle");
 
-    ROS_INFO("stable_right_track_end_stop_node started: image=%s cmd_vel=%s debug=%s",
-             image_topic_.c_str(), cmd_vel_topic_.c_str(), debug_image_topic_.c_str());
+    ROS_INFO("stable_right_track_end_stop_node started: image=%s cmd_vel=%s debug=%s radar=%s threshold=%.3fm",
+             image_topic_.c_str(), cmd_vel_topic_.c_str(), debug_image_topic_.c_str(),
+             radar_topic_.c_str(), radar_obstacle_threshold_m_);
   }
 
 private:
@@ -127,20 +130,27 @@ private:
     double best_y_ratio = 0.0;
   };
 
-  struct GrayObstacleResult
-  {
-    bool detected = false;
-    double area_ratio = 0.0;
-    double width_ratio = 0.0;
-    double height_ratio = 0.0;
-    double bottom_ratio = 0.0;
-  };
-
   void loadParams()
   {
-    // All parameters are intentionally hard-coded below.  Launch/YAML
-    // overrides are ignored so that the provincial-competition line-following
-    // values are always applied exactly as written in this file.
+    // Keep the competition tuning below hard-coded, but load runtime interface
+    // parameters so launch files can connect this node on different cars.
+    private_nh_.param<std::string>("image_topic", image_topic_,
+                                   "/usb_cam/image_raw");
+    private_nh_.param<std::string>("cmd_vel_topic", cmd_vel_topic_,
+                                   "/cmd_vel");
+    private_nh_.param<std::string>("status_topic", status_topic_,
+                                   "/stable_right_track_end_stop/status");
+    private_nh_.param<std::string>("debug_image_topic", debug_image_topic_,
+                                   "/stable_right_track_end_stop/debug_image");
+    private_nh_.param<std::string>("debug_info_topic", debug_info_topic_,
+                                   "/stable_right_track_end_stop/debug_info");
+    private_nh_.param("auto_start", auto_start_, true);
+
+    private_nh_.param("roi_y_start_ratio", roi_y_start_ratio_, roi_y_start_ratio_);
+    private_nh_.param("white_s_max", white_s_max_, white_s_max_);
+    private_nh_.param("white_v_min", white_v_min_, white_v_min_);
+    private_nh_.param("morph_kernel_size", morph_kernel_size_, morph_kernel_size_);
+    private_nh_.param("min_component_area", min_component_area_, min_component_area_);
 
     target_right_x_ = clampInt(
         static_cast<int>(std::round(kImageCols * 0.5 +
@@ -150,9 +160,20 @@ private:
     right_scan_rows_ = {
         0.95, 0.92, 0.88, 0.84, 0.80,
         0.75, 0.70, 0.64, 0.58};
+    private_nh_.getParam("right_scan_rows", right_scan_rows_);
 
     if (morph_kernel_size_ % 2 == 0)
       ++morph_kernel_size_;
+
+    // Radar obstacle detection parameters (replaces color-based visual detection).
+    private_nh_.param("radar_enabled", radar_enabled_, true);
+    private_nh_.param("radar_topic", radar_topic_, std::string("/scan"));
+    private_nh_.param("radar_obstacle_threshold_m", radar_obstacle_threshold_m_, 0.15);
+    private_nh_.param("radar_obstacle_confirm_frames", radar_obstacle_confirm_frames_, 3);
+    private_nh_.param("radar_min_range_m", radar_min_range_m_, 0.03);
+    private_nh_.param("radar_max_range_m", radar_max_range_m_, 2.0);
+    radar_obstacle_hit_count_ = 0;
+    last_radar_min_distance_m_ = std::numeric_limits<double>::max();
   }
 
   void imageCallback(const sensor_msgs::ImageConstPtr& msg)
@@ -179,7 +200,6 @@ private:
                         cv::Range(0, frame.cols));
     cv::Mat mask = extractWhiteMask(roi);
     EndOfTrackResult end_result = detectEndOfTrack(mask, now);
-    GrayObstacleResult obstacle = detectGrayObstacle(frame, now);
     FollowResult follow;
     geometry_msgs::Twist cmd;
 
@@ -246,26 +266,25 @@ private:
 
       case State::Follow:
         follow = computeFollow(mask);
-        if (obstacle.detected)
         {
-          ROS_INFO("gray obstacle detected: area=%.2f width=%.2f height=%.2f bottom=%.2f",
-                   obstacle.area_ratio, obstacle.width_ratio,
-                   obstacle.height_ratio, obstacle.bottom_ratio);
-          state_ = State::ObstacleShiftOut;
-          state_start_time_ = now;
-          hardStop();
-        }
-        else if (end_result.detected)
-        {
-          ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
-                   end_result.best_width_ratio, end_result.best_y_ratio);
-          state_ = State::EndDetected;
-          state_start_time_ = now;
-          hardStop();
-        }
-        else
-        {
-          publishFollowCommand(follow);
+          if (checkRadarObstacle(now))
+          {
+            state_ = State::ObstacleShiftOut;
+            state_start_time_ = now;
+            hardStop();
+          }
+          else if (end_result.detected)
+          {
+            ROS_INFO("stable right track end detected! width_ratio=%.2f y_ratio=%.2f",
+                     end_result.best_width_ratio, end_result.best_y_ratio);
+            state_ = State::EndDetected;
+            state_start_time_ = now;
+            hardStop();
+          }
+          else
+          {
+            publishFollowCommand(follow);
+          }
         }
         break;
 
@@ -320,7 +339,7 @@ private:
         else
         {
           obstacle_completed_ = true;
-          obstacle_hit_count_ = 0;
+          radar_obstacle_hit_count_ = 0;
           reacquire_count_ = 0;
           state_ = State::SearchRightLine;
           state_start_time_ = now;
@@ -427,70 +446,69 @@ private:
     return clean_mask;
   }
 
-  GrayObstacleResult detectGrayObstacle(const cv::Mat& frame, const ros::Time& now)
+  bool checkRadarObstacle(const ros::Time& now)
   {
-    GrayObstacleResult result;
-    if (state_ != State::Follow || obstacle_completed_ ||
-        (now - start_time_).toSec() < obstacle_enable_delay_)
+    if (!radar_enabled_)
+      return false;
+    if (!scan_storage_)
     {
-      obstacle_hit_count_ = 0;
-      return result;
+      ROS_WARN_THROTTLE(2.0, "radar enabled but no /scan data received yet");
+      return false;
+    }
+    if (state_ != State::Follow || obstacle_completed_)
+    {
+      radar_obstacle_hit_count_ = 0;
+      return false;
     }
 
-    const int x0 = frame.cols / 10;
-    const int y0 = frame.rows / 10;
-    const int width = frame.cols * 8 / 10;
-    const int height = frame.rows * 3 / 4;
-    const cv::Rect roi_rect(x0, y0, width, height);
-    cv::Mat hsv;
-    cv::cvtColor(frame(roi_rect), hsv, cv::COLOR_BGR2HSV);
-
-    cv::Mat gray_mask;
-    cv::inRange(hsv,
-                cv::Scalar(0, 0, obstacle_gray_v_min_),
-                cv::Scalar(179, obstacle_gray_s_max_, obstacle_gray_v_max_),
-                gray_mask);
-    const cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9, 9));
-    cv::morphologyEx(gray_mask, gray_mask, cv::MORPH_OPEN, kernel);
-    cv::morphologyEx(gray_mask, gray_mask, cv::MORPH_CLOSE, kernel);
-
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(gray_mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-    for (const auto& contour : contours)
+    double min_dist = std::numeric_limits<double>::max();
+    int valid_count = 0;
+    for (size_t i = 0; i < scan_storage_->ranges.size(); ++i)
     {
-      const double area_ratio = cv::contourArea(contour) /
-                                static_cast<double>(frame.rows * frame.cols);
-      const cv::Rect box = cv::boundingRect(contour);
-      const double width_ratio = static_cast<double>(box.width) / frame.cols;
-      const double height_ratio = static_cast<double>(box.height) / frame.rows;
-      const double bottom_ratio = static_cast<double>(box.y + y0 + box.height) / frame.rows;
-      if (area_ratio > result.area_ratio)
+      float r = scan_storage_->ranges[i];
+      if (std::isnan(r) || std::isinf(r))
+        continue;
+      if (r < radar_min_range_m_ || r > radar_max_range_m_)
+        continue;
+
+      // Euclidean distance in the laser frame (x = r*cos(theta), y = r*sin(theta)).
+      // For a 2D scan this is exactly the range value.
+      double dist = static_cast<double>(r);
+      if (dist < min_dist)
+        min_dist = dist;
+      ++valid_count;
+    }
+    last_radar_min_distance_m_ = min_dist;
+
+    if (valid_count == 0)
+    {
+      ROS_WARN_THROTTLE(2.0, "radar received scan with zero valid ranges");
+      return false;
+    }
+
+    if (min_dist < radar_obstacle_threshold_m_)
+    {
+      ++radar_obstacle_hit_count_;
+      ROS_INFO_THROTTLE(0.2,
+          "radar obstacle candidate: min_dist=%.3fm < threshold=%.3fm hits=%d/%d",
+          min_dist, radar_obstacle_threshold_m_,
+          radar_obstacle_hit_count_, radar_obstacle_confirm_frames_);
+      if (radar_obstacle_hit_count_ >= radar_obstacle_confirm_frames_)
       {
-        result.area_ratio = area_ratio;
-        result.width_ratio = width_ratio;
-        result.height_ratio = height_ratio;
-        result.bottom_ratio = bottom_ratio;
+        ROS_INFO("radar obstacle confirmed at %.3fm (threshold %.3fm), triggering avoidance",
+                 min_dist, radar_obstacle_threshold_m_);
+        radar_obstacle_hit_count_ = 0;
+        return true;
       }
     }
-
-    const bool candidate = result.area_ratio >= obstacle_min_area_ratio_ &&
-                           result.width_ratio >= obstacle_min_width_ratio_ &&
-                           result.height_ratio >= obstacle_min_height_ratio_ &&
-                           result.bottom_ratio >= obstacle_min_bottom_ratio_;
-    obstacle_hit_count_ = candidate ? obstacle_hit_count_ + 1 : 0;
-    result.detected = obstacle_hit_count_ >= obstacle_confirm_frames_;
-    if (obstacle_debug_)
+    else
     {
-      ROS_INFO_THROTTLE(0.5,
-          "obstacle candidate: area=%.3f(>=%.2f) width=%.2f(>=%.2f) height=%.2f(>=%.2f) bottom=%.2f(>=%.2f) hits=%d/%d %s",
-          result.area_ratio, obstacle_min_area_ratio_,
-          result.width_ratio, obstacle_min_width_ratio_,
-          result.height_ratio, obstacle_min_height_ratio_,
-          result.bottom_ratio, obstacle_min_bottom_ratio_,
-          obstacle_hit_count_, obstacle_confirm_frames_,
-          candidate ? "PASS" : "fail");
+      if (radar_obstacle_hit_count_ > 0)
+        ROS_INFO("radar obstacle cleared: min_dist=%.3fm >= threshold=%.3fm",
+                 min_dist, radar_obstacle_threshold_m_);
+      radar_obstacle_hit_count_ = 0;
     }
-    return result;
+    return false;
   }
 
   FollowResult computeFollow(const cv::Mat& mask)
@@ -976,6 +994,7 @@ private:
        << " lost_frames=" << lost_frame_count_
        << " cmd_linear=" << last_linear_
        << " cmd_angular=" << last_angular_
+       << " radar_min_m=" << std::fixed << std::setprecision(3) << last_radar_min_distance_m_
        << " end_detected=" << boolText(end_result.detected)
        << " end_width_ratio=" << end_result.best_width_ratio
        << " end_y_ratio=" << end_result.best_y_ratio;
@@ -997,9 +1016,15 @@ private:
     status_pub_.publish(msg);
   }
 
+  void scanCallback(const sensor_msgs::LaserScan::ConstPtr& msg)
+  {
+    scan_storage_ = msg;
+  }
+
   ros::NodeHandle nh_;
   ros::NodeHandle private_nh_;
   ros::Subscriber image_sub_;
+  ros::Subscriber scan_sub_;
   ros::Publisher cmd_pub_;
   ros::Publisher status_pub_;
   ros::Publisher debug_info_pub_;
@@ -1056,23 +1081,23 @@ private:
   int morph_kernel_size_ = 5;
   double min_component_area_ = 260.0;
 
-  double obstacle_enable_delay_ = 3.0;
-  int obstacle_gray_s_max_ = 70;
-  int obstacle_gray_v_min_ = 45;
-  int obstacle_gray_v_max_ = 215;
-  double obstacle_min_area_ratio_ = 0.06;
-  double obstacle_min_width_ratio_ = 0.30;
-  double obstacle_min_height_ratio_ = 0.18;
-  double obstacle_min_bottom_ratio_ = 0.50;
-  int obstacle_confirm_frames_ = 3;
+  // Obstacle avoidance maneuver parameters.
   double obstacle_lateral_distance_m_ = 0.40;
   double obstacle_forward_distance_m_ = 0.45;
   double obstacle_lateral_speed_ = 0.30;
   double obstacle_return_lateral_distance_m_ = 0.45;
-  bool obstacle_debug_ = true;
   double obstacle_forward_speed_ = 0.32;
-  int obstacle_hit_count_ = 0;
   bool obstacle_completed_ = false;
+
+  // Radar parameters
+  bool radar_enabled_ = true;
+  std::string radar_topic_ = "/scan";
+  double radar_obstacle_threshold_m_ = 0.15;  // trigger when obstacle < 15cm
+  int radar_obstacle_confirm_frames_ = 3;     // consecutive frames to trigger
+  int radar_obstacle_hit_count_ = 0;
+  double radar_min_range_m_ = 0.03;
+  double radar_max_range_m_ = 2.0;
+  double last_radar_min_distance_m_ = std::numeric_limits<double>::max();
   std::vector<double> right_scan_rows_;
   double right_scan_bottom_weight_ = 1.8;
   int min_line_width_px_ = 5;
@@ -1105,6 +1130,9 @@ private:
   int reacquire_count_ = 0;
   double last_linear_ = 0.0;
   double last_angular_ = 0.0;
+
+  // Latest laser scan storage for radar obstacle detection.
+  sensor_msgs::LaserScan::ConstPtr scan_storage_;
 };
 
 int main(int argc, char** argv)

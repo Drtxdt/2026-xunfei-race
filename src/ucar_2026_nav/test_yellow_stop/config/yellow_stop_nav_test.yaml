@@ -1,0 +1,26 @@
+# ============================================================================
+# 黄线停车 staging 点导航精度测试参数
+# 本文件是 yellow_stop_nav_test 节点的唯一参数来源，launch 不覆盖任何值。
+# ============================================================================
+
+# ------------------------------ 初始位姿猜测【标定】--------------------------
+# 车在 map 系下的实际摆放位姿（把车放到起点后实测填写）。
+initial_pose_x: 0.0
+initial_pose_y: 0.0
+initial_pose_yaw: 0.0
+# 初始位姿误差估计（标准差）：决定发布给 AMCL 的猜测协方差。
+# 摆车误差大就调大，让 AMCL 更快收敛；摆得准就调小。
+initial_pose_xy_sigma_m: 0.10
+initial_pose_yaw_sigma_deg: 10.0
+# 发布前等待 /initialpose 订阅者（AMCL）连接的最长时间（秒）。
+initial_pose_subscriber_wait_sec: 5.0
+# 发布后等待 AMCL 收敛的时间（秒）。
+initial_pose_settle_sec: 3.0
+
+# ------------------------------ 被测 staging 点【标定】-----------------------
+# 即省赛 task4 的 traffic_x/y/yaw，导航到点后人工核对车与黄线的相对位置。
+traffic_x: 0.2395
+traffic_y: -3.10
+traffic_yaw: -1.5596
+# move_base 导航超时（秒）。
+move_base_timeout_sec: 60.0

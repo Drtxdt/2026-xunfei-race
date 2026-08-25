@@ -33,10 +33,8 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
-    task2_ocr_observations,
     task2_prewarm_reusable,
     task2_resumed_coverage_hint,
-    task2_target_update_is_publishable,
     task2_target_trigger_is_eligible,
     task2_semantic_coverage_hint,
     task4_handoff_required,
@@ -119,9 +117,6 @@ class CompetitionLogicTest(unittest.TestCase):
             'factory_navigation_start_service: '
             '"/vision_triggered_navigator/start_navigation"', config)
         self.assertIn("coverage_goal_retry_count: 1", config)
-        self.assertIn("camera_boresight_yaw_offset: 0.292", config)
-        self.assertIn("parking_endpoint_min_clearance: 0.16", config)
-        self.assertIn("parking_tangent_offset: 0.03", config)
         self.assertNotIn("coverage_failed_revisit_limit", config)
 
         launch_path = os.path.abspath(os.path.join(
@@ -139,28 +134,9 @@ class CompetitionLogicTest(unittest.TestCase):
                 ("task2_prewarm_enabled", "true"),
                 ("factory_navigation_start_service",
                  "/vision_triggered_navigator/start_navigation"),
-                ("coverage_goal_retry_count", "1"),
-                ("camera_boresight_yaw_offset", "0.292"),
-                ("parking_tangent_offset", "0.03"),
-                ("parking_endpoint_min_clearance", "0.16")):
+                ("coverage_goal_retry_count", "1")):
             self.assertEqual(launch_args[name], default)
             self.assertEqual(node_params[name], "$(arg {})".format(name))
-
-    def test_task2_handles_new_parking_safety_terminal_states(self):
-        flow_path = os.path.abspath(os.path.join(
-            os.path.dirname(__file__), "..", "scripts",
-            "competition_flow.py"))
-        with open(flow_path, "r", encoding="utf-8") as stream:
-            source = stream.read()
-        for state in (
-                "parking_geometry_invalid",
-                "parking_wall_align_failed",
-                "parking_reverse_rejected",
-                "parking_obstacle_blocked",
-                "coverage_navigation_blocked",
-                "coverage_teb_restore_failed"):
-            self.assertIn('"{}"'.format(state), source)
-        self.assertNotIn('"parking_corner_unresolved"', source)
 
     def test_turn_track_startup_forward_is_exactly_five_centimeters_shorter(self):
         package_dir = os.path.abspath(os.path.join(
@@ -218,7 +194,7 @@ class CompetitionLogicTest(unittest.TestCase):
             "task2_remembered_heading_confirm_sec: 1.2", config)
         self.assertIn(
             "task2_remembered_heading_scan_half_angle_deg: 18.0", config)
-        self.assertIn("task2_non_target_early_exit: false", config)
+        self.assertIn("task2_non_target_early_exit: true", config)
         self.assertIn(
             "task2_non_target_early_exit_min_score: 0.62", config)
         self.assertIn("coverage_non_target_min_scan_steps: 2", config)
@@ -341,20 +317,7 @@ class CompetitionLogicTest(unittest.TestCase):
         self.assertFalse(task2_target_trigger_is_eligible(True, 0))
         self.assertFalse(task2_target_trigger_is_eligible(False, 9))
 
-    def test_latched_target_keeps_small_reobservation_boxes_flowing(self):
-        # Reproduces 20:26:58: food was recognised repeatedly at the corner
-        # observation pose, but 0.159/0.037/0.0059 was below the initial
-        # close-box gate.  A latched navigator still needs those frames.
-        self.assertTrue(task2_target_update_is_publishable(
-            True, False, True))
-        self.assertTrue(task2_target_update_is_publishable(
-            True, True, False))
-        self.assertFalse(task2_target_update_is_publishable(
-            True, False, False))
-        self.assertFalse(task2_target_update_is_publishable(
-            False, True, True))
-
-    def test_task2_semantic_memory_prioritizes_only_positive_target_evidence(self):
+    def test_task2_semantic_memory_prioritizes_target_and_skips_irrelevant(self):
         memory = {
             "daily": {"anchor": 2, "score": 0.71},
             "electronics": {"anchor": 8, "score": 0.69},
@@ -362,7 +325,7 @@ class CompetitionLogicTest(unittest.TestCase):
         }
         self.assertEqual(
             task2_semantic_coverage_hint(memory, "electronics"),
-            (8, ()),
+            (8, (2, 5)),
         )
 
     def test_task2_semantic_memory_never_skips_shared_target_anchor(self):
@@ -372,7 +335,7 @@ class CompetitionLogicTest(unittest.TestCase):
             (3, ()),
         )
 
-    def test_task2_second_search_restarts_at_last_anchor_and_wraps_all(self):
+    def test_task2_second_search_resumes_after_last_observed_anchor(self):
         self.assertEqual(
             task2_resumed_coverage_hint(
                 {"daily": {"anchor": 2}},
@@ -380,7 +343,7 @@ class CompetitionLogicTest(unittest.TestCase):
                 last_anchor=5,
                 anchor_count=9,
             ),
-            (5, ()),
+            (6, (1, 2, 3, 4, 5)),
         )
 
     def test_task2_remembered_target_wins_over_resume_anchor(self):
@@ -394,39 +357,8 @@ class CompetitionLogicTest(unittest.TestCase):
                 last_anchor=7,
                 anchor_count=9,
             ),
-            (3, ()),
+            (3, (2,)),
         )
-
-    def test_task2_ocr_observations_keep_competing_categories_independent(self):
-        payload = {
-            "image_width": 640,
-            "image_height": 480,
-            "detections": [
-                {
-                    "category": "food",
-                    "category_score": 0.78,
-                    "evidence": "食品",
-                    "target_bbox": [[10, 10], [150, 10], [150, 70], [10, 70]],
-                    "target_center_x": 80,
-                    "target_center_y": 40,
-                },
-                {
-                    "category": "daily",
-                    "confidence": 0.72,
-                    "evidence": "日用品",
-                    "bbox": [[300, 20], [520, 20], [520, 90], [300, 90]],
-                    "target_center_x": 410,
-                    "target_center_y": 55,
-                },
-            ],
-        }
-        observations = task2_ocr_observations(payload)
-        self.assertEqual(
-            {item["category"] for item in observations}, {"food", "daily"})
-        daily = next(
-            item for item in observations if item["category"] == "daily")
-        self.assertEqual(daily["target_center_x"], 410)
-        self.assertGreater(daily["area_ratio"], 0.04)
 
     def test_competition_flow_has_one_reasoning_worker_and_complete_qr_scan(self):
         flow_path = os.path.abspath(os.path.join(

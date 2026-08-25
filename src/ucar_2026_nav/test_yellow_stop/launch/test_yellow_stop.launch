@@ -1,0 +1,17 @@
+<launch>
+  <!-- 黄线停车 staging 点导航精度测试：
+       只启动导航栈（底层驱动 + 雷达 + 地图 + AMCL + move_base）和测试节点，
+       不启动相机/语音/OCR/比赛流程。
+       节点参数全部来自 config/yellow_stop_nav_test.yaml，本 launch 不覆盖。 -->
+  <arg name="start_rviz" default="true" />
+
+  <include file="$(find ucar_nav)/launch/ucar_amcl_nav.launch">
+    <arg name="start_rviz" value="$(arg start_rviz)" />
+  </include>
+
+  <node pkg="test_yellow_stop" type="yellow_stop_nav_test_node.py"
+        name="yellow_stop_nav_test" output="screen" required="false">
+    <rosparam command="load"
+              file="$(find test_yellow_stop)/config/yellow_stop_nav_test.yaml" />
+  </node>
+</launch>

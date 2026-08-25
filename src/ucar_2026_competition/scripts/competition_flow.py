@@ -51,10 +51,8 @@ from ucar_2026_competition.logic import (
     split_rotation_steps,
     stage_sequence,
     task2_delivery_targets,
-    task2_ocr_observations,
     task2_resumed_coverage_hint,
     task2_prewarm_reusable,
-    task2_target_update_is_publishable,
     task2_target_trigger_is_eligible,
     task4_handoff_required,
     task4_start_action,
@@ -192,7 +190,7 @@ class CompetitionFlow:
         self.ocr_memory_min_score = float(rospy.get_param(
             "~ocr_memory_min_score", 0.55))
         self.task2_non_target_early_exit = bool_param(
-            "~task2_non_target_early_exit", False)
+            "~task2_non_target_early_exit", True)
         self.ocr_non_target_min_score = float(rospy.get_param(
             "~task2_non_target_early_exit_min_score", 0.62))
         self.ocr_trigger_min_bbox_width_ratio = float(rospy.get_param(
@@ -570,26 +568,16 @@ class CompetitionFlow:
         try:
             payload = json.loads(msg.data)
             category = normalize_category(payload.get("category"))
-            observations = task2_ocr_observations(payload)
         except Exception:
             return
         now = time.monotonic()
         self.ocr_last_message_at = now
-        observations_by_category = {
-            observation["category"]: observation
-            for observation in observations
-        }
-        confirmed_categories = set()
+        memory_confirmed = False
         for candidate, candidate_filter in self.ocr_memory_filters.items():
-            observed = candidate if candidate in observations_by_category else None
-            if candidate_filter.push(candidate, observed, now):
-                confirmed_categories.add(candidate)
-        target_observation = observations_by_category.get(self.ocr_target)
-        if target_observation is not None:
-            category = self.ocr_target
-            bbox = target_observation["target_bbox"]
-        else:
-            bbox = payload.get("target_bbox")
+            if candidate_filter.push(candidate, category, now):
+                memory_confirmed = candidate == category
+        score = float(payload.get("category_score", 0.0) or 0.0)
+        bbox = payload.get("target_bbox")
         bbox_ratios = target_bbox_ratios(
             bbox, payload.get("image_width"), payload.get("image_height"))
         trigger_eligible = target_bbox_is_close_enough(
@@ -605,42 +593,24 @@ class CompetitionFlow:
         target_trigger_eligible = task2_target_trigger_is_eligible(
             trigger_eligible, active_anchor)
         non_target_event = None
-        for observed_category in sorted(confirmed_categories):
-            observation = observations_by_category.get(observed_category)
-            if observation is None:
-                continue
-            observed_score = float(observation["category_score"])
-            observed_bbox = observation["target_bbox"]
-            observed_ratios = target_bbox_ratios(
-                observed_bbox, payload.get("image_width"),
-                payload.get("image_height"))
-            if (not observed_bbox or
-                    observed_score < self.ocr_memory_min_score):
-                continue
-            observed_close = target_bbox_is_close_enough(
-                observed_bbox,
-                payload.get("image_width"), payload.get("image_height"),
-                self.ocr_trigger_min_bbox_width_ratio,
-                self.ocr_trigger_min_bbox_height_ratio,
-                self.ocr_trigger_min_bbox_area_ratio,
-            )
+        if (memory_confirmed and payload.get("target_bbox") and
+                score >= self.ocr_memory_min_score):
             with self.lock:
                 anchor = self.current_coverage_anchor
-                previous = self.task2_warehouse_memory.get(observed_category)
+                previous = self.task2_warehouse_memory.get(category)
                 pose = self.base_pose
                 yaw = pose[2] if pose is not None else None
-                area_ratio = (
-                    observed_ratios[2] if observed_ratios is not None else 0.0)
+                area_ratio = bbox_ratios[2] if bbox_ratios is not None else 0.0
                 previous_quality = (
                     float(previous.get("area_ratio", 0.0)),
                     float(previous.get("score", 0.0)),
                 ) if previous is not None else (-1.0, -1.0)
-                quality = (area_ratio, observed_score)
+                quality = (area_ratio, score)
                 if (anchor and yaw is not None and math.isfinite(yaw) and
                         (previous is None or quality > previous_quality)):
-                    self.task2_warehouse_memory[observed_category] = {
+                    self.task2_warehouse_memory[category] = {
                         "anchor": int(anchor),
-                        "score": observed_score,
+                        "score": score,
                         "area_ratio": area_ratio,
                         "odom_yaw": float(yaw),
                         "stamp": time.time(),
@@ -650,16 +620,20 @@ class CompetitionFlow:
                     #     "score=%.3f area=%.4f odom_yaw=%.3f",
                     #     category, anchor, score, area_ratio, yaw)
                 if non_target_observation_is_actionable(
-                        self.ocr_target, observed_category, True,
-                        observed_close, observed_score,
-                        self.ocr_non_target_min_score, anchor):
-                    event_key = (int(anchor), observed_category)
+                        self.ocr_target,
+                        category,
+                        memory_confirmed,
+                        trigger_eligible,
+                        score,
+                        self.ocr_non_target_min_score,
+                        anchor):
+                    event_key = (int(anchor), category)
                     if event_key not in self.task2_non_target_announced:
                         self.task2_non_target_announced.add(event_key)
                         non_target_event = {
-                            "category": observed_category,
+                            "category": category,
                             "anchor": int(anchor),
-                            "score": observed_score,
+                            "score": score,
                             "area_ratio": area_ratio,
                             "odom_yaw": yaw,
                             "confirmed": True,
@@ -2140,7 +2114,6 @@ class CompetitionFlow:
         }
         forwarded_defaults = {
             "coverage_rotation_min_clearance": 0.28,
-            "coverage_obstacle_required_scans": 2,
             "coverage_translation_min_clearance": 0.00,
             "coverage_translation_sector_half_angle_deg": 35.0,
             "coverage_max_vel_x": 0.72,
@@ -2152,10 +2125,6 @@ class CompetitionFlow:
             "coverage_caution_vel_x": 0.53,
             "coverage_caution_vel_y": 0.53,
             "coverage_caution_vel_theta": 1.12,
-            "coverage_teb_weight_kinematics_nh": 1.0,
-            "coverage_teb_weight_kinematics_forward_drive": 10.0,
-            "coverage_teb_min_turning_radius": 0.0,
-            "coverage_teb_global_plan_overwrite_orientation": False,
             "coverage_caution_enter_clearance": 0.45,
             "coverage_caution_exit_clearance": 0.55,
             "coverage_fast_exit_clearance": 0.75,
@@ -2175,10 +2144,6 @@ class CompetitionFlow:
             "parking_obstacle_min_clearance": 0.24,
             "parking_obstacle_clearance_tolerance": 0.005,
             "parking_obstacle_sector_half_angle_deg": 35.0,
-            "parking_obstacle_required_scans": 2,
-            "parking_recovery_retry_count": 1,
-            "parking_recovery_reverse_speed": 0.06,
-            "parking_recovery_timeout_sec": 8.0,
             "parking_dock_max_x": 0.10,
             "parking_dock_max_y": 0.06,
             "parking_dock_max_yaw": 0.30,
@@ -2200,7 +2165,7 @@ class CompetitionFlow:
             "parking_wall_fit_max_residual": 0.015,
             "parking_wall_fit_max_normal_error_deg": 20.0,
             "parking_normal_offset": 0.0,
-            "parking_tangent_offset": 0.03,
+            "parking_tangent_offset": 0.0,
             "parking_box_width": 0.50,
             "parking_box_depth": 0.50,
             "parking_xy_tolerance": 0.04,
@@ -2425,9 +2390,7 @@ class CompetitionFlow:
                 if self.navigator_status == "failed":
                     raise StageError("factory navigation failed")
                 if self.navigator_status in (
-                        "centering_failed", "parking_geometry_invalid",
-                        "parking_wall_align_failed",
-                        "parking_reverse_rejected",
+                        "centering_failed", "parking_staging_failed",
                         "parking_recenter_failed", "parking_wall_fit_failed",
                         "parking_docking_failed", "parking_validation_failed",
                         "coverage_recovery_disable_failed",

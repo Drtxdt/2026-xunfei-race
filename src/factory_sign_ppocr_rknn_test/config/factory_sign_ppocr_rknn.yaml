@@ -19,8 +19,7 @@ det_input_size: 480
 rec_image_height: 48
 rec_image_width: 320
 rec_resize_mode: stretch      # stretch matches rknn_model_zoo PPOCR-Rec demo; pad keeps aspect ratio
-# 同屏允许一行完整厂牌 + 邻接双行厂牌 + 一个图形/英文候选。
-max_rec_crops: 4
+max_rec_crops: 3
 use_global_rec_candidates: true
 global_fallback_crops: 1
 box_padding_x: 0.15

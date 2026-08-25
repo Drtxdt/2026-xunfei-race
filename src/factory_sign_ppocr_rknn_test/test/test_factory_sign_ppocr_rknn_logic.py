@@ -13,27 +13,10 @@ from factory_sign_ppocr_rknn_node import (
     OCRText,
     PPOCRRknnRecognizer,
     VoteWindow,
-    collect_factory_sign_detections,
     map_box_to_frame,
     parse_view_scales,
     select_factory_sign_box,
 )
-
-
-def test_competing_factory_signs_keep_independent_target_boxes():
-    classifier = FactorySignKeywordClassifier()
-    food_box = [[20.0, 20.0], [160.0, 20.0], [160.0, 60.0], [20.0, 60.0]]
-    daily_box = [[320.0, 20.0], [500.0, 20.0], [500.0, 60.0], [320.0, 60.0]]
-    texts = [
-        OCRText("食品加工车间", 0.74, food_box),
-        OCRText("日用品加工车间", 0.71, daily_box),
-    ]
-
-    category, _score, _evidence, _debug = classifier.classify_evidence(texts)
-    assert category is None
-    detections = collect_factory_sign_detections(texts, classifier)
-    assert [item["category"] for item in detections] == ["food", "daily"]
-    assert next(item for item in detections if item["category"] == "daily")["box"] == daily_box
 
 
 def test_keyword_classifier_maps_requested_categories():
@@ -100,48 +83,6 @@ def test_split_food_sign_uses_combined_factory_bbox():
     assert selected.box == [
         [80.0, 20.0], [166.0, 20.0], [166.0, 90.0], [80.0, 90.0],
     ]
-
-
-def test_two_line_electronic_sign_keeps_own_bbox_beside_complete_food_sign():
-    classifier = FactorySignKeywordClassifier()
-    food = OCRText(
-        "食品加工车间", 0.74,
-        [[20.0, 20.0], [180.0, 20.0], [180.0, 60.0], [20.0, 60.0]],
-    )
-    electronic = OCRText(
-        "电子产品", 0.82,
-        [[330.0, 18.0], [450.0, 18.0], [450.0, 50.0], [330.0, 50.0]],
-    )
-    workshop = OCRText(
-        "生产车间", 0.79,
-        [[310.0, 56.0], [475.0, 56.0], [475.0, 92.0], [310.0, 92.0]],
-    )
-
-    detections = collect_factory_sign_detections(
-        [food, electronic, workshop], classifier)
-    by_category = {item["category"]: item for item in detections}
-
-    assert by_category["food"]["box"] == food.box
-    assert by_category["electronic"]["box"] == [
-        [310.0, 18.0], [475.0, 18.0], [475.0, 92.0], [310.0, 92.0],
-    ]
-    assert by_category["electronic"]["raw_text"] == "电子产品 生产车间"
-
-
-def test_live_ocr_budget_keeps_four_candidates_for_adjacent_two_line_sign():
-    package_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    with open(os.path.join(
-            package_dir, "config", "factory_sign_ppocr_rknn.yaml"),
-            "r", encoding="utf-8") as stream:
-        config = stream.read()
-    assert "max_rec_crops: 4" in config
-
-    import xml.etree.ElementTree as ET
-    root = ET.parse(os.path.join(
-        package_dir, "launch", "factory_sign_ppocr_rknn_test.launch")).getroot()
-    crop_arg = root.find("arg[@name='max_rec_crops']")
-    assert crop_arg is not None
-    assert crop_arg.attrib["default"] == "4"
 
 
 def test_split_sign_does_not_merge_distant_workshop_text():

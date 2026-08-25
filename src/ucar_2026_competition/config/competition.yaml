@@ -73,12 +73,12 @@ target_center_start_speed: 0.28
 target_center_max_speed: 0.45
 target_center_timeout_sec: 20.0
 # 厂牌居中后，车头射线相对相机光轴的实车标定偏差。
-camera_boresight_yaw_offset: 0.292
+camera_boresight_yaw_offset: 0.0
 factory_navigation_timeout_sec: 420.0
 # 任务2（找厂牌+停车）总时间阈值：从 task2 启动开始计时，超时后立即播报并直接
 # 进入仿真任务（task3），不再等待泊车完成。单次搜索失败会自动从第一个锚点重扫，
 # 直到本阈值触发。比赛全程 30 分钟，请按实际节奏调整。
-task2_total_timeout_sec: 600.0
+task2_total_timeout_sec: 420.0
 task2_prewarm_enabled: true
 factory_navigation_start_service: "/vision_triggered_navigator/start_navigation"
 # 任务2停车框贴墙且厂牌居中，以四轮全部入框为目标。
@@ -93,10 +93,6 @@ parking_docking_timeout_sec: 30.0
 parking_obstacle_min_clearance: 0.24
 parking_obstacle_clearance_tolerance: 0.005
 parking_obstacle_sector_half_angle_deg: 35.0
-parking_obstacle_required_scans: 2
-parking_recovery_retry_count: 1
-parking_recovery_reverse_speed: 0.06
-parking_recovery_timeout_sec: 8.0
 parking_dock_max_x: 0.10
 parking_dock_max_y: 0.06
 parking_dock_max_yaw: 0.30
@@ -120,7 +116,7 @@ parking_wall_fit_max_normal_error_deg: 20.0
 parking_xy_tolerance: 0.04
 parking_yaw_tolerance: 0.06
 parking_normal_offset: 0.0
-parking_tangent_offset: 0.03
+parking_tangent_offset: 0.0
 target_trigger_service: /vision_triggered_navigator/trigger_target
 trigger_ack_timeout_sec: 2.0
 task1_task2_handoff_timeout_sec: 5.0
@@ -161,7 +157,6 @@ coverage_rotation_watchdog_window_sec: 5.0
 coverage_rotation_min_progress: 0.03
 coverage_rotation_max_yaw_deg: 90.0
 coverage_rotation_min_clearance: 0.28
-coverage_obstacle_required_scans: 2
 # 交由 move_base/costmap 绕障；设为 0 禁用会误取消整个位点的激光平移门槛。
 coverage_translation_min_clearance: 0.00
 coverage_translation_sector_half_angle_deg: 35.0
@@ -174,10 +169,6 @@ coverage_cruise_vel_theta: 1.30
 coverage_caution_vel_x: 0.53
 coverage_caution_vel_y: 0.53
 coverage_caution_vel_theta: 1.12
-coverage_teb_weight_kinematics_nh: 1.0
-coverage_teb_weight_kinematics_forward_drive: 10.0
-coverage_teb_min_turning_radius: 0.0
-coverage_teb_global_plan_overwrite_orientation: false
 coverage_caution_enter_clearance: 0.45
 coverage_caution_exit_clearance: 0.55
 coverage_fast_exit_clearance: 0.75
@@ -200,14 +191,14 @@ task2_second_search_abort_fail_fast_count: 0
 task2_remembered_heading_confirm_sec: 1.2
 task2_remembered_heading_scan_half_angle_deg: 18.0
 # 连续确认近距离非目标厂牌后结束当前观察点剩余转角；第二轮继续复用仓库记忆。
-task2_non_target_early_exit: false
+task2_non_target_early_exit: true
 task2_non_target_early_exit_min_score: 0.62
 task2_non_target_topic: /vision/non_target_observation
 
 # 仿真独立 ROS Master，通过 TCP 协同。
 sim_bridge_port: 26003
 # 仿真任务总时间阈值：超时（或反复重连失败）后跳过仿真，直接进入黄线停车任务（task4）。
-sim_timeout_sec: 200.0
+sim_timeout_sec: 150.0
 # 子任务3播报前先确认静止，播报期间持续发布零速度；任何运动都会阻止进入任务4。
 stationary_announcement_stable_sec: 0.5
 stationary_announcement_odom_stale_sec: 0.5

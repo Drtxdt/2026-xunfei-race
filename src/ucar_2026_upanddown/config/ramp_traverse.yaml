@@ -68,9 +68,9 @@ confirm_frames: 3
 # ------------------------------ 速度 ---------------------------------------
 # 各段目标速度（m/s）。原则：慢到不打滑、快到不溜车超时。
 # level 段（坡前平地接近段）。
-speed_approach_mps: 0.5
+speed_approach_mps: 0.4
 # 上坡段。麦轮爬 22° 需要持续动力，太慢反而力矩不足。
-speed_up_mps: 0.5
+speed_up_mps: 0.4
 # 坡顶平路段。
 speed_plateau_mps: 0.1
 # 下坡段。重力分量助跑，稍慢防冲出。
@@ -100,10 +100,10 @@ heading_deadband_deg: 1.5
 nominal_ramp_length_m: 1.5
 # 距离硬预算余量（m）：里程 > 名义长 + 余量 即 FAULT。
 # 覆盖坡前接近段 + 下坡后余量段 + 打滑冗余。
-distance_margin_m: 2.0
+distance_margin_m: 5.0
 # 下坡结束（pitch 回平）后继续直行的轴距余量（m）。
 # 车长约 0.34m，前轮落地时后轮仍在坡上；必须 >= 半轴距。
-exit_extra_m: 0.28
+exit_extra_m: 0.10
 # IMU 数据最大允许间隔（秒），超时 FAULT。
 imu_timeout_sec: 1.0
 # 里程计数据最大允许间隔（秒），超时 FAULT。

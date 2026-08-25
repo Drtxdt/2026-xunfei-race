@@ -1,8 +1,13 @@
 # 致所有人：登录小车后，先
 cd 2026-xunfei-race
 
-# 可选：构建
-catkin_make
+# 可选：构建（必须强制使用系统 Python 3.7，否则 cv_bridge 等 Python 绑定会链接到 conda
+# 的 Python 3.9 并导致 strict_mission 等节点启动时 SIGABRT 崩溃）
+catkin_make \
+  -DPYTHON_EXECUTABLE=/usr/bin/python3 \
+  -DPYTHON_INCLUDE_DIR=/usr/include/python3.7m \
+  -DPYTHON_LIBRARY=/usr/lib/aarch64-linux-gnu/libpython3.7m.so \
+  -DPYTHON_NUMPY_INCLUDE_DIR=/usr/lib/python3/dist-packages/numpy/core/include
 # 指定某一个包构建
 catkin_make --pkg ucar_2026_line_follow
 
@@ -64,27 +69,9 @@ roslaunch ucar_2026_national_competition national_full_competition.launch \
   sim_bridge_host:=192.168.1.30 \
   debug:=true
 
+# 黄线停车测试
+roslaunch test_yellow_stop test_yellow_stop.launch
 
-```
-national_full_competition.launch
-├── national_common_core.launch
-│   ├── 省赛 common_core.launch（原样 include，语音/相机/LLM 同一套）
-│   └── national_nav.launch     # 门控导航栈
-│       ├── AMCL + move_base（/scan remap 到 /scan_gated）
-│       └── scan_gate_node（upanddown 包，雷达门控）
-└── national_flow.launch
-    ├── national_flow_node.py   # 国赛主控，8 阶段
-    └──_traverse_node      # upanddown 包，过坡状态机
+roslaunch ucar_2026_national_competition ramp_to_track_test.launch
 
-national_flow_node 执行：
-  voice_handshake → navigate_ramp_staging → traverse_ramp
-  (调 /ramp_traverse/start，轮询 /ramptraverse/status)
-  → post_ramp_recovery → navigate_qr_area → scan_qr
-  (复用省赛 qr_decoder.launch) → reason_and_announce
-  → handover:
-      子进程 roslaunch ucar_2026etition flow_node.launch
-      按 start_stage=task2 → task3_task4 → task4_task5（无仿真 task2→task4→task5）
-      顺序跑三段，每段退出码 0 才起下一段
-      （省赛 flow pause 时由national/resume 转发 /competition/resume，
-        /national/abort 转发 /competition/abort）
-```
+roslaunch ucar_2026_national_competition yellow_line_track_test.launch

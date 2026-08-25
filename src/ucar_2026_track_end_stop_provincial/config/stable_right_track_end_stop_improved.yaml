@@ -2,8 +2,10 @@
 auto_start: true
 startup_time: 2.0
 startup_speed: 0.35
-
-right_line_offset_px: 195.0
+##############################
+# 右线参数
+right_line_offset_px: 195 # 170.0 #调小为右转留余量
+###############################
 target_right_x: 200
 base_speed: 0.32
 curve_speed: 0.12
@@ -22,15 +24,18 @@ steering_deadband_px: 3
 max_straight_angular_speed: 0.25
 max_right_angular_speed: 0.32
 straight_angular_alpha: 0.60
-curve_angular_alpha: 0.68
+#################################################################
+curve_angular_alpha: 0.68 # 0.70 # 增大转向平滑度
+#################################################################
 straight_angular_step: 0.05
 curve_angular_step: 0.08
 right_guard_error_px: 60.0
 right_warning_error_px: 20
 right_near_warning_error_px: 8
 right_guard_speed: 0.10
-deadband_angular_decay: 0.40
-
+################################################################
+deadband_angular_decay: 0.45 # 0.40 # 死区衰减系数原本抖动略大
+#################################################################
 # 防压右线保护：right_x 越小表示右线越靠近车体中心
 right_danger_x: 150
 right_emergency_x: 120
@@ -46,11 +51,12 @@ lost_brake_frames: 3
 lost_stop_frames: 10
 
 roi_y_start_ratio: 0.60
-white_s_max: 45
-white_v_min: 200
+################################################################白线提取
+white_s_max: 30 # 45 # 越小要求越白
+white_v_min: 170 #200 # 越大要求越亮
+################################################################白线提取结束
 morph_kernel_size: 5
 min_component_area: 260.0
-
 end_enable_delay: 35.0
 end_roi_y_start_ratio: 0.87
 end_min_width_ratio: 0.45
